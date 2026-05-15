@@ -99,6 +99,9 @@ export function createBlockParser(
       }
 
       pendingText += text;
+      if (state.currentCodeBlock && !pendingText.includes('\n')) {
+        return tree;
+      }
       tree.edit(() => {
         discardProjectedPendingLine(state, projectedPending);
         projectedPending = undefined;
@@ -310,12 +313,18 @@ function projectPendingLine(
     return;
   }
 
-  if (state.currentCodeBlock) {
-    return {kind: 'code-block', text: appendCodeBlockLine(state, line)};
+  if (state.currentCodeBlock && state.currentCodeFence) {
+    return;
   }
 
   const prefix = parseLinePrefix(state, line);
   if (shouldWaitForPendingPrefixResolution(state, line, prefix)) {
+    return;
+  }
+  if (prefix.content === '') {
+    return;
+  }
+  if (parseFenceStart(prefix.content)) {
     return;
   }
   if (

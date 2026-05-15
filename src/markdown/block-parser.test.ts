@@ -900,6 +900,34 @@ describe('parseBlocks', () => {
     expect(parseBlocks(serializeToString(expected)).node).toEqual(expected);
   });
 
+  it('matches full parse for a section containing a quoted fenced code block under char-by-char append', () => {
+    const expected: DocumentNode = {
+      type: 'document',
+      children: [
+        {
+          type: 'section',
+          marker: '#',
+          content: 'section 1',
+          children: [
+            {
+              type: 'block-quote',
+              marker: '> ',
+              children: [
+                {
+                  type: 'code-block',
+                  info: 'ts',
+                  content: 'section > quote',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    const markdown = serializeToString(expected);
+    expectCharByCharAppendMatchesFullParse(markdown);
+  });
+
   it('parses a same-line unordered list marker in a list item as a nested list', () => {
     const {node} = parseBlocks('* - nested\n');
     expect(node).toEqual({
@@ -1021,6 +1049,26 @@ describe('parseBlocks', () => {
         continue;
       }
       const expected = buildRoundtripDocument(chain, 'paragraph');
+      const markdown = serializeToString(expected);
+      const parser = createBlockParser();
+      for (const char of markdown) {
+        parser.push(char);
+      }
+      expect(parser.finish().serialize()).toEqual(expected);
+    }
+  });
+
+  it('matches full parse for generated code-block nesting permutations under char-by-char append', () => {
+    const chains = [
+      ...chainPermutations(2),
+      ...chainPermutations(3),
+    ];
+
+    for (const chain of chains) {
+      if (!supportsGeneratedIncremental(chain)) {
+        continue;
+      }
+      const expected = buildRoundtripDocument(chain, 'code-block');
       const markdown = serializeToString(expected);
       const parser = createBlockParser();
       for (const char of markdown) {
