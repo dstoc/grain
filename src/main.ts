@@ -148,6 +148,16 @@ class MarkdownDevHarness extends LitElement {
       font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
     }
 
+    .tree {
+      width: 100%;
+      min-height: 68vh;
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #0f172a;
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
     @media (max-width: 920px) {
       .shell {
         grid-template-columns: 1fr;
@@ -172,6 +182,7 @@ class MarkdownDevHarness extends LitElement {
     renderVersion: {state: true},
     activeTab: {state: true},
     serializedMarkdown: {state: true},
+    treeJson: {state: true},
   };
 
   declare root: ViewModelNode | undefined;
@@ -179,8 +190,9 @@ class MarkdownDevHarness extends LitElement {
   private declare pendingText: string;
   private declare parseMode: string;
   private declare renderVersion: number;
-  private declare activeTab: 'render' | 'serialize';
+  private declare activeTab: 'render' | 'serialize' | 'tree';
   private declare serializedMarkdown: string;
+  private declare treeJson: string;
   private parser: BlockParser;
 
   constructor() {
@@ -193,6 +205,7 @@ class MarkdownDevHarness extends LitElement {
     this.renderVersion = 0;
     this.activeTab = 'render';
     this.serializedMarkdown = '';
+    this.treeJson = '';
     this.reparse(sample, true);
   }
 
@@ -236,6 +249,13 @@ class MarkdownDevHarness extends LitElement {
             >
               Serialize
             </button>
+            <button
+              class="tab"
+              ?selected=${this.activeTab === 'tree'}
+              @click=${() => this.setTab('tree')}
+            >
+              Tree
+            </button>
           </div>
           <div class="preview-card">
             ${this.activeTab === 'render'
@@ -245,7 +265,9 @@ class MarkdownDevHarness extends LitElement {
                     .version=${this.renderVersion}
                   ></md-block-render>`
                 : html``
-              : html`<pre class="serialized">${this.serializedMarkdown}</pre>`}
+              : this.activeTab === 'serialize'
+                ? html`<pre class="serialized">${this.serializedMarkdown}</pre>`
+                : html`<pre class="tree">${this.treeJson}</pre>`}
           </div>
         </section>
       </main>
@@ -257,7 +279,7 @@ class MarkdownDevHarness extends LitElement {
     this.reparse(value);
   };
 
-  private setTab(tab: 'render' | 'serialize') {
+  private setTab(tab: 'render' | 'serialize' | 'tree') {
     this.activeTab = tab;
   }
 
@@ -275,9 +297,11 @@ class MarkdownDevHarness extends LitElement {
     }
 
     const tree = this.parser.getTree();
+    const serializedTree = tree.serialize();
     this.root = tree.root;
     this.pendingText = this.parser.getPendingText();
-    this.serializedMarkdown = serializeToString(tree.serialize());
+    this.serializedMarkdown = serializeToString(serializedTree);
+    this.treeJson = JSON.stringify(serializedTree, null, 2);
     this.renderVersion++;
   }
 }

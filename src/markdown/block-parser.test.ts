@@ -3,6 +3,16 @@ import {describe, expect, it} from 'vitest';
 import {createBlockParser, parseBlocks} from './block-parser.js';
 import {serializeToString} from './block-serializer.js';
 
+function expectCharByCharAppendMatchesFullParse(source: string) {
+  const full = parseBlocks(source).node;
+  const parser = createBlockParser();
+  for (const char of source) {
+    parser.push(char);
+  }
+  const incremental = parser.finish().serialize();
+  expect(incremental).toEqual(full);
+}
+
 describe('parseBlocks', () => {
   it('returns an empty paragraph for empty input', () => {
     const {node} = parseBlocks('');
@@ -94,6 +104,48 @@ describe('parseBlocks', () => {
       ],
     });
     expect(parser.getPendingText()).toBe('hello');
+  });
+
+  it('projects partial paragraph text inside a list item', () => {
+    const parser = createBlockParser();
+    parser.push('- item\n  cont');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '- ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'paragraph',
+                  content: 'item\ncont',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('projects partial ATX heading text as a section', () => {
+    const parser = createBlockParser();
+    parser.push('## heading');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'section',
+          marker: '##',
+          content: 'heading',
+          children: [],
+        },
+      ],
+    });
   });
 
   it('promotes a projected paragraph after later setext input', () => {
@@ -498,6 +550,244 @@ describe('parseBlocks', () => {
               ],
             },
           ],
+        },
+      ],
+    });
+  });
+
+  it('matches full parse when appending list continuation one character at a time', () => {
+    expectCharByCharAppendMatchesFullParse('* list\n  continue\n');
+  });
+
+  it('parses a section as the first child of a list item', () => {
+    const {node} = parseBlocks('* # section\n  content\n');
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'section',
+                  marker: '#',
+                  content: 'section',
+                  children: [
+                    {
+                      type: 'paragraph',
+                      content: 'content',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('parses a same-line quote marker in a list item as a block quote', () => {
+    const {node} = parseBlocks('* > quote\n');
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'block-quote',
+                  marker: '> ',
+                  children: [
+                    {
+                      type: 'paragraph',
+                      content: 'quote',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('parses a same-line code fence marker in a list item as a code block', () => {
+    const {node} = parseBlocks('* ```js\n');
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'code-block',
+                  info: 'js',
+                  content: '',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('parses a same-line unordered list marker in a list item as a nested list', () => {
+    const {node} = parseBlocks('* - nested\n');
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'list',
+                  children: [
+                    {
+                      type: 'list-item',
+                      marker: '- ',
+                      checked: undefined,
+                      children: [
+                        {
+                          type: 'paragraph',
+                          content: 'nested',
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('parses a same-line ordered list marker in a list item as a nested list', () => {
+    const {node} = parseBlocks('* 1. nested\n');
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'list',
+                  children: [
+                    {
+                      type: 'list-item',
+                      marker: '1. ',
+                      checked: undefined,
+                      children: [
+                        {
+                          type: 'paragraph',
+                          content: 'nested',
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('matches full parse when appending a list-item section one character at a time', () => {
+    expectCharByCharAppendMatchesFullParse('* # section\n  content\n');
+  });
+
+  it('matches full parse when appending a quoted list item one character at a time', () => {
+    expectCharByCharAppendMatchesFullParse('* > one\n  > two\n');
+  });
+
+  it('ends a list-item section before an unindented following paragraph', () => {
+    const {node} = parseBlocks('* # section\n\noutside?\n');
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'section',
+                  marker: '#',
+                  content: 'section',
+                  children: [],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          type: 'paragraph',
+          content: 'outside?',
+        },
+      ],
+    });
+  });
+
+  it('projects an unindented paragraph outside a list-item section without a trailing newline', () => {
+    const parser = createBlockParser();
+    parser.push('* # section\n\noutside?');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'section',
+                  marker: '#',
+                  content: 'section',
+                  children: [],
+                },
+              ],
+            },
+          ],
+        },
+        {
+          type: 'paragraph',
+          content: 'outside?',
         },
       ],
     });

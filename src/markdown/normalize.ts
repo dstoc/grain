@@ -136,7 +136,6 @@ export function normalizeTree(tree: MarkdownTree) {
         next[viewModel].remove();
       }
     }
-    // Collapse directly nested lists.
     if (node.type === 'list-item') {
       // Ensure checked is not set, rather than set to undefined
       // since it could serialize as null.
@@ -145,20 +144,6 @@ export function normalizeTree(tree: MarkdownTree) {
         (node.checked === undefined && 'checked' in node)
       ) {
         node[viewModel].updateChecked(undefined);
-      }
-      if (
-        node[viewModel].firstChild?.type === 'list' &&
-        node.children?.length === 1
-      ) {
-        const list = node[viewModel].firstChild;
-        while (list[viewModel].firstChild) {
-          list[viewModel].firstChild[viewModel].insertBefore(
-            cast(node[viewModel].parent),
-            node,
-          );
-        }
-        // Note. `node` still contains the empty `list`. They will
-        // be removed in the next normalization step below.
       }
     }
   }
