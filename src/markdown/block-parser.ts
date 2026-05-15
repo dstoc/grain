@@ -311,8 +311,7 @@ function projectPendingLine(
   }
 
   if (state.currentCodeBlock) {
-    appendCodeBlockLine(state, line);
-    return {kind: 'code-block', text: line};
+    return {kind: 'code-block', text: appendCodeBlockLine(state, line)};
   }
 
   const prefix = parseLinePrefix(state, line);
@@ -679,12 +678,20 @@ function parseInitialListItemContent(
   item: ListItemViewModelNode,
   content: string,
 ) {
+  parseInitialContainerContent(state, item, content);
+}
+
+function parseInitialContainerContent(
+  state: BlockParseState,
+  parent: ViewModelNode,
+  content: string,
+) {
   if (content === '') {
     const paragraph = state.tree.add({
       type: 'paragraph',
       content: '',
     }) as ParagraphViewModelNode;
-    paragraph[viewModel].insertBefore(item);
+    paragraph[viewModel].insertBefore(parent);
     state.currentParagraph = paragraph;
     return;
   }
@@ -697,8 +704,8 @@ function parseInitialListItemContent(
       content: atxHeading.content,
       children: [],
     }) as SectionViewModelNode;
-    section[viewModel].insertBefore(item);
-    syncSectionStack(state, item);
+    section[viewModel].insertBefore(parent);
+    syncSectionStack(state, parent);
     state.sectionStack.push(section);
     state.currentParagraph = undefined;
     return;
@@ -706,8 +713,8 @@ function parseInitialListItemContent(
 
   const quoteMatch = /^(>\s?)(.*)$/.exec(content);
   if (quoteMatch) {
-    const quote = syncQuoteStack(state, item, 1);
-    appendParagraphLine(state, quote, quoteMatch[2]);
+    const quote = syncQuoteStack(state, parent, 1);
+    parseInitialContainerContent(state, quote, quoteMatch[2]);
     return;
   }
 
@@ -715,7 +722,7 @@ function parseInitialListItemContent(
   if (nestedListItem) {
     appendListItem(
       state,
-      item,
+      parent,
       nestedListItem.marker,
       nestedListItem.checked,
       nestedListItem.content,
@@ -725,7 +732,7 @@ function parseInitialListItemContent(
 
   const fence = parseFenceStart(content);
   if (fence) {
-    openCodeBlock(state, item, fence.marker, fence.info);
+    openCodeBlock(state, parent, fence.marker, fence.info);
     state.currentParagraph = undefined;
     return;
   }
@@ -734,7 +741,7 @@ function parseInitialListItemContent(
     type: 'paragraph',
     content,
   }) as ParagraphViewModelNode;
-  paragraph[viewModel].insertBefore(item);
+  paragraph[viewModel].insertBefore(parent);
   state.currentParagraph = paragraph;
 }
 
@@ -766,12 +773,14 @@ function openCodeBlock(
   state.sawContent = true;
 }
 
-function appendCodeBlockLine(state: BlockParseState, line: string) {
+function appendCodeBlockLine(state: BlockParseState, line: string): string {
   const node = state.currentCodeBlock;
-  if (!node) return;
-  const newContent = node.content === '' ? line : `${node.content}\n${line}`;
+  if (!node) return '';
+  const inserted = node.content === '' ? line : `\n${line}`;
+  const newContent = `${node.content}${inserted}`;
   (node as {content: string}).content = newContent;
   node[viewModel].renderSignal.value++;
+  return inserted;
 }
 
 function isClosingFence(line: string, marker: string): boolean {

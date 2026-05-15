@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest';
 
 import {createBlockParser, parseBlocks} from './block-parser.js';
 import {serializeToString} from './block-serializer.js';
+import type {DocumentNode, MarkdownNode} from './node.js';
 
 function expectCharByCharAppendMatchesFullParse(source: string) {
   const full = parseBlocks(source).node;
@@ -11,6 +12,122 @@ function expectCharByCharAppendMatchesFullParse(source: string) {
   }
   const incremental = parser.finish().serialize();
   expect(incremental).toEqual(full);
+}
+
+type ChainToken = 'section' | 'quote' | 'bullet' | 'ordered';
+type LeafToken = 'paragraph' | 'code-block';
+
+function buildRoundtripDocument(
+  chain: ChainToken[],
+  leaf: LeafToken,
+): DocumentNode {
+  let node: MarkdownNode =
+    leaf === 'paragraph'
+      ? {type: 'paragraph', content: chainLabel(chain)}
+      : {type: 'code-block', info: 'ts', content: chainLabel(chain)};
+
+  for (let i = chain.length - 1; i >= 0; i--) {
+    const token = chain[i];
+    switch (token) {
+      case 'section':
+        node = {
+          type: 'section',
+          marker: '#',
+          content: `section ${i + 1}`,
+          children: [node],
+        };
+        break;
+      case 'quote':
+        node = {
+          type: 'block-quote',
+          marker: '> ',
+          children: [node],
+        };
+        break;
+      case 'bullet':
+        node = {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '- ',
+              checked: undefined,
+              children: [node],
+            },
+          ],
+        };
+        break;
+      case 'ordered':
+        node = {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '1. ',
+              checked: undefined,
+              children: [node],
+            },
+          ],
+        };
+        break;
+    }
+  }
+
+  return {
+    type: 'document',
+    children: [node],
+  };
+}
+
+function chainLabel(chain: ChainToken[]): string {
+  return chain.length ? chain.join(' > ') : 'root';
+}
+
+function chainPermutations(depth: number): ChainToken[][] {
+  const tokens: ChainToken[] = ['section', 'quote', 'bullet', 'ordered'];
+  const results: ChainToken[][] = [];
+
+  function visit(current: ChainToken[]) {
+    if (current.length === depth) {
+      results.push(current);
+      return;
+    }
+    for (const token of tokens) {
+      visit([...current, token]);
+    }
+  }
+
+  visit([]);
+  return results;
+}
+
+function supportsGeneratedRoundtrip(chain: ChainToken[], leaf: LeafToken): boolean {
+  if (!supportsSectionPrefixOnly(chain)) {
+    return false;
+  }
+  if (chain.filter((token) => token === 'section').length > 1) {
+    return false;
+  }
+  if (leaf === 'code-block') {
+    return !chain.includes('bullet') && !chain.includes('ordered');
+  }
+  return true;
+}
+
+function supportsGeneratedIncremental(chain: ChainToken[]): boolean {
+  return supportsSectionPrefixOnly(chain) && chain.filter((token) => token === 'section').length <= 1;
+}
+
+function supportsSectionPrefixOnly(chain: ChainToken[]): boolean {
+  let sawNonSection = false;
+  for (const token of chain) {
+    if (token === 'section') {
+      if (sawNonSection) return false;
+      continue;
+    }
+    sawNonSection = true;
+  }
+  return true;
 }
 
 describe('parseBlocks', () => {
@@ -622,6 +739,86 @@ describe('parseBlocks', () => {
     });
   });
 
+  it('parses a deeper same-line quote marker inside a list-item quote as a nested quote', () => {
+    const {node} = parseBlocks('* > > no inner quote\n');
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'block-quote',
+                  marker: '> ',
+                  children: [
+                    {
+                      type: 'block-quote',
+                      marker: '> ',
+                      children: [
+                        {
+                          type: 'paragraph',
+                          content: 'no inner quote',
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('parses a deeper same-line list marker inside a list-item quote as a nested list', () => {
+    const {node} = parseBlocks('* > * no inner list\n');
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'block-quote',
+                  marker: '> ',
+                  children: [
+                    {
+                      type: 'list',
+                      children: [
+                        {
+                          type: 'list-item',
+                          marker: '* ',
+                          checked: undefined,
+                          children: [
+                            {
+                              type: 'paragraph',
+                              content: 'no inner list',
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   it('parses a same-line code fence marker in a list item as a code block', () => {
     const {node} = parseBlocks('* ```js\n');
     expect(node).toEqual({
@@ -728,6 +925,54 @@ describe('parseBlocks', () => {
 
   it('matches full parse when appending a quoted list item one character at a time', () => {
     expectCharByCharAppendMatchesFullParse('* > one\n  > two\n');
+  });
+
+  it('matches full parse when appending a deeper same-line quote marker one character at a time', () => {
+    expectCharByCharAppendMatchesFullParse('* > > no inner quote\n');
+  });
+
+  it('matches full parse when appending a deeper same-line list marker one character at a time', () => {
+    expectCharByCharAppendMatchesFullParse('* > * no inner list\n');
+  });
+
+  it('roundtrips generated nesting permutations through serialize and parse', () => {
+    const chains = [
+      ...chainPermutations(2),
+      ...chainPermutations(3),
+    ];
+    const leaves: LeafToken[] = ['paragraph', 'code-block'];
+
+    for (const chain of chains) {
+      for (const leaf of leaves) {
+        if (!supportsGeneratedRoundtrip(chain, leaf)) {
+          continue;
+        }
+        const expected = buildRoundtripDocument(chain, leaf);
+        const markdown = serializeToString(expected);
+        const reparsed = parseBlocks(markdown).node;
+        expect(reparsed).toEqual(expected);
+      }
+    }
+  });
+
+  it('matches full parse for generated paragraph nesting permutations under char-by-char append', () => {
+    const chains = [
+      ...chainPermutations(2),
+      ...chainPermutations(3),
+    ];
+
+    for (const chain of chains) {
+      if (!supportsGeneratedIncremental(chain)) {
+        continue;
+      }
+      const expected = buildRoundtripDocument(chain, 'paragraph');
+      const markdown = serializeToString(expected);
+      const parser = createBlockParser();
+      for (const char of markdown) {
+        parser.push(char);
+      }
+      expect(parser.finish().serialize()).toEqual(expected);
+    }
   });
 
   it('ends a list-item section before an unindented following paragraph', () => {
