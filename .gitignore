@@ -13,3 +13,4 @@ pnpm-debug.log*
 *.tsbuildinfo
 
 .DS_Store
+pkmapp/
