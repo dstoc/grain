@@ -117,6 +117,12 @@ export function parseBlocks(
   return {node, tree: keepTree ? rootTree : (rootTree.delete(), undefined)};
 }
 
+export function parseMarkdownTree(markdown: string): MarkdownTree {
+  const parser = createBlockParser();
+  parser.push(markdown);
+  return parser.finish();
+}
+
 function parseLine(state: BlockParseState, line: string) {
   if (isBlankLine(line)) {
     closeLeafBlocks(state);
