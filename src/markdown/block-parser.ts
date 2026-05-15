@@ -530,14 +530,13 @@ function parseBlankLinePrefix(
     const quoteMatch = /^(>\s?)(.*)$/.exec(rest);
     if (quoteMatch) {
       matchedPrefix = true;
-      if (quoteBase !== currentContainer) {
+      if (quoteDepth === 0) {
         quoteBase = currentContainer;
-        quoteDepth = 0;
       }
       quoteDepth++;
       rest = quoteMatch[2];
       currentContainer =
-        getQuotedPrefixContainer(state, quoteBase, quoteDepth) ??
+        getQuotedPrefixContainer(state, quoteBase ?? currentContainer, quoteDepth) ??
         currentContainer;
       continue;
     }
@@ -547,9 +546,12 @@ function parseBlankLinePrefix(
       currentContainer,
       0,
     );
-    if (nextListItem && rest.startsWith('  ')) {
+    if (
+      nextListItem &&
+      rest.startsWith(listContinuationPrefix(nextListItem))
+    ) {
       matchedPrefix = true;
-      rest = rest.slice(2);
+      rest = rest.slice(listContinuationPrefix(nextListItem).length);
       currentContainer = nextListItem;
       continue;
     }
@@ -784,7 +786,7 @@ function appendCodeBlockLine(state: BlockParseState, line: string): string {
 }
 
 function isClosingFence(line: string, marker: string): boolean {
-  return new RegExp(`^${escapeRegExp(marker)}\\s*$`).test(line);
+  return new RegExp(`^\\s{0,3}${escapeRegExp(marker)}\\s*$`).test(line);
 }
 
 function escapeRegExp(text: string): string {
@@ -938,8 +940,33 @@ function getQuotedPrefixContainer(
   base: ViewModelNode,
   depth: number,
 ): ViewModelNode | undefined {
-  if (state.currentQuoteBase !== base) return;
-  return state.currentQuoteStack[depth - 1];
+  if (state.currentQuoteBase === base) {
+    return state.currentQuoteStack[depth - 1];
+  }
+  return activeQuoteChainForBase(state, base)[depth - 1];
+}
+
+function activeQuoteChainForBase(
+  state: BlockParseState,
+  base: ViewModelNode,
+): BlockQuoteViewModelNode[] {
+  const seed =
+    state.currentCodeBlock ??
+    state.currentParagraph ??
+    state.currentListPath.at(-1) ??
+    state.currentQuoteStack.at(-1) ??
+    state.sectionStack.at(-1);
+  if (!seed) return [];
+
+  const path: ViewModelNode[] = [];
+  let node: ViewModelNode | undefined = seed;
+  while (node && node !== base) {
+    path.push(node);
+    node = node[viewModel].parent;
+  }
+  if (node !== base) return [];
+
+  return path.reverse().filter((node): node is BlockQuoteViewModelNode => node.type === 'block-quote');
 }
 
 function parseLinePrefix(
@@ -955,11 +982,11 @@ function parseLinePrefix(
   let continuedListIndent = false;
 
   if (
-    rest.startsWith('  ') &&
+    rest.startsWith(listContinuationPrefix(state.currentListPath.at(-1))) &&
     state.currentListPath.length &&
     isInsideListPath(currentContainer, state.currentListPath.at(-1))
   ) {
-    rest = rest.slice(2);
+    rest = rest.slice(listContinuationPrefix(state.currentListPath.at(-1)).length);
     continuedListIndent = true;
   }
 
@@ -967,14 +994,13 @@ function parseLinePrefix(
     const quoteMatch = /^(>\s?)(.*)$/.exec(rest);
     if (quoteMatch) {
       prefixes.push('quote');
-      if (quoteBase !== currentContainer) {
+      if (quoteDepth === 0) {
         quoteBase = currentContainer;
-        quoteDepth = 0;
       }
       quoteDepth++;
       rest = quoteMatch[2];
       currentContainer =
-        getQuotedPrefixContainer(state, quoteBase, quoteDepth) ??
+        getQuotedPrefixContainer(state, quoteBase ?? currentContainer, quoteDepth) ??
         currentContainer;
       continue;
     }
@@ -984,9 +1010,12 @@ function parseLinePrefix(
       currentContainer,
       listDepth,
     );
-    if (nextListItem && rest.startsWith('  ')) {
+    if (
+      nextListItem &&
+      rest.startsWith(listContinuationPrefix(nextListItem))
+    ) {
       prefixes.push('list');
-      rest = rest.slice(2);
+      rest = rest.slice(listContinuationPrefix(nextListItem).length);
       currentContainer = nextListItem;
       listDepth++;
       continue;
@@ -1037,12 +1066,11 @@ function resolvePrefixContainers(
     }
 
     sawQuote = true;
-    if (quoteBase !== container) {
+    if (quoteDepth === 0) {
       quoteBase = container;
-      quoteDepth = 0;
     }
     quoteDepth++;
-    container = syncQuoteStack(state, quoteBase, quoteDepth);
+    container = syncQuoteStack(state, quoteBase ?? container, quoteDepth);
   }
 
   if (!sawQuote) {
@@ -1115,17 +1143,20 @@ function ensureListContainer(
   return list;
 }
 
+function listContinuationPrefix(item?: ListItemViewModelNode): string {
+  return ' '.repeat(item?.marker.length ?? 0);
+}
+
 function buildListPath(
   state: BlockParseState,
   parent: ViewModelNode,
   item: ListItemViewModelNode,
 ): ListItemViewModelNode[] {
-  if (parent.type === 'list-item') {
-    const depth = state.currentListPath.indexOf(parent as ListItemViewModelNode);
-    if (depth >= 0) {
+  for (let depth = state.currentListPath.length - 1; depth >= 0; depth--) {
+    const ancestor = state.currentListPath[depth];
+    if (parent === ancestor || isInsideListPath(parent, ancestor)) {
       return [...state.currentListPath.slice(0, depth + 1), item];
     }
-    return [parent as ListItemViewModelNode, item];
   }
   return [item];
 }

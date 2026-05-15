@@ -21,6 +21,15 @@ function buildRoundtripDocument(
   chain: ChainToken[],
   leaf: LeafToken,
 ): DocumentNode {
+  const sectionDepths = new Map<number, number>();
+  let sectionDepth = 0;
+  for (let i = 0; i < chain.length; i++) {
+    if (chain[i] === 'section') {
+      sectionDepth++;
+      sectionDepths.set(i, sectionDepth);
+    }
+  }
+
   let node: MarkdownNode =
     leaf === 'paragraph'
       ? {type: 'paragraph', content: chainLabel(chain)}
@@ -32,7 +41,7 @@ function buildRoundtripDocument(
       case 'section':
         node = {
           type: 'section',
-          marker: '#',
+          marker: '#'.repeat(sectionDepths.get(i) ?? 1),
           content: `section ${i + 1}`,
           children: [node],
         };
@@ -105,17 +114,11 @@ function supportsGeneratedRoundtrip(chain: ChainToken[], leaf: LeafToken): boole
   if (!supportsSectionPrefixOnly(chain)) {
     return false;
   }
-  if (chain.filter((token) => token === 'section').length > 1) {
-    return false;
-  }
-  if (leaf === 'code-block') {
-    return !chain.includes('bullet') && !chain.includes('ordered');
-  }
   return true;
 }
 
 function supportsGeneratedIncremental(chain: ChainToken[]): boolean {
-  return supportsSectionPrefixOnly(chain) && chain.filter((token) => token === 'section').length <= 1;
+  return supportsSectionPrefixOnly(chain);
 }
 
 function supportsSectionPrefixOnly(chain: ChainToken[]): boolean {
@@ -843,6 +846,58 @@ describe('parseBlocks', () => {
         },
       ],
     });
+  });
+
+  it('roundtrips a fenced code block inside a bullet list item', () => {
+    const expected: DocumentNode = {
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '- ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'code-block',
+                  info: 'ts',
+                  content: 'bullet code',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    expect(parseBlocks(serializeToString(expected)).node).toEqual(expected);
+  });
+
+  it('roundtrips a fenced code block inside an ordered list item', () => {
+    const expected: DocumentNode = {
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '1. ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'code-block',
+                  info: 'ts',
+                  content: 'ordered code',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    expect(parseBlocks(serializeToString(expected)).node).toEqual(expected);
   });
 
   it('parses a same-line unordered list marker in a list item as a nested list', () => {
