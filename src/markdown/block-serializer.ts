@@ -111,6 +111,17 @@ function serialize(
     }
   }
 
+  function writeIndentedText(text: string) {
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      if (i > 0) {
+        result.push('\n');
+        indent();
+      }
+      result.push(lines[i]);
+    }
+  }
+
   const shouldSerializeNodeContent = !predicate || predicate(node);
   switch (node.type) {
     case 'document':
@@ -139,7 +150,7 @@ function serialize(
     case 'paragraph':
       indent();
       if (shouldSerializeNodeContent) {
-        result.push(node.content);
+        writeIndentedText(node.content);
       }
       result.push('\n');
       break;

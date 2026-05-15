@@ -3,6 +3,7 @@ import {LitElement, css, html} from 'lit';
 import './markdown/block-render.js';
 import {createBlockParser} from './markdown/block-parser.js';
 import type {BlockParser} from './markdown/block-parser.js';
+import {serializeToString} from './markdown/block-serializer.js';
 import type {ViewModelNode} from './markdown/view-model-node.js';
 
 const sample = `# Block Harness
@@ -111,6 +112,42 @@ class MarkdownDevHarness extends LitElement {
       padding: 1.35rem 1.35rem 1.6rem;
     }
 
+    .tabs {
+      display: inline-flex;
+      gap: 0.45rem;
+      margin-bottom: 0.85rem;
+      padding: 0.2rem;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.06);
+    }
+
+    .tab {
+      border: 0;
+      border-radius: 999px;
+      background: transparent;
+      color: #475569;
+      padding: 0.5rem 0.9rem;
+      font: 600 0.84rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+    }
+
+    .tab[selected] {
+      background: #ffffff;
+      color: #0f766e;
+      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+    }
+
+    .serialized {
+      width: 100%;
+      min-height: 68vh;
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: #0f172a;
+      font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
     @media (max-width: 920px) {
       .shell {
         grid-template-columns: 1fr;
@@ -133,6 +170,8 @@ class MarkdownDevHarness extends LitElement {
     pendingText: {state: true},
     parseMode: {state: true},
     renderVersion: {state: true},
+    activeTab: {state: true},
+    serializedMarkdown: {state: true},
   };
 
   declare root: ViewModelNode | undefined;
@@ -140,6 +179,8 @@ class MarkdownDevHarness extends LitElement {
   private declare pendingText: string;
   private declare parseMode: string;
   private declare renderVersion: number;
+  private declare activeTab: 'render' | 'serialize';
+  private declare serializedMarkdown: string;
   private parser: BlockParser;
 
   constructor() {
@@ -150,6 +191,8 @@ class MarkdownDevHarness extends LitElement {
     this.pendingText = '';
     this.parseMode = 'initial';
     this.renderVersion = 0;
+    this.activeTab = 'render';
+    this.serializedMarkdown = '';
     this.reparse(sample, true);
   }
 
@@ -177,14 +220,32 @@ class MarkdownDevHarness extends LitElement {
           </div>
         </section>
         <section class="panel preview">
-          <label class="label">Rendered Blocks</label>
+          <label class="label">Tree Output</label>
+          <div class="tabs">
+            <button
+              class="tab"
+              ?selected=${this.activeTab === 'render'}
+              @click=${() => this.setTab('render')}
+            >
+              Render
+            </button>
+            <button
+              class="tab"
+              ?selected=${this.activeTab === 'serialize'}
+              @click=${() => this.setTab('serialize')}
+            >
+              Serialize
+            </button>
+          </div>
           <div class="preview-card">
-            ${this.root
-              ? html`<md-block-render
-                  .block=${this.root}
-                  .version=${this.renderVersion}
-                ></md-block-render>`
-              : html``}
+            ${this.activeTab === 'render'
+              ? this.root
+                ? html`<md-block-render
+                    .block=${this.root}
+                    .version=${this.renderVersion}
+                  ></md-block-render>`
+                : html``
+              : html`<pre class="serialized">${this.serializedMarkdown}</pre>`}
           </div>
         </section>
       </main>
@@ -195,6 +256,10 @@ class MarkdownDevHarness extends LitElement {
     const value = (event.currentTarget as HTMLTextAreaElement).value;
     this.reparse(value);
   };
+
+  private setTab(tab: 'render' | 'serialize') {
+    this.activeTab = tab;
+  }
 
   private reparse(markdown: string, forceFull = false) {
     if (!forceFull && markdown.startsWith(this.source)) {
@@ -212,6 +277,7 @@ class MarkdownDevHarness extends LitElement {
     const tree = this.parser.getTree();
     this.root = tree.root;
     this.pendingText = this.parser.getPendingText();
+    this.serializedMarkdown = serializeToString(tree.serialize());
     this.renderVersion++;
   }
 }

@@ -1,5 +1,6 @@
 import type {
   BlockQuoteNode,
+  CodeBlockNode,
   DocumentNode,
   ListItemNode,
   MarkdownNode,
@@ -14,7 +15,9 @@ import type {ViewModelNode} from './view-model-node.js';
 type ParagraphViewModelNode = ParagraphNode & ViewModelNode;
 type SectionViewModelNode = SectionNode & ViewModelNode;
 type ListViewModelNode = Extract<MarkdownNode, {type: 'list'}> & ViewModelNode;
+type ListItemViewModelNode = ListItemNode & ViewModelNode;
 type BlockQuoteViewModelNode = BlockQuoteNode & ViewModelNode;
+type CodeBlockViewModelNode = CodeBlockNode & ViewModelNode;
 
 interface BlockParseState {
   tree: MarkdownTree;
@@ -22,8 +25,17 @@ interface BlockParseState {
   sawContent: boolean;
   currentParagraph?: ParagraphViewModelNode;
   currentList?: ListViewModelNode;
-  currentQuote?: BlockQuoteViewModelNode;
+  currentListPath: ListItemViewModelNode[];
+  currentQuoteBase?: ViewModelNode;
+  currentQuoteStack: BlockQuoteViewModelNode[];
+  currentCodeBlock?: CodeBlockViewModelNode;
+  currentCodeFence?: string;
   sectionStack: SectionViewModelNode[];
+}
+
+interface LinePrefixResult {
+  content: string;
+  prefixes: Array<'list' | 'quote'>;
 }
 
 export interface BlockParser {
@@ -31,25 +43,42 @@ export interface BlockParser {
   finish(): MarkdownTree;
   getTree(): MarkdownTree;
   getPendingText(): string;
+  snapshot(): BlockParserSnapshot;
 }
 
 export type Tree = ParserTree;
 
-export function createBlockParser(): BlockParser {
-  const tree = new MarkdownTree({
-    type: 'document',
-    children: [{type: 'paragraph', content: ''}],
-  });
-  const state: BlockParseState = {
-    tree,
-    root: tree.root,
-    sawContent: false,
-    sectionStack: [],
-  };
+export interface BlockParserSnapshot {
+  root: DocumentNode;
+  pendingText: string;
+  projectedPendingLine: string;
+  sawContent: boolean;
+  finished: boolean;
+  currentParagraphPath?: number[];
+  currentListPath: number[][];
+  currentQuoteBasePath?: number[];
+  currentQuoteStackPaths: number[][];
+  currentCodeBlockPath?: number[];
+  currentCodeFence?: string;
+  sectionStackPaths: number[][];
+}
 
-  let pendingText = '';
-  let finished = false;
-  let projectedPendingLine = '';
+export function createBlockParser(
+  snapshot?: BlockParserSnapshot,
+): BlockParser {
+  const tree = new MarkdownTree(
+    snapshot?.root ?? {
+      type: 'document',
+      children: [{type: 'paragraph', content: ''}],
+    },
+  );
+  const state = snapshot
+    ? restoreState(tree, snapshot)
+    : createInitialState(tree);
+
+  let pendingText = snapshot?.pendingText ?? '';
+  let finished = snapshot?.finished ?? false;
+  let projectedPendingLine = snapshot?.projectedPendingLine ?? '';
 
   return {
     push(text: string) {
@@ -99,6 +128,28 @@ export function createBlockParser(): BlockParser {
     getPendingText() {
       return pendingText;
     },
+    snapshot() {
+      return {
+        root: tree.serialize() as DocumentNode,
+        pendingText,
+        projectedPendingLine,
+        sawContent: state.sawContent,
+        finished,
+        currentParagraphPath: pathForNode(state.root, state.currentParagraph),
+        currentListPath: state.currentListPath
+          .map((node) => pathForNode(state.root, node))
+          .filter(isDefined),
+        currentQuoteBasePath: pathForNode(state.root, state.currentQuoteBase),
+        currentQuoteStackPaths: state.currentQuoteStack
+          .map((node) => pathForNode(state.root, node))
+          .filter(isDefined),
+        currentCodeBlockPath: pathForNode(state.root, state.currentCodeBlock),
+        currentCodeFence: state.currentCodeFence,
+        sectionStackPaths: state.sectionStack
+          .map((node) => pathForNode(state.root, node))
+          .filter(isDefined),
+      };
+    },
   };
 }
 
@@ -123,41 +174,114 @@ export function parseMarkdownTree(markdown: string): MarkdownTree {
   return parser.finish();
 }
 
+function createInitialState(tree: MarkdownTree): BlockParseState {
+  return {
+    tree,
+    root: tree.root,
+    sawContent: false,
+    currentListPath: [],
+    currentQuoteStack: [],
+    sectionStack: [],
+  };
+}
+
+function restoreState(
+  tree: MarkdownTree,
+  snapshot: BlockParserSnapshot,
+): BlockParseState {
+  const state = createInitialState(tree);
+  state.sawContent = snapshot.sawContent;
+  state.currentParagraph = nodeAtPath(
+    state.root,
+    snapshot.currentParagraphPath,
+  ) as ParagraphViewModelNode | undefined;
+  state.currentListPath = snapshot.currentListPath
+    .map((path) => nodeAtPath(state.root, path) as ListItemViewModelNode | undefined)
+    .filter(isDefined);
+  state.currentQuoteBase = nodeAtPath(state.root, snapshot.currentQuoteBasePath);
+  state.currentQuoteStack = snapshot.currentQuoteStackPaths
+    .map((path) => nodeAtPath(state.root, path) as BlockQuoteViewModelNode | undefined)
+    .filter(isDefined);
+  state.currentCodeBlock = nodeAtPath(
+    state.root,
+    snapshot.currentCodeBlockPath,
+  ) as CodeBlockViewModelNode | undefined;
+  state.currentCodeFence = snapshot.currentCodeFence;
+  state.sectionStack = snapshot.sectionStackPaths
+    .map((path) => nodeAtPath(state.root, path) as SectionViewModelNode | undefined)
+    .filter(isDefined);
+  const currentListItem = state.currentListPath.at(-1);
+  const parent = currentListItem?.[viewModel].parent;
+  state.currentList =
+    parent?.type === 'list' ? (parent as ListViewModelNode) : undefined;
+  return state;
+}
+
 function parseLine(state: BlockParseState, line: string) {
+  const blankPrefix = parseBlankLinePrefix(state, line);
+  if (blankPrefix) {
+    closeParagraph(state);
+    state.currentList = undefined;
+    syncQuoteStack(state, blankPrefix.quoteBase, blankPrefix.quoteDepth);
+    return;
+  }
+
   if (isBlankLine(line)) {
     closeLeafBlocks(state);
     return;
   }
 
-  if (tryPromoteSetextHeading(state, line)) {
+  const prefix = parseLinePrefix(state, line);
+  const container = resolvePrefixContainers(state, prefix);
+  const unquotedContent = prefix.content;
+
+  if (state.currentCodeBlock && state.currentCodeFence) {
+    if (isClosingFence(unquotedContent, state.currentCodeFence)) {
+      closeCodeBlock(state);
+    } else {
+      appendCodeBlockLine(state, unquotedContent);
+    }
     return;
   }
 
-  const atxHeading = parseAtxHeading(line);
+  if (tryPromoteSetextHeading(state, unquotedContent, container)) {
+    return;
+  }
+
+  const atxHeading = parseAtxHeading(unquotedContent);
   if (atxHeading) {
     closeLeafBlocks(state);
     openSection(state, atxHeading.level, atxHeading.content);
     return;
   }
 
-  const listItem = parseListItem(line);
+  const listItem = parseListItem(unquotedContent);
   if (listItem) {
     closeParagraph(state);
-    closeQuote(state);
-    appendListItem(state, listItem.marker, listItem.checked, listItem.content);
+    appendListItem(
+      state,
+      container,
+      listItem.marker,
+      listItem.checked,
+      listItem.content,
+    );
     return;
   }
 
-  const quote = parseBlockQuote(line);
-  if (quote) {
+  const fence = parseFenceStart(unquotedContent);
+  if (fence) {
+    closeParagraph(state);
     closeList(state);
-    appendQuoteLine(state, quote.marker, quote.content);
+    openCodeBlock(state, container, fence.marker, fence.info);
     return;
   }
 
+  if (canContinueListParagraph(state, container, unquotedContent)) {
+    appendParagraphLine(state, container, unquotedContent);
+    return;
+  }
   closeList(state);
-  closeQuote(state);
-  appendParagraphLine(state, line);
+  appendParagraphLine(state, container, unquotedContent);
 }
 
 function projectPendingLine(state: BlockParseState, line: string): string {
@@ -165,8 +289,9 @@ function projectPendingLine(state: BlockParseState, line: string): string {
     return '';
   }
   closeList(state);
-  closeQuote(state);
-  appendPendingParagraphText(state, line);
+  state.currentListPath.length = 0;
+  resetQuoteStack(state);
+  appendPendingParagraphText(state, currentSectionContainer(state), line);
   return line;
 }
 
@@ -181,14 +306,18 @@ function discardProjectedPendingLine(state: BlockParseState, line: string) {
   }
 }
 
-function appendPendingParagraphText(state: BlockParseState, line: string) {
+function appendPendingParagraphText(
+  state: BlockParseState,
+  container: ViewModelNode,
+  line: string,
+) {
   ensurePlaceholderRemoved(state);
-  if (!state.currentParagraph) {
+  if (!state.currentParagraph || state.currentParagraph[viewModel].parent !== container) {
     const paragraph = state.tree.add({
       type: 'paragraph',
       content: '',
     }) as ParagraphViewModelNode;
-    paragraph[viewModel].insertBefore(currentContainer(state));
+    paragraph[viewModel].insertBefore(container);
     state.currentParagraph = paragraph;
     state.sawContent = true;
   }
@@ -216,10 +345,65 @@ function isBlankLine(line: string): boolean {
   return /^\s*$/.test(line);
 }
 
-function tryPromoteSetextHeading(state: BlockParseState, line: string): boolean {
+function parseBlankLinePrefix(
+  state: BlockParseState,
+  line: string,
+): {quoteBase: ViewModelNode; quoteDepth: number} | undefined {
+  let rest = line;
+  let currentContainer: ViewModelNode = currentSectionContainer(state);
+  let quoteBase = currentContainer;
+  let quoteDepth = 0;
+  let matchedPrefix = false;
+
+  while (true) {
+    const quoteMatch = /^(>\s?)(.*)$/.exec(rest);
+    if (quoteMatch) {
+      matchedPrefix = true;
+      if (quoteBase !== currentContainer) {
+        quoteBase = currentContainer;
+        quoteDepth = 0;
+      }
+      quoteDepth++;
+      rest = quoteMatch[2];
+      currentContainer =
+        getQuotedPrefixContainer(state, quoteBase, quoteDepth) ??
+        currentContainer;
+      continue;
+    }
+
+    const nextListItem = nextListPathItem(
+      state.currentListPath,
+      currentContainer,
+      0,
+    );
+    if (nextListItem && rest.startsWith('  ')) {
+      matchedPrefix = true;
+      rest = rest.slice(2);
+      currentContainer = nextListItem;
+      continue;
+    }
+    break;
+  }
+
+  if (matchedPrefix && /^\s*$/.test(rest)) {
+    return {quoteBase, quoteDepth};
+  }
+  return;
+}
+
+function tryPromoteSetextHeading(
+  state: BlockParseState,
+  line: string,
+  container: ViewModelNode,
+): boolean {
   const match = /^(=+|-+)\s*$/.exec(line);
   const paragraph = state.currentParagraph;
-  if (!match || !paragraph || paragraph.content.includes('\n')) {
+  if (
+    !match ||
+    !paragraph ||
+    paragraph.content.includes('\n') ||
+    paragraph[viewModel].parent !== container
+  ) {
     return false;
   }
 
@@ -243,7 +427,7 @@ function promoteParagraphToSection(
   syncSectionStack(state, parent);
   popSectionsToLevel(state, level);
 
-  const container = currentContainer(state);
+  const container = currentSectionContainer(state);
   const nextSibling = paragraph[viewModel].nextSibling;
   const section = state.tree.add({
     type: 'section',
@@ -270,7 +454,7 @@ function parseAtxHeading(
 
 function openSection(state: BlockParseState, level: number, content: string) {
   popSectionsToLevel(state, level);
-  const parent = currentContainer(state);
+  const parent = currentSectionContainer(state);
   ensurePlaceholderRemoved(state);
   const section = state.tree.add({
     type: 'section',
@@ -298,79 +482,94 @@ function parseListItem(
 
 function appendListItem(
   state: BlockParseState,
+  parent: ViewModelNode,
   marker: string,
   checked: boolean | undefined,
   content: string,
 ) {
   ensurePlaceholderRemoved(state);
-  const parent = currentContainer(state);
-  if (!state.currentList || state.currentList[viewModel].parent !== parent) {
-    const list = state.tree.add({
-      type: 'list',
-      children: [],
-    }) as ListViewModelNode;
-    list[viewModel].insertBefore(parent);
-    state.currentList = list;
-  }
-  const list = state.currentList as ListViewModelNode;
+  const list = ensureListContainer(state, parent);
 
   const item = state.tree.add({
     type: 'list-item',
     marker,
     checked,
     children: [{type: 'paragraph', content}],
-  }) as ListItemNode & ViewModelNode;
+  }) as ListItemViewModelNode;
   item[viewModel].insertBefore(list);
   state.currentParagraph = item.children?.[0] as ParagraphViewModelNode | undefined;
+  state.currentListPath = buildListPath(state, parent, item);
   state.sawContent = true;
 }
 
-function parseBlockQuote(
-  line: string,
-): {marker: string; content: string} | undefined {
-  const match = /^(>\s?)(.*)$/.exec(line);
+function parseFenceStart(line: string): {marker: string; info: string | null} | undefined {
+  const match = /^(```+)(.*)$/.exec(line);
   if (!match) return;
+  const info = match[2].trim();
   return {
     marker: match[1],
-    content: match[2],
+    info: info === '' ? null : info,
   };
 }
 
-function appendQuoteLine(
+function openCodeBlock(
   state: BlockParseState,
+  parent: ViewModelNode,
   marker: string,
-  content: string,
+  info: string | null,
 ) {
   ensurePlaceholderRemoved(state);
-  const parent = currentContainer(state);
-  if (!state.currentQuote || state.currentQuote[viewModel].parent !== parent) {
-    const quote = state.tree.add({
-      type: 'block-quote',
-      marker,
-      children: [],
-    }) as BlockQuoteViewModelNode;
-    quote[viewModel].insertBefore(parent);
-    state.currentQuote = quote;
-    state.currentParagraph = undefined;
-  }
-  const quote = state.currentQuote as BlockQuoteViewModelNode;
-
-  if (state.currentParagraph && state.currentParagraph[viewModel].parent === quote) {
-    appendInlineText(state.currentParagraph, `\n${content}`);
-  } else {
-    const paragraph = state.tree.add({
-      type: 'paragraph',
-      content,
-    }) as ParagraphViewModelNode;
-    paragraph[viewModel].insertBefore(quote);
-    state.currentParagraph = paragraph;
-  }
+  const node = state.tree.add({
+    type: 'code-block',
+    info,
+    content: '',
+  }) as CodeBlockViewModelNode;
+  node[viewModel].insertBefore(parent);
+  state.currentCodeBlock = node;
+  state.currentCodeFence = marker;
   state.sawContent = true;
 }
 
-function appendParagraphLine(state: BlockParseState, line: string) {
+function appendCodeBlockLine(state: BlockParseState, line: string) {
+  const node = state.currentCodeBlock;
+  if (!node) return;
+  const newContent = node.content === '' ? line : `${node.content}\n${line}`;
+  (node as {content: string}).content = newContent;
+  node[viewModel].renderSignal.value++;
+}
+
+function isClosingFence(line: string, marker: string): boolean {
+  return new RegExp(`^${escapeRegExp(marker)}\\s*$`).test(line);
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function closeCodeBlock(state: BlockParseState) {
+  state.currentCodeBlock = undefined;
+  state.currentCodeFence = undefined;
+}
+
+function canContinueListParagraph(
+  state: BlockParseState,
+  container: ViewModelNode,
+  line: string,
+): boolean {
+  if (!state.currentListPath.length) return false;
+  if (line.trim() === '') return false;
+  if (parseListItem(line)) return false;
+  if (parseFenceStart(line)) return false;
+  return container.type === 'list-item';
+}
+
+function appendParagraphLine(
+  state: BlockParseState,
+  container: ViewModelNode,
+  line: string,
+) {
   ensurePlaceholderRemoved(state);
-  if (state.currentParagraph) {
+  if (state.currentParagraph && state.currentParagraph[viewModel].parent === container) {
     appendInlineText(state.currentParagraph, `\n${line}`);
     return;
   }
@@ -379,7 +578,7 @@ function appendParagraphLine(state: BlockParseState, line: string) {
     type: 'paragraph',
     content: line,
   }) as ParagraphViewModelNode;
-  paragraph[viewModel].insertBefore(currentContainer(state));
+  paragraph[viewModel].insertBefore(container);
   state.currentParagraph = paragraph;
   state.sawContent = true;
 }
@@ -409,8 +608,193 @@ function ensurePlaceholderRemoved(state: BlockParseState) {
   }
 }
 
-function currentContainer(state: BlockParseState): ViewModelNode {
+function currentSectionContainer(state: BlockParseState): ViewModelNode {
   return state.sectionStack.at(-1) ?? state.root;
+}
+
+function nextListPathItem(
+  path: ListItemViewModelNode[],
+  container: ViewModelNode,
+  depth: number,
+): ListItemViewModelNode | undefined {
+  const item = path[depth];
+  const parent = item?.[viewModel].parent;
+  if (parent?.type !== 'list') return;
+  return parent[viewModel].parent === container ? item : undefined;
+}
+
+function getQuotedPrefixContainer(
+  state: BlockParseState,
+  base: ViewModelNode,
+  depth: number,
+): ViewModelNode | undefined {
+  if (state.currentQuoteBase !== base) return;
+  return state.currentQuoteStack[depth - 1];
+}
+
+function parseLinePrefix(
+  state: BlockParseState,
+  line: string,
+): LinePrefixResult {
+  let rest = line;
+  let currentContainer: ViewModelNode = currentSectionContainer(state);
+  let listDepth = 0;
+  let quoteBase: ViewModelNode | undefined;
+  let quoteDepth = 0;
+  const prefixes: Array<'list' | 'quote'> = [];
+
+  while (true) {
+    const quoteMatch = /^(>\s?)(.*)$/.exec(rest);
+    if (quoteMatch) {
+      prefixes.push('quote');
+      if (quoteBase !== currentContainer) {
+        quoteBase = currentContainer;
+        quoteDepth = 0;
+      }
+      quoteDepth++;
+      rest = quoteMatch[2];
+      currentContainer =
+        getQuotedPrefixContainer(state, quoteBase, quoteDepth) ??
+        currentContainer;
+      continue;
+    }
+
+    const nextListItem = nextListPathItem(
+      state.currentListPath,
+      currentContainer,
+      listDepth,
+    );
+    if (nextListItem && rest.startsWith('  ')) {
+      prefixes.push('list');
+      rest = rest.slice(2);
+      currentContainer = nextListItem;
+      listDepth++;
+      continue;
+    }
+    break;
+  }
+  state.currentListPath = state.currentListPath.slice(0, listDepth);
+
+  return {
+    content: rest,
+    prefixes,
+  };
+}
+
+function resolvePrefixContainers(
+  state: BlockParseState,
+  prefix: LinePrefixResult,
+): ViewModelNode {
+  let container = currentSectionContainer(state);
+  let listDepth = 0;
+  let quoteBase: ViewModelNode | undefined;
+  let quoteDepth = 0;
+  let sawQuote = false;
+
+  for (const token of prefix.prefixes) {
+    if (token === 'list') {
+      const next = nextListPathItem(state.currentListPath, container, listDepth);
+      if (next) {
+        container = next;
+        listDepth++;
+      }
+      quoteBase = undefined;
+      quoteDepth = 0;
+      continue;
+    }
+
+    sawQuote = true;
+    if (quoteBase !== container) {
+      quoteBase = container;
+      quoteDepth = 0;
+    }
+    quoteDepth++;
+    container = syncQuoteStack(state, quoteBase, quoteDepth);
+  }
+
+  if (!sawQuote) {
+    resetQuoteStack(state);
+  }
+  return container;
+}
+
+function syncQuoteStack(
+  state: BlockParseState,
+  base: ViewModelNode,
+  depth: number,
+): ViewModelNode {
+  if (depth === 0) {
+    resetQuoteStack(state);
+    return base;
+  }
+
+  if (state.currentQuoteBase !== base) {
+    resetQuoteStack(state);
+    state.currentQuoteBase = base;
+  }
+
+  while (state.currentQuoteStack.length > depth) {
+    state.currentQuoteStack.pop();
+  }
+
+  while (state.currentQuoteStack.length < depth) {
+    ensurePlaceholderRemoved(state);
+    const parent = state.currentQuoteStack.at(-1) ?? base;
+    const quote = state.tree.add({
+      type: 'block-quote',
+      marker: '> ',
+      children: [],
+    }) as BlockQuoteViewModelNode;
+    quote[viewModel].insertBefore(parent);
+    state.currentQuoteStack.push(quote);
+    state.sawContent = true;
+  }
+
+  return state.currentQuoteStack.at(-1) ?? base;
+}
+
+function resetQuoteStack(state: BlockParseState) {
+  state.currentQuoteBase = undefined;
+  state.currentQuoteStack.length = 0;
+}
+
+function ensureListContainer(
+  state: BlockParseState,
+  parent: ViewModelNode,
+): ListViewModelNode {
+  if (state.currentList && state.currentList[viewModel].parent === parent) {
+    return state.currentList;
+  }
+
+  const lastChild = parent.children?.at(-1);
+  if (lastChild?.type === 'list') {
+    const list = lastChild as ListViewModelNode;
+    state.currentList = list;
+    return list;
+  }
+
+  const list = state.tree.add({
+    type: 'list',
+    children: [],
+  }) as ListViewModelNode;
+  list[viewModel].insertBefore(parent);
+  state.currentList = list;
+  return list;
+}
+
+function buildListPath(
+  state: BlockParseState,
+  parent: ViewModelNode,
+  item: ListItemViewModelNode,
+): ListItemViewModelNode[] {
+  if (parent.type === 'list-item') {
+    const depth = state.currentListPath.indexOf(parent as ListItemViewModelNode);
+    if (depth >= 0) {
+      return [...state.currentListPath.slice(0, depth + 1), item];
+    }
+    return [parent as ListItemViewModelNode, item];
+  }
+  return [item];
 }
 
 function syncSectionStack(state: BlockParseState, parent: ViewModelNode) {
@@ -441,14 +825,58 @@ function closeList(state: BlockParseState) {
 }
 
 function closeQuote(state: BlockParseState) {
-  if (state.currentParagraph?.[viewModel].parent?.type === 'block-quote') {
+  if (state.currentParagraph && isInsideBlockQuote(state.currentParagraph)) {
     state.currentParagraph = undefined;
   }
-  state.currentQuote = undefined;
+  resetQuoteStack(state);
 }
 
 function closeLeafBlocks(state: BlockParseState) {
   closeParagraph(state);
   closeList(state);
   closeQuote(state);
+  closeCodeBlock(state);
+}
+
+function isInsideBlockQuote(node: ViewModelNode): boolean {
+  let parent = node[viewModel].parent;
+  while (parent) {
+    if (parent.type === 'block-quote') return true;
+    parent = parent[viewModel].parent;
+  }
+  return false;
+}
+
+function pathForNode(
+  root: ViewModelNode,
+  node?: ViewModelNode,
+): number[] | undefined {
+  if (!node) return;
+  const path: number[] = [];
+  while (node !== root) {
+    const parent: ViewModelNode | undefined = node[viewModel].parent;
+    if (!parent) return;
+    const index = parent.children?.indexOf(node);
+    if (index === undefined || index < 0) return;
+    path.unshift(index);
+    node = parent;
+  }
+  return path;
+}
+
+function nodeAtPath(
+  root: ViewModelNode,
+  path?: number[],
+): ViewModelNode | undefined {
+  if (!path) return;
+  let node: ViewModelNode | undefined = root;
+  for (const index of path) {
+    node = node.children?.[index] as ViewModelNode | undefined;
+    if (!node) return;
+  }
+  return node;
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
 }
