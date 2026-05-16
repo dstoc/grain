@@ -21,7 +21,7 @@ import type {
 } from './view-model-node.js';
 
 import {parser as inlineParser} from './inline-parser.js';
-import {parseBlocks} from './block-parser.js';
+import {parseBlocks} from './block-parser/api.js';
 import type {ParserTree} from './parser-tree.js';
 import {assert, cast} from '../asserts.js';
 import {type NormalizeTreeOptions, normalizeTree} from './normalize.js';

@@ -1,6 +1,6 @@
 import {describe, expect, it} from 'vitest';
 
-import {createBlockParser, parseBlocks} from './block-parser.js';
+import {createBlockParser, parseBlocks} from './block-parser/api.js';
 import {serializeToString} from './block-serializer.js';
 import type {DocumentNode} from './node.js';
 

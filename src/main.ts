@@ -1,8 +1,8 @@
 import {LitElement, css, html} from 'lit';
 
 import './markdown/block-render.js';
-import {createBlockParser} from './markdown/block-parser.js';
-import type {BlockParser} from './markdown/block-parser.js';
+import {createBlockParser} from './markdown/block-parser/api.js';
+import type {BlockParser} from './markdown/block-parser/api.js';
 import {serializeToString} from './markdown/block-serializer.js';
 import type {ViewModelNode} from './markdown/view-model-node.js';
 
