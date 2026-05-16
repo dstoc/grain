@@ -97,10 +97,14 @@ export function getQuotedPrefixContainer(
   base: ViewModelNode,
   depth: number,
 ): ViewModelNode | undefined {
+  const activeChain = activeQuoteChainForBase(state, base);
+  if (activeChain.length >= depth) {
+    return activeChain[depth - 1];
+  }
   if (state.currentQuoteBase === base) {
     return state.currentQuoteStack[depth - 1];
   }
-  return activeQuoteChainForBase(state, base)[depth - 1];
+  return activeChain[depth - 1];
 }
 
 export function activeQuoteChainForBase(
@@ -123,11 +127,36 @@ export function activeQuoteChainForBase(
   }
   if (node !== base) return [];
 
-  return path
+  const chain = path
     .reverse()
     .filter(
       (node): node is BlockQuoteViewModelNode => node.type === 'block-quote',
     );
+  return chain.length ? chain : trailingQuoteChainFromBase(base);
+}
+
+function trailingQuoteChainFromBase(
+  base: ViewModelNode,
+): BlockQuoteViewModelNode[] {
+  const quotes: BlockQuoteViewModelNode[] = [];
+  let current = base.children?.at(-1);
+  while (current?.type === 'block-quote') {
+    quotes.push(current as BlockQuoteViewModelNode);
+    current = current.children?.at(-1);
+  }
+  return quotes.some(hasBlockQuoteDescendant) ? quotes : [];
+}
+
+function hasBlockQuoteDescendant(node: BlockQuoteViewModelNode): boolean {
+  for (const child of node.children ?? []) {
+    if (child.type === 'block-quote') {
+      return true;
+    }
+    if (child.children?.length && hasBlockQuoteDescendant(child as BlockQuoteViewModelNode)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export function quoteContextForNode(

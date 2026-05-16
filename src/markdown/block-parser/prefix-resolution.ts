@@ -8,6 +8,7 @@ import {
   isInsideListPath,
   currentSectionContainer,
   listContinuationPrefix,
+  activeQuoteChainForBase,
   getQuotedPrefixContainer,
   nextListPathItem,
   quoteContextForNode,
@@ -73,14 +74,19 @@ export function parseBlankLinePrefix(
       rest = rest.slice(listContinuationPrefix(nextListItem).length);
       currentContainer = nextListItem;
       listDepth++;
-      quoteBase = currentContainer;
-      quoteDepth = 0;
+      if (quoteDepth > 0 && rest.startsWith('>')) {
+        quoteBase = currentContainer;
+        quoteDepth = 0;
+      }
       continue;
     }
     break;
   }
 
   if (matchedPrefix && /^\s*$/.test(rest)) {
+    if (line.trimStart().startsWith('>')) {
+      quoteDepth = Math.max(quoteDepth, 1);
+    }
     return { quoteBase, quoteDepth, listDepth, continuedListIndent };
   }
   return;
@@ -180,7 +186,17 @@ export function resolvePrefixContainers(
       quoteBase = container;
     }
     quoteDepth++;
-    container = syncQuoteStack(state, quoteBase ?? container, quoteDepth);
+    const quoteRoot = quoteBase ?? container;
+    const activeQuotes = activeQuoteChainForBase(state, quoteRoot);
+    if (activeQuotes.length >= quoteDepth) {
+      container = activeQuotes[quoteDepth - 1];
+      continue;
+    }
+    container = syncQuoteStack(
+      state,
+      activeQuotes.at(-1) ?? quoteRoot,
+      quoteDepth - activeQuotes.length,
+    );
   }
 
   if (!sawQuote) {
@@ -195,6 +211,7 @@ export function parseQuotedListContinuation(
 ):
   | {
       container: ListItemViewModelNode;
+      listPath: ListItemViewModelNode[];
       content: string;
       quoteBase: ViewModelNode;
       quoteDepth: number;
@@ -220,15 +237,15 @@ export function parseQuotedListContinuation(
       state,
       quoteContext.quoteBase,
       quoteContext.quoteDepth,
-    ) ?? quoteContext.quoteBase;
+  ) ?? quoteContext.quoteBase;
   let container: ListItemViewModelNode | undefined;
-  let listDepth = 0;
+  const listPath: ListItemViewModelNode[] = [];
 
   while (true) {
     const nextListItem = nextListPathItem(
       state.currentListPath,
       currentContainer,
-      listDepth,
+      listPath.length,
     );
     if (
       !nextListItem ||
@@ -239,7 +256,7 @@ export function parseQuotedListContinuation(
     rest = rest.slice(listContinuationPrefix(nextListItem).length);
     currentContainer = nextListItem;
     container = nextListItem;
-    listDepth++;
+    listPath.push(nextListItem);
   }
 
   if (!container) {
@@ -248,6 +265,9 @@ export function parseQuotedListContinuation(
 
   const content = rest;
   if (content.trim() === '') {
+    return;
+  }
+  if (content.startsWith('>')) {
     return;
   }
   if (
@@ -263,6 +283,7 @@ export function parseQuotedListContinuation(
 
   return {
     container,
+    listPath,
     content,
     quoteBase: quoteContext.quoteBase,
     quoteDepth: quoteContext.quoteDepth,
@@ -278,11 +299,7 @@ export function shouldPreserveListPathOnQuotedBlankLine(
     continuedListIndent: boolean;
   },
 ): boolean {
-  if (
-    blankPrefix.continuedListIndent ||
-    blankPrefix.listDepth !== 0 ||
-    blankPrefix.quoteDepth === 0
-  ) {
+  if (blankPrefix.continuedListIndent || blankPrefix.quoteDepth === 0) {
     return false;
   }
   const lastItem = state.currentListPath.at(-1);

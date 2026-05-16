@@ -74,9 +74,9 @@ export function createBlockParser(snapshot?: BlockParserSnapshot): BlockParser {
       }
       tree.edit(
         () => {
-          discardProjectedPendingLine(state, projectedPending);
-          projectedPending = undefined;
           if (pendingText !== '') {
+            discardProjectedPendingLine(state, projectedPending);
+            projectedPending = undefined;
             parseLine(state, pendingText);
             pendingText = '';
           }

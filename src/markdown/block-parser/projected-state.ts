@@ -71,9 +71,11 @@ export function projectPendingResolvedContent(
   if (!canProjectPendingParagraph(content)) {
     return;
   }
+  const paragraphContent =
+    container.type === 'block-quote' ? content.trimStart() : content;
   return {
     kind: 'paragraph',
-    text: appendPendingParagraphText(state, container, content),
+    text: appendPendingParagraphText(state, container, paragraphContent),
   };
 }
 
@@ -106,12 +108,10 @@ export function discardProjectedPendingLine(
 
 function discardProjectedParagraph(state: BlockParseState, text: string) {
   if (!state.currentParagraph) return;
-  const parent = state.currentParagraph[viewModel].parent;
   removeTrailingText(state.currentParagraph, text.length);
   if (state.currentParagraph.content === '') {
     state.currentParagraph[viewModel].remove();
     state.currentParagraph = undefined;
-    pruneEmptyContainerChain(parent);
   }
   pruneDetachedState(state);
 }

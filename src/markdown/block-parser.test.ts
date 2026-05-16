@@ -422,6 +422,48 @@ describe('parseBlocks', () => {
     });
   });
 
+  it('keeps the sibling after a nested quote inside the quoted list item', () => {
+    const source = '> - > quote\n>   after\n';
+    expect(parseBlocks(source).node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [
+            {
+              type: 'list',
+              children: [
+                {
+                  type: 'list-item',
+                  marker: '- ',
+                  checked: undefined,
+                  children: [
+                    {
+                      type: 'block-quote',
+                      marker: '> ',
+                      children: [
+                        {
+                          type: 'paragraph',
+                          content: 'quote',
+                        },
+                      ],
+                    },
+                    {
+                      type: 'paragraph',
+                      content: 'after',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expectCharByCharAppendMatchesFullParse(source);
+  });
+
   it('returns to the parent list after a nested list', () => {
     const { node } = parseBlocks('- outer\n  - inner\n- sibling\n');
     expect(node).toEqual({
@@ -1748,6 +1790,46 @@ describe('parseBlocks', () => {
     });
   });
 
+  it('projects a doubly quoted paragraph incrementally before newline', () => {
+    const parser = createBlockParser();
+    for (const char of '> > hi') {
+      parser.push(char);
+    }
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [
+            {
+              type: 'block-quote',
+              marker: '> ',
+              children: [
+                {
+                  type: 'paragraph',
+                  content: 'hi',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('matches full parse when appending a nested quoted paragraph sibling one character at a time', () => {
+    expectCharByCharAppendMatchesFullParse(
+      '> > quote > quote\n> \n> container 0 after paragraph\n',
+    );
+  });
+
+  it('matches full parse when appending a nested quoted code block sibling one character at a time', () => {
+    expectCharByCharAppendMatchesFullParse(
+      '> > container 1 before paragraph\n> > \n> > ```ts\n> > quote > quote\n> > ```\n',
+    );
+  });
+
   it('matches full parse when appending a fenced code block inside a doubly quoted list item one character at a time', () => {
     expectCharByCharAppendMatchesFullParse(
       '> > - ```ts\n> >   quote > quote > bullet\n> >   ```\n',
@@ -1763,6 +1845,12 @@ describe('parseBlocks', () => {
   it('matches full parse when appending a nested quoted paragraph sibling after a blank separator one character at a time', () => {
     expectCharByCharAppendMatchesFullParse(
       '> - > container 2 before paragraph\n>   > \n>   > quote > bullet > quote\n',
+    );
+  });
+
+  it('matches full parse when appending a quoted sibling after a blank quoted separator inside a list item one character at a time', () => {
+    expectCharByCharAppendMatchesFullParse(
+      '# section 1\n- > > container 2 before quote\n  > \n  > section > bullet > quote\n  > \n  > > container 2 after quote\n',
     );
   });
 

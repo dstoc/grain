@@ -14,7 +14,10 @@ import {
 } from './prefix-resolution.js';
 import { syncQuoteStack } from './container-management.js';
 import { closeParagraph, appendParagraphLine } from './handlers/paragraphs.js';
-import { isBlankLine, currentSectionContainer } from './utils.js';
+import {
+  isBlankLine,
+  currentSectionContainer,
+} from './utils.js';
 import { exitDetachedContainerContexts } from './cleanup.js';
 import {
   isClosingFence,
@@ -34,6 +37,9 @@ import {
 import { parseListItem, appendListItem, closeList } from './handlers/lists.js';
 
 export function parseLine(state: BlockParseState, line: string) {
+  if (shouldRestartQuotedListBranch(state, line)) {
+    closeParagraph(state);
+  }
   const quotedListContinuation = parseQuotedListContinuation(state, line);
   if (quotedListContinuation) {
     syncQuoteStack(
@@ -41,10 +47,10 @@ export function parseLine(state: BlockParseState, line: string) {
       quotedListContinuation.quoteBase,
       quotedListContinuation.quoteDepth,
     );
-    state.currentListPath = [quotedListContinuation.container];
+    state.currentListPath = quotedListContinuation.listPath;
     state.currentList =
-      quotedListContinuation.container[viewModel].parent?.type === 'list'
-        ? quotedListContinuation.container[viewModel].parent
+      state.currentListPath.at(-1)?.[viewModel].parent?.type === 'list'
+        ? state.currentListPath.at(-1)?.[viewModel].parent
         : undefined;
     if (quotedListContinuation.content === '') {
       closeParagraph(state);
@@ -72,7 +78,9 @@ export function parseLine(state: BlockParseState, line: string) {
         blankPrefix.listDepth,
       );
     }
-    syncQuoteStack(state, blankPrefix.quoteBase, blankPrefix.quoteDepth);
+    if (blankPrefix.quoteDepth > 0) {
+      syncQuoteStack(state, blankPrefix.quoteBase, blankPrefix.quoteDepth);
+    }
     return;
   }
 
@@ -81,6 +89,9 @@ export function parseLine(state: BlockParseState, line: string) {
     return;
   }
 
+  if (line.startsWith('>')) {
+    expandCurrentListPathFromTree(state);
+  }
   const prefix = parseLinePrefix(state, line);
   if (!(state.currentCodeBlock && state.currentCodeFence)) {
     if (
@@ -122,6 +133,10 @@ export function projectPendingLine(
     };
   }
 
+  if (shouldRestartQuotedListBranch(state, line)) {
+    closeParagraph(state);
+  }
+
   const quotedListContinuation = parseQuotedListContinuation(state, line);
   if (quotedListContinuation) {
     syncQuoteStack(
@@ -129,10 +144,10 @@ export function projectPendingLine(
       quotedListContinuation.quoteBase,
       quotedListContinuation.quoteDepth,
     );
-    state.currentListPath = [quotedListContinuation.container];
+    state.currentListPath = quotedListContinuation.listPath;
     state.currentList =
-      quotedListContinuation.container[viewModel].parent?.type === 'list'
-        ? quotedListContinuation.container[viewModel].parent
+      state.currentListPath.at(-1)?.[viewModel].parent?.type === 'list'
+        ? state.currentListPath.at(-1)?.[viewModel].parent
         : undefined;
     return projectPendingResolvedContent(
       state,
@@ -147,13 +162,13 @@ export function projectPendingLine(
     return;
   }
   if (/^>\s*$/.test(line)) {
-    if (state.currentListPath.length) {
+    if (state.currentQuoteStack.length > 1 || state.currentListPath.length) {
       return;
     }
     projectPendingQuoteOpen(state, currentSectionContainer(state));
     return { kind: 'quote-open', text: line };
   }
-  if (prefix.content === '') {
+  if (prefix.content.trim() === '') {
     return;
   }
   if (
@@ -161,6 +176,9 @@ export function projectPendingLine(
     prefix.listDepth === 0 &&
     !prefix.continuedListIndent
   ) {
+    if (state.currentQuoteStack.length) {
+      return;
+    }
     exitDetachedContainerContexts(state);
   }
   if (prefix.continuedListIndent) {
@@ -190,12 +208,49 @@ function shouldWaitForPendingPrefixResolution(
   if (/^(?:[-+*]|\d+[.)]?|#+)$/.test(prefix.content.trim())) {
     return true;
   }
+  if (
+    state.currentListPath.at(-1)?.children?.length &&
+    prefix.prefixes[0] === 'quote'
+  ) {
+    return true;
+  }
   if (line.startsWith(' ') && prefix.content === '') {
     return true;
   }
   if (!state.currentListPath.length) return false;
   if (!line.startsWith(' ')) return false;
   return prefix.prefixes.length === 0;
+}
+
+function expandCurrentListPathFromTree(state: BlockParseState) {
+  while (true) {
+    const current = state.currentListPath.at(-1);
+    if (!current) return;
+    const nestedList = [...(current.children ?? [])]
+      .reverse()
+      .find((child) => child.type === 'list');
+    if (!nestedList?.children?.length) return;
+    const nestedItem = nestedList.children.at(-1);
+    if (!nestedItem || nestedItem.type !== 'list-item') return;
+    if (state.currentListPath.includes(nestedItem as never)) return;
+    state.currentListPath = [...state.currentListPath, nestedItem as never];
+    state.currentList =
+      nestedItem[viewModel].parent?.type === 'list'
+        ? (nestedItem[viewModel].parent as never)
+        : state.currentList;
+  }
+}
+
+function shouldRestartQuotedListBranch(
+  state: BlockParseState,
+  line: string,
+): boolean {
+  return (
+    line.trimStart().startsWith('>') &&
+    state.currentParagraph?.[viewModel].parent?.type === 'block-quote' &&
+    state.currentListPath.length > 0 &&
+    state.currentQuoteStack.length > 0
+  );
 }
 
 function parseResolvedContainerContent(
