@@ -226,6 +226,94 @@ describe('parseBlocks', () => {
     expect(parser.getPendingText()).toBe('hello');
   });
 
+  it('projects an empty list item shell during push', () => {
+    const parser = createBlockParser();
+    parser.push('* ');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'paragraph',
+                  content: '',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('projects an empty block quote shell during push', () => {
+    const parser = createBlockParser();
+    parser.push('> ');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [],
+        },
+      ],
+    });
+  });
+
+  it('projects an empty block quote shell across incremental pushes', () => {
+    const parser = createBlockParser();
+    parser.push('>');
+    parser.push(' ');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [],
+        },
+      ],
+    });
+  });
+
+  it('projects an empty code block shell during push', () => {
+    const parser = createBlockParser();
+    parser.push('```ts');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'code-block',
+          info: 'ts',
+          content: '',
+        },
+      ],
+    });
+  });
+
+  it('projects incomplete code block content during push', () => {
+    const parser = createBlockParser();
+    parser.push('```\n');
+    parser.push('content');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'code-block',
+          info: null,
+          content: 'content',
+        },
+      ],
+    });
+  });
+
   it('projects partial paragraph text inside a list item', () => {
     const parser = createBlockParser();
     parser.push('- item\n  cont');

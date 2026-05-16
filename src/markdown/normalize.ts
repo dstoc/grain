@@ -19,6 +19,11 @@ import type {MarkdownTree} from './view-model.js';
 import type {ViewModelNode} from './view-model-node.js';
 import {cast} from '../asserts.js';
 
+export interface NormalizeTreeOptions {
+  force?: boolean;
+  preserveEmptyBlocks?: boolean;
+}
+
 function moveTrailingNodesIntoSections(tree: MarkdownTree) {
   for (const node of dfs(tree.root)) {
     let section: (SectionNode & ViewModelNode) | undefined;
@@ -122,7 +127,10 @@ function normalizeSections(tree: MarkdownTree) {
   }
 }
 
-export function normalizeTree(tree: MarkdownTree) {
+export function normalizeTree(
+  tree: MarkdownTree,
+  options: NormalizeTreeOptions = {},
+) {
   normalizeSections(tree);
 
   for (const node of dfs(tree.root)) {
@@ -149,17 +157,19 @@ export function normalizeTree(tree: MarkdownTree) {
   }
 
   // Remove empty blocks.
-  const emptyPredicate = (node?: ViewModelNode) =>
-    node &&
-    node[viewModel].parent &&
-    !node[viewModel].firstChild &&
-    ['list-item', 'list', 'block-quote'].includes(node.type);
-  for (const empty of [...dfs(tree.root)].filter(emptyPredicate)) {
-    let node: ViewModelNode | undefined = empty;
-    while (node) {
-      const parent: ViewModelNode | undefined = node[viewModel].parent;
-      node[viewModel].remove();
-      node = emptyPredicate(parent) ? parent : undefined;
+  if (!options.preserveEmptyBlocks) {
+    const emptyPredicate = (node?: ViewModelNode) =>
+      node &&
+      node[viewModel].parent &&
+      !node[viewModel].firstChild &&
+      ['list-item', 'list', 'block-quote'].includes(node.type);
+    for (const empty of [...dfs(tree.root)].filter(emptyPredicate)) {
+      let node: ViewModelNode | undefined = empty;
+      while (node) {
+        const parent: ViewModelNode | undefined = node[viewModel].parent;
+        node[viewModel].remove();
+        node = emptyPredicate(parent) ? parent : undefined;
+      }
     }
   }
 

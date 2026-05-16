@@ -40,7 +40,13 @@ interface LinePrefixResult {
   continuedListIndent: boolean;
 }
 
-type ProjectedPendingKind = 'paragraph' | 'section' | 'code-block' | 'list-item';
+type ProjectedPendingKind =
+  | 'paragraph'
+  | 'section'
+  | 'code-block'
+  | 'code-block-open'
+  | 'quote-open'
+  | 'list-item';
 
 interface ProjectedPendingState {
   kind: ProjectedPendingKind;
@@ -99,9 +105,6 @@ export function createBlockParser(
       }
 
       pendingText += text;
-      if (state.currentCodeBlock && !pendingText.includes('\n')) {
-        return tree;
-      }
       tree.edit(() => {
         discardProjectedPendingLine(state, projectedPending);
         projectedPending = undefined;
@@ -113,8 +116,9 @@ export function createBlockParser(
         }
 
         projectedPending = projectPendingLine(state, pendingText);
+        cleanupInactiveEmptyBlocks(state);
         return {};
-      }, false);
+      }, false, {preserveEmptyBlocks: true});
       return tree;
     },
     finish() {
@@ -131,7 +135,7 @@ export function createBlockParser(
         closeLeafBlocks(state);
         removeEmptyRootParagraph(state);
         return {};
-      }, false);
+      }, false, {force: true});
       finished = true;
       return tree;
     },
@@ -314,17 +318,25 @@ function projectPendingLine(
   }
 
   if (state.currentCodeBlock && state.currentCodeFence) {
-    return;
+    const prefix = parseLinePrefix(state, line);
+    if (prefix.content === '') {
+      return;
+    }
+    if (isClosingFence(prefix.content, state.currentCodeFence)) {
+      return;
+    }
+    return {kind: 'code-block', text: appendCodeBlockLine(state, prefix.content)};
   }
 
   const prefix = parseLinePrefix(state, line);
   if (shouldWaitForPendingPrefixResolution(state, line, prefix)) {
     return;
   }
-  if (prefix.content === '') {
-    return;
+  if (/^>\s*$/.test(line)) {
+    projectPendingQuoteOpen(state, currentSectionContainer(state));
+    return {kind: 'quote-open', text: line};
   }
-  if (parseFenceStart(prefix.content)) {
+  if (prefix.content === '') {
     return;
   }
   if (
@@ -353,6 +365,12 @@ function projectPendingLine(
     return {kind: 'list-item', text: prefix.content};
   }
 
+  const fence = parseFenceStart(prefix.content);
+  if (fence) {
+    projectPendingCodeBlockOpen(state, container, fence.marker, fence.info);
+    return {kind: 'code-block-open', text: prefix.content};
+  }
+
   if (!canProjectPendingParagraph(prefix.content)) {
     return;
   }
@@ -376,6 +394,12 @@ function discardProjectedPendingLine(
       return;
     case 'code-block':
       discardProjectedCodeBlock(state, projected.text);
+      return;
+    case 'code-block-open':
+      discardProjectedCodeBlockOpen(state);
+      return;
+    case 'quote-open':
+      discardProjectedQuoteOpen(state);
       return;
     case 'list-item':
       discardProjectedListItem(state);
@@ -409,6 +433,26 @@ function discardProjectedCodeBlock(state: BlockParseState, text: string) {
   if (!node) return;
   (node as {content: string}).content = node.content.slice(0, -text.length);
   node[viewModel].renderSignal.value++;
+  pruneDetachedState(state);
+}
+
+function discardProjectedCodeBlockOpen(state: BlockParseState) {
+  const node = state.currentCodeBlock;
+  if (!node || node.content !== '') return;
+  const parent = node[viewModel].parent;
+  node[viewModel].remove();
+  state.currentCodeBlock = undefined;
+  state.currentCodeFence = undefined;
+  pruneEmptyContainerChain(parent);
+  pruneDetachedState(state);
+}
+
+function discardProjectedQuoteOpen(state: BlockParseState) {
+  const quote = state.currentQuoteStack.at(-1);
+  if (!quote || quote.children?.length) return;
+  const parent = quote[viewModel].parent;
+  quote[viewModel].remove();
+  pruneEmptyContainerChain(parent);
   pruneDetachedState(state);
 }
 
@@ -488,6 +532,24 @@ function projectPendingListItem(
   state.sawContent = true;
 }
 
+function projectPendingCodeBlockOpen(
+  state: BlockParseState,
+  parent: ViewModelNode,
+  marker: string,
+  info: string | null,
+) {
+  closeParagraph(state);
+  closeList(state);
+  openCodeBlock(state, parent, marker, info);
+}
+
+function projectPendingQuoteOpen(
+  state: BlockParseState,
+  parent: ViewModelNode,
+) {
+  syncQuoteStack(state, parent, 1);
+}
+
 function removeTrailingText(node: ParagraphViewModelNode, count: number) {
   const startIndex = node.content.length - count;
   node[viewModel].edit(
@@ -510,6 +572,15 @@ function shouldWaitForPendingPrefixResolution(
   line: string,
   prefix: LinePrefixResult,
 ): boolean {
+  if (parseListItem(prefix.content)) {
+    return false;
+  }
+  if (parseFenceStart(prefix.content)) {
+    return false;
+  }
+  if (prefix.prefixes.at(-1) === 'quote' && prefix.content === '') {
+    return false;
+  }
   if (/^(?:[-+*]|\d+[.)]?|#+)$/.test(prefix.content.trim())) {
     return true;
   }
@@ -904,6 +975,55 @@ function pruneDetachedState(state: BlockParseState) {
   if (parent?.type === 'list') {
     state.currentList = parent as ListViewModelNode;
   }
+}
+
+function cleanupInactiveEmptyBlocks(state: BlockParseState) {
+  const preserved = new Set<ViewModelNode>();
+  for (const node of activeNodes(state)) {
+    let current: ViewModelNode | undefined = node;
+    while (current && !preserved.has(current)) {
+      preserved.add(current);
+      current = current[viewModel].parent;
+    }
+  }
+
+  for (const node of collectEmptyBlocks(state.root)) {
+    if (!preserved.has(node)) {
+      node[viewModel].remove();
+    }
+  }
+  pruneDetachedState(state);
+}
+
+function *activeNodes(state: BlockParseState): Generator<ViewModelNode> {
+  yield state.root;
+  if (state.currentParagraph) yield state.currentParagraph;
+  if (state.currentList) yield state.currentList;
+  for (const node of state.currentListPath) yield node;
+  if (state.currentQuoteBase) yield state.currentQuoteBase;
+  for (const node of state.currentQuoteStack) yield node;
+  if (state.currentCodeBlock) yield state.currentCodeBlock;
+  for (const node of state.sectionStack) yield node;
+}
+
+function collectEmptyBlocks(root: ViewModelNode): ViewModelNode[] {
+  const result: ViewModelNode[] = [];
+
+  function visit(node: ViewModelNode) {
+    for (const child of (node.children ?? []) as ViewModelNode[]) {
+      visit(child);
+    }
+    if (
+      node !== root &&
+      !node.children?.length &&
+      ['list-item', 'list', 'block-quote'].includes(node.type)
+    ) {
+      result.push(node);
+    }
+  }
+
+  visit(root);
+  return result;
 }
 
 function pruneEmptyContainerChain(node?: ViewModelNode) {

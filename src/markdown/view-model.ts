@@ -24,7 +24,7 @@ import {parser as inlineParser} from './inline-parser.js';
 import {parseBlocks} from './block-parser.js';
 import type {ParserTree} from './parser-tree.js';
 import {assert, cast} from '../asserts.js';
-import {normalizeTree} from './normalize.js';
+import {type NormalizeTreeOptions, normalizeTree} from './normalize.js';
 import {dfs} from './view-model-util.js';
 import {
   Focus,
@@ -510,6 +510,7 @@ export class MarkdownTree extends EventTarget {
   edit(
     editFn: () => {startFocus?: Focus; endFocus?: Focus},
     fireTreeEditEvent = true,
+    normalizeOptions?: NormalizeTreeOptions,
   ): Op[] {
     assert(this.state === 'idle');
     this.editStartVersion = this.root[viewModel].version;
@@ -517,7 +518,12 @@ export class MarkdownTree extends EventTarget {
     this.removed.clear();
     return batch(() => {
       const {startFocus, endFocus} = editFn();
-      return this.finishEdit(startFocus, endFocus, fireTreeEditEvent);
+      return this.finishEdit(
+        startFocus,
+        endFocus,
+        fireTreeEditEvent,
+        normalizeOptions,
+      );
     });
   }
 
@@ -584,10 +590,14 @@ export class MarkdownTree extends EventTarget {
     startFocus: Focus | undefined,
     endFocus: Focus | undefined,
     fireTreeEditEvent = true,
+    normalizeOptions?: NormalizeTreeOptions,
   ) {
     assert(this.state === 'editing');
-    if (this.root[viewModel].version > this.editStartVersion) {
-      normalizeTree(this);
+    if (
+      normalizeOptions?.force ||
+      this.root[viewModel].version > this.editStartVersion
+    ) {
+      normalizeTree(this, normalizeOptions);
     }
     const removedRoots = new Set<ViewModelNode>();
     for (const node of this.removed.values()) {
