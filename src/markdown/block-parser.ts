@@ -263,6 +263,13 @@ function parseLine(state: BlockParseState, line: string) {
   if (blankPrefix) {
     closeParagraph(state);
     state.currentList = undefined;
+    if (blankPrefix.continuedListIndent) {
+      state.currentListPath = [...state.currentListPath];
+    } else if (shouldPreserveListPathOnQuotedBlankLine(state, blankPrefix)) {
+      state.currentListPath = [...state.currentListPath];
+    } else {
+      state.currentListPath = state.currentListPath.slice(0, blankPrefix.listDepth);
+    }
     syncQuoteStack(state, blankPrefix.quoteBase, blankPrefix.quoteDepth);
     return;
   }
@@ -273,17 +280,19 @@ function parseLine(state: BlockParseState, line: string) {
   }
 
   const prefix = parseLinePrefix(state, line);
-  if (
-    prefix.prefixes.length === 0 &&
-    prefix.listDepth === 0 &&
-    !prefix.continuedListIndent
-  ) {
-    exitDetachedContainerContexts(state);
-  }
-  if (prefix.continuedListIndent) {
-    state.currentListPath = [...state.currentListPath];
-  } else {
-    state.currentListPath = state.currentListPath.slice(0, prefix.listDepth);
+  if (!(state.currentCodeBlock && state.currentCodeFence)) {
+    if (
+      prefix.prefixes.length === 0 &&
+      prefix.listDepth === 0 &&
+      !prefix.continuedListIndent
+    ) {
+      exitDetachedContainerContexts(state);
+    }
+    if (prefix.continuedListIndent) {
+      state.currentListPath = [...state.currentListPath];
+    } else {
+      state.currentListPath = state.currentListPath.slice(0, prefix.listDepth);
+    }
   }
   const container = resolvePrefixContainers(state, prefix);
   parseResolvedContainerContent(state, container, prefix.content);
@@ -333,6 +342,9 @@ function projectPendingLine(
     return;
   }
   if (/^>\s*$/.test(line)) {
+    if (state.currentListPath.length) {
+      return;
+    }
     projectPendingQuoteOpen(state, currentSectionContainer(state));
     return {kind: 'quote-open', text: line};
   }
@@ -359,8 +371,13 @@ function projectPendingResolvedContent(
   content: string,
   line: string,
 ): ProjectedPendingState | undefined {
-  if (content === '') {
+  if (content.trim() === '') {
     return;
+  }
+  const quoteMatch = /^(>\s?)(.*)$/.exec(content);
+  if (quoteMatch) {
+    const quote = syncQuoteStack(state, container, 1);
+    return projectPendingResolvedContent(state, quote, quoteMatch[2], line);
   }
   const atxHeading = parseAtxHeading(content);
   if (atxHeading) {
@@ -466,6 +483,10 @@ function discardProjectedQuoteOpen(state: BlockParseState) {
   const quote = state.currentQuoteStack.at(-1);
   if (!quote || quote.children?.length) return;
   const parent = quote[viewModel].parent;
+  if (!parent) {
+    pruneDetachedState(state);
+    return;
+  }
   quote[viewModel].remove();
   pruneEmptyContainerChain(parent);
   pruneDetachedState(state);
@@ -617,12 +638,29 @@ function isBlankLine(line: string): boolean {
 function parseBlankLinePrefix(
   state: BlockParseState,
   line: string,
-): {quoteBase: ViewModelNode; quoteDepth: number} | undefined {
+): {
+  quoteBase: ViewModelNode;
+  quoteDepth: number;
+  listDepth: number;
+  continuedListIndent: boolean;
+} | undefined {
   let rest = line;
   let currentContainer: ViewModelNode = currentSectionContainer(state);
+  let listDepth = 0;
   let quoteBase = currentContainer;
   let quoteDepth = 0;
   let matchedPrefix = false;
+  let continuedListIndent = false;
+
+  if (
+    rest.startsWith(listContinuationPrefix(state.currentListPath.at(-1))) &&
+    state.currentListPath.length &&
+    isInsideListPath(currentContainer, state.currentListPath.at(-1))
+  ) {
+    rest = rest.slice(listContinuationPrefix(state.currentListPath.at(-1)).length);
+    continuedListIndent = true;
+    matchedPrefix = true;
+  }
 
   while (true) {
     const quoteMatch = /^(>\s?)(.*)$/.exec(rest);
@@ -642,7 +680,7 @@ function parseBlankLinePrefix(
     const nextListItem = nextListPathItem(
       state.currentListPath,
       currentContainer,
-      0,
+      listDepth,
     );
     if (
       nextListItem &&
@@ -651,15 +689,48 @@ function parseBlankLinePrefix(
       matchedPrefix = true;
       rest = rest.slice(listContinuationPrefix(nextListItem).length);
       currentContainer = nextListItem;
+      listDepth++;
+      quoteBase = currentContainer;
+      quoteDepth = 0;
       continue;
     }
     break;
   }
 
   if (matchedPrefix && /^\s*$/.test(rest)) {
-    return {quoteBase, quoteDepth};
+    return {quoteBase, quoteDepth, listDepth, continuedListIndent};
   }
   return;
+}
+
+function shouldPreserveListPathOnQuotedBlankLine(
+  state: BlockParseState,
+  blankPrefix: {
+    quoteBase: ViewModelNode;
+    quoteDepth: number;
+    listDepth: number;
+    continuedListIndent: boolean;
+  },
+): boolean {
+  if (
+    blankPrefix.continuedListIndent ||
+    blankPrefix.listDepth !== 0 ||
+    blankPrefix.quoteDepth === 0
+  ) {
+    return false;
+  }
+  const container = state.currentListPath.at(-1);
+  if (!container) {
+    return false;
+  }
+  const quoteContext = quoteContextForNode(container);
+  if (!quoteContext) {
+    return false;
+  }
+  return (
+    quoteContext.quoteBase === blankPrefix.quoteBase &&
+    quoteContext.quoteDepth === blankPrefix.quoteDepth
+  );
 }
 
 function tryPromoteSetextHeading(
@@ -877,10 +948,11 @@ function parseResolvedContainerContent(
   }
 
   if (state.currentCodeBlock && state.currentCodeFence) {
-    if (isClosingFence(content, state.currentCodeFence)) {
+    const codeLine = stripActiveCodeBlockContinuation(state, content);
+    if (isClosingFence(codeLine, state.currentCodeFence)) {
       closeCodeBlock(state);
     } else {
-      appendCodeBlockLine(state, content);
+      appendCodeBlockLine(state, codeLine);
     }
     return;
   }
@@ -959,6 +1031,22 @@ function appendCodeBlockLine(state: BlockParseState, line: string): string {
   (node as {content: string}).content = newContent;
   node[viewModel].renderSignal.value++;
   return inserted;
+}
+
+function stripActiveCodeBlockContinuation(
+  state: BlockParseState,
+  line: string,
+): string {
+  const parent = state.currentCodeBlock?.[viewModel].parent;
+  const currentListItem = state.currentListPath.at(-1);
+  if (
+    parent?.type === 'list-item' &&
+    currentListItem === parent &&
+    line.startsWith(listContinuationPrefix(currentListItem))
+  ) {
+    return line.slice(listContinuationPrefix(currentListItem).length);
+  }
+  return line;
 }
 
 function isClosingFence(line: string, marker: string): boolean {
@@ -1395,14 +1483,10 @@ function parseQuotedListContinuation(
   quoteBase: ViewModelNode;
   quoteDepth: number;
 } | undefined {
-  if (state.currentCodeBlock && state.currentCodeFence) {
-    return;
-  }
+  const deepestContainer = state.currentListPath.at(-1);
+  if (!deepestContainer) return;
 
-  const container = state.currentListPath.at(-1);
-  if (!container) return;
-
-  const quoteContext = quoteContextForNode(container);
+  const quoteContext = quoteContextForNode(deepestContainer);
   if (!quoteContext || quoteContext.quoteDepth === 0) return;
 
   let rest = line;
@@ -1414,14 +1498,51 @@ function parseQuotedListContinuation(
     rest = quoteMatch[2];
   }
 
-  const continuation = listContinuationPrefix(container);
-  if (!rest.startsWith(continuation)) {
+  let currentContainer =
+    getQuotedPrefixContainer(
+      state,
+      quoteContext.quoteBase,
+      quoteContext.quoteDepth,
+    ) ?? quoteContext.quoteBase;
+  let container: ListItemViewModelNode | undefined;
+  let listDepth = 0;
+
+  while (true) {
+    const nextListItem = nextListPathItem(
+      state.currentListPath,
+      currentContainer,
+      listDepth,
+    );
+    if (
+      !nextListItem ||
+      !rest.startsWith(listContinuationPrefix(nextListItem))
+    ) {
+      break;
+    }
+    rest = rest.slice(listContinuationPrefix(nextListItem).length);
+    currentContainer = nextListItem;
+    container = nextListItem;
+    listDepth++;
+  }
+
+  if (!container) {
+    return;
+  }
+
+  const content = rest;
+  if (content.trim() === '') {
+    return;
+  }
+  if (state.currentCodeBlock && state.currentCodeFence && /^>\s?/.test(content)) {
+    return;
+  }
+  if (/^>\s*$/.test(content)) {
     return;
   }
 
   return {
     container,
-    content: rest.slice(continuation.length),
+    content,
     quoteBase: quoteContext.quoteBase,
     quoteDepth: quoteContext.quoteDepth,
   };

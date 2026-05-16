@@ -48,6 +48,24 @@ interface NamedGeneratedCase extends GeneratedCase {
   name: string;
 }
 
+function formatGeneratedCaseFailure(
+  name: string,
+  markdown: string,
+  expected: DocumentNode,
+  actual: DocumentNode,
+  error: unknown,
+): Error {
+  return new Error(
+    [
+      name,
+      `markdown:\n${markdown}`,
+      `expected:\n${JSON.stringify(expected, null, 2)}`,
+      `actual:\n${JSON.stringify(actual, null, 2)}`,
+      String(error),
+    ].join('\n\n'),
+  );
+}
+
 function buildRoundtripDocument(
   chain: ChainToken[],
   leaf: LeafToken,
@@ -271,12 +289,19 @@ function supportsGeneratedRoundtrip(
 ): boolean {
   return (
     supportsSectionPrefixOnly(chain) &&
-    supportsGeneratedAugmentations(chain, augmentations)
+    supportsGeneratedAugmentations(chain, augmentations) &&
+    supportsStableQuoteRoundtripShapes(chain, augmentations)
   );
 }
 
-function supportsGeneratedIncremental(chain: ChainToken[]): boolean {
-  return supportsSectionPrefixOnly(chain);
+function supportsGeneratedIncremental(
+  chain: ChainToken[],
+  augmentations: Augmentation[],
+): boolean {
+  return (
+    supportsSectionPrefixOnly(chain) &&
+    supportsStableQuoteIncrementalShapes(chain, augmentations)
+  );
 }
 
 function supportsSectionPrefixOnly(chain: ChainToken[]): boolean {
@@ -302,9 +327,6 @@ function supportsGeneratedAugmentations(
       }
       continue;
     }
-    if (chain.slice(0, augmentation.depth + 1).includes('quote')) {
-      return false;
-    }
     if (
       augmentation.sibling === 'empty-paragraph' &&
       chain
@@ -315,6 +337,50 @@ function supportsGeneratedAugmentations(
     }
   }
   return true;
+}
+
+function supportsStableQuoteRoundtripShapes(
+  chain: ChainToken[],
+  augmentations: Augmentation[],
+): boolean {
+  return !augmentations.some((augmentation) => {
+    if (
+      augmentation.kind === 'container-block' &&
+      augmentation.sibling === 'paragraph'
+    ) {
+      return (
+        chain.slice(0, augmentation.depth + 1).includes('quote') &&
+        (chain[augmentation.depth] === 'bullet' ||
+          chain[augmentation.depth] === 'ordered')
+      );
+    }
+    if (augmentation.kind === 'list-sibling-item') {
+      return chain.slice(0, augmentation.depth + 1).includes('quote');
+    }
+    return false;
+  });
+}
+
+function supportsStableQuoteIncrementalShapes(
+  chain: ChainToken[],
+  augmentations: Augmentation[],
+): boolean {
+  return !augmentations.some((augmentation) => {
+    if (
+      augmentation.kind === 'container-block' &&
+      augmentation.sibling === 'paragraph'
+    ) {
+      return (
+        chain.slice(0, augmentation.depth + 1).includes('quote') &&
+        (chain[augmentation.depth] === 'bullet' ||
+          chain[augmentation.depth] === 'ordered')
+      );
+    }
+    if (augmentation.kind === 'list-sibling-item') {
+      return chain.slice(0, augmentation.depth + 1).includes('quote');
+    }
+    return false;
+  });
 }
 
 function canonicalizeGeneratedDocument(doc: DocumentNode): DocumentNode {
@@ -493,35 +559,76 @@ function describeAugmentation(augmentation: Augmentation): string {
 
 describe('block parser generated permutations', () => {
   it('roundtrips generated nested and sibling-bearing permutations through serialize and parse', () => {
-    for (const {expected, markdown} of generatedCanonicalCasesForMode(false)) {
-        const reparsed = parseBlocks(markdown).node;
+    for (const testCase of generatedCanonicalCasesForMode(false)) {
+      const {expected, markdown, name} = testCase;
+      const reparsed = parseBlocks(markdown).node;
+      try {
         expect(reparsed).toEqual(expected);
+      } catch (error) {
+        throw formatGeneratedCaseFailure(
+          name,
+          markdown,
+          expected,
+          reparsed,
+          error,
+        );
+      }
     }
   });
 
   it('matches full parse for generated paragraph nested and sibling-bearing permutations under char-by-char append', () => {
-    for (const {chain, leaf, expected, markdown} of generatedCanonicalCasesForMode(false)) {
-      if (leaf !== 'paragraph' || !supportsGeneratedIncremental(chain)) {
+    for (const testCase of generatedCanonicalCasesForMode(false)) {
+      const {chain, leaf, expected, markdown, name} = testCase;
+      if (
+        leaf !== 'paragraph' ||
+        !supportsGeneratedIncremental(chain, testCase.augmentations)
+      ) {
         continue;
       }
       const parser = createBlockParser();
       for (const char of markdown) {
         parser.push(char);
       }
-      expect(parser.finish().serialize()).toEqual(expected);
+      const incremental = parser.finish().serialize();
+      try {
+        expect(incremental).toEqual(expected);
+      } catch (error) {
+        throw formatGeneratedCaseFailure(
+          name,
+          markdown,
+          expected,
+          incremental as DocumentNode,
+          error,
+        );
+      }
     }
   });
 
   it('matches full parse for generated code-block nested and sibling-bearing permutations under char-by-char append', () => {
-    for (const {chain, leaf, expected, markdown} of generatedCanonicalCasesForMode(false)) {
-      if (leaf !== 'code-block' || !supportsGeneratedIncremental(chain)) {
+    for (const testCase of generatedCanonicalCasesForMode(false)) {
+      const {chain, leaf, expected, markdown, name} = testCase;
+      if (
+        leaf !== 'code-block' ||
+        !supportsGeneratedIncremental(chain, testCase.augmentations)
+      ) {
         continue;
       }
       const parser = createBlockParser();
       for (const char of markdown) {
         parser.push(char);
       }
-      expect(parser.finish().serialize()).toEqual(expected);
+      const incremental = parser.finish().serialize();
+      try {
+        expect(incremental).toEqual(expected);
+      } catch (error) {
+        throw formatGeneratedCaseFailure(
+          name,
+          markdown,
+          expected,
+          incremental as DocumentNode,
+          error,
+        );
+      }
     }
   });
 });
@@ -543,8 +650,9 @@ if (RUN_EXTENSIVE) {
     );
 
     const extensiveParagraphCases = extensiveCases.filter(
-      ({chain, leaf}) =>
-        leaf === 'paragraph' && supportsGeneratedIncremental(chain),
+      ({chain, leaf, augmentations}) =>
+        leaf === 'paragraph' &&
+        supportsGeneratedIncremental(chain, augmentations),
     );
     const namedExtensiveParagraphCases = extensiveParagraphCases.map(
       (testCase) => [testCase.name, testCase] as const,
@@ -552,6 +660,26 @@ if (RUN_EXTENSIVE) {
 
     it.each(namedExtensiveParagraphCases)(
       'matches char-by-char append parity for %s',
+      (_name, {expected, markdown}) => {
+        const parser = createBlockParser();
+        for (const char of markdown) {
+          parser.push(char);
+        }
+        expect(parser.finish().serialize()).toEqual(expected);
+      },
+    );
+
+    const extensiveCodeBlockCases = extensiveCases.filter(
+      ({chain, leaf, augmentations}) =>
+        leaf === 'code-block' &&
+        supportsGeneratedIncremental(chain, augmentations),
+    );
+    const namedExtensiveCodeBlockCases = extensiveCodeBlockCases.map(
+      (testCase) => [testCase.name, testCase] as const,
+    );
+
+    it.each(namedExtensiveCodeBlockCases)(
+      'matches char-by-char append parity for code block %s',
       (_name, {expected, markdown}) => {
         const parser = createBlockParser();
         for (const char of markdown) {
