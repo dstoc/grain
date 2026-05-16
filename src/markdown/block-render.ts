@@ -1,4 +1,4 @@
-import {LitElement, css, html, type TemplateResult} from 'lit';
+import { LitElement, css, html, type TemplateResult } from 'lit';
 
 import type {
   BlockQuoteNode,
@@ -8,7 +8,7 @@ import type {
   ParagraphNode,
   SectionNode,
 } from './node.js';
-import type {ViewModelNode} from './view-model-node.js';
+import type { ViewModelNode } from './view-model-node.js';
 
 type RenderableNode = MarkdownNode & Partial<ViewModelNode>;
 
@@ -22,8 +22,13 @@ const styles = css`
     --md-border: #d1d5db;
     --md-quote: #ecfeff;
     --md-code: #f8fafc;
-    font: 15px/1.5 "Iowan Old Style", "Palatino Linotype", "Book Antiqua",
-      Palatino, Georgia, serif;
+    font:
+      15px/1.5 'Iowan Old Style',
+      'Palatino Linotype',
+      'Book Antiqua',
+      Palatino,
+      Georgia,
+      serif;
   }
 
   .root {
@@ -57,7 +62,11 @@ const styles = css`
 
   .section-marker {
     flex: none;
-    font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font:
+      600 11px/1 ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--md-accent);
@@ -96,7 +105,11 @@ const styles = css`
   .list-marker {
     padding-top: 0.1rem;
     color: var(--md-accent);
-    font: 600 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font:
+      600 12px/1.4 ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
     text-align: center;
     user-select: none;
   }
@@ -120,7 +133,11 @@ const styles = css`
     border: 1px solid var(--md-border);
     border-radius: 14px;
     background: var(--md-code);
-    font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+    font:
+      13px/1.55 ui-monospace,
+      SFMono-Regular,
+      Menlo,
+      monospace;
     white-space: pre-wrap;
     overflow-x: auto;
   }
@@ -137,8 +154,8 @@ const styles = css`
 export class MarkdownBlockRender extends LitElement {
   static override styles = styles;
   static override properties = {
-    block: {attribute: false},
-    version: {attribute: false},
+    block: { attribute: false },
+    version: { attribute: false },
   };
 
   declare block: RenderableNode;

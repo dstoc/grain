@@ -1,7 +1,7 @@
-import type {InlineEdit} from './view-model.js';
-import {viewModel} from './view-model-node.js';
-import type {InlineViewModelNode, ViewModelNode} from './view-model-node.js';
-import {isAncestorOf} from './view-model-util.js';
+import type { InlineEdit } from './view-model.js';
+import { viewModel } from './view-model-node.js';
+import type { InlineViewModelNode, ViewModelNode } from './view-model-node.js';
+import { isAncestorOf } from './view-model-util.js';
 
 export type Op = RemoveOp | InsertOp | EditOp | UpdateMarkerOp | UpdateCheckOp;
 

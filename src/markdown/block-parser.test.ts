@@ -1,8 +1,8 @@
-import {describe, expect, it} from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import {createBlockParser, parseBlocks} from './block-parser/api.js';
-import {serializeToString} from './block-serializer.js';
-import type {DocumentNode} from './node.js';
+import { createBlockParser, parseBlocks } from './block-parser/api.js';
+import { serializeToString } from './block-serializer.js';
+import type { DocumentNode } from './node.js';
 
 function expectCharByCharAppendMatchesFullParse(source: string) {
   const full = parseBlocks(source).node;
@@ -16,15 +16,15 @@ function expectCharByCharAppendMatchesFullParse(source: string) {
 
 describe('parseBlocks', () => {
   it('returns an empty paragraph for empty input', () => {
-    const {node} = parseBlocks('');
+    const { node } = parseBlocks('');
     expect(node).toEqual({
       type: 'document',
-      children: [{type: 'paragraph', content: ''}],
+      children: [{ type: 'paragraph', content: '' }],
     });
   });
 
   it('parses headings, lists, block quotes, and paragraphs', () => {
-    const {node} = parseBlocks('# Title\n- item\n> quote\nplain text\n');
+    const { node } = parseBlocks('# Title\n- item\n> quote\nplain text\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -40,14 +40,14 @@ describe('parseBlocks', () => {
                   type: 'list-item',
                   marker: '- ',
                   checked: undefined,
-                  children: [{type: 'paragraph', content: 'item'}],
+                  children: [{ type: 'paragraph', content: 'item' }],
                 },
               ],
             },
             {
               type: 'block-quote',
               marker: '> ',
-              children: [{type: 'paragraph', content: 'quote'}],
+              children: [{ type: 'paragraph', content: 'quote' }],
             },
             {
               type: 'paragraph',
@@ -60,7 +60,7 @@ describe('parseBlocks', () => {
   });
 
   it('accumulates plain lines into one paragraph', () => {
-    const {node} = parseBlocks('first line\nsecond line\n');
+    const { node } = parseBlocks('first line\nsecond line\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -73,7 +73,7 @@ describe('parseBlocks', () => {
   });
 
   it('promotes a paragraph into a setext heading', () => {
-    const {node} = parseBlocks('Title\n---\nbody\n');
+    const { node } = parseBlocks('Title\n---\nbody\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -286,7 +286,7 @@ describe('parseBlocks', () => {
   });
 
   it('nests block quotes and lists under a list item', () => {
-    const {node} = parseBlocks('- item\n  > quote\n  - nested\n');
+    const { node } = parseBlocks('- item\n  > quote\n  - nested\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -337,7 +337,7 @@ describe('parseBlocks', () => {
   });
 
   it('allows lists inside block quotes', () => {
-    const {node} = parseBlocks('> quote\n> - nested\n');
+    const { node } = parseBlocks('> quote\n> - nested\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -372,7 +372,7 @@ describe('parseBlocks', () => {
   });
 
   it('nests a list under a quoted list item', () => {
-    const {node} = parseBlocks('> quote\n> * list 1\n>   * list 2\n');
+    const { node } = parseBlocks('> quote\n> * list 1\n>   * list 2\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -423,7 +423,7 @@ describe('parseBlocks', () => {
   });
 
   it('returns to the parent list after a nested list', () => {
-    const {node} = parseBlocks('- outer\n  - inner\n- sibling\n');
+    const { node } = parseBlocks('- outer\n  - inner\n- sibling\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -551,7 +551,7 @@ describe('parseBlocks', () => {
   });
 
   it('continues a list item paragraph on indented lines', () => {
-    const {node} = parseBlocks('- item\n  continuation\n');
+    const { node } = parseBlocks('- item\n  continuation\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -577,7 +577,7 @@ describe('parseBlocks', () => {
 
   it('serializes list continuation and second paragraphs with indentation', () => {
     const source = '* list para 1\n  para continue\n\n  list para 2\n';
-    const {node} = parseBlocks(source);
+    const { node } = parseBlocks(source);
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -610,7 +610,7 @@ describe('parseBlocks', () => {
 
   it('keeps a second paragraph inside a quoted list item', () => {
     const source = '> * list para 1\n>   para continue\n>\n>   list para 2\n';
-    const {node} = parseBlocks(source);
+    const { node } = parseBlocks(source);
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -645,8 +645,9 @@ describe('parseBlocks', () => {
   });
 
   it('keeps a second paragraph inside a doubly quoted list item', () => {
-    const source = '> > - list para 1\n> >   para continue\n> >   \n> >   list para 2\n';
-    const {node} = parseBlocks(source);
+    const source =
+      '> > - list para 1\n> >   para continue\n> >   \n> >   list para 2\n';
+    const { node } = parseBlocks(source);
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -688,7 +689,7 @@ describe('parseBlocks', () => {
 
   it('keeps sibling paragraphs inside a doubly quoted block quote', () => {
     const source = '> > before\n> > \n> > after\n';
-    const {node} = parseBlocks(source);
+    const { node } = parseBlocks(source);
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -717,7 +718,7 @@ describe('parseBlocks', () => {
   });
 
   it('parses html comment sentinel as an empty paragraph', () => {
-    const {node} = parseBlocks('<!-- -->\n');
+    const { node } = parseBlocks('<!-- -->\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -731,7 +732,7 @@ describe('parseBlocks', () => {
 
   it('roundtrips separate lists through empty paragraph sentinels', () => {
     const source = '* list 1\n\n<!-- -->\n\n* list 2\n';
-    const {node} = parseBlocks(source);
+    const { node } = parseBlocks(source);
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -778,7 +779,7 @@ describe('parseBlocks', () => {
 
   it('roundtrips separate quotes through empty paragraph sentinels', () => {
     const source = '> quote 1\n\n<!-- -->\n\n> quote 2\n';
-    const {node} = parseBlocks(source);
+    const { node } = parseBlocks(source);
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -812,8 +813,9 @@ describe('parseBlocks', () => {
   });
 
   it('keeps a fenced code block inside a doubly quoted list item after a blank separator', () => {
-    const source = '> > - list para 1\n> >   \n> >   ```ts\n> >   body\n> >   ```\n';
-    const {node} = parseBlocks(source);
+    const source =
+      '> > - list para 1\n> >   \n> >   ```ts\n> >   body\n> >   ```\n';
+    const { node } = parseBlocks(source);
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -859,7 +861,7 @@ describe('parseBlocks', () => {
   });
 
   it('parses a section as the first child of a list item', () => {
-    const {node} = parseBlocks('* # section\n  content\n');
+    const { node } = parseBlocks('* # section\n  content\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -891,7 +893,7 @@ describe('parseBlocks', () => {
   });
 
   it('continues a paragraph under a list-item section across multiple indented lines', () => {
-    const {node} = parseBlocks('* # section\n  para\n  continue\n');
+    const { node } = parseBlocks('* # section\n  para\n  continue\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -923,7 +925,7 @@ describe('parseBlocks', () => {
   });
 
   it('continues a paragraph under a list-item section without a trailing newline', () => {
-    const {node} = parseBlocks('* # section\n  para\n  continue');
+    const { node } = parseBlocks('* # section\n  para\n  continue');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -955,7 +957,7 @@ describe('parseBlocks', () => {
   });
 
   it('parses a same-line quote marker in a list item as a block quote', () => {
-    const {node} = parseBlocks('* > quote\n');
+    const { node } = parseBlocks('* > quote\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -986,7 +988,7 @@ describe('parseBlocks', () => {
   });
 
   it('parses a deeper same-line quote marker inside a list-item quote as a nested quote', () => {
-    const {node} = parseBlocks('* > > no inner quote\n');
+    const { node } = parseBlocks('* > > no inner quote\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -1023,7 +1025,7 @@ describe('parseBlocks', () => {
   });
 
   it('parses a deeper same-line list marker inside a list-item quote as a nested list', () => {
-    const {node} = parseBlocks('* > * no inner list\n');
+    const { node } = parseBlocks('* > * no inner list\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -1066,7 +1068,7 @@ describe('parseBlocks', () => {
   });
 
   it('parses a same-line code fence marker in a list item as a code block', () => {
-    const {node} = parseBlocks('* ```js\n');
+    const { node } = parseBlocks('* ```js\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -1172,7 +1174,7 @@ describe('parseBlocks', () => {
   });
 
   it('parses a same-line unordered list marker in a list item as a nested list', () => {
-    const {node} = parseBlocks('* - nested\n');
+    const { node } = parseBlocks('* - nested\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -1209,7 +1211,7 @@ describe('parseBlocks', () => {
   });
 
   it('parses a same-line ordered list marker in a list item as a nested list', () => {
-    const {node} = parseBlocks('* 1. nested\n');
+    const { node } = parseBlocks('* 1. nested\n');
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -1492,7 +1494,7 @@ describe('parseBlocks', () => {
   it('keeps a paragraph sibling after a fenced code block inside a doubly quoted list item', () => {
     const source =
       '> > - ```ts\n> >   quote > quote > bullet\n> >   ```\n> >   container 2 after paragraph\n';
-    const {node} = parseBlocks(source);
+    const { node } = parseBlocks(source);
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -1536,7 +1538,7 @@ describe('parseBlocks', () => {
   it('keeps a nested quote sibling after a paragraph inside a quoted list item', () => {
     const source =
       '> - container 1 before paragraph\n>   > quote > bullet > quote\n';
-    const {node} = parseBlocks(source);
+    const { node } = parseBlocks(source);
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -1579,7 +1581,7 @@ describe('parseBlocks', () => {
   it('keeps a paragraph sibling after a nested quoted list inside a quoted list item', () => {
     const source =
       '> - - quote > bullet > bullet\n>   \n>   container 1 after paragraph\n';
-    const {node} = parseBlocks(source);
+    const { node } = parseBlocks(source);
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -1628,7 +1630,7 @@ describe('parseBlocks', () => {
   it('keeps a nested quoted sibling after a blank separator inside a quoted list item', () => {
     const source =
       '> - > container 2 before paragraph\n>   > \n>   > quote > bullet > quote\n';
-    const {node} = parseBlocks(source);
+    const { node } = parseBlocks(source);
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -1669,9 +1671,8 @@ describe('parseBlocks', () => {
   });
 
   it('parses a quoted code block inside a quoted list item', () => {
-    const source =
-      '> - > ```ts\n>   > quote > bullet > quote\n>   > ```\n';
-    const {node} = parseBlocks(source);
+    const source = '> - > ```ts\n>   > quote > bullet > quote\n>   > ```\n';
+    const { node } = parseBlocks(source);
     expect(node).toEqual({
       type: 'document',
       children: [
@@ -1784,7 +1785,7 @@ describe('parseBlocks', () => {
   });
 
   it('ends a list-item section before an unindented following paragraph', () => {
-    const {node} = parseBlocks('* # section\n\noutside?\n');
+    const { node } = parseBlocks('* # section\n\noutside?\n');
     expect(node).toEqual({
       type: 'document',
       children: [

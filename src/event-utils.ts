@@ -10,7 +10,7 @@ export interface TypedEventTarget<Target, EventMap> {
     options?: boolean | EventListenerOptions,
   ): void;
   dispatchEvent<K extends keyof EventMap>(
-    event: EventMap[K] & Event & {type: K},
+    event: EventMap[K] & Event & { type: K },
   ): boolean;
 }
 
@@ -22,5 +22,5 @@ export const TypedCustomEvent = CustomEvent as {
   new <T, K extends string>(
     type: K,
     eventInitDict?: CustomEventInit<T>,
-  ): CustomEvent<T> & {type: K};
+  ): CustomEvent<T> & { type: K };
 };

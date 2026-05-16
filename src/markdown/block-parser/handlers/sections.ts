@@ -1,14 +1,17 @@
-import {viewModel} from "../../view-model-node.js";
-import type {ViewModelNode} from "../../view-model-node.js";
+import { viewModel } from '../../view-model-node.js';
+import type { ViewModelNode } from '../../view-model-node.js';
 import {
   type BlockParseState,
   type SectionViewModelNode,
   type ParagraphViewModelNode,
-} from "../types.js";
-import {currentSectionContainer} from "../utils.js";
-import {removeEmptyRootParagraph as ensurePlaceholderRemoved} from "../cleanup.js";
-import {syncSectionStack, popSectionsToLevel} from "../container-management.js";
-import {closeParagraph} from "./paragraphs.js";
+} from '../types.js';
+import { currentSectionContainer } from '../utils.js';
+import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
+import {
+  syncSectionStack,
+  popSectionsToLevel,
+} from '../container-management.js';
+import { closeParagraph } from './paragraphs.js';
 
 export function tryPromoteSetextHeading(
   state: BlockParseState,
@@ -20,18 +23,18 @@ export function tryPromoteSetextHeading(
   if (
     !match ||
     !paragraph ||
-    paragraph.content.includes("\n") ||
+    paragraph.content.includes('\n') ||
     paragraph[viewModel].parent !== container
   ) {
     return false;
   }
 
   const parent = paragraph[viewModel].parent;
-  if (!parent || (parent.type !== "document" && parent.type !== "section")) {
+  if (!parent || (parent.type !== 'document' && parent.type !== 'section')) {
     return false;
   }
 
-  const level = match[1][0] === "=" ? 1 : 2;
+  const level = match[1].startsWith('=') ? 1 : 2;
   closeParagraph(state);
   promoteParagraphToSection(state, paragraph, parent, level);
   return true;
@@ -49,8 +52,8 @@ export function promoteParagraphToSection(
   const container = currentSectionContainer(state);
   const nextSibling = paragraph[viewModel].nextSibling;
   const section = state.tree.add({
-    type: "section",
-    marker: "#".repeat(level),
+    type: 'section',
+    marker: '#'.repeat(level),
     content: paragraph.content,
     children: [],
   }) as SectionViewModelNode;
@@ -62,7 +65,7 @@ export function promoteParagraphToSection(
 
 export function parseAtxHeading(
   line: string,
-): {level: number; content: string} | undefined {
+): { level: number; content: string } | undefined {
   const match = /^(#{1,6})\s+(.*)$/.exec(line);
   if (!match) return;
   return {
@@ -71,13 +74,17 @@ export function parseAtxHeading(
   };
 }
 
-export function openSection(state: BlockParseState, level: number, content: string) {
+export function openSection(
+  state: BlockParseState,
+  level: number,
+  content: string,
+) {
   popSectionsToLevel(state, level);
   const parent = currentSectionContainer(state);
   ensurePlaceholderRemoved(state);
   const section = state.tree.add({
-    type: "section",
-    marker: "#".repeat(level),
+    type: 'section',
+    marker: '#'.repeat(level),
     content,
     children: [],
   }) as SectionViewModelNode;

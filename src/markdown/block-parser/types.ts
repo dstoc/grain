@@ -7,13 +7,14 @@ import type {
   ParagraphNode,
   SectionNode,
 } from '../node.js';
-import {type ParserTree} from '../parser-tree.js';
-import {MarkdownTree} from '../view-model.js';
-import type {ViewModelNode} from '../view-model-node.js';
+import { type ParserTree } from '../parser-tree.js';
+import { MarkdownTree } from '../view-model.js';
+import type { ViewModelNode } from '../view-model-node.js';
 
 export type ParagraphViewModelNode = ParagraphNode & ViewModelNode;
 export type SectionViewModelNode = SectionNode & ViewModelNode;
-export type ListViewModelNode = Extract<MarkdownNode, {type: 'list'}> & ViewModelNode;
+export type ListViewModelNode = Extract<MarkdownNode, { type: 'list' }> &
+  ViewModelNode;
 export type ListItemViewModelNode = ListItemNode & ViewModelNode;
 export type BlockQuoteViewModelNode = BlockQuoteNode & ViewModelNode;
 export type CodeBlockViewModelNode = CodeBlockNode & ViewModelNode;
@@ -34,7 +35,7 @@ export interface BlockParseState {
 
 export interface LinePrefixResult {
   content: string;
-  prefixes: Array<'list' | 'quote'>;
+  prefixes: ('list' | 'quote')[];
   listDepth: number;
   continuedListIndent: boolean;
 }

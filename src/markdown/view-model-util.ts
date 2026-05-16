@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {assert, cast} from '../asserts.js';
+import { assert, cast } from '../asserts.js';
 
 import {
   isInlineViewModelNode,
@@ -21,7 +21,7 @@ import {
   type ViewModelNode,
   viewModel,
 } from './view-model-node.js';
-import type {MarkdownNode} from './node.js';
+import type { MarkdownNode } from './node.js';
 
 export function swapNodes(node1: ViewModelNode, node2: ViewModelNode) {
   if (node1[viewModel].nextSibling === node2) {
@@ -299,7 +299,7 @@ export function performLogicalInsertion(
   context: ViewModelNode,
   nodes: ViewModelNode[],
 ) {
-  let {parent, nextSibling} = nextLogicalInsertionPoint(context);
+  let { parent, nextSibling } = nextLogicalInsertionPoint(context);
   if (context.type === 'section') {
     // Insertion into a section is append-only. Mainly so that send-to section
     // is sensible.
@@ -307,7 +307,7 @@ export function performLogicalInsertion(
     nextSibling = undefined;
     for (const node of nodes) {
       if (node.type === 'section') {
-        const list = parent[viewModel].tree.add({type: 'list'});
+        const list = parent[viewModel].tree.add({ type: 'list' });
         const listItem = parent[viewModel].tree.add({
           type: 'list-item',
           marker: '* ',

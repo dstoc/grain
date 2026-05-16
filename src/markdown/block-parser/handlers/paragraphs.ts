@@ -1,10 +1,7 @@
-import {viewModel} from "../../view-model-node.js";
-import type {ViewModelNode} from "../../view-model-node.js";
-import {
-  type BlockParseState,
-  type ParagraphViewModelNode,
-} from "../types.js";
-import {removeEmptyRootParagraph as ensurePlaceholderRemoved} from "../cleanup.js";
+import { viewModel } from '../../view-model-node.js';
+import type { ViewModelNode } from '../../view-model-node.js';
+import { type BlockParseState, type ParagraphViewModelNode } from '../types.js';
+import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
 
 export function appendParagraphLine(
   state: BlockParseState,
@@ -12,15 +9,15 @@ export function appendParagraphLine(
   line: string,
 ) {
   ensurePlaceholderRemoved(state);
-  if (state.currentParagraph && state.currentParagraph[viewModel].parent === container) {
+  if (state.currentParagraph?.[viewModel].parent === container) {
     appendInlineText(state.currentParagraph, `\n${line}`);
     return;
   }
 
   const paragraph = state.tree.add({
-    type: "paragraph",
+    type: 'paragraph',
     content: line,
-  }) as ParagraphViewModelNode;
+  });
   paragraph[viewModel].insertBefore(container);
   state.currentParagraph = paragraph;
   state.sawContent = true;

@@ -1,13 +1,13 @@
-import {viewModel} from '../view-model-node.js';
-import type {ViewModelNode} from '../view-model-node.js';
+import { viewModel } from '../view-model-node.js';
+import type { ViewModelNode } from '../view-model-node.js';
 import {
   type BlockParseState,
   type BlockQuoteViewModelNode,
   type ListViewModelNode,
   type ListItemViewModelNode,
 } from './types.js';
-import {isInsideListPath} from './utils.js';
-import {removeEmptyRootParagraph as ensurePlaceholderRemoved} from './cleanup.js';
+import { isInsideListPath } from './utils.js';
+import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from './cleanup.js';
 
 export function resetQuoteStack(state: BlockParseState) {
   state.currentQuoteBase = undefined;
@@ -53,7 +53,7 @@ export function ensureListContainer(
   state: BlockParseState,
   parent: ViewModelNode,
 ): ListViewModelNode {
-  if (state.currentList && state.currentList[viewModel].parent === parent) {
+  if (state.currentList?.[viewModel].parent === parent) {
     return state.currentList;
   }
 
@@ -87,7 +87,10 @@ export function buildListPath(
   return [item];
 }
 
-export function syncSectionStack(state: BlockParseState, parent: ViewModelNode) {
+export function syncSectionStack(
+  state: BlockParseState,
+  parent: ViewModelNode,
+) {
   if (parent.type !== 'section') {
     state.sectionStack.length = 0;
     return;

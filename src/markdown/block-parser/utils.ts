@@ -1,6 +1,10 @@
-import {viewModel} from '../view-model-node.js';
-import type {ViewModelNode} from '../view-model-node.js';
-import type {BlockParseState, ListItemViewModelNode, BlockQuoteViewModelNode} from './types.js';
+import { viewModel } from '../view-model-node.js';
+import type { ViewModelNode } from '../view-model-node.js';
+import type {
+  BlockParseState,
+  ListItemViewModelNode,
+  BlockQuoteViewModelNode,
+} from './types.js';
 
 export function isBlankLine(line: string): boolean {
   return /^\s*$/.test(line);
@@ -59,7 +63,7 @@ export function nodeAtPath(
   if (!path) return;
   let node: ViewModelNode | undefined = root;
   for (const index of path) {
-    node = node.children?.[index] as ViewModelNode | undefined;
+    node = node.children?.[index];
     if (!node) return;
   }
   return node;
@@ -119,19 +123,23 @@ export function activeQuoteChainForBase(
   }
   if (node !== base) return [];
 
-  return path.reverse().filter((node): node is BlockQuoteViewModelNode => node.type === 'block-quote');
+  return path
+    .reverse()
+    .filter(
+      (node): node is BlockQuoteViewModelNode => node.type === 'block-quote',
+    );
 }
 
 export function quoteContextForNode(
   node: ViewModelNode,
-): {quoteBase: ViewModelNode; quoteDepth: number} | undefined {
+): { quoteBase: ViewModelNode; quoteDepth: number } | undefined {
   const quotes: BlockQuoteViewModelNode[] = [];
   let current: ViewModelNode | undefined = node[viewModel].parent;
   let quoteBase: ViewModelNode | undefined;
 
   while (current) {
     if (current.type === 'block-quote') {
-      quotes.push(current as BlockQuoteViewModelNode);
+      quotes.push(current);
     } else if (quotes.length) {
       quoteBase = current;
       break;

@@ -3,7 +3,7 @@ export interface Signal<T> {
 }
 
 export function signal<T>(value: T): Signal<T> {
-  return {value};
+  return { value };
 }
 
 export function batch<T>(fn: () => T): T {

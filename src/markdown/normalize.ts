@@ -12,12 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type {SectionNode} from './node.js';
-import {children, dfs} from './view-model-util.js';
-import {viewModel} from './view-model-node.js';
-import type {MarkdownTree} from './view-model.js';
-import type {ViewModelNode} from './view-model-node.js';
-import {cast} from '../asserts.js';
+import type { SectionNode } from './node.js';
+import { children, dfs } from './view-model-util.js';
+import { viewModel } from './view-model-node.js';
+import type { MarkdownTree } from './view-model.js';
+import type { ViewModelNode } from './view-model-node.js';
+import { cast } from '../asserts.js';
 
 export interface NormalizeTreeOptions {
   force?: boolean;
@@ -78,7 +78,7 @@ function normalizeContiguousSections(
     }
     if (activeSections.length && contains(activeSection(), section)) {
       // If the active section can contain this section...
-      if (last && last[viewModel].parent === activeSection()) {
+      if (last?.[viewModel].parent === activeSection()) {
         // Place it next to the last section, if that section was also contained
         // by the active section.
         section[viewModel].insertBefore(
@@ -168,8 +168,7 @@ export function normalizeTree(
   // Remove empty blocks.
   if (!options.preserveEmptyBlocks) {
     const emptyPredicate = (node?: ViewModelNode) =>
-      node &&
-      node[viewModel].parent &&
+      node?.[viewModel].parent &&
       !node[viewModel].firstChild &&
       ['list-item', 'list', 'block-quote'].includes(node.type);
     for (const empty of [...dfs(tree.root)].filter(emptyPredicate)) {

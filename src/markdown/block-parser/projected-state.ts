@@ -1,5 +1,5 @@
-import {viewModel} from '../view-model-node.js';
-import type {ViewModelNode} from '../view-model-node.js';
+import { viewModel } from '../view-model-node.js';
+import type { ViewModelNode } from '../view-model-node.js';
 import type {
   BlockParseState,
   ProjectedPendingState,
@@ -7,12 +7,23 @@ import type {
   SectionViewModelNode,
   ListItemViewModelNode,
 } from './types.js';
-import {pruneDetachedState, removeEmptyRootParagraph as ensurePlaceholderRemoved} from './cleanup.js';
-import {syncQuoteStack, ensureListContainer, buildListPath} from './container-management.js';
-import {appendInlineText, closeParagraph} from './handlers/paragraphs.js';
-import {openCodeBlock, parseFenceStart} from './handlers/code-blocks.js';
-import {closeList, parseInitialListItemContent, parseListItem} from './handlers/lists.js';
-import {parseAtxHeading} from './handlers/sections.js';
+import {
+  pruneDetachedState,
+  removeEmptyRootParagraph as ensurePlaceholderRemoved,
+} from './cleanup.js';
+import {
+  syncQuoteStack,
+  ensureListContainer,
+  buildListPath,
+} from './container-management.js';
+import { appendInlineText, closeParagraph } from './handlers/paragraphs.js';
+import { openCodeBlock, parseFenceStart } from './handlers/code-blocks.js';
+import {
+  closeList,
+  parseInitialListItemContent,
+  parseListItem,
+} from './handlers/lists.js';
+import { parseAtxHeading } from './handlers/sections.js';
 
 export function projectPendingResolvedContent(
   state: BlockParseState,
@@ -30,8 +41,13 @@ export function projectPendingResolvedContent(
   }
   const atxHeading = parseAtxHeading(content);
   if (atxHeading) {
-    projectPendingSectionText(state, container, atxHeading.level, atxHeading.content);
-    return {kind: 'section', text: line};
+    projectPendingSectionText(
+      state,
+      container,
+      atxHeading.level,
+      atxHeading.content,
+    );
+    return { kind: 'section', text: line };
   }
 
   const listItem = parseListItem(content);
@@ -43,13 +59,13 @@ export function projectPendingResolvedContent(
       listItem.checked,
       listItem.content,
     );
-    return {kind: 'list-item', text: content};
+    return { kind: 'list-item', text: content };
   }
 
   const fence = parseFenceStart(content);
   if (fence) {
     projectPendingCodeBlockOpen(state, container, fence.marker, fence.info);
-    return {kind: 'code-block-open', text: content};
+    return { kind: 'code-block-open', text: content };
   }
 
   if (!canProjectPendingParagraph(content)) {
@@ -112,14 +128,14 @@ function discardProjectedSection(state: BlockParseState) {
 function discardProjectedCodeBlock(state: BlockParseState, text: string) {
   const node = state.currentCodeBlock;
   if (!node) return;
-  (node as {content: string}).content = node.content.slice(0, -text.length);
+  (node as { content: string }).content = node.content.slice(0, -text.length);
   node[viewModel].renderSignal.value++;
   pruneDetachedState(state);
 }
 
 function discardProjectedCodeBlockOpen(state: BlockParseState) {
   const node = state.currentCodeBlock;
-  if (!node || node.content !== '') return;
+  if (node?.content !== '') return;
   const parent = node[viewModel].parent;
   node[viewModel].remove();
   state.currentCodeBlock = undefined;
@@ -161,11 +177,11 @@ function appendPendingParagraphText(
 ): string {
   ensurePlaceholderRemoved(state);
   let prefix = '';
-  if (!state.currentParagraph || state.currentParagraph[viewModel].parent !== container) {
+  if (state.currentParagraph?.[viewModel].parent !== container) {
     const paragraph = state.tree.add({
       type: 'paragraph',
       content: '',
-    }) as ParagraphViewModelNode;
+    });
     paragraph[viewModel].insertBefore(container);
     state.currentParagraph = paragraph;
     state.sawContent = true;
@@ -173,7 +189,7 @@ function appendPendingParagraphText(
     prefix = '\n';
   }
   const inserted = prefix + line;
-  appendInlineText(state.currentParagraph as ParagraphViewModelNode, inserted);
+  appendInlineText(state.currentParagraph!, inserted);
   return inserted;
 }
 
@@ -247,8 +263,7 @@ export function canProjectPendingParagraph(line: string): boolean {
 
 function pruneEmptyContainerChain(node?: ViewModelNode) {
   while (
-    node &&
-    node[viewModel].parent &&
+    node?.[viewModel].parent &&
     !node[viewModel].firstChild &&
     ['list-item', 'list', 'block-quote'].includes(node.type)
   ) {

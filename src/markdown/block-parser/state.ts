@@ -1,6 +1,6 @@
-import {viewModel} from '../view-model-node.js';
-import {MarkdownTree} from '../view-model.js';
-import {nodeAtPath, isDefined} from './utils.js';
+import { viewModel } from '../view-model-node.js';
+import { MarkdownTree } from '../view-model.js';
+import { nodeAtPath, isDefined } from './utils.js';
 import {
   type BlockParseState,
   type BlockParserSnapshot,
@@ -9,7 +9,6 @@ import {
   type BlockQuoteViewModelNode,
   type CodeBlockViewModelNode,
   type SectionViewModelNode,
-  type ListViewModelNode,
 } from './types.js';
 
 export function createInitialState(tree: MarkdownTree): BlockParseState {
@@ -34,11 +33,20 @@ export function restoreState(
     snapshot.currentParagraphPath,
   ) as ParagraphViewModelNode | undefined;
   state.currentListPath = snapshot.currentListPath
-    .map((path) => nodeAtPath(state.root, path) as ListItemViewModelNode | undefined)
+    .map(
+      (path) =>
+        nodeAtPath(state.root, path) as ListItemViewModelNode | undefined,
+    )
     .filter(isDefined);
-  state.currentQuoteBase = nodeAtPath(state.root, snapshot.currentQuoteBasePath);
+  state.currentQuoteBase = nodeAtPath(
+    state.root,
+    snapshot.currentQuoteBasePath,
+  );
   state.currentQuoteStack = snapshot.currentQuoteStackPaths
-    .map((path) => nodeAtPath(state.root, path) as BlockQuoteViewModelNode | undefined)
+    .map(
+      (path) =>
+        nodeAtPath(state.root, path) as BlockQuoteViewModelNode | undefined,
+    )
     .filter(isDefined);
   state.currentCodeBlock = nodeAtPath(
     state.root,
@@ -46,11 +54,13 @@ export function restoreState(
   ) as CodeBlockViewModelNode | undefined;
   state.currentCodeFence = snapshot.currentCodeFence;
   state.sectionStack = snapshot.sectionStackPaths
-    .map((path) => nodeAtPath(state.root, path) as SectionViewModelNode | undefined)
+    .map(
+      (path) =>
+        nodeAtPath(state.root, path) as SectionViewModelNode | undefined,
+    )
     .filter(isDefined);
   const currentListItem = state.currentListPath.at(-1);
   const parent = currentListItem?.[viewModel].parent;
-  state.currentList =
-    parent?.type === 'list' ? (parent as ListViewModelNode) : undefined;
+  state.currentList = parent?.type === 'list' ? parent : undefined;
   return state;
 }

@@ -7,11 +7,10 @@ import {
   type ListItemNode,
   isInlineNode,
 } from './node.js';
-import type {ViewModel, InlineViewModel} from './view-model.js';
+import type { ViewModel, InlineViewModel } from './view-model.js';
 
 export const viewModel = Symbol('viewModel');
 
-// eslint-disable-next-line  @typescript-eslint/no-empty-interface
 export interface Caches {
   _?: undefined;
 }

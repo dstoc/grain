@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {type MarkdownNode, type DocumentNode, isInlineNode} from './node.js';
+import { type MarkdownNode, type DocumentNode, isInlineNode } from './node.js';
 import type {
   ViewModelNode,
   MaybeViewModelNode,
@@ -20,12 +20,12 @@ import type {
   Caches,
 } from './view-model-node.js';
 
-import {parser as inlineParser} from './inline-parser.js';
-import {parseBlocks} from './block-parser/api.js';
-import type {ParserTree} from './parser-tree.js';
-import {assert, cast} from '../asserts.js';
-import {type NormalizeTreeOptions, normalizeTree} from './normalize.js';
-import {dfs} from './view-model-util.js';
+import { parser as inlineParser } from './inline-parser.js';
+import { parseBlocks } from './block-parser/api.js';
+import type { ParserTree } from './parser-tree.js';
+import { assert, cast } from '../asserts.js';
+import { type NormalizeTreeOptions, normalizeTree } from './normalize.js';
+import { dfs } from './view-model-util.js';
 import {
   Focus,
   Op,
@@ -35,12 +35,12 @@ import {
   doOp,
   undoOp,
 } from './view-model-ops.js';
-import {viewModel} from './view-model-node.js';
-import {batch, signal} from '../signals.js';
-import {TypedCustomEvent} from '../event-utils.js';
+import { viewModel } from './view-model-node.js';
+import { batch, signal } from '../signals.js';
+import { TypedCustomEvent } from '../event-utils.js';
 
 function emptyDocument(): DocumentNode {
-  return {type: 'document', children: [{type: 'paragraph', content: ''}]};
+  return { type: 'document', children: [{ type: 'paragraph', content: '' }] };
 }
 
 let sequence = 0;
@@ -207,7 +207,7 @@ export class ViewModel {
       case 'section': {
         const oldMarker = this.self.marker;
         if (oldMarker === marker) return;
-        (this.self as {marker: string}).marker = marker;
+        (this.self as { marker: string }).marker = marker;
         this.signalMutation({
           type: 'marker',
           node: this.self,
@@ -226,9 +226,9 @@ export class ViewModel {
         const oldChecked = this.self.checked;
         if (oldChecked === checked) return;
         if (checked == undefined) {
-          delete (this.self as {checked?: boolean}).checked;
+          delete (this.self as { checked?: boolean }).checked;
         } else {
-          (this.self as {checked?: boolean}).checked = checked;
+          (this.self as { checked?: boolean }).checked = checked;
         }
 
         this.signalMutation({
@@ -303,7 +303,7 @@ export class InlineViewModel extends ViewModel {
     this.editedInlineTree = undefined;
   }
   edit(
-    {startIndex, newEndIndex, oldEndIndex, newText}: InlineEdit,
+    { startIndex, newEndIndex, oldEndIndex, newText }: InlineEdit,
     replaceWithBlocks = true,
   ) {
     assert(this.tree.state === 'editing');
@@ -321,7 +321,7 @@ export class InlineViewModel extends ViewModel {
 
     const newContent = apply(this.self.content, result);
     if (this.self.content === newContent) return null;
-    (this.self as {content: string}).content = newContent;
+    (this.self as { content: string }).content = newContent;
     const newNodes = replaceWithBlocks ? this.maybeReplaceWithBlocks() : false;
     this.editedInlineTree ??= this.inlineTree_;
     this.inlineTree_ = undefined;
@@ -331,7 +331,7 @@ export class InlineViewModel extends ViewModel {
     this.signalMutation({
       type: 'edit',
       node: this.self,
-      edit: {startIndex, newEndIndex, oldEndIndex, newText},
+      edit: { startIndex, newEndIndex, oldEndIndex, newText },
       oldText,
     });
     if (newNodes) return newNodes;
@@ -357,7 +357,7 @@ export class InlineViewModel extends ViewModel {
     if (!/^(\d+[.)] |[-+*>] |#+ |[`*\-_]{3})/.test(content)) return;
     if (this.self.type !== 'paragraph') return;
     // TODO: Ensure there's a trailing new line?
-    const {node} = parseBlocks(this.self.content + '\n');
+    const { node } = parseBlocks(this.self.content + '\n');
     assert(node);
     assert(node.type === 'document' && node.children);
     return node.children;
@@ -372,10 +372,6 @@ export interface MarkdownTreeDelegate {
 }
 
 export type TreeChange = 'edit' | 'cache';
-
-interface MarkdownTreeEventMap {
-  'tree-change': CustomEvent<TreeChange>;
-}
 
 export class MarkdownTree extends EventTarget {
   constructor(
@@ -508,7 +504,7 @@ export class MarkdownTree extends EventTarget {
   }
 
   edit(
-    editFn: () => {startFocus?: Focus; endFocus?: Focus},
+    editFn: () => { startFocus?: Focus; endFocus?: Focus },
     fireTreeEditEvent = true,
     normalizeOptions?: NormalizeTreeOptions,
   ): Op[] {
@@ -517,7 +513,7 @@ export class MarkdownTree extends EventTarget {
     this.state = 'editing';
     this.removed.clear();
     return batch(() => {
-      const {startFocus, endFocus} = editFn();
+      const { startFocus, endFocus } = editFn();
       return this.finishEdit(
         startFocus,
         endFocus,
@@ -550,7 +546,9 @@ export class MarkdownTree extends EventTarget {
         this.caches.delete(node);
       }
     }
-    this.dispatchEvent(new TypedCustomEvent('tree-change', {detail: 'cache'}));
+    this.dispatchEvent(
+      new TypedCustomEvent('tree-change', { detail: 'cache' }),
+    );
   }
 
   setCache<K extends keyof Caches>(
@@ -665,12 +663,12 @@ export class MarkdownTree extends EventTarget {
     if (fireTreeEditEvent) {
       if (this.root[viewModel].version > this.editStartVersion) {
         this.dispatchEvent(
-          new TypedCustomEvent('tree-change', {detail: 'edit'}),
+          new TypedCustomEvent('tree-change', { detail: 'edit' }),
         );
       } else if (this.editChangedCaches) {
         this.editChangedCaches = false;
         this.dispatchEvent(
-          new TypedCustomEvent('tree-change', {detail: 'cache'}),
+          new TypedCustomEvent('tree-change', { detail: 'cache' }),
         );
       }
     } else {
@@ -687,12 +685,7 @@ export class MarkdownTree extends EventTarget {
     const result = node as T & ViewModelNode;
     if (isInlineNode(result)) {
       assert(!result[viewModel]);
-      result[viewModel] = new InlineViewModel(
-        result as InlineViewModelNode,
-        this,
-        parent,
-        childIndex,
-      );
+      result[viewModel] = new InlineViewModel(result, this, parent, childIndex);
     } else {
       assert(!result[viewModel]);
       result[viewModel] = new ViewModel(result, this, parent, childIndex);
@@ -718,7 +711,7 @@ export class MarkdownTree extends EventTarget {
     root: MarkdownNode;
     caches: Map<MarkdownNode, Caches>;
   } {
-    return structuredClone({root: this.root, caches: this.caches});
+    return structuredClone({ root: this.root, caches: this.caches });
   }
 }
 
@@ -738,7 +731,7 @@ function indexToPosition(text: string, index: number): Position {
       column++;
     }
   }
-  return {row, column};
+  return { row, column };
 }
 
 interface Edit {

@@ -1,11 +1,7 @@
-import {viewModel} from "../../view-model-node.js";
-import type {ViewModelNode} from "../../view-model-node.js";
-import {
-  type BlockParseState,
-  type ParagraphViewModelNode,
-} from "../types.js";
-import {hasContainerAncestor} from "../utils.js";
-import {syncQuoteStack, resetQuoteStack} from "../container-management.js";
+import type { ViewModelNode } from '../../view-model-node.js';
+import { type BlockParseState } from '../types.js';
+import { hasContainerAncestor } from '../utils.js';
+import { syncQuoteStack, resetQuoteStack } from '../container-management.js';
 
 export function projectPendingQuoteOpen(
   state: BlockParseState,
@@ -22,5 +18,5 @@ export function closeQuote(state: BlockParseState) {
 }
 
 function isInsideBlockQuote(node: ViewModelNode): boolean {
-  return hasContainerAncestor(node, "block-quote");
+  return hasContainerAncestor(node, 'block-quote');
 }

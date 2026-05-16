@@ -1,33 +1,40 @@
-import {viewModel} from '../view-model-node.js';
-import type {ViewModelNode} from '../view-model-node.js';
-import {isAttached, hasContainerAncestor} from './utils.js';
-import {
-  type BlockParseState,
-  type ParagraphViewModelNode,
-  type ListViewModelNode,
-} from './types.js';
-import {resetQuoteStack} from './container-management.js';
+import { viewModel } from '../view-model-node.js';
+import type { ViewModelNode } from '../view-model-node.js';
+import { isAttached, hasContainerAncestor } from './utils.js';
+import { type BlockParseState } from './types.js';
+import { resetQuoteStack } from './container-management.js';
 
 export function removeEmptyRootParagraph(state: BlockParseState) {
   if (state.root.children?.length !== 1) return;
   const onlyChild = state.root.children[0];
   if (onlyChild.type !== 'paragraph' || onlyChild.content !== '') return;
-  (onlyChild as ParagraphViewModelNode)[viewModel].remove();
+  onlyChild[viewModel].remove();
 }
 
 export function pruneDetachedState(state: BlockParseState) {
-  state.sectionStack = state.sectionStack.filter((node) => isAttached(state.root, node));
+  state.sectionStack = state.sectionStack.filter((node) =>
+    isAttached(state.root, node),
+  );
 
-  if (state.currentParagraph && !isAttached(state.root, state.currentParagraph)) {
+  if (
+    state.currentParagraph &&
+    !isAttached(state.root, state.currentParagraph)
+  ) {
     state.currentParagraph = undefined;
   }
 
-  if (state.currentCodeBlock && !isAttached(state.root, state.currentCodeBlock)) {
+  if (
+    state.currentCodeBlock &&
+    !isAttached(state.root, state.currentCodeBlock)
+  ) {
     state.currentCodeBlock = undefined;
     state.currentCodeFence = undefined;
   }
 
-  if (state.currentQuoteBase && !isAttached(state.root, state.currentQuoteBase)) {
+  if (
+    state.currentQuoteBase &&
+    !isAttached(state.root, state.currentQuoteBase)
+  ) {
     state.currentQuoteBase = undefined;
     state.currentQuoteStack = [];
   } else {
@@ -47,7 +54,7 @@ export function pruneDetachedState(state: BlockParseState) {
   const currentListItem = state.currentListPath.at(-1);
   const parent = currentListItem?.[viewModel].parent;
   if (parent?.type === 'list') {
-    state.currentList = parent as ListViewModelNode;
+    state.currentList = parent;
   }
 }
 
@@ -105,7 +112,9 @@ export function exitDetachedContainerContexts(state: BlockParseState) {
   state.currentListPath = [];
   resetQuoteStack(state);
   state.sectionStack = state.sectionStack.filter(
-    (node) => !hasContainerAncestor(node, 'list-item') && !hasContainerAncestor(node, 'block-quote'),
+    (node) =>
+      !hasContainerAncestor(node, 'list-item') &&
+      !hasContainerAncestor(node, 'block-quote'),
   );
   pruneDetachedState(state);
 }

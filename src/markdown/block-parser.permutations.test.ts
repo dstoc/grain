@@ -1,9 +1,9 @@
-import {describe, expect, it} from 'vitest';
+import { describe, expect, it } from 'vitest';
 
-import {createBlockParser, parseBlocks} from './block-parser/api.js';
-import {serializeToString} from './block-serializer.js';
-import type {DocumentNode, MarkdownNode} from './node.js';
-import {MarkdownTree} from './view-model.js';
+import { createBlockParser, parseBlocks } from './block-parser/api.js';
+import { serializeToString } from './block-serializer.js';
+import type { DocumentNode, MarkdownNode } from './node.js';
+import { MarkdownTree } from './view-model.js';
 
 type ChainToken = 'section' | 'quote' | 'bullet' | 'ordered';
 type LeafToken = 'paragraph' | 'code-block';
@@ -15,7 +15,7 @@ type SiblingKind =
   | 'ordered'
   | 'code-block';
 type Augmentation =
-  | {kind: 'root-block'; position: 'before' | 'after'; sibling: SiblingKind}
+  | { kind: 'root-block'; position: 'before' | 'after'; sibling: SiblingKind }
   | {
       kind: 'container-block';
       depth: number;
@@ -32,7 +32,7 @@ type Augmentation =
 const RUN_EXTENSIVE =
   (
     globalThis as {
-      process?: {env?: Record<string, string | undefined>};
+      process?: { env?: Record<string, string | undefined> };
     }
   ).process?.env?.MARKDOWN_EXTENSIVE_TESTS === '1';
 
@@ -82,14 +82,18 @@ function buildRoundtripDocument(
 
   let node: MarkdownNode =
     leaf === 'paragraph'
-      ? {type: 'paragraph', content: chainLabel(chain)}
-      : {type: 'code-block', info: 'ts', content: chainLabel(chain)};
+      ? { type: 'paragraph', content: chainLabel(chain) }
+      : { type: 'code-block', info: 'ts', content: chainLabel(chain) };
 
   for (let i = chain.length - 1; i >= 0; i--) {
     const token = chain[i];
     switch (token) {
       case 'section': {
-        const children = withContainerBlockAugmentations([node], augmentations, i);
+        const children = withContainerBlockAugmentations(
+          [node],
+          augmentations,
+          i,
+        );
         node = {
           type: 'section',
           marker: '#'.repeat(sectionDepths.get(i) ?? 1),
@@ -99,7 +103,11 @@ function buildRoundtripDocument(
         break;
       }
       case 'quote': {
-        const children = withContainerBlockAugmentations([node], augmentations, i);
+        const children = withContainerBlockAugmentations(
+          [node],
+          augmentations,
+          i,
+        );
         node = {
           type: 'block-quote',
           marker: '> ',
@@ -120,7 +128,11 @@ function buildRoundtripDocument(
           checked: undefined,
           children: itemChildren,
         };
-        const children = withListSiblingItemAugmentations([item], augmentations, i);
+        const children = withListSiblingItemAugmentations(
+          [item],
+          augmentations,
+          i,
+        );
         node = {
           type: 'list',
           children,
@@ -152,7 +164,7 @@ function buildSiblingNode(kind: SiblingKind, label: string): MarkdownNode {
     case 'paragraph':
       return siblingParagraph(label);
     case 'empty-paragraph':
-      return {type: 'paragraph', content: ''};
+      return { type: 'paragraph', content: '' };
     case 'quote':
       return {
         type: 'block-quote',
@@ -385,16 +397,14 @@ function supportsStableQuoteIncrementalShapes(
 
 function canonicalizeGeneratedDocument(doc: DocumentNode): DocumentNode {
   const tree = new MarkdownTree(structuredClone(doc));
-  tree.edit(() => ({}), false, {force: true});
+  tree.edit(() => ({}), false, { force: true });
   return tree.serialize() as DocumentNode;
 }
 
 function isCanonicalGeneratedDocument(doc: DocumentNode): boolean {
-  return JSON.stringify(canonicalizeGeneratedDocument(doc)) === JSON.stringify(doc);
-}
-
-function augmentationPermutations(chain: ChainToken[]): Augmentation[][] {
-  return augmentationPermutationsForMode(chain, RUN_EXTENSIVE);
+  return (
+    JSON.stringify(canonicalizeGeneratedDocument(doc)) === JSON.stringify(doc)
+  );
 }
 
 function augmentationPermutationsForMode(
@@ -414,8 +424,8 @@ function augmentationPermutationsForMode(
   const singles: Augmentation[] = [];
 
   for (const sibling of siblingKinds) {
-    singles.push({kind: 'root-block', position: 'before', sibling});
-    singles.push({kind: 'root-block', position: 'after', sibling});
+    singles.push({ kind: 'root-block', position: 'before', sibling });
+    singles.push({ kind: 'root-block', position: 'after', sibling });
   }
 
   for (let i = 0; i < chain.length; i++) {
@@ -486,17 +496,12 @@ function augmentationPermutationsForMode(
   return results;
 }
 
-function generatedCanonicalCases() {
-  return generatedCanonicalCasesForMode(RUN_EXTENSIVE);
-}
-
-function generatedCanonicalCasesForMode(extensive: boolean): NamedGeneratedCase[] {
+function generatedCanonicalCasesForMode(
+  extensive: boolean,
+): NamedGeneratedCase[] {
   const seenMarkdown = new Set<string>();
   const cases: NamedGeneratedCase[] = [];
-  const chains = [
-    ...chainPermutations(2),
-    ...chainPermutations(3),
-  ];
+  const chains = [...chainPermutations(2), ...chainPermutations(3)];
   const leaves: LeafToken[] = ['paragraph', 'code-block'];
 
   for (const chain of chains) {
@@ -560,7 +565,7 @@ function describeAugmentation(augmentation: Augmentation): string {
 describe('block parser generated permutations', () => {
   it('roundtrips generated nested and sibling-bearing permutations through serialize and parse', () => {
     for (const testCase of generatedCanonicalCasesForMode(false)) {
-      const {expected, markdown, name} = testCase;
+      const { expected, markdown, name } = testCase;
       const reparsed = parseBlocks(markdown).node;
       try {
         expect(reparsed).toEqual(expected);
@@ -578,7 +583,7 @@ describe('block parser generated permutations', () => {
 
   it('matches full parse for generated paragraph nested and sibling-bearing permutations under char-by-char append', () => {
     for (const testCase of generatedCanonicalCasesForMode(false)) {
-      const {chain, leaf, expected, markdown, name} = testCase;
+      const { chain, leaf, expected, markdown, name } = testCase;
       if (
         leaf !== 'paragraph' ||
         !supportsGeneratedIncremental(chain, testCase.augmentations)
@@ -606,7 +611,7 @@ describe('block parser generated permutations', () => {
 
   it('matches full parse for generated code-block nested and sibling-bearing permutations under char-by-char append', () => {
     for (const testCase of generatedCanonicalCasesForMode(false)) {
-      const {chain, leaf, expected, markdown, name} = testCase;
+      const { chain, leaf, expected, markdown, name } = testCase;
       if (
         leaf !== 'code-block' ||
         !supportsGeneratedIncremental(chain, testCase.augmentations)
@@ -636,21 +641,20 @@ describe('block parser generated permutations', () => {
 if (RUN_EXTENSIVE) {
   describe('block parser extensive generated permutations', () => {
     const extensiveCases = generatedCanonicalCasesForMode(true);
-    const namedExtensiveCases = extensiveCases.map((testCase) => [
-      testCase.name,
-      testCase,
-    ] as const);
+    const namedExtensiveCases = extensiveCases.map(
+      (testCase) => [testCase.name, testCase] as const,
+    );
 
     it.each(namedExtensiveCases)(
       'roundtrips %s through serialize and parse',
-      (_name, {expected, markdown}) => {
+      (_name, { expected, markdown }) => {
         const reparsed = parseBlocks(markdown).node;
         expect(reparsed).toEqual(expected);
       },
     );
 
     const extensiveParagraphCases = extensiveCases.filter(
-      ({chain, leaf, augmentations}) =>
+      ({ chain, leaf, augmentations }) =>
         leaf === 'paragraph' &&
         supportsGeneratedIncremental(chain, augmentations),
     );
@@ -660,7 +664,7 @@ if (RUN_EXTENSIVE) {
 
     it.each(namedExtensiveParagraphCases)(
       'matches char-by-char append parity for %s',
-      (_name, {expected, markdown}) => {
+      (_name, { expected, markdown }) => {
         const parser = createBlockParser();
         for (const char of markdown) {
           parser.push(char);
@@ -670,7 +674,7 @@ if (RUN_EXTENSIVE) {
     );
 
     const extensiveCodeBlockCases = extensiveCases.filter(
-      ({chain, leaf, augmentations}) =>
+      ({ chain, leaf, augmentations }) =>
         leaf === 'code-block' &&
         supportsGeneratedIncremental(chain, augmentations),
     );
@@ -680,7 +684,7 @@ if (RUN_EXTENSIVE) {
 
     it.each(namedExtensiveCodeBlockCases)(
       'matches char-by-char append parity for code block %s',
-      (_name, {expected, markdown}) => {
+      (_name, { expected, markdown }) => {
         const parser = createBlockParser();
         for (const char of markdown) {
           parser.push(char);

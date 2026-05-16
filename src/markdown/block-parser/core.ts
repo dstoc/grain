@@ -1,9 +1,8 @@
-import {viewModel} from '../view-model-node.js';
-import type {ViewModelNode} from '../view-model-node.js';
+import { viewModel } from '../view-model-node.js';
+import type { ViewModelNode } from '../view-model-node.js';
 import type {
   BlockParseState,
   ProjectedPendingState,
-  ListViewModelNode,
   LinePrefixResult,
 } from './types.js';
 import {
@@ -13,10 +12,10 @@ import {
   parseLinePrefix,
   resolvePrefixContainers,
 } from './prefix-resolution.js';
-import {syncQuoteStack} from './container-management.js';
-import {closeParagraph, appendParagraphLine} from './handlers/paragraphs.js';
-import {isBlankLine, currentSectionContainer} from './utils.js';
-import {exitDetachedContainerContexts} from './cleanup.js';
+import { syncQuoteStack } from './container-management.js';
+import { closeParagraph, appendParagraphLine } from './handlers/paragraphs.js';
+import { isBlankLine, currentSectionContainer } from './utils.js';
+import { exitDetachedContainerContexts } from './cleanup.js';
 import {
   isClosingFence,
   appendCodeBlockLine,
@@ -25,10 +24,14 @@ import {
   parseFenceStart,
   openCodeBlock,
 } from './handlers/code-blocks.js';
-import {projectPendingQuoteOpen, closeQuote} from './handlers/quotes.js';
-import {projectPendingResolvedContent} from './projected-state.js';
-import {tryPromoteSetextHeading, parseAtxHeading, openSection} from './handlers/sections.js';
-import {parseListItem, appendListItem, closeList} from './handlers/lists.js';
+import { projectPendingQuoteOpen, closeQuote } from './handlers/quotes.js';
+import { projectPendingResolvedContent } from './projected-state.js';
+import {
+  tryPromoteSetextHeading,
+  parseAtxHeading,
+  openSection,
+} from './handlers/sections.js';
+import { parseListItem, appendListItem, closeList } from './handlers/lists.js';
 
 export function parseLine(state: BlockParseState, line: string) {
   const quotedListContinuation = parseQuotedListContinuation(state, line);
@@ -41,7 +44,7 @@ export function parseLine(state: BlockParseState, line: string) {
     state.currentListPath = [quotedListContinuation.container];
     state.currentList =
       quotedListContinuation.container[viewModel].parent?.type === 'list'
-        ? (quotedListContinuation.container[viewModel].parent as ListViewModelNode)
+        ? quotedListContinuation.container[viewModel].parent
         : undefined;
     if (quotedListContinuation.content === '') {
       closeParagraph(state);
@@ -64,7 +67,10 @@ export function parseLine(state: BlockParseState, line: string) {
     } else if (shouldPreserveListPathOnQuotedBlankLine(state, blankPrefix)) {
       state.currentListPath = [...state.currentListPath];
     } else {
-      state.currentListPath = state.currentListPath.slice(0, blankPrefix.listDepth);
+      state.currentListPath = state.currentListPath.slice(
+        0,
+        blankPrefix.listDepth,
+      );
     }
     syncQuoteStack(state, blankPrefix.quoteBase, blankPrefix.quoteDepth);
     return;
@@ -110,7 +116,10 @@ export function projectPendingLine(
     if (isClosingFence(prefix.content, state.currentCodeFence)) {
       return;
     }
-    return {kind: 'code-block', text: appendCodeBlockLine(state, prefix.content)};
+    return {
+      kind: 'code-block',
+      text: appendCodeBlockLine(state, prefix.content),
+    };
   }
 
   const quotedListContinuation = parseQuotedListContinuation(state, line);
@@ -123,7 +132,7 @@ export function projectPendingLine(
     state.currentListPath = [quotedListContinuation.container];
     state.currentList =
       quotedListContinuation.container[viewModel].parent?.type === 'list'
-        ? (quotedListContinuation.container[viewModel].parent as ListViewModelNode)
+        ? quotedListContinuation.container[viewModel].parent
         : undefined;
     return projectPendingResolvedContent(
       state,
@@ -142,7 +151,7 @@ export function projectPendingLine(
       return;
     }
     projectPendingQuoteOpen(state, currentSectionContainer(state));
-    return {kind: 'quote-open', text: line};
+    return { kind: 'quote-open', text: line };
   }
   if (prefix.content === '') {
     return;

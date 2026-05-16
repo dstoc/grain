@@ -1,4 +1,4 @@
-import type {ViewModelNode} from '../view-model-node.js';
+import type { ViewModelNode } from '../view-model-node.js';
 import {
   type BlockParseState,
   type ListItemViewModelNode,
@@ -12,17 +12,19 @@ import {
   nextListPathItem,
   quoteContextForNode,
 } from './utils.js';
-import {resetQuoteStack, syncQuoteStack} from './container-management.js';
+import { resetQuoteStack, syncQuoteStack } from './container-management.js';
 
 export function parseBlankLinePrefix(
   state: BlockParseState,
   line: string,
-): {
-  quoteBase: ViewModelNode;
-  quoteDepth: number;
-  listDepth: number;
-  continuedListIndent: boolean;
-} | undefined {
+):
+  | {
+      quoteBase: ViewModelNode;
+      quoteDepth: number;
+      listDepth: number;
+      continuedListIndent: boolean;
+    }
+  | undefined {
   let rest = line;
   let currentContainer: ViewModelNode = currentSectionContainer(state);
   let listDepth = 0;
@@ -36,7 +38,9 @@ export function parseBlankLinePrefix(
     state.currentListPath.length &&
     isInsideListPath(currentContainer, state.currentListPath.at(-1))
   ) {
-    rest = rest.slice(listContinuationPrefix(state.currentListPath.at(-1)).length);
+    rest = rest.slice(
+      listContinuationPrefix(state.currentListPath.at(-1)).length,
+    );
     continuedListIndent = true;
     matchedPrefix = true;
   }
@@ -51,8 +55,11 @@ export function parseBlankLinePrefix(
       quoteDepth++;
       rest = quoteMatch[2];
       currentContainer =
-        getQuotedPrefixContainer(state, quoteBase ?? currentContainer, quoteDepth) ??
-        currentContainer;
+        getQuotedPrefixContainer(
+          state,
+          quoteBase ?? currentContainer,
+          quoteDepth,
+        ) ?? currentContainer;
       continue;
     }
 
@@ -61,10 +68,7 @@ export function parseBlankLinePrefix(
       currentContainer,
       listDepth,
     );
-    if (
-      nextListItem &&
-      rest.startsWith(listContinuationPrefix(nextListItem))
-    ) {
+    if (nextListItem && rest.startsWith(listContinuationPrefix(nextListItem))) {
       matchedPrefix = true;
       rest = rest.slice(listContinuationPrefix(nextListItem).length);
       currentContainer = nextListItem;
@@ -77,7 +81,7 @@ export function parseBlankLinePrefix(
   }
 
   if (matchedPrefix && /^\s*$/.test(rest)) {
-    return {quoteBase, quoteDepth, listDepth, continuedListIndent};
+    return { quoteBase, quoteDepth, listDepth, continuedListIndent };
   }
   return;
 }
@@ -91,7 +95,7 @@ export function parseLinePrefix(
   let listDepth = 0;
   let quoteBase: ViewModelNode | undefined;
   let quoteDepth = 0;
-  const prefixes: Array<'list' | 'quote'> = [];
+  const prefixes: ('list' | 'quote')[] = [];
   let continuedListIndent = false;
 
   if (
@@ -99,7 +103,9 @@ export function parseLinePrefix(
     state.currentListPath.length &&
     isInsideListPath(currentContainer, state.currentListPath.at(-1))
   ) {
-    rest = rest.slice(listContinuationPrefix(state.currentListPath.at(-1)).length);
+    rest = rest.slice(
+      listContinuationPrefix(state.currentListPath.at(-1)).length,
+    );
     continuedListIndent = true;
   }
 
@@ -113,8 +119,11 @@ export function parseLinePrefix(
       quoteDepth++;
       rest = quoteMatch[2];
       currentContainer =
-        getQuotedPrefixContainer(state, quoteBase ?? currentContainer, quoteDepth) ??
-        currentContainer;
+        getQuotedPrefixContainer(
+          state,
+          quoteBase ?? currentContainer,
+          quoteDepth,
+        ) ?? currentContainer;
       continue;
     }
 
@@ -123,10 +132,7 @@ export function parseLinePrefix(
       currentContainer,
       listDepth,
     );
-    if (
-      nextListItem &&
-      rest.startsWith(listContinuationPrefix(nextListItem))
-    ) {
+    if (nextListItem && rest.startsWith(listContinuationPrefix(nextListItem))) {
       prefixes.push('list');
       rest = rest.slice(listContinuationPrefix(nextListItem).length);
       currentContainer = nextListItem;
@@ -155,7 +161,11 @@ export function resolvePrefixContainers(
 
   for (const token of prefix.prefixes) {
     if (token === 'list') {
-      const next = nextListPathItem(state.currentListPath, container, listDepth);
+      const next = nextListPathItem(
+        state.currentListPath,
+        container,
+        listDepth,
+      );
       if (next) {
         container = next;
         listDepth++;
@@ -182,12 +192,14 @@ export function resolvePrefixContainers(
 export function parseQuotedListContinuation(
   state: BlockParseState,
   line: string,
-): {
-  container: ListItemViewModelNode;
-  content: string;
-  quoteBase: ViewModelNode;
-  quoteDepth: number;
-} | undefined {
+):
+  | {
+      container: ListItemViewModelNode;
+      content: string;
+      quoteBase: ViewModelNode;
+      quoteDepth: number;
+    }
+  | undefined {
   const deepestContainer = state.currentListPath.at(-1);
   if (!deepestContainer) return;
 
@@ -238,7 +250,11 @@ export function parseQuotedListContinuation(
   if (content.trim() === '') {
     return;
   }
-  if (state.currentCodeBlock && state.currentCodeFence && /^>\s?/.test(content)) {
+  if (
+    state.currentCodeBlock &&
+    state.currentCodeFence &&
+    /^>\s?/.test(content)
+  ) {
     return;
   }
   if (/^>\s*$/.test(content)) {

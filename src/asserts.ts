@@ -22,5 +22,5 @@ export function cast<T>(val: T): NonNullable<T> {
   if (val === null || val === undefined) {
     throw new Error(`cast failed: ${String(val)}`);
   }
-  return val as NonNullable<T>;
+  return val;
 }

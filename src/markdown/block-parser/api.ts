@@ -1,36 +1,33 @@
-import {type DocumentNode} from '../node.js';
-import {type ParserEdit, type ParserTree, createSyntaxNode, createTree} from '../parser-tree.js';
-import {MarkdownTree} from '../view-model.js';
-
+import { type DocumentNode } from '../node.js';
 import {
-  type BlockParseState,
-} from './types.js';
+  type ParserEdit,
+  type ParserTree,
+  createSyntaxNode,
+  createTree,
+} from '../parser-tree.js';
+import { MarkdownTree } from '../view-model.js';
+
 export {
   type BlockParser,
   type BlockParserSnapshot,
   type Tree,
 } from './types.js';
-import {
-  isDefined,
-  pathForNode,
-} from './utils.js';
+import { isDefined, pathForNode } from './utils.js';
 import {
   cleanupInactiveEmptyBlocks,
   removeEmptyRootParagraph,
 } from './cleanup.js';
-import {createInitialState, restoreState} from './state.js';
-import {parseLine, projectPendingLine, closeLeafBlocks} from './core.js';
-import {discardProjectedPendingLine} from './projected-state.js';
+import { createInitialState, restoreState } from './state.js';
+import { parseLine, projectPendingLine, closeLeafBlocks } from './core.js';
+import { discardProjectedPendingLine } from './projected-state.js';
 
-import type {BlockParser, BlockParserSnapshot} from './types.js';
+import type { BlockParser, BlockParserSnapshot } from './types.js';
 
-export function createBlockParser(
-  snapshot?: BlockParserSnapshot,
-): BlockParser {
+export function createBlockParser(snapshot?: BlockParserSnapshot): BlockParser {
   const tree = new MarkdownTree(
     snapshot?.root ?? {
       type: 'document',
-      children: [{type: 'paragraph', content: ''}],
+      children: [{ type: 'paragraph', content: '' }],
     },
   );
   const state = snapshot
@@ -51,37 +48,45 @@ export function createBlockParser(
       }
 
       pendingText += text;
-      tree.edit(() => {
-        discardProjectedPendingLine(state, projectedPending);
-        projectedPending = undefined;
+      tree.edit(
+        () => {
+          discardProjectedPendingLine(state, projectedPending);
+          projectedPending = undefined;
 
-        const lines = pendingText.split('\n');
-        pendingText = lines.pop() ?? '';
-        for (const line of lines) {
-          parseLine(state, line);
-        }
+          const lines = pendingText.split('\n');
+          pendingText = lines.pop() ?? '';
+          for (const line of lines) {
+            parseLine(state, line);
+          }
 
-        projectedPending = projectPendingLine(state, pendingText);
-        cleanupInactiveEmptyBlocks(state);
-        return {};
-      }, false, {preserveEmptyBlocks: true});
+          projectedPending = projectPendingLine(state, pendingText);
+          cleanupInactiveEmptyBlocks(state);
+          return {};
+        },
+        false,
+        { preserveEmptyBlocks: true },
+      );
       return tree;
     },
     finish() {
       if (finished) {
         return tree;
       }
-      tree.edit(() => {
-        discardProjectedPendingLine(state, projectedPending);
-        projectedPending = undefined;
-        if (pendingText !== '') {
-          parseLine(state, pendingText);
-          pendingText = '';
-        }
-        closeLeafBlocks(state);
-        removeEmptyRootParagraph(state);
-        return {};
-      }, false, {force: true});
+      tree.edit(
+        () => {
+          discardProjectedPendingLine(state, projectedPending);
+          projectedPending = undefined;
+          if (pendingText !== '') {
+            parseLine(state, pendingText);
+            pendingText = '';
+          }
+          closeLeafBlocks(state);
+          removeEmptyRootParagraph(state);
+          return {};
+        },
+        false,
+        { force: true },
+      );
       finished = true;
       return tree;
     },
@@ -128,7 +133,7 @@ export function parseBlocks(
   const blockTree = parser.finish();
   const node = blockTree.serialize() as DocumentNode;
   const rootTree = createTree(createSyntaxNode('document', markdown));
-  return {node, tree: keepTree ? rootTree : (rootTree.delete(), undefined)};
+  return { node, tree: keepTree ? rootTree : (rootTree.delete(), undefined) };
 }
 
 export function parseMarkdownTree(markdown: string): MarkdownTree {

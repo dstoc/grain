@@ -1,10 +1,10 @@
-import {LitElement, css, html} from 'lit';
+import { LitElement, css, html } from 'lit';
 
 import './markdown/block-render.js';
-import {createBlockParser} from './markdown/block-parser/api.js';
-import type {BlockParser} from './markdown/block-parser/api.js';
-import {serializeToString} from './markdown/block-serializer.js';
-import type {ViewModelNode} from './markdown/view-model-node.js';
+import { createBlockParser } from './markdown/block-parser/api.js';
+import type { BlockParser } from './markdown/block-parser/api.js';
+import { serializeToString } from './markdown/block-serializer.js';
+import type { ViewModelNode } from './markdown/view-model-node.js';
 
 const sample = `# Block Harness
 This is a minimal browser harness for block rendering.
@@ -26,10 +26,19 @@ class MarkdownDevHarness extends LitElement {
       min-height: 100vh;
       color: #111827;
       background:
-        radial-gradient(circle at top left, rgba(13, 148, 136, 0.12), transparent 28%),
+        radial-gradient(
+          circle at top left,
+          rgba(13, 148, 136, 0.12),
+          transparent 28%
+        ),
         linear-gradient(180deg, #fcfcf9 0%, #f3f4ef 100%);
-      font: 15px/1.5 "Iowan Old Style", "Palatino Linotype", "Book Antiqua",
-        Palatino, Georgia, serif;
+      font:
+        15px/1.5 'Iowan Old Style',
+        'Palatino Linotype',
+        'Book Antiqua',
+        Palatino,
+        Georgia,
+        serif;
     }
 
     .shell {
@@ -69,7 +78,11 @@ class MarkdownDevHarness extends LitElement {
       display: block;
       margin-bottom: 0.55rem;
       color: #0f766e;
-      font: 600 0.78rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font:
+        600 0.78rem/1.2 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
       letter-spacing: 0.08em;
       text-transform: uppercase;
     }
@@ -84,7 +97,11 @@ class MarkdownDevHarness extends LitElement {
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
       padding: 1rem 1.05rem;
       color: #111827;
-      font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font:
+        14px/1.55 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
     }
 
     textarea:focus {
@@ -127,7 +144,11 @@ class MarkdownDevHarness extends LitElement {
       background: transparent;
       color: #475569;
       padding: 0.5rem 0.9rem;
-      font: 600 0.84rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font:
+        600 0.84rem/1 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
       letter-spacing: 0.04em;
       cursor: pointer;
     }
@@ -145,7 +166,11 @@ class MarkdownDevHarness extends LitElement {
       white-space: pre-wrap;
       word-break: break-word;
       color: #0f172a;
-      font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font:
+        14px/1.55 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
     }
 
     .tree {
@@ -155,7 +180,11 @@ class MarkdownDevHarness extends LitElement {
       white-space: pre-wrap;
       word-break: break-word;
       color: #0f172a;
-      font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+      font:
+        13px/1.5 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
     }
 
     @media (max-width: 920px) {
@@ -175,24 +204,24 @@ class MarkdownDevHarness extends LitElement {
     }
   `;
   static override properties = {
-    root: {attribute: false},
-    source: {state: true},
-    pendingText: {state: true},
-    parseMode: {state: true},
-    renderVersion: {state: true},
-    activeTab: {state: true},
-    serializedMarkdown: {state: true},
-    treeJson: {state: true},
+    root: { attribute: false },
+    source: { state: true },
+    pendingText: { state: true },
+    parseMode: { state: true },
+    renderVersion: { state: true },
+    activeTab: { state: true },
+    serializedMarkdown: { state: true },
+    treeJson: { state: true },
   };
 
   declare root: ViewModelNode | undefined;
-  private declare source: string;
-  private declare pendingText: string;
-  private declare parseMode: string;
-  private declare renderVersion: number;
-  private declare activeTab: 'render' | 'serialize' | 'tree';
-  private declare serializedMarkdown: string;
-  private declare treeJson: string;
+  declare private source: string;
+  declare private pendingText: string;
+  declare private parseMode: string;
+  declare private renderVersion: number;
+  declare private activeTab: 'render' | 'serialize' | 'tree';
+  declare private serializedMarkdown: string;
+  declare private treeJson: string;
   private parser: BlockParser;
 
   constructor() {

@@ -1,19 +1,23 @@
-import {viewModel} from '../../view-model-node.js';
-import type {ViewModelNode} from '../../view-model-node.js';
+import { viewModel } from '../../view-model-node.js';
+import type { ViewModelNode } from '../../view-model-node.js';
 import {
   type BlockParseState,
   type ListItemViewModelNode,
-  type ParagraphViewModelNode,
   type SectionViewModelNode,
 } from '../types.js';
-import {ensureListContainer, buildListPath, syncQuoteStack, syncSectionStack} from '../container-management.js';
-import {removeEmptyRootParagraph as ensurePlaceholderRemoved} from '../cleanup.js';
-import {parseAtxHeading} from './sections.js';
-import {parseFenceStart, openCodeBlock} from './code-blocks.js';
+import {
+  ensureListContainer,
+  buildListPath,
+  syncQuoteStack,
+  syncSectionStack,
+} from '../container-management.js';
+import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
+import { parseAtxHeading } from './sections.js';
+import { parseFenceStart, openCodeBlock } from './code-blocks.js';
 
 export function parseListItem(
   line: string,
-): {marker: string; checked?: boolean; content: string} | undefined {
+): { marker: string; checked?: boolean; content: string } | undefined {
   const match = /^((?:[-+*]|\d+[.)]) )(\[(x| )\] )?(.*)$/.exec(line);
   if (!match) return;
   const checked = match[3] === 'x' ? true : match[2] ? false : undefined;
@@ -63,7 +67,7 @@ export function parseInitialContainerContent(
     const paragraph = state.tree.add({
       type: 'paragraph',
       content: '',
-    }) as ParagraphViewModelNode;
+    });
     paragraph[viewModel].insertBefore(parent);
     state.currentParagraph = paragraph;
     return;
@@ -73,7 +77,7 @@ export function parseInitialContainerContent(
     const paragraph = state.tree.add({
       type: 'paragraph',
       content: '',
-    }) as ParagraphViewModelNode;
+    });
     paragraph[viewModel].insertBefore(parent);
     state.currentParagraph = paragraph;
     return;
@@ -123,7 +127,7 @@ export function parseInitialContainerContent(
   const paragraph = state.tree.add({
     type: 'paragraph',
     content,
-  }) as ParagraphViewModelNode;
+  });
   paragraph[viewModel].insertBefore(parent);
   state.currentParagraph = paragraph;
 }
