@@ -744,6 +744,16 @@ function parseInitialContainerContent(
   parent: ViewModelNode,
   content: string,
 ) {
+  if (content.trim() === '<!-- -->') {
+    const paragraph = state.tree.add({
+      type: 'paragraph',
+      content: '',
+    }) as ParagraphViewModelNode;
+    paragraph[viewModel].insertBefore(parent);
+    state.currentParagraph = paragraph;
+    return;
+  }
+
   if (content === '') {
     const paragraph = state.tree.add({
       type: 'paragraph',
@@ -818,6 +828,12 @@ function parseResolvedContainerContent(
   container: ViewModelNode,
   content: string,
 ) {
+  if (content.trim() === '<!-- -->') {
+    closeLeafBlocks(state);
+    appendParagraphLine(state, container, '');
+    return;
+  }
+
   if (state.currentCodeBlock && state.currentCodeFence) {
     if (isClosingFence(content, state.currentCodeFence)) {
       closeCodeBlock(state);

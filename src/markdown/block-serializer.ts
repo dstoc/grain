@@ -42,6 +42,7 @@ type Indents = Generator<string, string, unknown>[];
 
 function separator(prev: MarkdownNode, next: MarkdownNode): string {
   if (next.type === 'list-item') return '';
+  if (prev.type === 'paragraph' && prev.content === '') return '\n';
   if (prev.type === 'paragraph' && next.type === 'list') return '';
   return '\n';
 }
@@ -150,7 +151,11 @@ function serialize(
     case 'paragraph':
       indent();
       if (shouldSerializeNodeContent) {
-        writeIndentedText(node.content);
+        if (node.content === '') {
+          result.push('<!-- -->');
+        } else {
+          writeIndentedText(node.content);
+        }
       }
       result.push('\n');
       break;

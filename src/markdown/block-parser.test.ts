@@ -716,6 +716,101 @@ describe('parseBlocks', () => {
     });
   });
 
+  it('parses html comment sentinel as an empty paragraph', () => {
+    const {node} = parseBlocks('<!-- -->\n');
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'paragraph',
+          content: '',
+        },
+      ],
+    });
+  });
+
+  it('roundtrips separate lists through empty paragraph sentinels', () => {
+    const source = '* list 1\n\n<!-- -->\n\n* list 2\n';
+    const {node} = parseBlocks(source);
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'paragraph',
+                  content: 'list 1',
+                },
+              ],
+            },
+          ],
+        },
+        {
+          type: 'paragraph',
+          content: '',
+        },
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'paragraph',
+                  content: 'list 2',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(serializeToString(node)).toBe(source);
+  });
+
+  it('roundtrips separate quotes through empty paragraph sentinels', () => {
+    const source = '> quote 1\n\n<!-- -->\n\n> quote 2\n';
+    const {node} = parseBlocks(source);
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [
+            {
+              type: 'paragraph',
+              content: 'quote 1',
+            },
+          ],
+        },
+        {
+          type: 'paragraph',
+          content: '',
+        },
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [
+            {
+              type: 'paragraph',
+              content: 'quote 2',
+            },
+          ],
+        },
+      ],
+    });
+    expect(serializeToString(node)).toBe(source);
+  });
+
   it('keeps a fenced code block inside a doubly quoted list item after a blank separator', () => {
     const source = '> > - list para 1\n> >   \n> >   ```ts\n> >   body\n> >   ```\n';
     const {node} = parseBlocks(source);
