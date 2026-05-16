@@ -240,10 +240,8 @@ function augmentationPermutations(chain: ChainToken[]): Augmentation[][] {
 
   for (let i = 0; i < chain.length; i++) {
     const token = chain[i];
-    if (token !== 'quote') {
-      singles.push({kind: 'container-block', depth: i, position: 'before'});
-      singles.push({kind: 'container-block', depth: i, position: 'after'});
-    }
+    singles.push({kind: 'container-block', depth: i, position: 'before'});
+    singles.push({kind: 'container-block', depth: i, position: 'after'});
     if (token === 'bullet' || token === 'ordered') {
       singles.push({kind: 'list-sibling-item', depth: i, position: 'before'});
       singles.push({kind: 'list-sibling-item', depth: i, position: 'after'});

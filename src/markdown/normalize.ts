@@ -144,6 +144,15 @@ export function normalizeTree(
         next[viewModel].remove();
       }
     }
+    if (node.type === 'block-quote') {
+      while (node[viewModel].nextSibling?.type === 'block-quote') {
+        const next = node[viewModel].nextSibling;
+        while (next[viewModel].firstChild) {
+          next[viewModel].firstChild[viewModel].insertBefore(node);
+        }
+        next[viewModel].remove();
+      }
+    }
     if (node.type === 'list-item') {
       // Ensure checked is not set, rather than set to undefined
       // since it could serialize as null.

@@ -644,6 +644,121 @@ describe('parseBlocks', () => {
     });
   });
 
+  it('keeps a second paragraph inside a doubly quoted list item', () => {
+    const source = '> > - list para 1\n> >   para continue\n> >   \n> >   list para 2\n';
+    const {node} = parseBlocks(source);
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [
+            {
+              type: 'block-quote',
+              marker: '> ',
+              children: [
+                {
+                  type: 'list',
+                  children: [
+                    {
+                      type: 'list-item',
+                      marker: '- ',
+                      checked: undefined,
+                      children: [
+                        {
+                          type: 'paragraph',
+                          content: 'list para 1\npara continue',
+                        },
+                        {
+                          type: 'paragraph',
+                          content: 'list para 2',
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('keeps sibling paragraphs inside a doubly quoted block quote', () => {
+    const source = '> > before\n> > \n> > after\n';
+    const {node} = parseBlocks(source);
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [
+            {
+              type: 'block-quote',
+              marker: '> ',
+              children: [
+                {
+                  type: 'paragraph',
+                  content: 'before',
+                },
+                {
+                  type: 'paragraph',
+                  content: 'after',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('keeps a fenced code block inside a doubly quoted list item after a blank separator', () => {
+    const source = '> > - list para 1\n> >   \n> >   ```ts\n> >   body\n> >   ```\n';
+    const {node} = parseBlocks(source);
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [
+            {
+              type: 'block-quote',
+              marker: '> ',
+              children: [
+                {
+                  type: 'list',
+                  children: [
+                    {
+                      type: 'list-item',
+                      marker: '- ',
+                      checked: undefined,
+                      children: [
+                        {
+                          type: 'paragraph',
+                          content: 'list para 1',
+                        },
+                        {
+                          type: 'code-block',
+                          info: 'ts',
+                          content: 'body',
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   it('matches full parse when appending list continuation one character at a time', () => {
     expectCharByCharAppendMatchesFullParse('* list\n  continue\n');
   });

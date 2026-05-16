@@ -235,6 +235,30 @@ function restoreState(
 }
 
 function parseLine(state: BlockParseState, line: string) {
+  const quotedListContinuation = parseQuotedListContinuation(state, line);
+  if (quotedListContinuation) {
+    syncQuoteStack(
+      state,
+      quotedListContinuation.quoteBase,
+      quotedListContinuation.quoteDepth,
+    );
+    state.currentListPath = [quotedListContinuation.container];
+    state.currentList =
+      quotedListContinuation.container[viewModel].parent?.type === 'list'
+        ? (quotedListContinuation.container[viewModel].parent as ListViewModelNode)
+        : undefined;
+    if (quotedListContinuation.content === '') {
+      closeParagraph(state);
+      return;
+    }
+    parseResolvedContainerContent(
+      state,
+      quotedListContinuation.container,
+      quotedListContinuation.content,
+    );
+    return;
+  }
+
   const blankPrefix = parseBlankLinePrefix(state, line);
   if (blankPrefix) {
     closeParagraph(state);
@@ -258,55 +282,7 @@ function parseLine(state: BlockParseState, line: string) {
   }
   state.currentListPath = state.currentListPath.slice(0, prefix.listDepth);
   const container = resolvePrefixContainers(state, prefix);
-  const unquotedContent = prefix.content;
-
-  if (state.currentCodeBlock && state.currentCodeFence) {
-    if (isClosingFence(unquotedContent, state.currentCodeFence)) {
-      closeCodeBlock(state);
-    } else {
-      appendCodeBlockLine(state, unquotedContent);
-    }
-    return;
-  }
-
-  if (tryPromoteSetextHeading(state, unquotedContent, container)) {
-    return;
-  }
-
-  const atxHeading = parseAtxHeading(unquotedContent);
-  if (atxHeading) {
-    closeLeafBlocks(state);
-    openSection(state, atxHeading.level, atxHeading.content);
-    return;
-  }
-
-  const listItem = parseListItem(unquotedContent);
-  if (listItem) {
-    closeParagraph(state);
-    appendListItem(
-      state,
-      container,
-      listItem.marker,
-      listItem.checked,
-      listItem.content,
-    );
-    return;
-  }
-
-  const fence = parseFenceStart(unquotedContent);
-  if (fence) {
-    closeParagraph(state);
-    closeList(state);
-    openCodeBlock(state, container, fence.marker, fence.info);
-    return;
-  }
-
-  if (canContinueListParagraph(state, container, unquotedContent)) {
-    appendParagraphLine(state, container, unquotedContent);
-    return;
-  }
-  closeList(state);
-  appendParagraphLine(state, container, unquotedContent);
+  parseResolvedContainerContent(state, container, prefix.content);
 }
 
 function projectPendingLine(
@@ -837,6 +813,68 @@ function parseFenceStart(line: string): {marker: string; info: string | null} | 
   };
 }
 
+function parseResolvedContainerContent(
+  state: BlockParseState,
+  container: ViewModelNode,
+  content: string,
+) {
+  if (state.currentCodeBlock && state.currentCodeFence) {
+    if (isClosingFence(content, state.currentCodeFence)) {
+      closeCodeBlock(state);
+    } else {
+      appendCodeBlockLine(state, content);
+    }
+    return;
+  }
+
+  if (tryPromoteSetextHeading(state, content, container)) {
+    return;
+  }
+
+  const atxHeading = parseAtxHeading(content);
+  if (atxHeading) {
+    closeLeafBlocks(state);
+    openSection(state, atxHeading.level, atxHeading.content);
+    return;
+  }
+
+  const quoteMatch = /^(>\s?)(.*)$/.exec(content);
+  if (quoteMatch) {
+    closeParagraph(state);
+    const quote = syncQuoteStack(state, container, 1);
+    parseResolvedContainerContent(state, quote, quoteMatch[2]);
+    return;
+  }
+
+  const listItem = parseListItem(content);
+  if (listItem) {
+    closeParagraph(state);
+    appendListItem(
+      state,
+      container,
+      listItem.marker,
+      listItem.checked,
+      listItem.content,
+    );
+    return;
+  }
+
+  const fence = parseFenceStart(content);
+  if (fence) {
+    closeParagraph(state);
+    closeList(state);
+    openCodeBlock(state, container, fence.marker, fence.info);
+    return;
+  }
+
+  if (canContinueListParagraph(state, container, content)) {
+    appendParagraphLine(state, container, content);
+    return;
+  }
+  closeList(state);
+  appendParagraphLine(state, container, content);
+}
+
 function openCodeBlock(
   state: BlockParseState,
   parent: ViewModelNode,
@@ -1288,6 +1326,74 @@ function buildListPath(
     }
   }
   return [item];
+}
+
+function parseQuotedListContinuation(
+  state: BlockParseState,
+  line: string,
+): {
+  container: ListItemViewModelNode;
+  content: string;
+  quoteBase: ViewModelNode;
+  quoteDepth: number;
+} | undefined {
+  if (state.currentCodeBlock && state.currentCodeFence) {
+    return;
+  }
+
+  const container = state.currentListPath.at(-1);
+  if (!container) return;
+
+  const quoteContext = quoteContextForNode(container);
+  if (!quoteContext || quoteContext.quoteDepth === 0) return;
+
+  let rest = line;
+  for (let depth = 0; depth < quoteContext.quoteDepth; depth++) {
+    const quoteMatch = /^(>\s?)(.*)$/.exec(rest);
+    if (!quoteMatch) {
+      return;
+    }
+    rest = quoteMatch[2];
+  }
+
+  const continuation = listContinuationPrefix(container);
+  if (!rest.startsWith(continuation)) {
+    return;
+  }
+
+  return {
+    container,
+    content: rest.slice(continuation.length),
+    quoteBase: quoteContext.quoteBase,
+    quoteDepth: quoteContext.quoteDepth,
+  };
+}
+
+function quoteContextForNode(
+  node: ViewModelNode,
+): {quoteBase: ViewModelNode; quoteDepth: number} | undefined {
+  const quotes: BlockQuoteViewModelNode[] = [];
+  let current: ViewModelNode | undefined = node[viewModel].parent;
+  let quoteBase: ViewModelNode | undefined;
+
+  while (current) {
+    if (current.type === 'block-quote') {
+      quotes.push(current);
+    } else if (quotes.length) {
+      quoteBase = current;
+      break;
+    }
+    current = current[viewModel].parent;
+  }
+
+  if (!quoteBase || quotes.length === 0) {
+    return;
+  }
+
+  return {
+    quoteBase,
+    quoteDepth: quotes.length,
+  };
 }
 
 function syncSectionStack(state: BlockParseState, parent: ViewModelNode) {
