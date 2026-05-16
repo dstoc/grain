@@ -7,10 +7,34 @@ import {MarkdownTree} from './view-model.js';
 
 type ChainToken = 'section' | 'quote' | 'bullet' | 'ordered';
 type LeafToken = 'paragraph' | 'code-block';
+type SiblingKind =
+  | 'paragraph'
+  | 'empty-paragraph'
+  | 'quote'
+  | 'bullet'
+  | 'ordered'
+  | 'code-block';
 type Augmentation =
-  | {kind: 'root-block'; position: 'before' | 'after'}
-  | {kind: 'container-block'; depth: number; position: 'before' | 'after'}
-  | {kind: 'list-sibling-item'; depth: number; position: 'before' | 'after'};
+  | {kind: 'root-block'; position: 'before' | 'after'; sibling: SiblingKind}
+  | {
+      kind: 'container-block';
+      depth: number;
+      position: 'before' | 'after';
+      sibling: SiblingKind;
+    }
+  | {
+      kind: 'list-sibling-item';
+      depth: number;
+      position: 'before' | 'after';
+      sibling: SiblingKind;
+    };
+
+const RUN_EXTENSIVE =
+  (
+    globalThis as {
+      process?: {env?: Record<string, string | undefined>};
+    }
+  ).process?.env?.MARKDOWN_EXTENSIVE_TESTS === '1';
 
 interface GeneratedCase {
   chain: ChainToken[];
@@ -18,6 +42,10 @@ interface GeneratedCase {
   augmentations: Augmentation[];
   expected: DocumentNode;
   markdown: string;
+}
+
+interface NamedGeneratedCase extends GeneratedCase {
+  name: string;
 }
 
 function buildRoundtripDocument(
@@ -101,13 +129,61 @@ function siblingParagraph(label: string): MarkdownNode {
   };
 }
 
+function buildSiblingNode(kind: SiblingKind, label: string): MarkdownNode {
+  switch (kind) {
+    case 'paragraph':
+      return siblingParagraph(label);
+    case 'empty-paragraph':
+      return {type: 'paragraph', content: ''};
+    case 'quote':
+      return {
+        type: 'block-quote',
+        marker: '> ',
+        children: [siblingParagraph(label)],
+      };
+    case 'bullet':
+      return {
+        type: 'list',
+        children: [
+          {
+            type: 'list-item',
+            marker: '- ',
+            checked: undefined,
+            children: [siblingParagraph(label)],
+          },
+        ],
+      };
+    case 'ordered':
+      return {
+        type: 'list',
+        children: [
+          {
+            type: 'list-item',
+            marker: '1. ',
+            checked: undefined,
+            children: [siblingParagraph(label)],
+          },
+        ],
+      };
+    case 'code-block':
+      return {
+        type: 'code-block',
+        info: 'ts',
+        content: label,
+      };
+  }
+}
+
 function withRootBlockAugmentations(
   children: MarkdownNode[],
   augmentations: Augmentation[],
 ) {
   return applyBlockAugmentations(children, augmentations, (augmentation) =>
     augmentation.kind === 'root-block'
-      ? siblingParagraph(`root ${augmentation.position}`)
+      ? buildSiblingNode(
+          augmentation.sibling,
+          `root ${augmentation.position} ${augmentation.sibling}`,
+        )
       : undefined,
   );
 }
@@ -119,7 +195,10 @@ function withContainerBlockAugmentations(
 ) {
   return applyBlockAugmentations(children, augmentations, (augmentation) =>
     augmentation.kind === 'container-block' && augmentation.depth === depth
-      ? siblingParagraph(`container ${depth} ${augmentation.position}`)
+      ? buildSiblingNode(
+          augmentation.sibling,
+          `container ${depth} ${augmentation.position} ${augmentation.sibling}`,
+        )
       : undefined,
   );
 }
@@ -135,7 +214,12 @@ function withListSiblingItemAugmentations(
           type: 'list-item',
           marker: '- ',
           checked: undefined,
-          children: [siblingParagraph(`list ${depth} ${augmentation.position}`)],
+          children: [
+            buildSiblingNode(
+              augmentation.sibling,
+              `list ${depth} ${augmentation.position} ${augmentation.sibling}`,
+            ),
+          ],
         }
       : undefined,
   );
@@ -213,9 +297,20 @@ function supportsGeneratedAugmentations(
 ): boolean {
   for (const augmentation of augmentations) {
     if (augmentation.kind === 'root-block') {
+      if (augmentation.sibling === 'empty-paragraph') {
+        return false;
+      }
       continue;
     }
     if (chain.slice(0, augmentation.depth + 1).includes('quote')) {
+      return false;
+    }
+    if (
+      augmentation.sibling === 'empty-paragraph' &&
+      chain
+        .slice(0, augmentation.depth + 1)
+        .some((token) => token === 'section' || token === 'quote')
+    ) {
       return false;
     }
   }
@@ -233,18 +328,61 @@ function isCanonicalGeneratedDocument(doc: DocumentNode): boolean {
 }
 
 function augmentationPermutations(chain: ChainToken[]): Augmentation[][] {
-  const singles: Augmentation[] = [
-    {kind: 'root-block', position: 'before'},
-    {kind: 'root-block', position: 'after'},
+  return augmentationPermutationsForMode(chain, RUN_EXTENSIVE);
+}
+
+function augmentationPermutationsForMode(
+  chain: ChainToken[],
+  extensive: boolean,
+): Augmentation[][] {
+  const simpleSiblingKinds: SiblingKind[] = ['paragraph'];
+  const extensiveSiblingKinds: SiblingKind[] = [
+    'paragraph',
+    'empty-paragraph',
+    'quote',
+    'bullet',
+    'ordered',
+    'code-block',
   ];
+  const siblingKinds = extensive ? extensiveSiblingKinds : simpleSiblingKinds;
+  const singles: Augmentation[] = [];
+
+  for (const sibling of siblingKinds) {
+    singles.push({kind: 'root-block', position: 'before', sibling});
+    singles.push({kind: 'root-block', position: 'after', sibling});
+  }
 
   for (let i = 0; i < chain.length; i++) {
     const token = chain[i];
-    singles.push({kind: 'container-block', depth: i, position: 'before'});
-    singles.push({kind: 'container-block', depth: i, position: 'after'});
+    for (const sibling of siblingKinds) {
+      singles.push({
+        kind: 'container-block',
+        depth: i,
+        position: 'before',
+        sibling,
+      });
+      singles.push({
+        kind: 'container-block',
+        depth: i,
+        position: 'after',
+        sibling,
+      });
+    }
     if (token === 'bullet' || token === 'ordered') {
-      singles.push({kind: 'list-sibling-item', depth: i, position: 'before'});
-      singles.push({kind: 'list-sibling-item', depth: i, position: 'after'});
+      for (const sibling of siblingKinds) {
+        singles.push({
+          kind: 'list-sibling-item',
+          depth: i,
+          position: 'before',
+          sibling,
+        });
+        singles.push({
+          kind: 'list-sibling-item',
+          depth: i,
+          position: 'after',
+          sibling,
+        });
+      }
     }
   }
 
@@ -253,27 +391,42 @@ function augmentationPermutations(chain: ChainToken[]): Augmentation[][] {
     results.push([augmentation]);
   }
 
-  const rootBefore = singles.find(
-    (augmentation) =>
-      augmentation.kind === 'root-block' && augmentation.position === 'before',
-  );
-  const deepestContainerAfter = [...singles]
-    .reverse()
-    .find(
+  if (extensive) {
+    for (let i = 0; i < singles.length; i++) {
+      for (let j = i + 1; j < singles.length; j++) {
+        results.push([singles[i], singles[j]]);
+      }
+    }
+  } else {
+    const rootBefore = singles.find(
       (augmentation) =>
-        augmentation.kind === 'container-block' &&
-        augmentation.position === 'after',
+        augmentation.kind === 'root-block' &&
+        augmentation.position === 'before' &&
+        augmentation.sibling === 'paragraph',
     );
-  if (rootBefore && deepestContainerAfter) {
-    results.push([rootBefore, deepestContainerAfter]);
+    const deepestContainerAfter = [...singles]
+      .reverse()
+      .find(
+        (augmentation) =>
+          augmentation.kind === 'container-block' &&
+          augmentation.position === 'after' &&
+          augmentation.sibling === 'paragraph',
+      );
+    if (rootBefore && deepestContainerAfter) {
+      results.push([rootBefore, deepestContainerAfter]);
+    }
   }
 
   return results;
 }
 
 function generatedCanonicalCases() {
+  return generatedCanonicalCasesForMode(RUN_EXTENSIVE);
+}
+
+function generatedCanonicalCasesForMode(extensive: boolean): NamedGeneratedCase[] {
   const seenMarkdown = new Set<string>();
-  const cases: GeneratedCase[] = [];
+  const cases: NamedGeneratedCase[] = [];
   const chains = [
     ...chainPermutations(2),
     ...chainPermutations(3),
@@ -282,7 +435,10 @@ function generatedCanonicalCases() {
 
   for (const chain of chains) {
     for (const leaf of leaves) {
-      for (const augmentations of augmentationPermutations(chain)) {
+      for (const augmentations of augmentationPermutationsForMode(
+        chain,
+        extensive,
+      )) {
         if (!supportsGeneratedRoundtrip(chain, leaf, augmentations)) {
           continue;
         }
@@ -296,7 +452,14 @@ function generatedCanonicalCases() {
           continue;
         }
         seenMarkdown.add(markdown);
-        cases.push({chain, leaf, augmentations, expected, markdown});
+        cases.push({
+          name: generatedCaseName(chain, leaf, augmentations),
+          chain,
+          leaf,
+          augmentations,
+          expected,
+          markdown,
+        });
       }
     }
   }
@@ -304,16 +467,40 @@ function generatedCanonicalCases() {
   return cases;
 }
 
+function generatedCaseName(
+  chain: ChainToken[],
+  leaf: LeafToken,
+  augmentations: Augmentation[],
+): string {
+  const chainPart = chain.length ? chain.join(' > ') : 'root';
+  const augmentationPart =
+    augmentations.length === 0
+      ? 'no-augmentations'
+      : augmentations.map(describeAugmentation).join(' + ');
+  return `${leaf} | ${chainPart} | ${augmentationPart}`;
+}
+
+function describeAugmentation(augmentation: Augmentation): string {
+  switch (augmentation.kind) {
+    case 'root-block':
+      return `root-${augmentation.position}-${augmentation.sibling}`;
+    case 'container-block':
+      return `container-${augmentation.depth}-${augmentation.position}-${augmentation.sibling}`;
+    case 'list-sibling-item':
+      return `list-${augmentation.depth}-${augmentation.position}-${augmentation.sibling}`;
+  }
+}
+
 describe('block parser generated permutations', () => {
   it('roundtrips generated nested and sibling-bearing permutations through serialize and parse', () => {
-    for (const {expected, markdown} of generatedCanonicalCases()) {
+    for (const {expected, markdown} of generatedCanonicalCasesForMode(false)) {
         const reparsed = parseBlocks(markdown).node;
         expect(reparsed).toEqual(expected);
     }
   });
 
   it('matches full parse for generated paragraph nested and sibling-bearing permutations under char-by-char append', () => {
-    for (const {chain, leaf, expected, markdown} of generatedCanonicalCases()) {
+    for (const {chain, leaf, expected, markdown} of generatedCanonicalCasesForMode(false)) {
       if (leaf !== 'paragraph' || !supportsGeneratedIncremental(chain)) {
         continue;
       }
@@ -326,7 +513,7 @@ describe('block parser generated permutations', () => {
   });
 
   it('matches full parse for generated code-block nested and sibling-bearing permutations under char-by-char append', () => {
-    for (const {chain, leaf, expected, markdown} of generatedCanonicalCases()) {
+    for (const {chain, leaf, expected, markdown} of generatedCanonicalCasesForMode(false)) {
       if (leaf !== 'code-block' || !supportsGeneratedIncremental(chain)) {
         continue;
       }
@@ -338,3 +525,40 @@ describe('block parser generated permutations', () => {
     }
   });
 });
+
+if (RUN_EXTENSIVE) {
+  describe('block parser extensive generated permutations', () => {
+    const extensiveCases = generatedCanonicalCasesForMode(true);
+    const namedExtensiveCases = extensiveCases.map((testCase) => [
+      testCase.name,
+      testCase,
+    ] as const);
+
+    it.each(namedExtensiveCases)(
+      'roundtrips %s through serialize and parse',
+      (_name, {expected, markdown}) => {
+        const reparsed = parseBlocks(markdown).node;
+        expect(reparsed).toEqual(expected);
+      },
+    );
+
+    const extensiveParagraphCases = extensiveCases.filter(
+      ({chain, leaf}) =>
+        leaf === 'paragraph' && supportsGeneratedIncremental(chain),
+    );
+    const namedExtensiveParagraphCases = extensiveParagraphCases.map(
+      (testCase) => [testCase.name, testCase] as const,
+    );
+
+    it.each(namedExtensiveParagraphCases)(
+      'matches char-by-char append parity for %s',
+      (_name, {expected, markdown}) => {
+        const parser = createBlockParser();
+        for (const char of markdown) {
+          parser.push(char);
+        }
+        expect(parser.finish().serialize()).toEqual(expected);
+      },
+    );
+  });
+}

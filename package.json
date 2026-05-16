@@ -8,7 +8,8 @@
     "build:web": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:extensive": "MARKDOWN_EXTENSIVE_TESTS=1 vitest run src/markdown/block-parser.permutations.test.ts"
   },
   "devDependencies": {
     "typescript": "^6.0.3",
