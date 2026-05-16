@@ -890,6 +890,70 @@ describe('parseBlocks', () => {
     });
   });
 
+  it('continues a paragraph under a list-item section across multiple indented lines', () => {
+    const {node} = parseBlocks('* # section\n  para\n  continue\n');
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'section',
+                  marker: '#',
+                  content: 'section',
+                  children: [
+                    {
+                      type: 'paragraph',
+                      content: 'para\ncontinue',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('continues a paragraph under a list-item section without a trailing newline', () => {
+    const {node} = parseBlocks('* # section\n  para\n  continue');
+    expect(node).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'section',
+                  marker: '#',
+                  content: 'section',
+                  children: [
+                    {
+                      type: 'paragraph',
+                      content: 'para\ncontinue',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
   it('parses a same-line quote marker in a list item as a block quote', () => {
     const {node} = parseBlocks('* > quote\n');
     expect(node).toEqual({
@@ -1183,6 +1247,246 @@ describe('parseBlocks', () => {
 
   it('matches full parse when appending a list-item section one character at a time', () => {
     expectCharByCharAppendMatchesFullParse('* # section\n  content\n');
+  });
+
+  it('matches full parse when appending a multi-line list-item section paragraph one character at a time', () => {
+    expectCharByCharAppendMatchesFullParse('* # section\n  para\n  continue\n');
+  });
+
+  it('matches full parse when appending a multi-line list-item section paragraph one character at a time without a trailing newline', () => {
+    expectCharByCharAppendMatchesFullParse('* # section\n  para\n  continue');
+  });
+
+  it('projects a list-item section paragraph continuation without a trailing newline', () => {
+    const parser = createBlockParser();
+    parser.push('* # section\n  para');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'section',
+                  marker: '#',
+                  content: 'section',
+                  children: [
+                    {
+                      type: 'paragraph',
+                      content: 'para',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('projects a plain list-item paragraph continuation without a trailing newline', () => {
+    const parser = createBlockParser();
+    parser.push('* item\n  cont');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'paragraph',
+                  content: 'item\ncont',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('projects a quoted list-item paragraph continuation without a trailing newline', () => {
+    const parser = createBlockParser();
+    parser.push('> * item\n>   cont');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [
+            {
+              type: 'list',
+              children: [
+                {
+                  type: 'list-item',
+                  marker: '* ',
+                  checked: undefined,
+                  children: [
+                    {
+                      type: 'paragraph',
+                      content: 'item\ncont',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('projects a nested list-item paragraph continuation without a trailing newline', () => {
+    const parser = createBlockParser();
+    parser.push('* outer\n  * inner\n    cont');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'paragraph',
+                  content: 'outer',
+                },
+                {
+                  type: 'list',
+                  children: [
+                    {
+                      type: 'list-item',
+                      marker: '* ',
+                      checked: undefined,
+                      children: [
+                        {
+                          type: 'paragraph',
+                          content: 'inner\ncont',
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('projects a quoted list-item section paragraph continuation without a trailing newline', () => {
+    const parser = createBlockParser();
+    parser.push('> * # section\n>   para');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [
+            {
+              type: 'list',
+              children: [
+                {
+                  type: 'list-item',
+                  marker: '* ',
+                  checked: undefined,
+                  children: [
+                    {
+                      type: 'section',
+                      marker: '#',
+                      content: 'section',
+                      children: [
+                        {
+                          type: 'paragraph',
+                          content: 'para',
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('projects a fenced code block continuation inside a list item without a trailing newline', () => {
+    const parser = createBlockParser();
+    parser.push('* ```\n  body');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'code-block',
+                  info: null,
+                  content: 'body',
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('projects a fenced code block continuation inside a quoted list item without a trailing newline', () => {
+    const parser = createBlockParser();
+    parser.push('> * ```\n>   body');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [
+            {
+              type: 'list',
+              children: [
+                {
+                  type: 'list-item',
+                  marker: '* ',
+                  checked: undefined,
+                  children: [
+                    {
+                      type: 'code-block',
+                      info: null,
+                      content: 'body',
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
   });
 
   it('matches full parse when appending a quoted list item one character at a time', () => {

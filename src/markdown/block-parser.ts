@@ -280,7 +280,11 @@ function parseLine(state: BlockParseState, line: string) {
   ) {
     exitDetachedContainerContexts(state);
   }
-  state.currentListPath = state.currentListPath.slice(0, prefix.listDepth);
+  if (prefix.continuedListIndent) {
+    state.currentListPath = [...state.currentListPath];
+  } else {
+    state.currentListPath = state.currentListPath.slice(0, prefix.listDepth);
+  }
   const container = resolvePrefixContainers(state, prefix);
   parseResolvedContainerContent(state, container, prefix.content);
 }
@@ -304,6 +308,26 @@ function projectPendingLine(
     return {kind: 'code-block', text: appendCodeBlockLine(state, prefix.content)};
   }
 
+  const quotedListContinuation = parseQuotedListContinuation(state, line);
+  if (quotedListContinuation) {
+    syncQuoteStack(
+      state,
+      quotedListContinuation.quoteBase,
+      quotedListContinuation.quoteDepth,
+    );
+    state.currentListPath = [quotedListContinuation.container];
+    state.currentList =
+      quotedListContinuation.container[viewModel].parent?.type === 'list'
+        ? (quotedListContinuation.container[viewModel].parent as ListViewModelNode)
+        : undefined;
+    return projectPendingResolvedContent(
+      state,
+      quotedListContinuation.container,
+      quotedListContinuation.content,
+      line,
+    );
+  }
+
   const prefix = parseLinePrefix(state, line);
   if (shouldWaitForPendingPrefixResolution(state, line, prefix)) {
     return;
@@ -322,14 +346,29 @@ function projectPendingLine(
   ) {
     exitDetachedContainerContexts(state);
   }
+  if (prefix.continuedListIndent) {
+    state.currentListPath = [...state.currentListPath];
+  }
   const container = resolvePrefixContainers(state, prefix);
-  const atxHeading = parseAtxHeading(prefix.content);
+  return projectPendingResolvedContent(state, container, prefix.content, line);
+}
+
+function projectPendingResolvedContent(
+  state: BlockParseState,
+  container: ViewModelNode,
+  content: string,
+  line: string,
+): ProjectedPendingState | undefined {
+  if (content === '') {
+    return;
+  }
+  const atxHeading = parseAtxHeading(content);
   if (atxHeading) {
     projectPendingSectionText(state, container, atxHeading.level, atxHeading.content);
     return {kind: 'section', text: line};
   }
 
-  const listItem = parseListItem(prefix.content);
+  const listItem = parseListItem(content);
   if (listItem) {
     projectPendingListItem(
       state,
@@ -338,21 +377,21 @@ function projectPendingLine(
       listItem.checked,
       listItem.content,
     );
-    return {kind: 'list-item', text: prefix.content};
+    return {kind: 'list-item', text: content};
   }
 
-  const fence = parseFenceStart(prefix.content);
+  const fence = parseFenceStart(content);
   if (fence) {
     projectPendingCodeBlockOpen(state, container, fence.marker, fence.info);
-    return {kind: 'code-block-open', text: prefix.content};
+    return {kind: 'code-block-open', text: content};
   }
 
-  if (!canProjectPendingParagraph(prefix.content)) {
+  if (!canProjectPendingParagraph(content)) {
     return;
   }
   return {
     kind: 'paragraph',
-    text: appendPendingParagraphText(state, container, prefix.content),
+    text: appendPendingParagraphText(state, container, content),
   };
 }
 
@@ -548,6 +587,9 @@ function shouldWaitForPendingPrefixResolution(
   line: string,
   prefix: LinePrefixResult,
 ): boolean {
+  if (prefix.continuedListIndent) {
+    return false;
+  }
   if (parseListItem(prefix.content)) {
     return false;
   }
