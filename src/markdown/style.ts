@@ -92,6 +92,11 @@ export const styles = [
       --md-section-gutter-color: initial;
       --md-section-nested-gutter: initial;
     }
+    md-block[type='section']:focus-within:not(
+        :has(:is(md-block[type='section'], md-transclusion):focus-within)
+      ) {
+      --md-section-gutter-color: var(--md-active-block-color);
+    }
     md-block[type='section'] > md-block[type='section'] {
       --md-section-nested-gutter: -18px;
     }
@@ -116,7 +121,9 @@ export const styles = [
       background: var(--md-block-selection-bgcolor);
       caret-color: transparent;
     }
-    md-block:not(:has(md-inline:not([selected]))) {
+    md-block:not(
+        :has(md-inline:not([selected]), md-transclusion:not([selected]))
+      ) {
       --md-accent-color: currentcolor;
       --md-active-block-color: var(--md-block-selection-bgcolor);
       --md-block-quote-bgcolor: var(--md-block-selection-bgcolor);

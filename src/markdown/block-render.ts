@@ -1,5 +1,5 @@
 import { consume, provide } from '@lit/context';
-import { html, LitElement } from 'lit';
+import { html, LitElement, render } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 
@@ -10,6 +10,8 @@ import { isInlineNode } from './node.js';
 import { styles } from './style.js';
 import type { InlineViewModelNode, ViewModelNode } from './view-model-node.js';
 import { viewModel } from './view-model-node.js';
+import './transclusion.js';
+import './block-ui.js';
 
 @customElement('md-block')
 export class MarkdownBlock extends LitElement implements SigpropHost {
@@ -38,12 +40,49 @@ export class MarkdownBlock extends LitElement implements SigpropHost {
     const node = this.node;
     if (!node) return;
     this.type = node.type;
+    if (node.type === 'code-block' && node.info === 'tc') {
+      const selected = this.hostContext?.selection.has(node) ?? false;
+      return html`<md-transclusion
+        .node=${node}
+        ?selected=${selected}
+      ></md-transclusion>`;
+    }
     return html`${isInlineNode(node) ? html`<md-inline .node=${node}></md-inline>` : ''}
     ${repeat(
       node.children ?? [],
       (child) => child[viewModel].id,
       (child) => html`<md-block .node=${child}></md-block>`,
     )}`;
+  }
+
+  #renderShadow() {
+    const node = this.node;
+    if (!node) return;
+    if (node.type === 'section') {
+      return html`
+        <md-section-ui .node=${this.node}>
+          <slot></slot>
+        </md-section-ui>
+      `;
+    }
+    if (node.type === 'list-item') {
+      return html`
+        <md-list-item-ui .node=${this.node}>
+          <slot></slot>
+        </md-list-item-ui>
+      `;
+    }
+    return;
+  }
+
+  protected override updated() {
+    const content = this.#renderShadow();
+    if (content && !this.shadowRoot) {
+      this.attachShadow({ mode: 'open' });
+    }
+    if (this.shadowRoot) {
+      render(content ?? html`<slot></slot>`, this.shadowRoot);
+    }
   }
 
   protected override createRenderRoot() {
