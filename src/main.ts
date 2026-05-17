@@ -5,33 +5,61 @@ import { createBlockParser } from './markdown/block-parser/api.js';
 import type { BlockParser } from './markdown/block-parser/api.js';
 import { serializeToString } from './markdown/block-serializer.js';
 import type { ViewModelNode } from './markdown/view-model-node.js';
+import { styles as appStyles } from './style.js';
+
+document.adoptedStyleSheets = [...document.adoptedStyleSheets, ...appStyles];
 
 const sample = `# Block Harness
-This is a minimal browser harness for block rendering.
+This harness exercises the legacy renderer port with *emphasis*, **strong text**, ~~strikethrough~~, \`inline code\`, and a #tag.
+
+## Links And Tags
+Try an [inline link](https://example.com), a bare autolink <https://openai.com>, and mixed text with #notes and #render-test.
 
 ## Lists
-- one
-- [ ] two
-- [x] three
+- plain bullet item
+- [ ] unchecked task with *inline formatting*
+- [x] completed task with \`code\` and a [link](https://lit.dev)
+- nested list parent
+  - child bullet
+  - child bullet with #nested/tag
 
 ## Quote
-> This keeps the render path focused on block structure.
+> Quoted text can still contain **strong text**, \`code\`, and links like <https://vite.dev>.
+>
+> - quoted list item
+> - second item
 
-Plain text still renders inline content as raw text for now.`;
+## Section Nesting
+### Deep Heading
+Paragraph text under a nested heading with **bold**, *italic*, and ~~edited~~ content.
+
+\`\`\`js
+function greet(name) {
+  return \`hello, \${name}\`;
+}
+\`\`\`
+
+\`\`\`tc
+demo/transclusion
+\`\`\``;
 
 class MarkdownDevHarness extends LitElement {
   static override styles = css`
     :host {
       display: block;
       min-height: 100vh;
-      color: #111827;
+      color: var(--root-color);
       background:
         radial-gradient(
           circle at top left,
-          rgba(13, 148, 136, 0.12),
+          color-mix(in srgb, var(--md-accent-color) 14%, transparent),
           transparent 28%
         ),
-        linear-gradient(180deg, #fcfcf9 0%, #f3f4ef 100%);
+        linear-gradient(
+          180deg,
+          color-mix(in srgb, var(--root-background-color) 92%, white) 0%,
+          color-mix(in srgb, var(--root-background-color) 96%, black) 100%
+        );
       font:
         15px/1.5 'Iowan Old Style',
         'Palatino Linotype',
@@ -52,13 +80,22 @@ class MarkdownDevHarness extends LitElement {
     }
 
     .editor {
-      border-right: 1px solid rgba(17, 24, 39, 0.08);
-      background: rgba(255, 255, 255, 0.58);
+      border-right: 1px solid
+        color-mix(in srgb, var(--root-color) 10%, transparent);
+      background: color-mix(
+        in srgb,
+        var(--root-background-color) 84%,
+        transparent
+      );
       backdrop-filter: blur(18px);
     }
 
     .preview {
-      background: rgba(252, 252, 249, 0.92);
+      background: color-mix(
+        in srgb,
+        var(--root-background-color) 92%,
+        transparent
+      );
     }
 
     h1 {
@@ -71,13 +108,13 @@ class MarkdownDevHarness extends LitElement {
     .lede {
       max-width: 40rem;
       margin: 0 0 1.4rem;
-      color: #4b5563;
+      color: color-mix(in srgb, var(--root-color) 72%, transparent);
     }
 
     .label {
       display: block;
       margin-bottom: 0.55rem;
-      color: #0f766e;
+      color: var(--md-accent-color);
       font:
         600 0.78rem/1.2 ui-monospace,
         SFMono-Regular,
@@ -91,12 +128,17 @@ class MarkdownDevHarness extends LitElement {
       width: 100%;
       min-height: 68vh;
       resize: vertical;
-      border: 1px solid rgba(17, 24, 39, 0.14);
+      border: 1px solid color-mix(in srgb, var(--root-color) 14%, transparent);
       border-radius: 18px;
-      background: rgba(255, 255, 255, 0.86);
-      box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+      background: color-mix(
+        in srgb,
+        var(--root-background-color) 90%,
+        transparent
+      );
+      box-shadow: inset 0 1px 0
+        color-mix(in srgb, var(--root-background-color) 70%, white);
       padding: 1rem 1.05rem;
-      color: #111827;
+      color: var(--root-color);
       font:
         14px/1.55 ui-monospace,
         SFMono-Regular,
@@ -105,7 +147,8 @@ class MarkdownDevHarness extends LitElement {
     }
 
     textarea:focus {
-      outline: 2px solid rgba(15, 118, 110, 0.25);
+      outline: 2px solid
+        color-mix(in srgb, var(--md-accent-color) 25%, transparent);
       outline-offset: 2px;
     }
 
@@ -114,18 +157,71 @@ class MarkdownDevHarness extends LitElement {
       gap: 1rem;
       flex-wrap: wrap;
       margin-top: 0.85rem;
-      color: #6b7280;
+      color: color-mix(in srgb, var(--root-color) 60%, transparent);
       font-size: 0.9rem;
+    }
+
+    .controls {
+      display: flex;
+      align-items: center;
+      gap: 0.9rem;
+      flex-wrap: wrap;
+      margin-top: 1rem;
+    }
+
+    .play {
+      border: 0;
+      border-radius: 999px;
+      background: var(--md-accent-color);
+      color: var(--root-background-color);
+      padding: 0.65rem 1rem;
+      font:
+        600 0.84rem/1 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
+      cursor: pointer;
+    }
+
+    .play[disabled] {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    .slider-wrap {
+      display: grid;
+      gap: 0.3rem;
+      min-width: min(100%, 18rem);
+    }
+
+    .slider-label {
+      color: color-mix(in srgb, var(--root-color) 68%, transparent);
+      font:
+        600 0.78rem/1.2 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
+      letter-spacing: 0.02em;
+    }
+
+    input[type='range'] {
+      width: 100%;
+      accent-color: var(--md-accent-color);
     }
 
     .preview-card {
       min-height: 68vh;
-      border: 1px solid rgba(17, 24, 39, 0.08);
+      border: 1px solid color-mix(in srgb, var(--root-color) 8%, transparent);
       border-radius: 24px;
-      background: rgba(255, 255, 255, 0.86);
+      background: color-mix(
+        in srgb,
+        var(--root-background-color) 90%,
+        transparent
+      );
       box-shadow:
-        0 24px 60px rgba(17, 24, 39, 0.08),
-        inset 0 1px 0 rgba(255, 255, 255, 0.65);
+        0 24px 60px color-mix(in srgb, var(--root-color) 8%, transparent),
+        inset 0 1px 0
+          color-mix(in srgb, var(--root-background-color) 65%, white);
       padding: 1.35rem 1.35rem 1.6rem;
     }
 
@@ -135,14 +231,14 @@ class MarkdownDevHarness extends LitElement {
       margin-bottom: 0.85rem;
       padding: 0.2rem;
       border-radius: 999px;
-      background: rgba(15, 23, 42, 0.06);
+      background: color-mix(in srgb, var(--root-color) 6%, transparent);
     }
 
     .tab {
       border: 0;
       border-radius: 999px;
       background: transparent;
-      color: #475569;
+      color: color-mix(in srgb, var(--root-color) 70%, transparent);
       padding: 0.5rem 0.9rem;
       font:
         600 0.84rem/1 ui-monospace,
@@ -154,9 +250,10 @@ class MarkdownDevHarness extends LitElement {
     }
 
     .tab[selected] {
-      background: #ffffff;
-      color: #0f766e;
-      box-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
+      background: var(--root-background-color);
+      color: var(--md-accent-color);
+      box-shadow: 0 6px 18px
+        color-mix(in srgb, var(--root-color) 8%, transparent);
     }
 
     .serialized {
@@ -165,7 +262,7 @@ class MarkdownDevHarness extends LitElement {
       margin: 0;
       white-space: pre-wrap;
       word-break: break-word;
-      color: #0f172a;
+      color: var(--root-color);
       font:
         14px/1.55 ui-monospace,
         SFMono-Regular,
@@ -179,7 +276,7 @@ class MarkdownDevHarness extends LitElement {
       margin: 0;
       white-space: pre-wrap;
       word-break: break-word;
-      color: #0f172a;
+      color: var(--root-color);
       font:
         13px/1.5 ui-monospace,
         SFMono-Regular,
@@ -194,7 +291,8 @@ class MarkdownDevHarness extends LitElement {
 
       .editor {
         border-right: 0;
-        border-bottom: 1px solid rgba(17, 24, 39, 0.08);
+        border-bottom: 1px solid
+          color-mix(in srgb, var(--root-color) 8%, transparent);
       }
 
       textarea,
@@ -208,6 +306,8 @@ class MarkdownDevHarness extends LitElement {
     source: { state: true },
     pendingText: { state: true },
     parseMode: { state: true },
+    playbackIndex: { state: true },
+    playing: { state: true },
     renderVersion: { state: true },
     activeTab: { state: true },
     serializedMarkdown: { state: true },
@@ -218,11 +318,15 @@ class MarkdownDevHarness extends LitElement {
   declare private source: string;
   declare private pendingText: string;
   declare private parseMode: string;
+  declare private playbackIndex: number;
+  declare private playing: boolean;
   declare private renderVersion: number;
   declare private activeTab: 'render' | 'serialize' | 'tree';
   declare private serializedMarkdown: string;
   declare private treeJson: string;
   private parser: BlockParser;
+  private playbackTimer: number | undefined;
+  private readonly playbackDelayMs = 10;
 
   constructor() {
     super();
@@ -231,6 +335,8 @@ class MarkdownDevHarness extends LitElement {
     this.source = sample;
     this.pendingText = '';
     this.parseMode = 'initial';
+    this.playbackIndex = sample.length;
+    this.playing = false;
     this.renderVersion = 0;
     this.activeTab = 'render';
     this.serializedMarkdown = '';
@@ -259,6 +365,26 @@ class MarkdownDevHarness extends LitElement {
             <span>${this.source.split('\n').length} lines</span>
             <span>pending tail: ${this.pendingText.length}</span>
             <span>mode: ${this.parseMode}</span>
+          </div>
+          <div class="controls">
+            <button class="play" @click=${this.onPlayToggle}>
+              ${this.playing ? 'Stop' : 'Play'}
+            </button>
+            <label class="slider-wrap">
+              <span class="slider-label"
+                >Playback progress:
+                ${this.playbackIndex}/${this.source.length}</span
+              >
+              <input
+                type="range"
+                min="0"
+                max=${String(this.source.length)}
+                step="1"
+                .value=${String(this.playbackIndex)}
+                @input=${this.onProgressInput}
+              />
+            </label>
+            <span>50ms per char</span>
           </div>
         </section>
         <section class="panel preview">
@@ -289,9 +415,7 @@ class MarkdownDevHarness extends LitElement {
           <div class="preview-card">
             ${this.activeTab === 'render'
               ? this.root
-                ? html`<md-editor
-                    .root=${this.root}
-                  ></md-block-render>`
+                ? html`<md-editor .root=${this.root}></md-editor>`
                 : html``
               : this.activeTab === 'serialize'
                 ? html`<pre class="serialized">${this.serializedMarkdown}</pre>`
@@ -304,11 +428,73 @@ class MarkdownDevHarness extends LitElement {
 
   private onInput = (event: Event) => {
     const value = (event.currentTarget as HTMLTextAreaElement).value;
+    this.stopPlayback();
     this.reparse(value);
+  };
+
+  private onProgressInput = (event: Event) => {
+    const value = Number((event.currentTarget as HTMLInputElement).value);
+    this.stopPlayback();
+    this.setPlaybackProgress(value);
+  };
+
+  private onPlayToggle = () => {
+    if (this.playing) {
+      this.stopPlayback();
+      return;
+    }
+    this.startPlayback();
   };
 
   private setTab(tab: 'render' | 'serialize' | 'tree') {
     this.activeTab = tab;
+  }
+
+  override disconnectedCallback(): void {
+    this.stopPlayback();
+    super.disconnectedCallback();
+  }
+
+  private startPlayback() {
+    this.stopPlayback();
+    this.playing = true;
+    this.playbackIndex = 0;
+    this.parser = createBlockParser();
+    this.parseMode = 'append';
+    this.root = this.parser.getTree().root;
+    this.serializedMarkdown = '';
+    this.updateFromParser();
+
+    this.playbackTimer = window.setInterval(() => {
+      if (this.playbackIndex >= this.source.length) {
+        this.finishPlayback();
+        return;
+      }
+      const nextChar = this.source[this.playbackIndex] ?? '';
+      this.parser.push(nextChar);
+      this.playbackIndex += 1;
+      this.parseMode = 'append';
+      this.updateFromParser();
+      if (this.playbackIndex >= this.source.length) {
+        this.finishPlayback();
+      }
+    }, this.playbackDelayMs);
+  }
+
+  private stopPlayback() {
+    if (this.playbackTimer !== undefined) {
+      window.clearInterval(this.playbackTimer);
+      this.playbackTimer = undefined;
+    }
+    this.playing = false;
+  }
+
+  private finishPlayback() {
+    this.stopPlayback();
+    this.parser.finish();
+    this.playbackIndex = this.source.length;
+    this.parseMode = 'play-finished';
+    this.updateFromParser();
   }
 
   private reparse(markdown: string, forceFull = false) {
@@ -324,11 +510,28 @@ class MarkdownDevHarness extends LitElement {
       this.parseMode = forceFull ? 'initial' : 'full';
     }
 
+    this.playbackIndex = this.source.length;
+    this.updateFromParser();
+  }
+
+  private setPlaybackProgress(index: number, mode = 'scrub') {
+    const clamped = Math.max(0, Math.min(index, this.source.length));
+    this.parser = createBlockParser();
+    const partial = this.source.slice(0, clamped);
+    this.parser.push(partial);
+    this.playbackIndex = clamped;
+    this.parseMode = mode;
+    this.updateFromParser();
+  }
+
+  private updateFromParser() {
     const tree = this.parser.getTree();
     const serializedTree = tree.serialize();
-    this.root = tree.root;
+    if (this.parseMode != 'append') {
+      this.root = tree.root;
+      this.serializedMarkdown = serializeToString(serializedTree);
+    }
     this.pendingText = this.parser.getPendingText();
-    this.serializedMarkdown = serializeToString(serializedTree);
     this.treeJson = JSON.stringify(serializedTree, null, 2);
     this.renderVersion++;
   }
