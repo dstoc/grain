@@ -176,9 +176,6 @@ export function projectPendingLine(
     prefix.listDepth === 0 &&
     !prefix.continuedListIndent
   ) {
-    if (state.currentQuoteStack.length) {
-      return;
-    }
     exitDetachedContainerContexts(state);
   }
   if (prefix.continuedListIndent) {
@@ -206,12 +203,6 @@ function shouldWaitForPendingPrefixResolution(
     return false;
   }
   if (/^(?:[-+*]|\d+[.)]?|#+)$/.test(prefix.content.trim())) {
-    return true;
-  }
-  if (
-    state.currentListPath.at(-1)?.children?.length &&
-    prefix.prefixes[0] === 'quote'
-  ) {
     return true;
   }
   if (line.startsWith(' ') && prefix.content === '') {

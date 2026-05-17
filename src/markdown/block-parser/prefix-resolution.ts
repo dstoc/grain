@@ -299,7 +299,11 @@ export function shouldPreserveListPathOnQuotedBlankLine(
     continuedListIndent: boolean;
   },
 ): boolean {
-  if (blankPrefix.continuedListIndent || blankPrefix.quoteDepth === 0) {
+  if (
+    blankPrefix.continuedListIndent ||
+    blankPrefix.listDepth !== 0 ||
+    blankPrefix.quoteDepth === 0
+  ) {
     return false;
   }
   const lastItem = state.currentListPath.at(-1);

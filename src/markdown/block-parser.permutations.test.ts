@@ -4,6 +4,7 @@ import { createBlockParser, parseBlocks } from './block-parser/api.js';
 import { serializeToString } from './block-serializer.js';
 import type { DocumentNode, MarkdownNode } from './node.js';
 import { MarkdownTree } from './view-model.js';
+import { viewModel } from './view-model-node.js';
 import { DEFAULT_UNSUPPORTED_GENERATED_CASE_NAMES } from './block-parser.permutations.default-skips.js';
 
 type ChainToken = 'section' | 'quote' | 'bullet' | 'ordered';
@@ -47,6 +48,16 @@ interface GeneratedCase {
 
 interface NamedGeneratedCase extends GeneratedCase {
   name: string;
+}
+
+type VisibleContentNodeType = 'paragraph' | 'code-block' | 'section';
+
+interface VisibleContentSnapshot {
+  nodeId: number;
+  identity: string;
+  path: string;
+  type: VisibleContentNodeType;
+  contentLength: number;
 }
 
 function formatGeneratedCaseFailure(
@@ -595,6 +606,410 @@ function describeAugmentation(augmentation: Augmentation): string {
   }
 }
 
+function collectVisibleContentSnapshots(
+  tree: MarkdownTree,
+): VisibleContentSnapshot[] {
+  const snapshots: VisibleContentSnapshot[] = [];
+
+  function visit(node: MarkdownNode, path: string): void {
+    if (
+      node.type === 'paragraph' ||
+      node.type === 'code-block' ||
+      node.type === 'section'
+    ) {
+      const nodeId = (node as MarkdownNode & {
+        [viewModel]?: { id: number };
+      })[viewModel]?.id ?? -1;
+      snapshots.push({
+        nodeId,
+        identity: `${path}:${node.type}`,
+        path,
+        type: node.type,
+        contentLength: node.content.length,
+      });
+    }
+
+    if (!node.children) {
+      return;
+    }
+
+    for (let index = 0; index < node.children.length; index++) {
+      visit(node.children[index], `${path}/${index}`);
+    }
+  }
+
+  visit(tree.root, 'document');
+  return snapshots;
+}
+
+function formatVisibleContentGrowthFailure(
+  caseName: string,
+  markdown: string,
+  previousSnapshot: VisibleContentSnapshot[],
+  currentSnapshot: VisibleContentSnapshot[],
+  detail: string,
+): Error {
+  return new Error(
+    [
+      `case: ${caseName}`,
+      `markdown:\n${markdown}`,
+      `previous snapshot:\n${JSON.stringify(previousSnapshot, null, 2)}`,
+      `current snapshot:\n${JSON.stringify(currentSnapshot, null, 2)}`,
+      detail,
+    ].join('\n\n'),
+  );
+}
+
+function assertVisibleContentGrowth(
+  caseName: string,
+  markdown: string,
+  previousSnapshot: VisibleContentSnapshot[],
+  currentSnapshot: VisibleContentSnapshot[],
+): void {
+  const previousByNodeId = new Map(
+    previousSnapshot.map((snapshot) => [snapshot.nodeId, snapshot]),
+  );
+  const previousByIdentity = new Map(
+    previousSnapshot.map((snapshot) => [snapshot.identity, snapshot]),
+  );
+
+  for (const snapshot of currentSnapshot) {
+    const previous =
+      previousByNodeId.get(snapshot.nodeId) ??
+      previousByIdentity.get(snapshot.identity);
+    if (!previous) {
+      if (snapshot.contentLength !== 1) {
+        throw formatVisibleContentGrowthFailure(
+          caseName,
+          markdown,
+          previousSnapshot,
+          currentSnapshot,
+          `new node ${snapshot.identity} started at ${snapshot.contentLength}`,
+        );
+      }
+      continue;
+    }
+
+    if (snapshot.contentLength < previous.contentLength) {
+      throw formatVisibleContentGrowthFailure(
+        caseName,
+        markdown,
+        previousSnapshot,
+        currentSnapshot,
+        `node ${snapshot.identity} shrank from ${previous.contentLength} to ${snapshot.contentLength}`,
+      );
+    }
+
+    if (snapshot.contentLength > previous.contentLength + 1) {
+      throw formatVisibleContentGrowthFailure(
+        caseName,
+        markdown,
+        previousSnapshot,
+        currentSnapshot,
+        `node ${snapshot.identity} grew from ${previous.contentLength} to ${snapshot.contentLength}`,
+      );
+    }
+  }
+}
+
+function assertVisibleContentGrowthAcrossIncrementalParse(
+  caseName: string,
+  markdown: string,
+  parser: ReturnType<typeof createBlockParser>,
+): void {
+  let previousSnapshot = collectVisibleContentSnapshots(
+    parser.getTree(),
+  );
+
+  for (let index = 0; index < markdown.length; index++) {
+    const char = markdown[index];
+    parser.push(char);
+    const currentSnapshot = collectVisibleContentSnapshots(
+      parser.getTree(),
+    );
+    if (shouldAssertVisibleContentGrowthCheckpoint(markdown, index)) {
+      assertVisibleContentGrowth(
+        caseName,
+        markdown,
+        previousSnapshot,
+        currentSnapshot,
+      );
+    }
+    previousSnapshot = currentSnapshot;
+  }
+}
+
+function shouldAssertVisibleContentGrowthCheckpoint(
+  markdown: string,
+  charIndex: number,
+): boolean {
+  const lineStart = markdown.lastIndexOf('\n', charIndex - 1) + 1;
+  const contentStart = getVisibleContentStartIndex(markdown, lineStart);
+  if (contentStart === -1 || charIndex < contentStart) {
+    return false;
+  }
+
+  return true;
+}
+
+function getVisibleContentStartIndex(
+  markdown: string,
+  lineStart: number,
+): number {
+  let index = lineStart;
+  while (index < markdown.length) {
+    const char = markdown[index];
+    if (char === ' ' || char === '\t') {
+      index++;
+      continue;
+    }
+    break;
+  }
+
+  if (index >= markdown.length) {
+    return -1;
+  }
+
+  for (;;) {
+    while (markdown[index] === ' ' || markdown[index] === '\t') {
+      index++;
+    }
+
+    if (index >= markdown.length) {
+      return -1;
+    }
+
+    const first = markdown[index];
+    if (first === '`') {
+      return -1;
+    }
+
+    if (first === '#') {
+      while (markdown[index] === '#') {
+        index++;
+      }
+      continue;
+    }
+
+    if (first === '>') {
+      index++;
+      continue;
+    }
+
+    if (first === '*' || first === '-' || first === '+') {
+      index++;
+      continue;
+    }
+
+    if (first >= '0' && first <= '9') {
+      const start = index;
+      while (markdown[index] >= '0' && markdown[index] <= '9') {
+        index++;
+      }
+      if (markdown[index] === '.' || markdown[index] === ')') {
+        index++;
+        continue;
+      }
+      return start;
+    }
+
+    return index;
+  }
+}
+
+describe('block parser content growth heuristic helpers', () => {
+  it('collects visible content-bearing nodes with path-based identities in document order', () => {
+    const tree = new MarkdownTree({
+      type: 'document',
+      children: [
+        {
+          type: 'section',
+          marker: '#',
+          content: 'root',
+          children: [
+            { type: 'paragraph', content: 'a' },
+            { type: 'code-block', info: 'ts', content: 'bb' },
+            {
+              type: 'section',
+              marker: '##',
+              content: 'ccc',
+              children: [{ type: 'paragraph', content: 'dddd' }],
+            },
+          ],
+        },
+        { type: 'paragraph', content: 'ee' },
+      ],
+    });
+
+    expect(collectVisibleContentSnapshots(tree)).toEqual([
+      {
+        nodeId: expect.any(Number),
+        identity: 'document/0:section',
+        path: 'document/0',
+        type: 'section',
+        contentLength: 4,
+      },
+      {
+        nodeId: expect.any(Number),
+        identity: 'document/0/0:paragraph',
+        path: 'document/0/0',
+        type: 'paragraph',
+        contentLength: 1,
+      },
+      {
+        nodeId: expect.any(Number),
+        identity: 'document/0/1:code-block',
+        path: 'document/0/1',
+        type: 'code-block',
+        contentLength: 2,
+      },
+      {
+        nodeId: expect.any(Number),
+        identity: 'document/0/2:section',
+        path: 'document/0/2',
+        type: 'section',
+        contentLength: 3,
+      },
+      {
+        nodeId: expect.any(Number),
+        identity: 'document/0/2/0:paragraph',
+        path: 'document/0/2/0',
+        type: 'paragraph',
+        contentLength: 4,
+      },
+      {
+        nodeId: expect.any(Number),
+        identity: 'document/0/2/1:paragraph',
+        path: 'document/0/2/1',
+        type: 'paragraph',
+        contentLength: 2,
+      },
+    ]);
+  });
+
+  it('accepts the expected visible-content growth progression', () => {
+    const previousSnapshot: VisibleContentSnapshot[] = [
+      {
+        nodeId: 1,
+        identity: 'document/0:paragraph',
+        path: 'document/0',
+        type: 'paragraph',
+        contentLength: 1,
+      },
+    ];
+    const currentSnapshot: VisibleContentSnapshot[] = [
+      {
+        nodeId: 1,
+        identity: 'document/0:paragraph',
+        path: 'document/0',
+        type: 'paragraph',
+        contentLength: 2,
+      },
+      {
+        nodeId: 2,
+        identity: 'document/1:code-block',
+        path: 'document/1',
+        type: 'code-block',
+        contentLength: 1,
+      },
+      {
+        nodeId: 3,
+        identity: 'document/2:section',
+        path: 'document/2',
+        type: 'section',
+        contentLength: 1,
+      },
+    ];
+
+    expect(() =>
+      assertVisibleContentGrowth(
+        'helper progression',
+        'abc',
+        previousSnapshot,
+        currentSnapshot,
+      ),
+    ).not.toThrow();
+  });
+
+  it('rejects newly visible content-bearing nodes that start above length one', () => {
+    const previousSnapshot: VisibleContentSnapshot[] = [
+      {
+        nodeId: 1,
+        identity: 'document/0:paragraph',
+        path: 'document/0',
+        type: 'paragraph',
+        contentLength: 1,
+      },
+    ];
+    const currentSnapshot: VisibleContentSnapshot[] = [
+      {
+        nodeId: 1,
+        identity: 'document/0:paragraph',
+        path: 'document/0',
+        type: 'paragraph',
+        contentLength: 1,
+      },
+      {
+        nodeId: 2,
+        identity: 'document/1:section',
+        path: 'document/1',
+        type: 'section',
+        contentLength: 2,
+      },
+    ];
+
+    expect(() =>
+      assertVisibleContentGrowth(
+        'helper growth allowance',
+        'abcd',
+        previousSnapshot,
+        currentSnapshot,
+      ),
+    ).toThrowError(/new node document\/1:section started at 2/);
+  });
+
+  it('rejects visible content nodes that grow by more than one character', () => {
+    const previousSnapshot: VisibleContentSnapshot[] = [
+      {
+        nodeId: 1,
+        identity: 'document/0:section',
+        path: 'document/0',
+        type: 'section',
+        contentLength: 3,
+      },
+    ];
+    const currentSnapshot: VisibleContentSnapshot[] = [
+      {
+        nodeId: 1,
+        identity: 'document/0:section',
+        path: 'document/0',
+        type: 'section',
+        contentLength: 5,
+      },
+    ];
+
+    expect(() =>
+      assertVisibleContentGrowth(
+        'helper growth failure',
+        'abcd',
+        previousSnapshot,
+        currentSnapshot,
+      ),
+    ).toThrowError(
+      /node document\/0:section grew from 3 to 5/,
+    );
+  });
+
+  it('skips checkpoint assertions while appending list markers', () => {
+    expect(shouldAssertVisibleContentGrowthCheckpoint('- item', 0)).toBe(false);
+    expect(shouldAssertVisibleContentGrowthCheckpoint('- item', 1)).toBe(false);
+    expect(shouldAssertVisibleContentGrowthCheckpoint('- item', 2)).toBe(true);
+    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 0)).toBe(false);
+    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 2)).toBe(false);
+    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 4)).toBe(true);
+  });
+});
+
 describe('block parser generated permutations', () => {
   it('roundtrips generated nested and sibling-bearing permutations through serialize and parse', () => {
     for (const testCase of generatedCanonicalCasesForMode(false)) {
@@ -642,9 +1057,7 @@ describe('block parser generated permutations', () => {
         continue;
       }
       const parser = createBlockParser();
-      for (const char of markdown) {
-        parser.push(char);
-      }
+      assertVisibleContentGrowthAcrossIncrementalParse(name, markdown, parser);
       const incremental = parser.finish().serialize();
       try {
         expect(incremental).toEqual(expected);
@@ -679,9 +1092,7 @@ describe('block parser generated permutations', () => {
         continue;
       }
       const parser = createBlockParser();
-      for (const char of markdown) {
-        parser.push(char);
-      }
+      assertVisibleContentGrowthAcrossIncrementalParse(name, markdown, parser);
       const incremental = parser.finish().serialize();
       try {
         expect(incremental).toEqual(expected);
