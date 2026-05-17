@@ -22,8 +22,8 @@ export interface ParserSyntaxNode {
   namedChildren: ParserSyntaxNode[];
 }
 
-export interface ParserTree {
-  rootNode: ParserSyntaxNode;
+export interface ParserTree<Node extends ParserSyntaxNode = ParserSyntaxNode> {
+  rootNode: Node;
   edit(edit: ParserEdit): void;
   delete(): void;
 }
@@ -46,7 +46,9 @@ export function createSyntaxNode(
   };
 }
 
-export function createTree(rootNode: ParserSyntaxNode): ParserTree {
+export function createTree<Node extends ParserSyntaxNode>(
+  rootNode: Node,
+): ParserTree<Node> {
   return {
     rootNode,
     edit() {},

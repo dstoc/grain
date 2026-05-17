@@ -20,9 +20,12 @@ import type {
   Caches,
 } from './view-model-node.js';
 
-import { parser as inlineParser } from './inline-parser.js';
+import {
+  parser as inlineParser,
+  type InlineTree,
+  type InlineTreeNode,
+} from './inline-parser.js';
 import { parseBlocks } from './block-parser/api.js';
-import type { ParserTree } from './parser-tree.js';
 import { assert, cast } from '../asserts.js';
 import { type NormalizeTreeOptions, normalizeTree } from './normalize.js';
 import { dfs } from './view-model-util.js';
@@ -243,19 +246,6 @@ export class ViewModel {
   }
 }
 
-export interface InlineTreeNode {
-  id: number;
-  startIndex: number;
-  endIndex: number;
-  text: string;
-  type: string;
-  namedChildren: InlineTreeNode[];
-}
-
-export interface InlineTree {
-  rootNode: InlineTreeNode;
-}
-
 export function* traverseInlineNodes(node: InlineTreeNode) {
   const seen = new Set<InlineTreeNode>();
   const queue = [node];
@@ -281,8 +271,8 @@ export class InlineViewModel extends ViewModel {
     super(self, tree, parent, childIndex);
     this.self = self;
   }
-  private editedInlineTree?: ParserTree;
-  private inlineTree_?: ParserTree;
+  private editedInlineTree?: InlineTree;
+  private inlineTree_?: InlineTree;
   get inlineTree(): InlineTree {
     assert(this.connected);
     if (!this.inlineTree_) {
