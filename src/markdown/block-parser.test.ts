@@ -14,6 +14,20 @@ function expectCharByCharAppendMatchesFullParse(source: string) {
   expect(incremental).toEqual(full);
 }
 
+function expectScheduledAppendMatchesFullParse(
+  source: string,
+  schedules: string[][],
+) {
+  const full = parseBlocks(source).node;
+  for (const schedule of schedules) {
+    const parser = createBlockParser();
+    for (const chunk of schedule) {
+      parser.push(chunk);
+    }
+    expect(parser.finish().serialize()).toEqual(full);
+  }
+}
+
 describe('parseBlocks', () => {
   it('returns an empty paragraph for empty input', () => {
     const { node } = parseBlocks('');
@@ -2076,6 +2090,13 @@ describe('parseBlocks', () => {
     expectCharByCharAppendMatchesFullParse(
       '# section 1\n- > > container 2 before quote\n  > \n  > section > bullet > quote\n  > \n  > > container 2 after quote\n',
     );
+  });
+
+  it('matches full parse when appending the list-quote-quote repro under multiple schedules', () => {
+    expectScheduledAppendMatchesFullParse('a\n* > a\n> a\n', [
+      ['a', '\n* > a\n> a\n'],
+      ['a\n', '* > a\n', '> a\n'],
+    ]);
   });
 
   it('matches full parse when appending a nested quoted code block after a blank separator one character at a time', () => {

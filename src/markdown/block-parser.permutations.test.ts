@@ -60,6 +60,17 @@ interface VisibleContentSnapshot {
   contentLength: number;
 }
 
+type IncrementalChunkSchedule = {
+  name: string;
+  chunks(markdown: string): string[];
+};
+
+interface IncrementalScheduleRun {
+  name: string;
+  checkpoints: Map<number, DocumentNode>;
+  finalTree: DocumentNode;
+}
+
 function formatGeneratedCaseFailure(
   name: string,
   markdown: string,
@@ -660,6 +671,185 @@ function formatVisibleContentGrowthFailure(
   );
 }
 
+function formatScheduleFailure(
+  caseName: string,
+  markdown: string,
+  scheduleName: string,
+  detail: string,
+  expected: DocumentNode,
+  actual: DocumentNode,
+): Error {
+  return new Error(
+    [
+      `case: ${caseName}`,
+      `schedule: ${scheduleName}`,
+      `markdown:\n${markdown}`,
+      `expected:\n${JSON.stringify(expected, null, 2)}`,
+      `actual:\n${JSON.stringify(actual, null, 2)}`,
+      detail,
+    ].join('\n\n'),
+  );
+}
+
+function formatScheduleCheckpointFailure(
+  caseName: string,
+  markdown: string,
+  checkpointLength: number,
+  baselineSchedule: string,
+  currentSchedule: string,
+  baselineTree: DocumentNode,
+  currentTree: DocumentNode,
+): Error {
+  return new Error(
+    [
+      `case: ${caseName}`,
+      `checkpoint: ${checkpointLength}`,
+      `baseline schedule: ${baselineSchedule}`,
+      `current schedule: ${currentSchedule}`,
+      `markdown:\n${markdown}`,
+      `baseline tree:\n${JSON.stringify(baselineTree, null, 2)}`,
+      `current tree:\n${JSON.stringify(currentTree, null, 2)}`,
+    ].join('\n\n'),
+  );
+}
+
+const DEFAULT_INCREMENTAL_SCHEDULES: IncrementalChunkSchedule[] = [
+  {
+    name: 'all-at-once',
+    chunks: (markdown) => (markdown ? [markdown] : []),
+  },
+  {
+    name: 'char-by-char',
+    chunks: (markdown) => [...markdown],
+  },
+  {
+    name: 'before-first-newline-then-rest',
+    chunks: (markdown) => splitBeforeFirstNewline(markdown),
+  },
+  {
+    name: 'through-first-newline-then-rest',
+    chunks: (markdown) => splitThroughFirstNewline(markdown),
+  },
+  {
+    name: 'first-line-next-char-then-rest',
+    chunks: (markdown) => splitFirstLineThenNextChar(markdown),
+  },
+];
+
+function splitBeforeFirstNewline(markdown: string): string[] {
+  const newlineIndex = markdown.indexOf('\n');
+  if (newlineIndex === -1) {
+    return markdown ? [markdown] : [];
+  }
+  return compactChunks([markdown.slice(0, newlineIndex), markdown.slice(newlineIndex)]);
+}
+
+function splitThroughFirstNewline(markdown: string): string[] {
+  const newlineIndex = markdown.indexOf('\n');
+  if (newlineIndex === -1) {
+    return markdown ? [markdown] : [];
+  }
+  return compactChunks([
+    markdown.slice(0, newlineIndex + 1),
+    markdown.slice(newlineIndex + 1),
+  ]);
+}
+
+function splitFirstLineThenNextChar(markdown: string): string[] {
+  const newlineIndex = markdown.indexOf('\n');
+  if (newlineIndex === -1) {
+    return markdown ? [markdown] : [];
+  }
+
+  const restStart = newlineIndex + 1;
+  return compactChunks([
+    markdown.slice(0, restStart),
+    markdown.slice(restStart, restStart + 1),
+    markdown.slice(restStart + 1),
+  ]);
+}
+
+function compactChunks(chunks: string[]): string[] {
+  return chunks.filter((chunk) => chunk.length > 0);
+}
+
+function runIncrementalSchedule(
+  markdown: string,
+  schedule: IncrementalChunkSchedule,
+): IncrementalScheduleRun {
+  const parser = createBlockParser();
+  const checkpoints = new Map<number, DocumentNode>();
+  let consumedLength = 0;
+
+  for (const chunk of schedule.chunks(markdown)) {
+    parser.push(chunk);
+    consumedLength += chunk.length;
+    checkpoints.set(consumedLength, parser.getTree().serialize() as DocumentNode);
+  }
+
+  const finalTree = parser.finish().serialize() as DocumentNode;
+  return {
+    name: schedule.name,
+    checkpoints,
+    finalTree,
+  };
+}
+
+function assertScheduleCoverageAcrossIncrementalParse(
+  caseName: string,
+  markdown: string,
+  expected: DocumentNode,
+): void {
+  const runs = DEFAULT_INCREMENTAL_SCHEDULES.map((schedule) =>
+    runIncrementalSchedule(markdown, schedule),
+  );
+  const baselineRun =
+    runs.find((run) => run.name === 'char-by-char') ?? runs[0];
+  if (!baselineRun) {
+    return;
+  }
+
+  for (const run of runs) {
+    try {
+      expect(run.finalTree).toEqual(expected);
+    } catch (error) {
+      throw formatScheduleFailure(
+        caseName,
+        markdown,
+        run.name,
+        String(error),
+        expected,
+        run.finalTree,
+      );
+    }
+
+    if (run.name === baselineRun.name) {
+      continue;
+    }
+
+    for (const [checkpointLength, currentTree] of run.checkpoints) {
+      const baselineTree = baselineRun.checkpoints.get(checkpointLength);
+      if (!baselineTree) {
+        continue;
+      }
+
+      try {
+        expect(currentTree).toEqual(baselineTree);
+      } catch {
+        throw formatScheduleCheckpointFailure(
+          caseName,
+          markdown,
+          checkpointLength,
+          baselineRun.name,
+          run.name,
+          baselineTree,
+          currentTree,
+        );
+      }
+    }
+  }
+}
+
 function assertVisibleContentGrowth(
   caseName: string,
   markdown: string,
@@ -1056,6 +1246,7 @@ describe('block parser generated permutations', () => {
       ) {
         continue;
       }
+      assertScheduleCoverageAcrossIncrementalParse(name, markdown, expected);
       const parser = createBlockParser();
       assertVisibleContentGrowthAcrossIncrementalParse(name, markdown, parser);
       const incremental = parser.finish().serialize();
@@ -1091,6 +1282,7 @@ describe('block parser generated permutations', () => {
       ) {
         continue;
       }
+      assertScheduleCoverageAcrossIncrementalParse(name, markdown, expected);
       const parser = createBlockParser();
       assertVisibleContentGrowthAcrossIncrementalParse(name, markdown, parser);
       const incremental = parser.finish().serialize();

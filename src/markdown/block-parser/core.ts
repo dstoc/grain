@@ -39,6 +39,7 @@ import { parseListItem, appendListItem, closeList } from './handlers/lists.js';
 export function parseLine(state: BlockParseState, line: string) {
   if (shouldRestartQuotedListBranch(state, line)) {
     closeParagraph(state);
+    closeQuote(state);
   }
   const quotedListContinuation = parseQuotedListContinuation(state, line);
   if (quotedListContinuation) {
@@ -135,6 +136,7 @@ export function projectPendingLine(
 
   if (shouldRestartQuotedListBranch(state, line)) {
     closeParagraph(state);
+    closeQuote(state);
   }
 
   const quotedListContinuation = parseQuotedListContinuation(state, line);
