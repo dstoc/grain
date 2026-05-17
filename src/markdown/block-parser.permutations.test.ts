@@ -356,17 +356,9 @@ function supportsGeneratedAugmentations(
   augmentations: Augmentation[],
 ): boolean {
   for (const augmentation of augmentations) {
-    if (augmentation.kind === 'root-block') {
-      if (augmentation.sibling === 'empty-paragraph') {
-        return false;
-      }
-      continue;
-    }
     if (
       augmentation.sibling === 'empty-paragraph' &&
-      chain
-        .slice(0, augmentation.depth + 1)
-        .some((token) => token === 'section' || token === 'quote')
+      augmentation.position === 'before'
     ) {
       return false;
     }
