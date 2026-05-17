@@ -1,6 +1,6 @@
 import { LitElement, css, html } from 'lit';
 
-import './markdown/block-render.js';
+import './editing/editor.js';
 import { createBlockParser } from './markdown/block-parser/api.js';
 import type { BlockParser } from './markdown/block-parser/api.js';
 import { serializeToString } from './markdown/block-serializer.js';
@@ -289,9 +289,8 @@ class MarkdownDevHarness extends LitElement {
           <div class="preview-card">
             ${this.activeTab === 'render'
               ? this.root
-                ? html`<md-block-render
-                    .block=${this.root}
-                    .version=${this.renderVersion}
+                ? html`<md-editor
+                    .root=${this.root}
                   ></md-block-render>`
                 : html``
               : this.activeTab === 'serialize'

@@ -207,10 +207,74 @@ export class MarkdownInline extends LitElement implements SigpropHost {
     return start.index <= end.index ? { start, end } : { start: end, end: start };
   }
 
+  moveCaret(
+    alter: 'move' | 'extend',
+    direction: 'backward' | 'forward',
+    granularity: 'line' | 'character' | 'word',
+  ): true | number {
+    const selection = (this.getRootNode() as Document).getSelection()!;
+    const focusNode = selection.focusNode!;
+    const focusOffset = selection.focusOffset;
+    const initial = MarkdownInline.nodeOffsetToInputPoint(
+      selection.focusNode!,
+      selection.focusOffset,
+    );
+    const focus = document.createRange();
+    focus.setStart(selection.focusNode!, selection.focusOffset);
+    focus.collapse(true);
+    const anchor = document.createRange();
+    anchor.setStart(selection.anchorNode!, selection.anchorOffset);
+    anchor.collapse(true);
+
+    selection.removeAllRanges();
+    selection.addRange(focus);
+    selection.modify('move', 'backward', 'lineboundary');
+    selection.modify('extend', 'forward', 'lineboundary');
+    const line = MarkdownInline.getSelectionRange(selection);
+
+    selection.modify('move', 'forward', 'documentboundary');
+    const end = MarkdownInline.nodeOffsetToInputPoint(
+      selection.focusNode!,
+      selection.focusOffset,
+    );
+
+    selection.removeAllRanges();
+    selection.addRange(anchor);
+    selection.extend(focusNode, focusOffset);
+    selection.modify(alter, direction, granularity);
+    const result = MarkdownInline.nodeOffsetToInputPoint(
+      selection.focusNode!,
+      selection.focusOffset,
+    );
+
+    if (granularity === 'line') {
+      if (direction === 'backward') {
+        return result.index < line.start.index || initial.index - line.start.index;
+      }
+      return (
+        result.index > line.end.index ||
+        (result.index !== end.index && result.index === line.end.index) ||
+        initial.index - line.start.index
+      );
+    }
+    return result.index !== initial.index || (direction === 'backward' ? Infinity : 0);
+  }
+
   getSelection() {
     const selection = (this.getRootNode() as Document).getSelection()!;
     if (!selection.focusNode) return;
     return MarkdownInline.getSelectionRange(selection);
+  }
+
+  getCaretPosition() {
+    let { x, y, height } = (this.getRootNode() as Document)
+      .getSelection()!
+      .getRangeAt(0)
+      .getBoundingClientRect();
+    if (x === 0 && y === 0) {
+      ({ x, y, height } = this.getBoundingClientRect());
+    }
+    return { x, y: y + height };
   }
 
   onKeyDown = (e: KeyboardEvent) => {

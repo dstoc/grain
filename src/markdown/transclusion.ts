@@ -1,6 +1,7 @@
 import { css, html, LitElement } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 
+import type { HostContext } from './host-context.js';
 import type { InlineViewModelNode } from './view-model-node.js';
 import type { CodeBlockNode } from './node.js';
 
@@ -22,10 +23,26 @@ export class MarkdownTransclusion extends LitElement {
   @property({ type: Boolean, reflect: true })
   accessor selected = false;
 
+  @property({ attribute: false })
+  accessor hostContext: HostContext | undefined;
+
   override render() {
     const ref = this.node?.content.trim() ?? '';
     return html`⮴ ${ref || 'transclusion unavailable'}`;
   }
+}
+
+export function getContainingTransclusion(element: Element) {
+  const renderShadow = element.getRootNode();
+  if (!(renderShadow instanceof ShadowRoot)) return;
+  const renderHost = renderShadow.host;
+  if (!(renderHost instanceof HTMLElement)) return;
+  if (renderHost.tagName.toLowerCase() !== 'md-block-render') return;
+  const shadow = renderHost.getRootNode();
+  if (!(shadow instanceof ShadowRoot)) return;
+  const transclusion = shadow.host;
+  if (!(transclusion instanceof MarkdownTransclusion)) return;
+  return transclusion;
 }
 
 declare global {
