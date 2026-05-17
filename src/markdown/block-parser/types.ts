@@ -7,7 +7,6 @@ import type {
   ParagraphNode,
   SectionNode,
 } from '../node.js';
-import { type ParserTree } from '../parser-tree.js';
 import { MarkdownTree } from '../view-model.js';
 import type { ViewModelNode } from '../view-model-node.js';
 
@@ -60,8 +59,6 @@ export interface BlockParser {
   getPendingText(): string;
   snapshot(): BlockParserSnapshot;
 }
-
-export type Tree = ParserTree;
 
 export interface BlockParserSnapshot {
   root: DocumentNode;

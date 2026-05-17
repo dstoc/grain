@@ -1,16 +1,9 @@
 import { type DocumentNode } from '../node.js';
-import {
-  type ParserEdit,
-  type ParserTree,
-  createSyntaxNode,
-  createTree,
-} from '../parser-tree.js';
 import { MarkdownTree } from '../view-model.js';
 
 export {
   type BlockParser,
   type BlockParserSnapshot,
-  type Tree,
 } from './types.js';
 import { isDefined, pathForNode } from './utils.js';
 import {
@@ -123,17 +116,12 @@ export function createBlockParser(snapshot?: BlockParserSnapshot): BlockParser {
 
 export function parseBlocks(
   markdown: string,
-  tree?: ParserTree,
-  _edit?: ParserEdit,
-  keepTree = false,
 ) {
-  tree?.delete();
   const parser = createBlockParser();
   parser.push(markdown);
   const blockTree = parser.finish();
   const node = blockTree.serialize() as DocumentNode;
-  const rootTree = createTree(createSyntaxNode('document', markdown));
-  return { node, tree: keepTree ? rootTree : (rootTree.delete(), undefined) };
+  return { node };
 }
 
 export function parseMarkdownTree(markdown: string): MarkdownTree {

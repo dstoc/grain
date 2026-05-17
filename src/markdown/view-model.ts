@@ -271,26 +271,17 @@ export class InlineViewModel extends ViewModel {
     super(self, tree, parent, childIndex);
     this.self = self;
   }
-  private editedInlineTree?: InlineTree;
   private inlineTree_?: InlineTree;
   get inlineTree(): InlineTree {
     assert(this.connected);
     if (!this.inlineTree_) {
-      this.inlineTree_ = inlineParser.parse(
-        this.self.content,
-        this.editedInlineTree,
-      );
-      this.editedInlineTree?.delete();
-      this.editedInlineTree = undefined;
+      this.inlineTree_ = inlineParser.parse(this.self.content);
     }
     return this.inlineTree_;
   }
   override disconnect() {
     super.disconnect();
-    this.inlineTree_?.delete();
     this.inlineTree_ = undefined;
-    this.editedInlineTree?.delete();
-    this.editedInlineTree = undefined;
   }
   edit(
     { startIndex, newEndIndex, oldEndIndex, newText }: InlineEdit,
@@ -313,11 +304,7 @@ export class InlineViewModel extends ViewModel {
     if (this.self.content === newContent) return null;
     (this.self as { content: string }).content = newContent;
     const newNodes = replaceWithBlocks ? this.maybeReplaceWithBlocks() : false;
-    this.editedInlineTree ??= this.inlineTree_;
     this.inlineTree_ = undefined;
-    if (this.editedInlineTree) {
-      this.editedInlineTree.edit(result);
-    }
     this.signalMutation({
       type: 'edit',
       node: this.self,

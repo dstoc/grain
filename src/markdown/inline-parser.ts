@@ -11,9 +11,15 @@ interface InlineSyntaxNodeBase<Type extends string> extends ParserSyntaxNode {
 }
 
 type InlineLeafType =
-  | 'formatting' // Any formatting characters or runs, e.g. '[' or ']' in links, '**' for emphasis
+  // 'syntax' is Syntax-only text that should remain distinguishable from user-visible text.
+  // For example, the '[' and ']' around a link can be hidden via styling while
+  // the nested link text remains visible.
+  | 'syntax'
   | 'link_destination'
   | 'link_title'
+  // Extension syntax for tags: '#' followed by a non-numeric, non-punctuation
+  // first character, then any mix of letters, numbers, '_', '-', '/', and
+  // commonly accepted Unicode characters including emoji and other symbols.
   | 'tag'
   | 'text';
 
@@ -33,14 +39,18 @@ export interface StrikethroughNode extends InlineSyntaxNodeBase<'strikethrough'>
 
 export interface CodeSpanNode extends InlineSyntaxNodeBase<'code_span'> {}
 
+// [label](destination "title"): link text and destination are distinct children.
 export interface InlineLinkNode extends InlineSyntaxNodeBase<'inline_link'> {
   namedChildren: InlineTreeNode[];
 }
 
+// [label]: bracketed shortcut form
 export interface ShortcutLinkNode extends InlineSyntaxNodeBase<'shortcut_link'> {
   namedChildren: InlineTreeNode[];
 }
 
+// <https://example.com>: autolink form where the destination can be derived
+// directly from the node text when no explicit child carries it.
 export interface UriAutolinkNode extends InlineSyntaxNodeBase<'uri_autolink'> {
   namedChildren: InlineTreeNode[];
 }
@@ -61,10 +71,10 @@ export type InlineTreeNode =
   | StrongEmphasisNode
   | UriAutolinkNode;
 
+// A concrete syntax tree
 export type InlineTree = ParserTree<InlineTreeNode>;
 
-function parse(text: string, tree?: InlineTree): InlineTree {
-  tree?.delete();
+function parse(text: string): InlineTree {
   return createTree(createSyntaxNode('text', text) as InlineLeafNode<'text'>);
 }
 

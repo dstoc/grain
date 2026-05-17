@@ -1,18 +1,3 @@
-export interface ParserPosition {
-  row: number;
-  column: number;
-}
-
-export interface ParserEdit {
-  startIndex: number;
-  oldEndIndex: number;
-  newEndIndex: number;
-  startPosition?: ParserPosition;
-  oldEndPosition?: ParserPosition;
-  newEndPosition?: ParserPosition;
-  newText?: string;
-}
-
 export interface ParserSyntaxNode {
   id: number;
   type: string;
@@ -24,8 +9,6 @@ export interface ParserSyntaxNode {
 
 export interface ParserTree<Node extends ParserSyntaxNode = ParserSyntaxNode> {
   rootNode: Node;
-  edit(edit: ParserEdit): void;
-  delete(): void;
 }
 
 let nextNodeId = 0;
@@ -51,7 +34,5 @@ export function createTree<Node extends ParserSyntaxNode>(
 ): ParserTree<Node> {
   return {
     rootNode,
-    edit() {},
-    delete() {},
   };
 }
