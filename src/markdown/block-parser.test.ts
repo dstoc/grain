@@ -107,6 +107,230 @@ describe('parseBlocks', () => {
     expect(parser.getPendingText()).toBe('hello');
   });
 
+  it('projects nested list-item paragraph content during push', () => {
+    const parser = createBlockParser();
+    parser.push('* > * ');
+    expect(parser.push('h').serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'block-quote',
+                  marker: '> ',
+                  children: [
+                    {
+                      type: 'list',
+                      children: [
+                        {
+                          type: 'list-item',
+                          marker: '* ',
+                          checked: undefined,
+                          children: [
+                            {
+                              type: 'paragraph',
+                              content: 'h',
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('projects nested quote paragraph content during push', () => {
+    const parser = createBlockParser();
+    parser.push('* > > ');
+    expect(parser.push('h').serialize()).toEqual({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '* ',
+              checked: undefined,
+              children: [
+                {
+                  type: 'block-quote',
+                  marker: '> ',
+                  children: [
+                    {
+                      type: 'block-quote',
+                      marker: '> ',
+                      children: [
+                        {
+                          type: 'paragraph',
+                          content: 'h',
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('holds back prefix-only shell fragments during push', () => {
+    const cases = [
+      {
+        fragment: '* ',
+        node: {
+          type: 'document',
+          children: [
+            {
+              type: 'list',
+              children: [
+                {
+                  type: 'list-item',
+                  marker: '* ',
+                  checked: undefined,
+                  children: [{ type: 'paragraph', content: '' }],
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        fragment: '* >',
+        node: {
+          type: 'document',
+          children: [
+            {
+              type: 'list',
+              children: [
+                {
+                  type: 'list-item',
+                  marker: '* ',
+                  checked: undefined,
+                  children: [
+                    {
+                      type: 'block-quote',
+                      marker: '> ',
+                      children: [{ type: 'paragraph', content: '' }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        fragment: '* > ',
+        node: {
+          type: 'document',
+          children: [
+            {
+              type: 'list',
+              children: [
+                {
+                  type: 'list-item',
+                  marker: '* ',
+                  checked: undefined,
+                  children: [
+                    {
+                      type: 'block-quote',
+                      marker: '> ',
+                      children: [{ type: 'paragraph', content: '' }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        fragment: '* > *',
+        node: {
+          type: 'document',
+          children: [
+            {
+              type: 'list',
+              children: [
+                {
+                  type: 'list-item',
+                  marker: '* ',
+                  checked: undefined,
+                  children: [
+                    {
+                      type: 'block-quote',
+                      marker: '> ',
+                      children: [{ type: 'paragraph', content: '*' }],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
+        fragment: '* > * ',
+        node: {
+          type: 'document',
+          children: [
+            {
+              type: 'list',
+              children: [
+                {
+                  type: 'list-item',
+                  marker: '* ',
+                  checked: undefined,
+                  children: [
+                    {
+                      type: 'block-quote',
+                      marker: '> ',
+                      children: [
+                        {
+                          type: 'list',
+                          children: [
+                            {
+                              type: 'list-item',
+                              marker: '* ',
+                              checked: undefined,
+                              children: [{ type: 'paragraph', content: '' }],
+                            },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      },
+    ] as const;
+
+    for (const { fragment, node } of cases) {
+      const parser = createBlockParser();
+      parser.push(fragment);
+      expect(parser.getTree().serialize()).toEqual(node);
+    }
+  });
+
   it('projects an empty list item shell during push', () => {
     const parser = createBlockParser();
     parser.push('* ');

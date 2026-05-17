@@ -165,7 +165,9 @@ function discardProjectedListItem(state: BlockParseState) {
   state.currentParagraph = undefined;
   state.currentListPath.pop();
   if (list?.type === 'list' && !list.children?.length) {
+    const parent = list[viewModel].parent;
     list[viewModel].remove();
+    pruneEmptyContainerChain(parent);
   }
   pruneDetachedState(state);
 }
