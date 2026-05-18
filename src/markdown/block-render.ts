@@ -7,6 +7,7 @@ import { sigprop, type SigpropHost } from '../signal-utils.js';
 import { HostContext, hostContext } from './host-context.js';
 import { MarkdownInline } from './inline-render.js';
 import { isInlineNode } from './node.js';
+import type { MarkdownRenderDelegate } from './render-delegate.js';
 import { styles } from './style.js';
 import type { InlineViewModelNode, ViewModelNode } from './view-model-node.js';
 import { viewModel } from './view-model-node.js';
@@ -40,12 +41,19 @@ export class MarkdownBlock extends LitElement implements SigpropHost {
     const node = this.node;
     if (!node) return;
     this.type = node.type;
-    if (node.type === 'code-block' && node.info === 'tc') {
-      const selected = this.hostContext?.selection.has(node) ?? false;
-      return html`<md-transclusion
-        .node=${node}
-        ?selected=${selected}
-      ></md-transclusion>`;
+    if (node.type === 'code-block') {
+      const hostContext = this.hostContext;
+      const selected = hostContext?.selection.has(node) ?? false;
+      if (hostContext) {
+        const rendered = hostContext.renderDelegate?.renderCodeBlock?.({
+          node,
+          hostContext,
+          selected,
+        });
+        if (rendered !== undefined) {
+          return rendered;
+        }
+      }
     }
     return html`${isInlineNode(node) ? html`<md-inline .node=${node}></md-inline>` : ''}
     ${repeat(
@@ -97,6 +105,9 @@ export class MarkdownRenderer extends LitElement {
   @provide({ context: hostContext })
   accessor hostContext = new HostContext();
 
+  @property({ attribute: false })
+  accessor renderDelegate: MarkdownRenderDelegate | undefined;
+
   @property({ attribute: false }) accessor block!: ViewModelNode;
   @property({ attribute: false }) accessor version = 0;
 
@@ -113,6 +124,7 @@ export class MarkdownRenderer extends LitElement {
 
   override render() {
     this.hostContext.root = this.block;
+    this.hostContext.renderDelegate = this.renderDelegate;
     if (!this.block) return html``;
     return html`<md-block .node=${this.block} ?root=${true}></md-block>`;
   }

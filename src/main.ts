@@ -1,9 +1,14 @@
 import { LitElement, css, html } from 'lit';
 
 import './editing/editor.js';
-import { createBlockParser } from './markdown/block-parser/api.js';
+import './markdown/transclusion.js';
+import {
+  createBlockParser,
+  parseMarkdownTree,
+} from './markdown/block-parser/api.js';
 import type { BlockParser } from './markdown/block-parser/api.js';
 import { serializeToString } from './markdown/block-serializer.js';
+import type { MarkdownRenderDelegate } from './markdown/render-delegate.js';
 import type { ViewModelNode } from './markdown/view-model-node.js';
 import { styles as appStyles } from './style.js';
 
@@ -39,9 +44,24 @@ function greet(name) {
 }
 \`\`\`
 
-\`\`\`tc
-demo/transclusion
+\`\`\`md
+## Transcluded Markdown
+This block is rendered through the transclusion delegate.
+
+- nested item
+- **formatted** child content
 \`\`\``;
+
+const transclusionRenderDelegate: MarkdownRenderDelegate = {
+  renderCodeBlock({ node, selected }) {
+    if (node.info !== 'md') return undefined;
+    return html`<md-transclusion
+      .node=${node}
+      .root=${parseMarkdownTree(node.content).root}
+      ?selected=${selected}
+    ></md-transclusion>`;
+  },
+};
 
 class MarkdownDevHarness extends LitElement {
   static override styles = css`
@@ -415,7 +435,10 @@ class MarkdownDevHarness extends LitElement {
           <div class="preview-card">
             ${this.activeTab === 'render'
               ? this.root
-                ? html`<md-editor .root=${this.root}></md-editor>`
+                ? html`<md-editor
+                    .root=${this.root}
+                    .renderDelegate=${transclusionRenderDelegate}
+                  ></md-editor>`
                 : html``
               : this.activeTab === 'serialize'
                 ? html`<pre class="serialized">${this.serializedMarkdown}</pre>`

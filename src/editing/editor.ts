@@ -19,6 +19,7 @@ import { css, html, LitElement } from 'lit';
 import { property, customElement, query } from 'lit/decorators.js';
 import { MarkdownRenderer } from '../markdown/block-render.js';
 import { HostContext, focusNode } from '../markdown/host-context.js';
+import type { MarkdownRenderDelegate } from '../markdown/render-delegate.js';
 import {
   MarkdownInline,
   InlineInput,
@@ -79,6 +80,8 @@ export class Editor extends LitElement {
   @property({ type: String, reflect: true })
   accessor status: 'loading' | 'loaded' | 'error' | undefined;
   @sigprop accessor root: ViewModelNode | undefined;
+  @property({ attribute: false })
+  accessor renderDelegate: MarkdownRenderDelegate | undefined;
   @query('md-block-render')
   private accessor markdownRenderer!: MarkdownRenderer;
   static override get styles() {
@@ -111,6 +114,7 @@ export class Editor extends LitElement {
     return html` <pkm-title .node=${this.root}></pkm-title>
       <md-block-render
         .block=${this.root}
+        .renderDelegate=${this.renderDelegate}
         @inline-input=${this.onInlineInput}
         @inline-link-click=${this.onInlineLinkClick}
         @inline-keydown=${this.onInlineKeyDown}
