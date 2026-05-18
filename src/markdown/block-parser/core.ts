@@ -37,6 +37,17 @@ import {
 import { parseListItem, appendListItem, closeList } from './handlers/lists.js';
 
 export function parseLine(state: BlockParseState, line: string) {
+  if (state.currentCodeBlock && state.currentCodeFence) {
+    const prefix = parseLinePrefix(state, line);
+    const codeLine = stripActiveCodeBlockContinuation(state, prefix.content);
+    if (isClosingFence(codeLine, state.currentCodeFence)) {
+      closeCodeBlock(state);
+    } else {
+      appendCodeBlockLine(state, codeLine);
+    }
+    return;
+  }
+
   if (shouldRestartQuotedListBranch(state, line)) {
     closeParagraph(state);
     closeQuote(state);
@@ -122,15 +133,13 @@ export function projectPendingLine(
 
   if (state.currentCodeBlock && state.currentCodeFence) {
     const prefix = parseLinePrefix(state, line);
-    if (prefix.content === '') {
-      return;
-    }
-    if (isClosingFence(prefix.content, state.currentCodeFence)) {
+    const codeLine = stripActiveCodeBlockContinuation(state, prefix.content);
+    if (isClosingFence(codeLine, state.currentCodeFence)) {
       return;
     }
     return {
       kind: 'code-block',
-      text: appendCodeBlockLine(state, prefix.content),
+      text: appendCodeBlockLine(state, codeLine),
     };
   }
 

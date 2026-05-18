@@ -1540,6 +1540,19 @@ describe('parseBlocks', () => {
     expect(parseBlocks(serializeToString(expected)).node).toEqual(expected);
   });
 
+  it('roundtrips a fenced md code block containing markdown-looking lines', () => {
+    const source =
+      '```md\n' +
+      '## Transcluded Markdown\n' +
+      'This block is rendered through the transclusion delegate.\n' +
+      '\n' +
+      '- nested item\n' +
+      '- **formatted** child content\n' +
+      '```\n';
+    const { node } = parseBlocks(source);
+    expect(serializeToString(node)).toBe(source);
+  });
+
   it('matches full parse for a section containing a quoted fenced code block under char-by-char append', () => {
     const expected: DocumentNode = {
       type: 'document',
