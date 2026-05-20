@@ -30,15 +30,15 @@ export interface InlineRootNode extends InlineSyntaxNodeBase<'inline_root'> {
   namedChildren: InlineTreeNode[];
 }
 
-export interface LinkTextNode extends InlineSyntaxNodeBase<'link_text'> {}
+export type LinkTextNode = InlineSyntaxNodeBase<'link_text'>;
 
-export interface EmphasisNode extends InlineSyntaxNodeBase<'emphasis'> {}
+export type EmphasisNode = InlineSyntaxNodeBase<'emphasis'>;
 
-export interface StrongEmphasisNode extends InlineSyntaxNodeBase<'strong_emphasis'> {}
+export type StrongEmphasisNode = InlineSyntaxNodeBase<'strong_emphasis'>;
 
-export interface StrikethroughNode extends InlineSyntaxNodeBase<'strikethrough'> {}
+export type StrikethroughNode = InlineSyntaxNodeBase<'strikethrough'>;
 
-export interface CodeSpanNode extends InlineSyntaxNodeBase<'code_span'> {}
+export type CodeSpanNode = InlineSyntaxNodeBase<'code_span'>;
 
 // [label](destination "title"): link text and destination are distinct children.
 export interface InlineLinkNode extends InlineSyntaxNodeBase<'inline_link'> {

@@ -1,12 +1,16 @@
-import {assert, cast} from '../../asserts.js';
-import {EditContext} from '../editor.js';
-import {InlineNode} from '../../markdown/node.js';
+import { assert, cast } from '../../asserts.js';
+import { EditContext } from '../editor.js';
+import { InlineNode } from '../../markdown/node.js';
 import {
   ViewModelNode,
   isInlineViewModelNode,
 } from '../../markdown/view-model-node.js';
-import {children, findAncestor, reverseDfs} from '../../markdown/view-model-util.js';
-import {viewModel} from '../../markdown/view-model-node.js';
+import {
+  children,
+  findAncestor,
+  reverseDfs,
+} from '../../markdown/view-model-util.js';
+import { viewModel } from '../../markdown/view-model-node.js';
 
 export function deleteContentBackwards(context: EditContext): boolean {
   const node = context.node;
@@ -46,7 +50,7 @@ export function deleteContentBackwards(context: EditContext): boolean {
   }
 
   // Remove a surrounding block-quote.
-  const {ancestor} = findAncestor(node, context.root, 'block-quote');
+  const { ancestor } = findAncestor(node, context.root, 'block-quote');
   if (ancestor) {
     context.startEditing();
     // Unless there's an earlier opportunity to merge into a previous

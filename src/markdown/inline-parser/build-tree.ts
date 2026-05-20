@@ -116,7 +116,12 @@ function createInlineTextNode(
   startIndex: number,
   namedChildren: InlineTreeNode[] = [],
 ): InlineTreeNode {
-  return createSyntaxNode(type, text, startIndex, namedChildren) as InlineTreeNode;
+  return createSyntaxNode(
+    type,
+    text,
+    startIndex,
+    namedChildren,
+  ) as InlineTreeNode;
 }
 
 function createCodeSpanNode(codeSpan: ResolvedCodeSpan): CodeSpanNode {
@@ -154,20 +159,26 @@ function createInlineLinkNode(link: ResolvedInlineLink): InlineLinkNode {
 
   if (link.title !== undefined) {
     children.push(
-      createInlineTextNode('link_title', link.title, link.titleStartIndex ?? link.startIndex),
+      createInlineTextNode(
+        'link_title',
+        link.title,
+        link.titleStartIndex ?? link.startIndex,
+      ),
     );
   }
 
-  return createSyntaxNode('inline_link', link.text, link.startIndex, children) as InlineLinkNode;
+  return createSyntaxNode(
+    'inline_link',
+    link.text,
+    link.startIndex,
+    children,
+  ) as InlineLinkNode;
 }
 
 function createShortcutLinkNode(link: ResolvedShortcutLink): ShortcutLinkNode {
-  return createSyntaxNode(
-    'shortcut_link',
-    link.text,
-    link.startIndex,
-    [createLinkTextNode(link.label, link.startIndex + 1)],
-  ) as ShortcutLinkNode;
+  return createSyntaxNode('shortcut_link', link.text, link.startIndex, [
+    createLinkTextNode(link.label, link.startIndex + 1),
+  ]) as ShortcutLinkNode;
 }
 
 function createImageNode(image: ResolvedImage): ImageNode {
@@ -182,11 +193,20 @@ function createImageNode(image: ResolvedImage): ImageNode {
 
   if (image.title !== undefined) {
     children.push(
-      createInlineTextNode('link_title', image.title, image.titleStartIndex ?? image.startIndex),
+      createInlineTextNode(
+        'link_title',
+        image.title,
+        image.titleStartIndex ?? image.startIndex,
+      ),
     );
   }
 
-  return createSyntaxNode('image', image.text, image.startIndex, children) as ImageNode;
+  return createSyntaxNode(
+    'image',
+    image.text,
+    image.startIndex,
+    children,
+  ) as ImageNode;
 }
 
 function createLinkTextNode(
@@ -196,7 +216,12 @@ function createLinkTextNode(
   const namedChildren = createNodesFromResolvedInline(label);
   const text = label.map((token) => token.text).join('');
   const startIndex = label[0]?.startIndex ?? fallbackStartIndex;
-  return createSyntaxNode('link_text', text, startIndex, namedChildren) as LinkTextNode;
+  return createSyntaxNode(
+    'link_text',
+    text,
+    startIndex,
+    namedChildren,
+  ) as LinkTextNode;
 }
 
 export function buildInlineTree(

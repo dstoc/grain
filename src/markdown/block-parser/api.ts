@@ -1,10 +1,7 @@
 import { type DocumentNode } from '../node.js';
 import { MarkdownTree } from '../view-model.js';
 
-export {
-  type BlockParser,
-  type BlockParserSnapshot,
-} from './types.js';
+export { type BlockParser, type BlockParserSnapshot } from './types.js';
 import { isDefined, pathForNode } from './utils.js';
 import {
   cleanupInactiveEmptyBlocks,
@@ -114,9 +111,7 @@ export function createBlockParser(snapshot?: BlockParserSnapshot): BlockParser {
   };
 }
 
-export function parseBlocks(
-  markdown: string,
-) {
+export function parseBlocks(markdown: string) {
   const parser = createBlockParser();
   parser.push(markdown);
   const blockTree = parser.finish();

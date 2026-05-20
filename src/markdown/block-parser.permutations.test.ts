@@ -60,10 +60,10 @@ interface VisibleContentSnapshot {
   contentLength: number;
 }
 
-type IncrementalChunkSchedule = {
+interface IncrementalChunkSchedule {
   name: string;
   chunks(markdown: string): string[];
-};
+}
 
 interface IncrementalScheduleRun {
   name: string;
@@ -367,15 +367,15 @@ function supportsGeneratedAugmentations(
 }
 
 function supportsStableQuoteRoundtripShapes(
-  chain: ChainToken[],
-  augmentations: Augmentation[],
+  _chain: ChainToken[],
+  _augmentations: Augmentation[],
 ): boolean {
   return true;
 }
 
 function supportsStableQuoteIncrementalShapes(
-  chain: ChainToken[],
-  augmentations: Augmentation[],
+  _chain: ChainToken[],
+  _augmentations: Augmentation[],
 ): boolean {
   return true;
 }
@@ -455,9 +455,7 @@ function augmentationPermutationsForMode(
   if (extensive) {
     for (let i = 0; i < singles.length; i++) {
       for (let j = i + 1; j < singles.length; j++) {
-        if (
-          isUnresolvedDoublyQuotedListPair(chain, singles[i], singles[j])
-        ) {
+        if (isUnresolvedDoublyQuotedListPair(chain, singles[i], singles[j])) {
           continue;
         }
         results.push([singles[i], singles[j]]);
@@ -620,9 +618,12 @@ function collectVisibleContentSnapshots(
       node.type === 'code-block' ||
       node.type === 'section'
     ) {
-      const nodeId = (node as MarkdownNode & {
-        [viewModel]?: { id: number };
-      })[viewModel]?.id ?? -1;
+      const nodeId =
+        (
+          node as MarkdownNode & {
+            [viewModel]?: { id: number };
+          }
+        )[viewModel]?.id ?? -1;
       snapshots.push({
         nodeId,
         identity: `${path}:${node.type}`,
@@ -733,7 +734,10 @@ function splitBeforeFirstNewline(markdown: string): string[] {
   if (newlineIndex === -1) {
     return markdown ? [markdown] : [];
   }
-  return compactChunks([markdown.slice(0, newlineIndex), markdown.slice(newlineIndex)]);
+  return compactChunks([
+    markdown.slice(0, newlineIndex),
+    markdown.slice(newlineIndex),
+  ]);
 }
 
 function splitThroughFirstNewline(markdown: string): string[] {
@@ -776,7 +780,10 @@ function runIncrementalSchedule(
   for (const chunk of schedule.chunks(markdown)) {
     parser.push(chunk);
     consumedLength += chunk.length;
-    checkpoints.set(consumedLength, parser.getTree().serialize() as DocumentNode);
+    checkpoints.set(
+      consumedLength,
+      parser.getTree().serialize() as DocumentNode,
+    );
   }
 
   const finalTree = parser.finish().serialize() as DocumentNode;
@@ -899,16 +906,12 @@ function assertVisibleContentGrowthAcrossIncrementalParse(
   markdown: string,
   parser: ReturnType<typeof createBlockParser>,
 ): void {
-  let previousSnapshot = collectVisibleContentSnapshots(
-    parser.getTree(),
-  );
+  let previousSnapshot = collectVisibleContentSnapshots(parser.getTree());
 
   for (let index = 0; index < markdown.length; index++) {
     const char = markdown[index];
     parser.push(char);
-    const currentSnapshot = collectVisibleContentSnapshots(
-      parser.getTree(),
-    );
+    const currentSnapshot = collectVisibleContentSnapshots(parser.getTree());
     if (shouldAssertVisibleContentGrowthCheckpoint(markdown, index)) {
       assertVisibleContentGrowth(
         caseName,
@@ -1025,42 +1028,42 @@ describe('block parser content growth heuristic helpers', () => {
 
     expect(collectVisibleContentSnapshots(tree)).toEqual([
       {
-        nodeId: expect.any(Number),
+        nodeId: expect.any(Number) as number,
         identity: 'document/0:section',
         path: 'document/0',
         type: 'section',
         contentLength: 4,
       },
       {
-        nodeId: expect.any(Number),
+        nodeId: expect.any(Number) as number,
         identity: 'document/0/0:paragraph',
         path: 'document/0/0',
         type: 'paragraph',
         contentLength: 1,
       },
       {
-        nodeId: expect.any(Number),
+        nodeId: expect.any(Number) as number,
         identity: 'document/0/1:code-block',
         path: 'document/0/1',
         type: 'code-block',
         contentLength: 2,
       },
       {
-        nodeId: expect.any(Number),
+        nodeId: expect.any(Number) as number,
         identity: 'document/0/2:section',
         path: 'document/0/2',
         type: 'section',
         contentLength: 3,
       },
       {
-        nodeId: expect.any(Number),
+        nodeId: expect.any(Number) as number,
         identity: 'document/0/2/0:paragraph',
         path: 'document/0/2/0',
         type: 'paragraph',
         contentLength: 4,
       },
       {
-        nodeId: expect.any(Number),
+        nodeId: expect.any(Number) as number,
         identity: 'document/0/2/1:paragraph',
         path: 'document/0/2/1',
         type: 'paragraph',
@@ -1177,18 +1180,22 @@ describe('block parser content growth heuristic helpers', () => {
         previousSnapshot,
         currentSnapshot,
       ),
-    ).toThrowError(
-      /node document\/0:section grew from 3 to 5/,
-    );
+    ).toThrowError(/node document\/0:section grew from 3 to 5/);
   });
 
   it('skips checkpoint assertions while appending list markers', () => {
     expect(shouldAssertVisibleContentGrowthCheckpoint('- item', 0)).toBe(false);
     expect(shouldAssertVisibleContentGrowthCheckpoint('- item', 1)).toBe(false);
     expect(shouldAssertVisibleContentGrowthCheckpoint('- item', 2)).toBe(true);
-    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 0)).toBe(false);
-    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 2)).toBe(false);
-    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 4)).toBe(true);
+    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 0)).toBe(
+      false,
+    );
+    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 2)).toBe(
+      false,
+    );
+    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 4)).toBe(
+      true,
+    );
   });
 });
 

@@ -1,6 +1,6 @@
-import {cast} from '../../asserts.js';
-import {EditContext} from '../editor.js';
-import {indent, unindent} from '../../indent-util.js';
+import { cast } from '../../asserts.js';
+import { EditContext } from '../editor.js';
+import { indent, unindent } from '../../indent-util.js';
 
 export function editBlockSelectionIndent(
   context: EditContext,

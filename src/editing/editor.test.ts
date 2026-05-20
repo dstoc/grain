@@ -9,7 +9,13 @@ import { viewModel } from '../markdown/view-model-node.js';
 
 describe('Editor', () => {
   function serializeEditor(editor: Editor) {
-    return editor.root?.[viewModel].tree.serialize();
+    const tree = editor.root?.[viewModel].tree.serialize();
+    return tree
+      ? {
+          ...tree,
+          [Symbol.for('markdown-tree')]: true,
+        }
+      : undefined;
   }
 
   const state = testState(async () => {
@@ -121,11 +127,12 @@ describe('Editor', () => {
       await state.input.insertParagraph(2);
       await state.input.insert('middle');
       expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
-        > # heading
+        # heading
+        <!-- -->
 
         middle
 
-        > body
+        body
       `);
     });
   });
@@ -218,6 +225,7 @@ describe('Editor', () => {
       expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
         * hello
 
+
         world!
       `);
     });
@@ -229,6 +237,7 @@ describe('Editor', () => {
       await state.input.insert('middle');
       expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
         * he
+
 
         middle
         * llo

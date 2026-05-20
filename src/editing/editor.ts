@@ -115,9 +115,11 @@ export class Editor extends LitElement {
       <md-block-render
         .block=${this.root}
         .renderDelegate=${this.renderDelegate}
-        @inline-input=${this.onInlineInput}
-        @inline-link-click=${this.onInlineLinkClick}
-        @inline-keydown=${this.onInlineKeyDown}
+        @inline-input=${(e: CustomEvent<InlineInput>) => this.onInlineInput(e)}
+        @inline-link-click=${(e: CustomEvent<InlineLinkClick>) =>
+          this.onInlineLinkClick(e)}
+        @inline-keydown=${(e: CustomEvent<InlineKeyDown>) =>
+          this.onInlineKeyDown(e)}
       ></md-block-render>`;
   }
   runEditAction<
@@ -342,9 +344,8 @@ export class Editor extends LitElement {
       } else {
         const selection = inline.getSelection();
         if (
-          selection &&
-          selection.start.index === 0 &&
-          selection.end.index === inline.node.content.length
+          selection?.start.index === 0 &&
+          selection?.end.index === inline.node.content.length
         ) {
           keyboardEvent.preventDefault();
           focusNode(hostContext, inline.node, 0);

@@ -1,12 +1,14 @@
-import { html } from 'lit';
+import { html, type TemplateResult } from 'lit';
 import { describe, expect, test, vi } from 'vitest';
 
 import { parseMarkdownTree } from './block-parser/api.js';
 import { HostContext } from './host-context.js';
 import { MarkdownBlock } from './block-render.js';
 import { MarkdownTree } from './view-model.js';
+import type { CodeBlockNode } from './node.js';
+import type { ViewModelNode } from './view-model-node.js';
 
-function makeCodeBlock() {
+function makeCodeBlock(): ViewModelNode & CodeBlockNode {
   const tree = new MarkdownTree({
     type: 'document',
     children: [
@@ -17,11 +19,17 @@ function makeCodeBlock() {
       },
     ],
   });
-  return tree.root.children![0] as any;
+  return tree.root.children![0] as ViewModelNode & CodeBlockNode;
 }
 
-function renderBlock(node: any, hostContext: HostContext) {
-  return MarkdownBlock.prototype.render.call({ node, hostContext } as any);
+function renderBlock(
+  node: ViewModelNode,
+  hostContext: HostContext,
+): TemplateResult | undefined {
+  return MarkdownBlock.prototype.render.call({
+    node,
+    hostContext,
+  } as unknown as MarkdownBlock) as TemplateResult | undefined;
 }
 
 describe('MarkdownBlock', () => {
@@ -29,12 +37,10 @@ describe('MarkdownBlock', () => {
     const node = makeCodeBlock();
     const hostContext = new HostContext();
 
-    const result = renderBlock(node, hostContext) as any;
+    const result = renderBlock(node, hostContext)!;
+    const subResult = result.values[0] as TemplateResult;
 
-    expect(result.values[0].strings).toEqual([
-      '<md-inline .node=',
-      '></md-inline>',
-    ]);
+    expect(subResult.strings).toEqual(['<md-inline .node=', '></md-inline>']);
   });
 
   test('falls back to the default code-block path when the delegate returns undefined', () => {
@@ -43,7 +49,8 @@ describe('MarkdownBlock', () => {
     const renderCodeBlock = vi.fn(() => undefined);
     hostContext.renderDelegate = { renderCodeBlock };
 
-    const result = renderBlock(node, hostContext) as any;
+    const result = renderBlock(node, hostContext)!;
+    const subResult = result.values[0] as TemplateResult;
 
     expect(renderCodeBlock).toHaveBeenCalledTimes(1);
     expect(renderCodeBlock).toHaveBeenCalledWith(
@@ -53,26 +60,28 @@ describe('MarkdownBlock', () => {
         selected: false,
       }),
     );
-    expect(result.values[0].strings).toEqual([
-      '<md-inline .node=',
-      '></md-inline>',
-    ]);
+    expect(subResult.strings).toEqual(['<md-inline .node=', '></md-inline>']);
   });
 
   test('renders md code blocks through the delegate and forwards selection state', () => {
     const node = makeCodeBlock();
     const hostContext = new HostContext();
-    const renderCodeBlock = vi.fn(({ node, selected }) => {
-      if (node.info !== 'md') return undefined;
-      return html`<md-transclusion
-        .node=${node}
-        .root=${parseMarkdownTree(node.content).root}
-        ?selected=${selected}
-      ></md-transclusion>`;
-    });
+    const renderCodeBlock = vi.fn(
+      ({
+        node,
+        selected,
+      }: {
+        node: ViewModelNode & CodeBlockNode;
+        selected: boolean;
+      }) => {
+        if (node.info !== 'md') return undefined;
+        // prettier-ignore
+        return html`<md-transclusion .node=${node} .root=${parseMarkdownTree(node.content).root} ?selected=${selected}></md-transclusion>`;
+      },
+    );
     hostContext.renderDelegate = { renderCodeBlock };
 
-    const unselected = renderBlock(node, hostContext) as any;
+    const unselected = renderBlock(node, hostContext)!;
     expect(renderCodeBlock).toHaveBeenLastCalledWith(
       expect.objectContaining({
         node,
@@ -89,7 +98,7 @@ describe('MarkdownBlock', () => {
     expect(unselected.values[2]).toBe(false);
 
     hostContext.selection.add(node);
-    const selected = renderBlock(node, hostContext) as any;
+    const selected = renderBlock(node, hostContext)!;
     expect(renderCodeBlock).toHaveBeenLastCalledWith(
       expect.objectContaining({
         node,

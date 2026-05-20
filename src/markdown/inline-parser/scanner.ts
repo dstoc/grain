@@ -16,7 +16,9 @@ export function scanInline(text: string): InlineToken[] {
 
     if (char === '[' || char === ']' || char === '(' || char === ')') {
       pushTextToken(tokens, text, textStart, index);
-      tokens.push(createSyntaxToken(text, index, char, charToSyntaxKind(char), 1));
+      tokens.push(
+        createSyntaxToken(text, index, char, charToSyntaxKind(char), 1),
+      );
       index += 1;
       textStart = index;
       continue;
@@ -24,9 +26,7 @@ export function scanInline(text: string): InlineToken[] {
 
     if (char === '!' && text[index + 1] === '[') {
       pushTextToken(tokens, text, textStart, index);
-      tokens.push(
-        createSyntaxToken(text, index, char, 'image_marker', 1),
-      );
+      tokens.push(createSyntaxToken(text, index, char, 'image_marker', 1));
       index += 1;
       textStart = index;
       continue;
@@ -172,7 +172,11 @@ function charToSyntaxKind(char: string): SyntaxTokenKind {
   }
 }
 
-function scanRepeatedRun(text: string, startIndex: number, marker: string): number {
+function scanRepeatedRun(
+  text: string,
+  startIndex: number,
+  marker: string,
+): number {
   let endIndex = startIndex + 1;
   while (endIndex < text.length && text[endIndex] === marker) {
     endIndex += 1;

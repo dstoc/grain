@@ -12,16 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import {HostContext} from '../markdown/host-context.js';
+import { HostContext } from '../markdown/host-context.js';
 import type {
   InlineViewModelNode,
   ViewModelNode,
 } from '../markdown/view-model-node.js';
-import {getContainingTransclusion} from '../markdown/transclusion.js';
-import {assert, cast} from '../asserts.js';
-import {dfs} from '../markdown/view-model-util.js';
-import {isInlineNode} from '../markdown/node.js';
-import {viewModel} from '../markdown/view-model-node.js';
+import { getContainingTransclusion } from '../markdown/transclusion.js';
+import { assert, cast } from '../asserts.js';
+import { dfs } from '../markdown/view-model-util.js';
+import { isInlineNode } from '../markdown/node.js';
+import { viewModel } from '../markdown/view-model-node.js';
 
 export type BlockSelectionTarget = Element & {
   hostContext?: HostContext;
@@ -29,7 +29,7 @@ export type BlockSelectionTarget = Element & {
 };
 
 export function getBlockSelectionTarget(
-  element: Element & {hostContext?: HostContext; node?: InlineViewModelNode},
+  element: Element & { hostContext?: HostContext; node?: InlineViewModelNode },
 ): BlockSelectionTarget | undefined {
   if (element.hostContext?.hasSelection) return element;
   // Retarget if there's any containing transclusion that has a selection.

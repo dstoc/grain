@@ -68,19 +68,18 @@ export function resolveLinksAndImages(
       continue;
     }
 
-    for (let openerIndex = openers.length - 1; openerIndex >= 0; openerIndex -= 1) {
+    for (
+      let openerIndex = openers.length - 1;
+      openerIndex >= 0;
+      openerIndex -= 1
+    ) {
       const opener = openers[openerIndex];
       if (consumed.has(opener.index)) {
         continue;
       }
 
       if (hasExplicitTail) {
-        const node = createExplicitNode(
-          resolved,
-          opener,
-          index,
-          parsedTail as ParsedLinkTail,
-        );
+        const node = createExplicitNode(resolved, opener, index, parsedTail!);
         if (node === null) {
           continue;
         }
@@ -246,7 +245,10 @@ function parseLinkTail(
   return {
     endTokenIndex: startIndex + closeTokenIndex,
     destination: mapSpanToSource(destination, tail, tokenOffsets),
-    title: title === undefined ? undefined : mapSpanToSource(title, tail, tokenOffsets),
+    title:
+      title === undefined
+        ? undefined
+        : mapSpanToSource(title, tail, tokenOffsets),
   };
 }
 
@@ -408,7 +410,11 @@ function offsetToTokenIndex(
   return -1;
 }
 
-function consumeRange(consumed: Set<number>, startIndex: number, endIndex: number): void {
+function consumeRange(
+  consumed: Set<number>,
+  startIndex: number,
+  endIndex: number,
+): void {
   for (let index = startIndex; index <= endIndex; index += 1) {
     consumed.add(index);
   }
@@ -436,7 +442,11 @@ function hasParenOpen(
   index: number,
   consumed: Set<number>,
 ): boolean {
-  return index < resolved.length && !consumed.has(index) && isParenOpen(resolved[index]);
+  return (
+    index < resolved.length &&
+    !consumed.has(index) &&
+    isParenOpen(resolved[index])
+  );
 }
 
 function joinTokenText(tokens: ResolvedInline[]): string {

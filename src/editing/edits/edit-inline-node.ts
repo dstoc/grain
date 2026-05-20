@@ -1,14 +1,13 @@
-import {assert} from '../../asserts.js';
-import {EditContext} from '../editor.js';
-import {isInlineNode} from '../../markdown/node.js';
-import {InlineViewModelNode} from '../../markdown/view-model-node.js';
-import {findNextEditable} from '../../markdown/view-model-util.js';
-import {InlineEdit} from '../../markdown/view-model.js';
-import {viewModel} from '../../markdown/view-model-node.js';
+import { assert } from '../../asserts.js';
+import { EditContext } from '../editor.js';
+import { isInlineNode } from '../../markdown/node.js';
+import { findNextEditable } from '../../markdown/view-model-util.js';
+import { InlineEdit } from '../../markdown/view-model.js';
+import { viewModel } from '../../markdown/view-model-node.js';
 
 export function editInlineNode(context: EditContext, edit: InlineEdit) {
   assert(isInlineNode(context.node));
-  const node = context.node as InlineViewModelNode;
+  const node = context.node;
   context.startEditing();
   const newNodes = node[viewModel].edit(edit);
   if (newNodes) {

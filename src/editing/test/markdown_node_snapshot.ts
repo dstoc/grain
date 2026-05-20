@@ -1,6 +1,6 @@
-import {expect} from 'vitest';
-import {serializeToString} from '../../markdown/block-serializer.js';
-import {MarkdownNode} from '../../markdown/node.js';
+import { expect } from 'vitest';
+import { serializeToString } from '../../markdown/block-serializer.js';
+import { MarkdownNode } from '../../markdown/node.js';
 
 expect.addSnapshotSerializer({
   serialize(val, _config, indentation, _depth, _refs, _printer) {

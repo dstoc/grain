@@ -237,7 +237,7 @@ export function parseQuotedListContinuation(
       state,
       quoteContext.quoteBase,
       quoteContext.quoteDepth,
-  ) ?? quoteContext.quoteBase;
+    ) ?? quoteContext.quoteBase;
   let container: ListItemViewModelNode | undefined;
   const listPath: ListItemViewModelNode[] = [];
 

@@ -1,11 +1,11 @@
-import {cast} from '../../asserts.js';
-import {EditContext} from '../editor.js';
+import { cast } from '../../asserts.js';
+import { EditContext } from '../editor.js';
 import {
   children,
   findNextEditable,
   findPreviousEditable,
 } from '../../markdown/view-model-util.js';
-import {viewModel} from '../../markdown/view-model-node.js';
+import { viewModel } from '../../markdown/view-model-node.js';
 
 export function removeSelectedNodes(context: EditContext) {
   const nodes = context.selection;
@@ -39,6 +39,7 @@ export function removeSelectedNodes(context: EditContext) {
     const next = findNextEditable(context.root, context.root, true);
     if (next) {
       context.focus(next, 0);
+      // eslint-disable-next-line no-useless-assignment
       didFocus = true;
     }
   }

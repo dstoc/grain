@@ -147,12 +147,12 @@ function trailingQuoteChainFromBase(
   return quotes.some(hasBlockQuoteDescendant) ? quotes : [];
 }
 
-function hasBlockQuoteDescendant(node: BlockQuoteViewModelNode): boolean {
+function hasBlockQuoteDescendant(node: ViewModelNode): boolean {
   for (const child of node.children ?? []) {
     if (child.type === 'block-quote') {
       return true;
     }
-    if (child.children?.length && hasBlockQuoteDescendant(child as BlockQuoteViewModelNode)) {
+    if (child.children?.length && hasBlockQuoteDescendant(child)) {
       return true;
     }
   }

@@ -1,4 +1,4 @@
-import {beforeEach} from 'vitest';
+import { beforeEach } from 'vitest';
 
 export function testState<T>(makeState: () => T | Promise<T>): T {
   const result = {};

@@ -19,7 +19,7 @@ function resolveInlineStructure(tokens: ResolvedInline[]): ResolvedInline[] {
 }
 
 function resolveCodeSpans(tokens: InlineToken[]): ResolvedInline[] {
-  const openers: Array<{ index: number; token: SyntaxToken }> = [];
+  const openers: { index: number; token: SyntaxToken }[] = [];
   const pairs = new Map<number, number>();
   const pairedClosers = new Set<number>();
 
@@ -62,7 +62,7 @@ function resolveCodeSpans(tokens: InlineToken[]): ResolvedInline[] {
 }
 
 function resolveDelimitedRuns(tokens: ResolvedInline[]): ResolvedInline[] {
-  const openers = new Map<string, Array<{ index: number; token: SyntaxToken }>>();
+  const openers = new Map<string, { index: number; token: SyntaxToken }[]>();
   const pairs = new Map<number, number>();
   const pairedClosers = new Set<number>();
 
@@ -80,7 +80,10 @@ function resolveDelimitedRuns(tokens: ResolvedInline[]): ResolvedInline[] {
     }
 
     const opener = openersForKey[openersForKey.length - 1];
-    if (!isValidDelimitedPair(opener.token, token) || index - opener.index <= 1) {
+    if (
+      !isValidDelimitedPair(opener.token, token) ||
+      index - opener.index <= 1
+    ) {
       openersForKey.push({ index, token });
       continue;
     }
@@ -118,7 +121,10 @@ function isDelimitedToken(token: ResolvedInline): token is SyntaxToken {
   return token.type === 'syntax' && token.kind === 'delimiter';
 }
 
-function isValidDelimitedPair(opener: SyntaxToken, closer: SyntaxToken): boolean {
+function isValidDelimitedPair(
+  opener: SyntaxToken,
+  closer: SyntaxToken,
+): boolean {
   if (opener.marker !== closer.marker || opener.length !== closer.length) {
     return false;
   }
@@ -135,7 +141,7 @@ function delimiterKey(token: SyntaxToken): string {
 }
 
 function findLastMatchingOpener(
-  openers: Array<{ index: number; token: SyntaxToken }>,
+  openers: { index: number; token: SyntaxToken }[],
   length: number,
 ): number {
   for (let index = openers.length - 1; index >= 0; index -= 1) {
@@ -155,7 +161,10 @@ function createDelimitedNode(
   const closer = tokens[closerIndex] as SyntaxToken;
   const innerTokens = tokens.slice(openerIndex + 1, closerIndex);
   const children = resolveInlineStructure(innerTokens);
-  const text = tokens.slice(openerIndex, closerIndex + 1).map((token) => token.text).join('');
+  const text = tokens
+    .slice(openerIndex, closerIndex + 1)
+    .map((token) => token.text)
+    .join('');
 
   const common: ResolvedDelimitedBase = {
     text,
@@ -196,7 +205,10 @@ function createCodeSpan(
 
   return {
     type: 'code_span',
-    text: tokens.slice(openerIndex, closerIndex + 1).map((token) => token.text).join(''),
+    text: tokens
+      .slice(openerIndex, closerIndex + 1)
+      .map((token) => token.text)
+      .join(''),
     startIndex: opener.startIndex,
     endIndex: closer.endIndex,
     innerText,

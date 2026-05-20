@@ -1,9 +1,9 @@
-import {assert, cast} from '../asserts.js';
-import {parseBlocks} from '../markdown/block-parser/api.js';
-import {serializeToString} from '../markdown/block-serializer.js';
-import {HostContext} from '../markdown/host-context.js';
-import {MarkdownNode} from '../markdown/node.js';
-import {MarkdownTree} from '../markdown/view-model.js';
+import { assert, cast } from '../asserts.js';
+import { parseBlocks } from '../markdown/block-parser/api.js';
+import { serializeToString } from '../markdown/block-serializer.js';
+import { HostContext } from '../markdown/host-context.js';
+import { MarkdownNode } from '../markdown/node.js';
+import { MarkdownTree } from '../markdown/view-model.js';
 import {
   ViewModelNode,
   isInlineViewModelNode,
@@ -19,7 +19,7 @@ import {
 } from '../markdown/view-model-util.js';
 
 export function insertMarkdown(markdown: string, node: ViewModelNode) {
-  const {node: root} = parseBlocks(markdown + '\n');
+  const { node: root } = parseBlocks(markdown + '\n');
   if (!root) return;
   assert(root.type === 'document' && root.children);
   const newNodes = root.children.map((newNode) =>
@@ -31,7 +31,7 @@ export function insertMarkdown(markdown: string, node: ViewModelNode) {
     .filter(isInlineViewModelNode);
   const newFocus = newInlineNodes.at(-1);
   performLogicalInsertion(node, newNodes);
-  return {newFocus, newInlineNodes};
+  return { newFocus, newInlineNodes };
 }
 
 export async function copyMarkdownToClipboard(markdown: string) {
@@ -39,8 +39,8 @@ export async function copyMarkdownToClipboard(markdown: string) {
   const mdType = 'web text/markdown';
   await navigator.clipboard.write([
     new ClipboardItem({
-      [textType]: new Blob([markdown], {type: textType}),
-      [mdType]: new Blob([markdown], {type: mdType}),
+      [textType]: new Blob([markdown], { type: textType }),
+      [mdType]: new Blob([markdown], { type: mdType }),
     }),
   ]);
 }

@@ -52,7 +52,9 @@ function isOrderedList(items: MarkdownNode[] | undefined): boolean {
   return firstItem?.type === 'list-item' && /^\d+\.\s/u.test(firstItem.marker);
 }
 
-function renderCodeBlock(node: Extract<MarkdownNode, { type: 'code-block' }>): string {
+function renderCodeBlock(
+  node: Extract<MarkdownNode, { type: 'code-block' }>,
+): string {
   const content = escapeHtmlText(node.content.replace(/\n$/, ''));
   return `<pre><code>${content}\n</code></pre>\n`;
 }
@@ -69,7 +71,9 @@ function renderInlineNode(node: InlineTreeNode): string {
     case 'tag':
       return escapeHtmlText(node.text);
     case 'uri_autolink':
-      return renderUriAutolink(node as Extract<InlineTreeNode, { type: 'uri_autolink' }>);
+      return renderUriAutolink(
+        node as Extract<InlineTreeNode, { type: 'uri_autolink' }>,
+      );
     case 'code_span':
       return `<code>${escapeHtmlText(getPlainText(node.namedChildren))}</code>`;
     case 'emphasis':
@@ -100,18 +104,18 @@ function renderInlineNodes(nodes: InlineTreeNode[]): string {
   return nodes.map(renderInlineNode).join('');
 }
 
-function renderInlineLink(node: Extract<InlineTreeNode, { type: 'inline_link' }>): string {
-  const labelNode = findNamedChild(node.namedChildren, 'link_text') as
-    | InlineTreeNode
-    | undefined;
-  const destinationNode = findNamedChild(node.namedChildren, 'link_destination') as
-    | InlineTreeNode
-    | undefined;
-  const titleNode = findNamedChild(node.namedChildren, 'link_title') as
-    | InlineTreeNode
-    | undefined;
+function renderInlineLink(
+  node: Extract<InlineTreeNode, { type: 'inline_link' }>,
+): string {
+  const labelNode = findNamedChild(node.namedChildren, 'link_text');
+  const destinationNode = findNamedChild(
+    node.namedChildren,
+    'link_destination',
+  );
+  const titleNode = findNamedChild(node.namedChildren, 'link_title');
 
-  const href = destinationNode && 'text' in destinationNode ? destinationNode.text : '';
+  const href =
+    destinationNode && 'text' in destinationNode ? destinationNode.text : '';
   const title = titleNode && 'text' in titleNode ? titleNode.text : undefined;
   const attrs = [`href="${escapeHtmlAttribute(href)}"`];
   if (title !== undefined) {
@@ -122,20 +126,18 @@ function renderInlineLink(node: Extract<InlineTreeNode, { type: 'inline_link' }>
 }
 
 function renderImage(node: Extract<InlineTreeNode, { type: 'image' }>): string {
-  const labelNode = findNamedChild(node.namedChildren, 'link_text') as
-    | InlineTreeNode
-    | undefined;
-  const destinationNode = findNamedChild(node.namedChildren, 'link_destination') as
-    | InlineTreeNode
-    | undefined;
-  const titleNode = findNamedChild(node.namedChildren, 'link_title') as
-    | InlineTreeNode
-    | undefined;
+  const labelNode = findNamedChild(node.namedChildren, 'link_text');
+  const destinationNode = findNamedChild(
+    node.namedChildren,
+    'link_destination',
+  );
+  const titleNode = findNamedChild(node.namedChildren, 'link_title');
 
   const alt = getPlainText(
     labelNode && 'namedChildren' in labelNode ? labelNode.namedChildren : [],
   );
-  const src = destinationNode && 'text' in destinationNode ? destinationNode.text : '';
+  const src =
+    destinationNode && 'text' in destinationNode ? destinationNode.text : '';
   const attrs = [
     `src="${escapeHtmlAttribute(src)}"`,
     `alt="${escapeHtmlAttribute(alt)}"`,
@@ -149,9 +151,12 @@ function renderImage(node: Extract<InlineTreeNode, { type: 'image' }>): string {
   return `<img ${attrs.join(' ')} />`;
 }
 
-function renderUriAutolink(node: Extract<InlineTreeNode, { type: 'uri_autolink' }>): string {
+function renderUriAutolink(
+  node: Extract<InlineTreeNode, { type: 'uri_autolink' }>,
+): string {
   const text = 'text' in node ? node.text : '';
-  const url = text.startsWith('<') && text.endsWith('>') ? text.slice(1, -1) : text;
+  const url =
+    text.startsWith('<') && text.endsWith('>') ? text.slice(1, -1) : text;
   return `<a href="${escapeHtmlAttribute(url)}">${escapeHtmlText(url)}</a>`;
 }
 

@@ -1,10 +1,10 @@
-import {cast} from './asserts.js';
-import type {ViewModelNode} from './markdown/view-model-node.js';
-import {findAncestor, ancestors} from './markdown/view-model-util.js';
-import {viewModel} from './markdown/view-model-node.js';
+import { cast } from './asserts.js';
+import type { ViewModelNode } from './markdown/view-model-node.js';
+import { findAncestor, ancestors } from './markdown/view-model-util.js';
+import { viewModel } from './markdown/view-model-node.js';
 
 export function unindent(node: ViewModelNode, root: ViewModelNode) {
-  const {ancestor: listItem, path} = findAncestor(node, root, 'list-item');
+  const { ancestor: listItem, path } = findAncestor(node, root, 'list-item');
   if (!listItem || !path) return;
   const target = path[0];
   const nextSibling = listItem[viewModel].nextSibling;

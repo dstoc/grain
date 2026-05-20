@@ -3,7 +3,11 @@ import { createContext } from '@lit/context';
 import { cast } from '../asserts.js';
 import type { MarkdownRenderDelegate } from './render-delegate.js';
 import { compareDocumentOrder } from './view-model-util.js';
-import { type InlineViewModelNode, type ViewModelNode, viewModel } from './view-model-node.js';
+import {
+  type InlineViewModelNode,
+  type ViewModelNode,
+  viewModel,
+} from './view-model-node.js';
 
 export class HostContext {
   focusNode?: InlineViewModelNode;
@@ -69,7 +73,9 @@ export class HostContext {
   }
 }
 
-export const hostContext = createContext<HostContext | undefined>('hostContext');
+export const hostContext = createContext<HostContext | undefined>(
+  'hostContext',
+);
 
 export function focusNode(
   context: HostContext,

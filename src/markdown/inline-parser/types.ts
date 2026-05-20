@@ -91,11 +91,7 @@ export interface ResolvedImage extends ResolvedLinkBase {
   titleEndIndex?: number;
 }
 
-export type InlineToken =
-  | TextToken
-  | SyntaxToken
-  | TagToken
-  | UriAutolinkToken;
+export type InlineToken = TextToken | SyntaxToken | TagToken | UriAutolinkToken;
 
 export type ResolvedInline =
   | InlineToken

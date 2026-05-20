@@ -14,10 +14,7 @@ import {
 } from './prefix-resolution.js';
 import { syncQuoteStack } from './container-management.js';
 import { closeParagraph, appendParagraphLine } from './handlers/paragraphs.js';
-import {
-  isBlankLine,
-  currentSectionContainer,
-} from './utils.js';
+import { isBlankLine, currentSectionContainer } from './utils.js';
 import { exitDetachedContainerContexts } from './cleanup.js';
 import {
   isClosingFence,
@@ -60,10 +57,8 @@ export function parseLine(state: BlockParseState, line: string) {
       quotedListContinuation.quoteDepth,
     );
     state.currentListPath = quotedListContinuation.listPath;
-    state.currentList =
-      state.currentListPath.at(-1)?.[viewModel].parent?.type === 'list'
-        ? state.currentListPath.at(-1)?.[viewModel].parent
-        : undefined;
+    const parentBlock = state.currentListPath.at(-1)?.[viewModel].parent;
+    state.currentList = parentBlock?.type === 'list' ? parentBlock : undefined;
     if (quotedListContinuation.content === '') {
       closeParagraph(state);
       return;
@@ -156,10 +151,8 @@ export function projectPendingLine(
       quotedListContinuation.quoteDepth,
     );
     state.currentListPath = quotedListContinuation.listPath;
-    state.currentList =
-      state.currentListPath.at(-1)?.[viewModel].parent?.type === 'list'
-        ? state.currentListPath.at(-1)?.[viewModel].parent
-        : undefined;
+    const parentBlock = state.currentListPath.at(-1)?.[viewModel].parent;
+    state.currentList = parentBlock?.type === 'list' ? parentBlock : undefined;
     return projectPendingResolvedContent(
       state,
       quotedListContinuation.container,
@@ -232,14 +225,13 @@ function expandCurrentListPathFromTree(state: BlockParseState) {
       .reverse()
       .find((child) => child.type === 'list');
     if (!nestedList?.children?.length) return;
-    const nestedItem = nestedList.children.at(-1);
-    if (!nestedItem || nestedItem.type !== 'list-item') return;
-    if (state.currentListPath.includes(nestedItem as never)) return;
-    state.currentListPath = [...state.currentListPath, nestedItem as never];
+    const nestedItem = nestedList.children.at(-1) as ViewModelNode | undefined;
+    if (nestedItem?.type !== 'list-item') return;
+    if (state.currentListPath.includes(nestedItem)) return;
+    state.currentListPath = [...state.currentListPath, nestedItem];
+    const parentBlock = nestedItem[viewModel].parent;
     state.currentList =
-      nestedItem[viewModel].parent?.type === 'list'
-        ? (nestedItem[viewModel].parent as never)
-        : state.currentList;
+      parentBlock?.type === 'list' ? parentBlock : state.currentList;
   }
 }
 

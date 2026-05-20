@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import type {ViewModelNode} from '../markdown/view-model-node.js';
-import {viewModel} from '../markdown/view-model-node.js';
+import type { ViewModelNode } from '../markdown/view-model-node.js';
+import { viewModel } from '../markdown/view-model-node.js';
 
 export function isLogicalContainingBlock(node?: ViewModelNode) {
   switch (node?.type) {

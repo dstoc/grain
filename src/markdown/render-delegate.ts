@@ -7,5 +7,5 @@ export interface MarkdownRenderDelegate {
     node: ViewModelNode & CodeBlockNode;
     hostContext: HostContext;
     selected: boolean;
-  }) => unknown | undefined;
+  }) => unknown;
 }

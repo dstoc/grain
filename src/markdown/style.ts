@@ -122,8 +122,8 @@ export const styles = [
       caret-color: transparent;
     }
     md-block:not(
-        :has(md-inline:not([selected]), md-transclusion:not([selected]))
-      ) {
+      :has(md-inline:not([selected]), md-transclusion:not([selected]))
+    ) {
       --md-accent-color: currentcolor;
       --md-active-block-color: var(--md-block-selection-bgcolor);
       --md-block-quote-bgcolor: var(--md-block-selection-bgcolor);

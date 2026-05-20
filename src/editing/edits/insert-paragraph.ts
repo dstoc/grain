@@ -1,7 +1,7 @@
-import {assert, cast} from '../../asserts.js';
-import {EditContext} from '../editor.js';
-import {unindent} from '../../indent-util.js';
-import {ParagraphNode} from '../../markdown/node.js';
+import { assert, cast } from '../../asserts.js';
+import { EditContext } from '../editor.js';
+import { unindent } from '../../indent-util.js';
+import { ParagraphNode } from '../../markdown/node.js';
 import {
   InlineViewModelNode,
   ViewModelNode,
@@ -14,7 +14,7 @@ import {
   shallowTraverse,
   swapNodes,
 } from '../../markdown/view-model-util.js';
-import {viewModel} from '../../markdown/view-model-node.js';
+import { viewModel } from '../../markdown/view-model-node.js';
 
 export function insertParagraph(context: EditContext, index: number) {
   if (
@@ -27,7 +27,7 @@ export function insertParagraph(context: EditContext, index: number) {
   insertSiblingParagraph(context, index);
 }
 
-export {insertSiblingParagraph as insertLineBreak};
+export { insertSiblingParagraph as insertLineBreak };
 
 /**
  * Unindents the immediately containing list-item if `node` is an
@@ -39,8 +39,7 @@ function unindentIfEmptyListItem(context: EditContext): boolean {
   if (node.type !== 'paragraph') return false;
   if (node.content.length > 0) return false;
   const parent = node[viewModel].parent;
-  if (!parent || parent.type !== 'list-item' || parent === context.root)
-    return false;
+  if (parent?.type !== 'list-item' || parent === context.root) return false;
   if (parent.children!.length > 1) return false;
   context.startEditing();
   unindent(node, context.root);
@@ -63,7 +62,7 @@ function splitBlockQuoteOrListItemOnEmptyParagraph(
   if (node.type !== 'paragraph') return false;
   if (node.content.length > 0) return false;
   if (!node[viewModel].parent) return false;
-  const {ancestor} = findAncestor(
+  const { ancestor } = findAncestor(
     node,
     context.root,
     'list-item',
@@ -151,13 +150,12 @@ function insertParagraphInList(
 ): boolean {
   const node = context.node;
   assert(isInlineViewModelNode(node));
-  const {ancestor, path} = findAncestor(node, context.root, 'list');
+  const { ancestor, path } = findAncestor(node, context.root, 'list');
   if (
     !(
       ancestor &&
       node.content.length > 0 &&
-      path &&
-      path.length === 2 &&
+      path?.length === 2 &&
       path[0].type === 'list-item' &&
       path[1].type === 'paragraph' &&
       (path[0].children?.length === 1 ||

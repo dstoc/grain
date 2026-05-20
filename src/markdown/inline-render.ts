@@ -81,7 +81,9 @@ export class MarkdownInline extends LitElement implements SigpropHost {
     if (!this.node) return;
     if (!this.node[viewModel].connected) return;
     this.selected = this.hostContext?.selection.has(this.node) ?? false;
-    return html`<md-span .node=${this.node[viewModel].inlineTree.rootNode}></md-span>`;
+    return html`<md-span
+      .node=${this.node[viewModel].inlineTree.rootNode}
+    ></md-span>`;
   }
 
   override updated() {
@@ -122,7 +124,10 @@ export class MarkdownInline extends LitElement implements SigpropHost {
     }
     if (final) {
       const range = document.createRange();
-      range.setStart(final, final.nodeType === Node.TEXT_NODE ? (final as Text).length : 0);
+      range.setStart(
+        final,
+        final.nodeType === Node.TEXT_NODE ? (final as Text).length : 0,
+      );
       selection.removeAllRanges();
       selection.addRange(range);
     }
@@ -148,7 +153,9 @@ export class MarkdownInline extends LitElement implements SigpropHost {
             selection.focusOffset,
           );
           if (point.span) {
-            this.setFocus(point.span.node!.startIndex + point.index + -focusOffset);
+            this.setFocus(
+              point.span.node!.startIndex + point.index + -focusOffset,
+            );
           }
         }
       } else {
@@ -182,7 +189,11 @@ export class MarkdownInline extends LitElement implements SigpropHost {
     );
     walker.currentNode = node;
     let previous = walker.previousNode();
-    while (previous && previous !== parent && !(previous instanceof MarkdownSpan)) {
+    while (
+      previous &&
+      previous !== parent &&
+      !(previous instanceof MarkdownSpan)
+    ) {
       if (previous.nodeType === Node.TEXT_NODE) {
         offset += (previous as Text).length;
       }
@@ -204,7 +215,9 @@ export class MarkdownInline extends LitElement implements SigpropHost {
       selection.focusNode!,
       selection.focusOffset,
     );
-    return start.index <= end.index ? { start, end } : { start: end, end: start };
+    return start.index <= end.index
+      ? { start, end }
+      : { start: end, end: start };
   }
 
   moveCaret(
@@ -249,7 +262,9 @@ export class MarkdownInline extends LitElement implements SigpropHost {
 
     if (granularity === 'line') {
       if (direction === 'backward') {
-        return result.index < line.start.index || initial.index - line.start.index;
+        return (
+          result.index < line.start.index || initial.index - line.start.index
+        );
       }
       return (
         result.index > line.end.index ||
@@ -257,7 +272,10 @@ export class MarkdownInline extends LitElement implements SigpropHost {
         initial.index - line.start.index
       );
     }
-    return result.index !== initial.index || (direction === 'backward' ? Infinity : 0);
+    return (
+      result.index !== initial.index ||
+      (direction === 'backward' ? Infinity : 0)
+    );
   }
 
   getSelection() {
@@ -339,7 +357,9 @@ export class MarkdownSpan extends LitElement {
 
   override async getUpdateComplete() {
     const result = super.getUpdateComplete();
-    await Promise.all(Array.from(this.spans).map((span) => span.updateComplete));
+    await Promise.all(
+      Array.from(this.spans).map((span) => span.updateComplete),
+    );
     return result;
   }
 
@@ -398,9 +418,12 @@ export class MarkdownSpan extends LitElement {
       ) {
         return;
       }
-      const text = node.namedChildren.find((child) => child.type === 'link_text')?.text ?? '';
+      const text =
+        node.namedChildren.find((child) => child.type === 'link_text')?.text ??
+        '';
       const destination =
-        node.namedChildren.find((child) => child.type === 'link_destination')?.text ??
+        node.namedChildren.find((child) => child.type === 'link_destination')
+          ?.text ??
         (node.type === 'uri_autolink' ? node.text.slice(1, -1) : null) ??
         text;
       inlineLinkClick = {
@@ -489,7 +512,12 @@ declare global {
     modify(
       alter: 'move' | 'extend',
       direction: 'forward' | 'backward',
-      granularity: 'character' | 'lineboundary' | 'line' | 'word' | 'documentboundary',
+      granularity:
+        | 'character'
+        | 'lineboundary'
+        | 'line'
+        | 'word'
+        | 'documentboundary',
     ): void;
   }
 

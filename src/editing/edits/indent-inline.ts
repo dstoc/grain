@@ -1,5 +1,5 @@
-import {EditContext} from '../editor.js';
-import {indent, unindent} from '../../indent-util.js';
+import { EditContext } from '../editor.js';
+import { indent, unindent } from '../../indent-util.js';
 
 export function editInlineIndent(
   context: EditContext,

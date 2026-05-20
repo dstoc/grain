@@ -23,18 +23,18 @@ const INLINE_RELEVANT_SECTIONS = new Set([
   'Autolinks',
 ]);
 
-const { default: commonmarkSpec } = await import(
-  '../../../data/commonmark.0.31.2.spec.json?raw'
-);
-const fixtures = JSON.parse(commonmarkSpec as string) as CommonMarkFixture[];
+const { default: commonmarkSpec } =
+  await import('../../../data/commonmark.0.31.2.spec.json?raw');
+const fixtures = JSON.parse(commonmarkSpec) as CommonMarkFixture[];
 
 const selectedFixtures = fixtures.filter((fixture) =>
   INLINE_RELEVANT_SECTIONS.has(fixture.section),
 );
 
-const skippedFixtures = selectedFixtures.filter((fixture) =>
-  DEFAULT_COMMONMARK_SKIP_EXAMPLES.has(fixture.example) ||
-  DEFAULT_COMMONMARK_SKIP_REASONS.has(fixture.example),
+const skippedFixtures = selectedFixtures.filter(
+  (fixture) =>
+    DEFAULT_COMMONMARK_SKIP_EXAMPLES.has(fixture.example) ||
+    DEFAULT_COMMONMARK_SKIP_REASONS.has(fixture.example),
 );
 
 const executedFixtures = selectedFixtures.filter(
@@ -48,7 +48,9 @@ describe('commonmark html serializer', () => {
     console.info(
       `[commonmark] total=${selectedFixtures.length} executed=${executedFixtures.length} skipped=${skippedFixtures.length}`,
     );
-    expect(executedFixtures.length + skippedFixtures.length).toBe(selectedFixtures.length);
+    expect(executedFixtures.length + skippedFixtures.length).toBe(
+      selectedFixtures.length,
+    );
   });
 
   for (const fixture of selectedFixtures) {
