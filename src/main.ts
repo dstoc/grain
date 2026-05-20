@@ -9,7 +9,9 @@ import {
 import type { BlockParser } from './markdown/block-parser/api.js';
 import { serializeToString } from './markdown/block-serializer.js';
 import type { MarkdownRenderDelegate } from './markdown/render-delegate.js';
+import { viewModel } from './markdown/view-model-node.js';
 import type { ViewModelNode } from './markdown/view-model-node.js';
+import type { MarkdownTree } from './markdown/view-model.js';
 import { styles as appStyles } from './style.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, ...appStyles];
@@ -345,6 +347,8 @@ class MarkdownDevHarness extends LitElement {
   declare private serializedMarkdown: string;
   declare private treeJson: string;
   private parser: BlockParser;
+  private observedTree: MarkdownTree | undefined;
+  private parserDirtyFromRenderEdit = false;
   private playbackTimer: number | undefined;
   private readonly playbackDelayMs = 10;
 
@@ -474,8 +478,13 @@ class MarkdownDevHarness extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    this.observeRootTree(undefined);
     this.stopPlayback();
     super.disconnectedCallback();
+  }
+
+  protected override updated() {
+    this.observeRootTree(this.root?.[viewModel].tree);
   }
 
   private startPlayback() {
@@ -521,7 +530,11 @@ class MarkdownDevHarness extends LitElement {
   }
 
   private reparse(markdown: string, forceFull = false) {
-    if (!forceFull && markdown.startsWith(this.source)) {
+    if (
+      !forceFull &&
+      !this.parserDirtyFromRenderEdit &&
+      markdown.startsWith(this.source)
+    ) {
       const appended = markdown.slice(this.source.length);
       this.source = markdown;
       this.parser.push(appended);
@@ -533,6 +546,7 @@ class MarkdownDevHarness extends LitElement {
       this.parseMode = forceFull ? 'initial' : 'full';
     }
 
+    this.parserDirtyFromRenderEdit = false;
     this.playbackIndex = this.source.length;
     this.updateFromParser();
   }
@@ -558,6 +572,28 @@ class MarkdownDevHarness extends LitElement {
     this.treeJson = JSON.stringify(serializedTree, null, 2);
     this.renderVersion++;
   }
+
+  private observeRootTree(tree: MarkdownTree | undefined) {
+    if (this.observedTree === tree) return;
+    this.observedTree?.removeEventListener('tree-change', this.onTreeChange);
+    this.observedTree = tree;
+    this.observedTree?.addEventListener('tree-change', this.onTreeChange);
+  }
+
+  private onTreeChange = (event: Event) => {
+    if ((event as CustomEvent<string>).detail !== 'edit') return;
+    if (!this.root) return;
+    this.stopPlayback();
+    const serializedTree = this.root[viewModel].tree.serialize();
+    this.source = serializeToString(serializedTree);
+    this.serializedMarkdown = this.source;
+    this.treeJson = JSON.stringify(serializedTree, null, 2);
+    this.pendingText = '';
+    this.parseMode = 'edited';
+    this.playbackIndex = this.source.length;
+    this.parserDirtyFromRenderEdit = true;
+    this.requestUpdate();
+  };
 }
 
 customElements.define('md-dev-harness', MarkdownDevHarness);
