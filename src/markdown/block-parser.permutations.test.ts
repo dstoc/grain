@@ -37,6 +37,14 @@ const RUN_EXTENSIVE =
       process?: { env?: Record<string, string | undefined> };
     }
   ).process?.env?.MARKDOWN_EXTENSIVE_TESTS === '1';
+const RUN_EXTENSIVE_SMOKE =
+  (
+    globalThis as {
+      process?: { env?: Record<string, string | undefined> };
+    }
+  ).process?.env?.MARKDOWN_EXTENSIVE_SMOKE_TESTS === '1';
+
+type GeneratedMode = 'default' | 'extensive-smoke' | 'extensive';
 
 interface GeneratedCase {
   chain: ChainToken[];
@@ -394,7 +402,7 @@ function isCanonicalGeneratedDocument(doc: DocumentNode): boolean {
 
 function augmentationPermutationsForMode(
   chain: ChainToken[],
-  extensive: boolean,
+  mode: GeneratedMode,
 ): Augmentation[][] {
   const simpleSiblingKinds: SiblingKind[] = ['paragraph'];
   const extensiveSiblingKinds: SiblingKind[] = [
@@ -405,7 +413,8 @@ function augmentationPermutationsForMode(
     'ordered',
     'code-block',
   ];
-  const siblingKinds = extensive ? extensiveSiblingKinds : simpleSiblingKinds;
+  const siblingKinds =
+    mode === 'default' ? simpleSiblingKinds : extensiveSiblingKinds;
   const singles: Augmentation[] = [];
 
   for (const sibling of siblingKinds) {
@@ -452,7 +461,7 @@ function augmentationPermutationsForMode(
     results.push([augmentation]);
   }
 
-  if (extensive) {
+  if (mode !== 'default') {
     for (let i = 0; i < singles.length; i++) {
       for (let j = i + 1; j < singles.length; j++) {
         if (isUnresolvedDoublyQuotedListPair(chain, singles[i], singles[j])) {
@@ -541,9 +550,111 @@ function isUnresolvedDoublyQuotedListPair(
   return hasDepth2AfterQuote && hasDepth2AfterOuterSibling;
 }
 
-function generatedCanonicalCasesForMode(
-  extensive: boolean,
+function augmentationDepthTag(augmentation: Augmentation): string {
+  switch (augmentation.kind) {
+    case 'root-block':
+      return 'root';
+    case 'container-block':
+      return `container-${augmentation.depth}`;
+    case 'list-sibling-item':
+      return `list-${augmentation.depth}`;
+  }
+}
+
+function generatedCaseContextFeatures(chain: ChainToken[]): string[] {
+  const features = [`depth:${chain.length}`];
+  if (chain.includes('section')) {
+    features.push('context:section');
+  }
+  if (chain.includes('quote')) {
+    features.push('context:quote');
+  }
+  if (chain.includes('bullet') || chain.includes('ordered')) {
+    features.push('context:list');
+  }
+  return features;
+}
+
+function generatedCaseCoverageFeatures(testCase: NamedGeneratedCase): string[] {
+  const features = [
+    `leaf:${testCase.leaf}`,
+    ...generatedCaseContextFeatures(testCase.chain),
+  ];
+
+  for (const augmentation of testCase.augmentations) {
+    features.push(`aug-kind:${augmentation.kind}`);
+    features.push(`aug-position:${augmentation.position}`);
+    features.push(`aug-sibling:${augmentation.sibling}`);
+    features.push(`aug-depth:${augmentationDepthTag(augmentation)}`);
+  }
+
+  if (testCase.augmentations.length === 2) {
+    const [first, second] = [...testCase.augmentations].sort((left, right) =>
+      describeAugmentation(left).localeCompare(describeAugmentation(right)),
+    );
+    features.push(`pair-kind:${first.kind}+${second.kind}`);
+    features.push(`pair-position:${first.position}+${second.position}`);
+    features.push(`pair-sibling:${first.sibling}+${second.sibling}`);
+    features.push(
+      `pair-depth:${augmentationDepthTag(first)}+${augmentationDepthTag(second)}`,
+    );
+  }
+
+  return features;
+}
+
+function selectExtensiveSmokeCases(
+  extensiveCases: NamedGeneratedCase[],
 ): NamedGeneratedCase[] {
+  const smokeCases = extensiveCases.filter(
+    (testCase) => testCase.augmentations.length <= 1,
+  );
+  const selectedNames = new Set(smokeCases.map((testCase) => testCase.name));
+  const coveredFeatures = new Set<string>();
+
+  for (const testCase of smokeCases) {
+    for (const feature of generatedCaseCoverageFeatures(testCase)) {
+      coveredFeatures.add(feature);
+    }
+  }
+
+  const doubleCases = extensiveCases
+    .filter((testCase) => testCase.augmentations.length === 2)
+    .sort((left, right) => left.name.localeCompare(right.name));
+
+  for (;;) {
+    let bestCase: NamedGeneratedCase | undefined;
+    let bestNewFeatureCount = 0;
+
+    for (const testCase of doubleCases) {
+      if (selectedNames.has(testCase.name)) {
+        continue;
+      }
+
+      const newFeatureCount = generatedCaseCoverageFeatures(testCase).filter(
+        (feature) => !coveredFeatures.has(feature),
+      ).length;
+      if (newFeatureCount > bestNewFeatureCount) {
+        bestCase = testCase;
+        bestNewFeatureCount = newFeatureCount;
+      }
+    }
+
+    if (!bestCase || bestNewFeatureCount === 0) {
+      break;
+    }
+
+    smokeCases.push(bestCase);
+    selectedNames.add(bestCase.name);
+    for (const feature of generatedCaseCoverageFeatures(bestCase)) {
+      coveredFeatures.add(feature);
+    }
+  }
+
+  return smokeCases;
+}
+
+function generatedCanonicalCasesForMode(mode: GeneratedMode): NamedGeneratedCase[] {
   const seenMarkdown = new Set<string>();
   const cases: NamedGeneratedCase[] = [];
   const chains = [...chainPermutations(2), ...chainPermutations(3)];
@@ -553,7 +664,7 @@ function generatedCanonicalCasesForMode(
     for (const leaf of leaves) {
       for (const augmentations of augmentationPermutationsForMode(
         chain,
-        extensive,
+        mode,
       )) {
         if (!supportsGeneratedRoundtrip(chain, leaf, augmentations)) {
           continue;
@@ -578,6 +689,10 @@ function generatedCanonicalCasesForMode(
         });
       }
     }
+  }
+
+  if (mode === 'extensive-smoke') {
+    return selectExtensiveSmokeCases(cases);
   }
 
   return cases;
@@ -1201,7 +1316,7 @@ describe('block parser content growth heuristic helpers', () => {
 
 describe('block parser generated permutations', () => {
   it('roundtrips generated nested and sibling-bearing permutations through serialize and parse', () => {
-    for (const testCase of generatedCanonicalCasesForMode(false)) {
+    for (const testCase of generatedCanonicalCasesForMode('default')) {
       const { expected, markdown, name, leaf } = testCase;
       if (
         isUnsupportedDefaultRoundtripNestedQuoteCase(
@@ -1228,7 +1343,7 @@ describe('block parser generated permutations', () => {
   });
 
   it('matches full parse for generated paragraph nested and sibling-bearing permutations under char-by-char append', () => {
-    for (const testCase of generatedCanonicalCasesForMode(false)) {
+    for (const testCase of generatedCanonicalCasesForMode('default')) {
       const { chain, leaf, expected, markdown, name } = testCase;
       if (
         isUnsupportedDefaultIncrementalNestedQuoteCase(
@@ -1264,7 +1379,7 @@ describe('block parser generated permutations', () => {
   });
 
   it('matches full parse for generated code-block nested and sibling-bearing permutations under char-by-char append', () => {
-    for (const testCase of generatedCanonicalCasesForMode(false)) {
+    for (const testCase of generatedCanonicalCasesForMode('default')) {
       const { chain, leaf, expected, markdown, name } = testCase;
       if (
         isUnsupportedDefaultCodeBlockIncrementalCase(
@@ -1330,9 +1445,66 @@ function isUnsupportedDefaultCodeBlockIncrementalCase(
   );
 }
 
+if (RUN_EXTENSIVE_SMOKE) {
+  describe('block parser extensive smoke generated permutations', () => {
+    const smokeCases = generatedCanonicalCasesForMode('extensive-smoke');
+    const namedSmokeCases = smokeCases.map(
+      (testCase) => [testCase.name, testCase] as const,
+    );
+
+    it.each(namedSmokeCases)(
+      'roundtrips %s through serialize and parse',
+      (_name, { expected, markdown }) => {
+        const reparsed = parseBlocks(markdown).node;
+        expect(reparsed).toEqual(expected);
+      },
+    );
+
+    const smokeParagraphCases = smokeCases.filter(
+      ({ chain, leaf, augmentations }) =>
+        leaf === 'paragraph' &&
+        supportsGeneratedIncremental(chain, augmentations),
+    );
+    const namedSmokeParagraphCases = smokeParagraphCases.map(
+      (testCase) => [testCase.name, testCase] as const,
+    );
+
+    it.each(namedSmokeParagraphCases)(
+      'matches char-by-char append parity for %s',
+      (_name, { expected, markdown }) => {
+        const parser = createBlockParser();
+        for (const char of markdown) {
+          parser.push(char);
+        }
+        expect(parser.finish().serialize()).toEqual(expected);
+      },
+    );
+
+    const smokeCodeBlockCases = smokeCases.filter(
+      ({ chain, leaf, augmentations }) =>
+        leaf === 'code-block' &&
+        supportsGeneratedIncremental(chain, augmentations),
+    );
+    const namedSmokeCodeBlockCases = smokeCodeBlockCases.map(
+      (testCase) => [testCase.name, testCase] as const,
+    );
+
+    it.each(namedSmokeCodeBlockCases)(
+      'matches char-by-char append parity for code block %s',
+      (_name, { expected, markdown }) => {
+        const parser = createBlockParser();
+        for (const char of markdown) {
+          parser.push(char);
+        }
+        expect(parser.finish().serialize()).toEqual(expected);
+      },
+    );
+  });
+}
+
 if (RUN_EXTENSIVE) {
   describe('block parser extensive generated permutations', () => {
-    const extensiveCases = generatedCanonicalCasesForMode(true);
+    const extensiveCases = generatedCanonicalCasesForMode('extensive');
     const namedExtensiveCases = extensiveCases.map(
       (testCase) => [testCase.name, testCase] as const,
     );

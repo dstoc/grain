@@ -15,6 +15,7 @@
     "test:watch": "vitest --project node",
     "test:browser": "vitest run --project browser",
     "test:all": "vitest run",
+    "test:extensive-smoke": "MARKDOWN_EXTENSIVE_SMOKE_TESTS=1 vitest run --project node src/markdown/block-parser.permutations.test.ts",
     "test:extensive": "MARKDOWN_EXTENSIVE_TESTS=1 vitest run --project node src/markdown/block-parser.permutations.test.ts"
   },
   "devDependencies": {
