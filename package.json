@@ -11,9 +11,11 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "test:extensive": "MARKDOWN_EXTENSIVE_TESTS=1 vitest run src/markdown/block-parser.permutations.test.ts"
+    "test": "vitest run --project node",
+    "test:watch": "vitest --project node",
+    "test:browser": "vitest run --project browser",
+    "test:all": "vitest run",
+    "test:extensive": "MARKDOWN_EXTENSIVE_TESTS=1 vitest run --project node src/markdown/block-parser.permutations.test.ts"
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",
