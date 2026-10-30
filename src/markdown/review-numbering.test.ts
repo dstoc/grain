@@ -1,5 +1,6 @@
 import { expect, test } from 'vitest';
 import { MarkdownTree } from './view-model.js';
+import { viewModel } from './view-model-node.js';
 import { editInlineIndent } from '../editing/edits/indent-inline.js';
 import { editBlockSelectionIndent } from '../editing/edits/indent-block-selection.js';
 import { insertParagraph } from '../editing/edits/insert-paragraph.js';
@@ -83,4 +84,25 @@ test('Enter in a bullet run retains a bullet marker through undo and redo', () =
     return {};
   });
   checkHistory(tree, before, '5. a\n* b\n* c\n* <!-- -->\n');
+});
+
+test.each([
+  ['2. ', '* ', '2. a\n3. b\n'],
+  ['* ', '9) ', '* a\n* b\n'],
+  ['5) ', '20. ', '5) a\n6) b\n'],
+])('merging lists uses the first list marker (%s, %s)', (first, second, after) => {
+  const tree = new MarkdownTree({
+    type: 'document',
+    children: [
+      { type: 'list', children: [item(first, 'a')] },
+      { type: 'paragraph', content: 'separator' },
+      { type: 'list', children: [item(second, 'b')] },
+    ],
+  });
+  const before = text(tree);
+  tree.edit(() => {
+    tree.root.children![1][viewModel].remove();
+    return {};
+  });
+  checkHistory(tree, before, after);
 });
