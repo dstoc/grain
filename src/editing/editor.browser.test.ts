@@ -1,4 +1,4 @@
-import { test, describe, expect } from 'vitest';
+import { test, describe, expect, vi } from 'vitest';
 import { Editor } from './editor.js';
 import { testState } from './test/test_state.js';
 import { MarkdownTree } from '../markdown/view-model.js';
@@ -91,6 +91,44 @@ describe('Editor', () => {
   });
 
   describe('undo', () => {
+    test('restores focus and block selection across deletion, undo and redo', async () => {
+      await state.input.insert('hello');
+      await state.input.insertParagraph();
+      await state.input.insert('world');
+      await state.input.selectAll();
+      await state.input.press('Control+a', 2);
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const focused = () => renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      expect(focused().hostContext!.selection.size).toBe(2);
+      await state.input.press('Backspace');
+      expect(focused().node!.content).toBe('');
+      expect(focused().getSelection()?.start.index).toBe(0);
+      expect(focused().hostContext!.selection.size).toBe(0);
+      await state.input.press('Control+z');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        hello
+
+        world
+      `);
+      expect(focused().node!.content).toBe('world');
+      expect(focused().hostContext!.selection.size).toBe(2);
+      await state.input.press('Control+y');
+      expect(focused().node!.content).toBe('');
+      expect(focused().getSelection()?.start.index).toBe(0);
+      expect(focused().hostContext!.selection.size).toBe(0);
+      await state.input.insert('again');
+      expect(focused().node!.content).toBe('again');
+    });
+
+    test('can type after deleting the only selected block', async () => {
+      await state.input.insert('hello');
+      await state.input.selectAll();
+      await state.input.press('Control+a');
+      await state.input.press('Backspace');
+      await state.input.insert('again');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`again`);
+    });
+
     test('can undo block selection delete', async () => {
       await state.input.insert('hello');
       await state.input.insertParagraph();
@@ -98,11 +136,85 @@ describe('Editor', () => {
       await state.input.selectAll();
       await state.input.press('Control+a');
       await state.input.press('Backspace');
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const focused = () => renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      expect(focused().node!.content).toBe('hello');
       await state.input.press('Control+z');
+      expect(focused().node!.content).toBe('item');
       expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
         hello
         * item
       `);
+    });
+
+    test('restores focus after deleting all nested list blocks', async () => {
+      await state.input.insert('* first');
+      await state.input.insertParagraph();
+      await state.input.insert('second');
+      await state.input.selectAll();
+      await state.input.press('Control+a', 3);
+      await state.input.press('Backspace');
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      expect(focused).toBeTruthy();
+      await state.input.insert('again');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`again`);
+    });
+
+    test('keeps an editable focused after cutting all blocks', async () => {
+      const write = vi.spyOn(navigator.clipboard, 'write').mockResolvedValue();
+      try {
+        await state.input.insert('hello');
+        await state.input.insertParagraph();
+        await state.input.insert('world');
+        await state.input.selectAll();
+        await state.input.press('Control+a', 2);
+        await state.input.press('Control+x');
+        expect(write).toHaveBeenCalledOnce();
+        await state.input.insert('again');
+        expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`again`);
+      } finally {
+        write.mockRestore();
+      }
+    });
+
+    test('retains focus through split, merge, indent and unindent', async () => {
+      await state.input.insert('* hello');
+      await state.input.insertParagraph();
+      await state.input.insert('world');
+      await state.input.press('Tab');
+      await state.input.press('Shift+Tab');
+      await state.input.press('ArrowLeft', 5);
+      await state.input.press('Backspace');
+      await state.input.insert('!');
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      expect(renderer.shadowRoot!.querySelector('md-inline:focus')).toBeTruthy();
+    });
+
+    test('retains focus after pasting Markdown blocks', async () => {
+      const read = vi.spyOn(navigator.clipboard, 'read').mockResolvedValue([]);
+      const readText = vi
+        .spyOn(navigator.clipboard, 'readText')
+        .mockResolvedValue('first\n\nsecond');
+      try {
+        const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+        const inline = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+        await state.editor.triggerPaste(
+          inline,
+          inline.node!,
+          { startIndex: 0, oldEndIndex: 0 },
+          true,
+        );
+        await nextTask();
+        const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+        expect(focused.node!.content).toBe('second');
+        await state.input.press('Escape');
+        await state.input.insert('!');
+        expect(focused.node!.content).toBe('second!');
+      } finally {
+        read.mockRestore();
+        readText.mockRestore();
+      }
     });
   });
 

@@ -26,7 +26,11 @@ import {
   InlineKeyDown,
   InlineLinkClick,
 } from '../markdown/inline-render.js';
-import { findNextEditable, findPreviousEditable } from '../markdown/view-model-util.js';
+import {
+  findNextEditable,
+  findPreviousEditable,
+  isAncestorOf,
+} from '../markdown/view-model-util.js';
 import { ViewModelNode, InlineViewModelNode, viewModel } from '../markdown/view-model-node.js';
 import { getContainingTransclusion } from '../markdown/transclusion.js';
 import { expandSelection, getBlockSelectionTarget } from './block-selection-util.js';
@@ -165,15 +169,29 @@ export class Editor extends LitElement {
       },
     };
     let actionResult: ReturnType<T>;
-    const ops = context.node[viewModel].tree.edit(() => {
-      actionResult = action(context, ...args);
-      if (endFocus && hostContext.hasSelection) {
-        endFocus.selection = [...hostContext.selection];
-      }
-      return { startFocus, endFocus };
-    });
+    const ops = context.node[viewModel].tree.edit(
+      () => {
+        actionResult = action(context, ...args);
+        if (endFocus && hostContext.hasSelection) {
+          endFocus.selection = [...hostContext.selection];
+        }
+        return { startFocus, endFocus };
+      },
+      true,
+      undefined,
+      (focus, hasOperations) => {
+        const belongsToRoot = (node: ViewModelNode) =>
+          node === context.root || isAncestorOf(context.root, node);
+        if (focus && belongsToRoot(focus.node)) return (endFocus = focus);
+        endFocus = undefined;
+        if (hasOperations && startFocus && !belongsToRoot(startFocus.node)) {
+          const node = findNextEditable(context.root, context.root, true);
+          if (node) endFocus = { node, offset: 0 };
+        }
+        return endFocus;
+      },
+    );
     if (ops.length > 0 && !endFocus) {
-      // TODO: also check that the focus is still connected
       console.warn(`Edit action: "${action.name}" did not set final focus`);
     } else if (endFocus) {
       hostContext.focusNode = endFocus.node;
