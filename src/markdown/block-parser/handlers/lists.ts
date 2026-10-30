@@ -45,6 +45,7 @@ export function appendListItem(
     children: [],
   }) as ListItemViewModelNode;
   item[viewModel].insertBefore(list);
+  state.sourceMarkerWidths.set(item, marker.length);
   state.currentListPath = buildListPath(state, parent, item);
   parseInitialListItemContent(state, item, content);
   state.sawContent = true;

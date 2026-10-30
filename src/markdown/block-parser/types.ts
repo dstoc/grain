@@ -24,6 +24,8 @@ export interface BlockParseState {
   currentParagraph?: ParagraphViewModelNode;
   currentList?: ListViewModelNode;
   currentListPath: ListItemViewModelNode[];
+  // Source indentation remains stable when document markers are normalized.
+  sourceMarkerWidths: Map<ListItemViewModelNode, number>;
   currentQuoteBase?: ViewModelNode;
   currentQuoteStack: BlockQuoteViewModelNode[];
   currentCodeBlock?: CodeBlockViewModelNode;
@@ -67,6 +69,7 @@ export interface BlockParserSnapshot {
   finished: boolean;
   currentParagraphPath?: number[];
   currentListPath: number[][];
+  sourceMarkerWidths?: { path: number[]; width: number }[];
   currentQuoteBasePath?: number[];
   currentQuoteStackPaths: number[][];
   currentCodeBlockPath?: number[];
