@@ -187,6 +187,79 @@ describe('Editor', () => {
   });
 
   describe('list items', () => {
+    test('renders following items after inserting at the start of a numbered item', async () => {
+      await state.input.insert('5. aaa');
+      await state.input.insertParagraph();
+      await state.input.insert('bbb');
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const first = renderer.shadowRoot!.querySelector('md-inline')!;
+      first.focus();
+      const range = document.createRange();
+      range.selectNodeContents(first);
+      range.collapse(true);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      await state.input.insertParagraph();
+      const renderedText = () =>
+        Array.from(renderer.shadowRoot!.querySelectorAll('md-inline')).map(
+          (inline) => inline.textContent,
+        );
+      expect(renderedText()).toEqual(['', 'aaa', 'bbb']);
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        5. <!-- -->
+        6. aaa
+        7. bbb
+      `);
+      await state.input.press('Control+z');
+      expect(renderedText()).toEqual(['aaa', 'bbb']);
+      await state.input.press('Control+y');
+      expect(renderedText()).toEqual(['', 'aaa', 'bbb']);
+    });
+    test('removing an empty first numbered item retains the list start', async () => {
+      await state.input.insert('1. test');
+      await state.input.press('ArrowLeft', 4);
+      await state.input.insertParagraph();
+      await state.input.insertParagraph();
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        <!-- -->
+
+        1. test
+      `);
+      await state.input.press('Control+z');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        1. <!-- -->
+        2. test
+      `);
+      await state.input.press('Control+y');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        <!-- -->
+
+        1. test
+      `);
+    });
+    test('retains a non-default start after removing the first empty item', async () => {
+      await state.input.insert('5. test');
+      await state.input.press('ArrowLeft', 4);
+      await state.input.insertParagraph();
+      await state.input.insertParagraph();
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        <!-- -->
+
+        5. test
+      `);
+    });
+    test('continues a numbered list and undoes the insertion', async () => {
+      await state.input.insert('5. hello');
+      await state.input.insertParagraph();
+      await state.input.insert('world');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        5. hello
+        6. world
+      `);
+      await state.input.press('Control+z');
+      await state.input.press('Control+z');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`5. hello`);
+    });
     test('insertParagraph adds new list items', async () => {
       await state.input.insert('* hello');
       await state.input.insertParagraph();

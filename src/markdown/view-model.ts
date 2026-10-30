@@ -381,18 +381,22 @@ export class MarkdownTree extends EventTarget {
   setRoot(node: DocumentNode & ViewModelNode, fireTreeEditEvent = false) {
     assert(node[viewModel].tree === this);
     assert(!node[viewModel].parent);
-    this.edit(() => {
-      // Ensures that the whole tree is considered new and marked
-      // as connected in post-edit.
-      this.editStartVersion = -1;
-      // TODO: Clear undo/redo
-      if (node !== this.root) {
-        // Disconnect the existing tree.
-        this.removed.add(this.root);
-        this.root = node;
-      }
-      return {};
-    }, fireTreeEditEvent);
+    this.edit(
+      () => {
+        // Ensures that the whole tree is considered new and marked
+        // as connected in post-edit.
+        this.editStartVersion = -1;
+        // TODO: Clear undo/redo
+        if (node !== this.root) {
+          // Disconnect the existing tree.
+          this.removed.add(this.root);
+          this.root = node;
+        }
+        return {};
+      },
+      fireTreeEditEvent,
+      {},
+    );
   }
 
   add<T extends MarkdownNode>(node: T) {
@@ -417,14 +421,18 @@ export class MarkdownTree extends EventTarget {
     }
     if (!batch) return;
     {
-      const newOps = this.edit(() => {
-        for (const op of batch.ops.toReversed()) {
-          undoOp(op);
-        }
-        this.editOperations.length = 0;
-        this.redoStack.push(batch);
-        return {};
-      });
+      const newOps = this.edit(
+        () => {
+          for (const op of batch.ops.toReversed()) {
+            undoOp(op);
+          }
+          this.editOperations.length = 0;
+          this.redoStack.push(batch);
+          return {};
+        },
+        true,
+        {},
+      );
       assert(newOps.length === 0);
     }
     return batch.startFocus;
@@ -445,14 +453,18 @@ export class MarkdownTree extends EventTarget {
     }
     if (!batch) return;
     {
-      const newOps = this.edit(() => {
-        for (const op of batch.ops) {
-          doOp(op);
-        }
-        this.editOperations.length = 0;
-        this.undoStack.push(batch);
-        return {};
-      });
+      const newOps = this.edit(
+        () => {
+          for (const op of batch.ops) {
+            doOp(op);
+          }
+          this.editOperations.length = 0;
+          this.undoStack.push(batch);
+          return {};
+        },
+        true,
+        {},
+      );
       assert(newOps.length === 0);
     }
     return batch.endFocus;
@@ -540,9 +552,10 @@ export class MarkdownTree extends EventTarget {
     }
     const removedRoots = new Set<ViewModelNode>();
     for (const node of this.removed.values()) {
-      if (!node[viewModel].parent) {
-        removedRoots.add(node);
-      }
+      // A moved node can have a new ancestor that has not connected yet.
+      let ancestor: ViewModelNode | undefined = node;
+      while (ancestor[viewModel].parent) ancestor = ancestor[viewModel].parent;
+      if (ancestor !== this.root) removedRoots.add(node);
     }
     this.state = 'post-edit';
     for (const root of removedRoots.values()) {

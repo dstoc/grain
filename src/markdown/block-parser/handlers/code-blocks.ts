@@ -48,9 +48,9 @@ export function stripActiveCodeBlockContinuation(state: BlockParseState, line: s
   if (
     parent?.type === 'list-item' &&
     currentListItem === parent &&
-    line.startsWith(listContinuationPrefix(currentListItem))
+    line.startsWith(listContinuationPrefix(state, currentListItem))
   ) {
-    return line.slice(listContinuationPrefix(currentListItem).length);
+    return line.slice(listContinuationPrefix(state, currentListItem).length);
   }
   return line;
 }

@@ -109,6 +109,45 @@ describe('node signal controller on mounted components', () => {
     expect(element.shadowRoot!.querySelector('#gutter')).toBe(gutter);
     element.remove();
   });
+  test('numbered gutter displays the marker and cycles task state', async () => {
+    const tree = new MarkdownTree({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '123456789) ',
+              children: [{ type: 'paragraph', content: 'task' }],
+            },
+          ],
+        },
+      ],
+    });
+    const item = tree.root.children![0].children![0] as ListItem['node'];
+    const element = document.createElement('md-list-item-ui') as ListItem;
+    element.node = item;
+    document.body.append(element);
+    await element.updateComplete;
+    const gutter = element.shadowRoot!.querySelector('#gutter')!;
+    expect(gutter.querySelector('span')!.textContent).toBe('123456789)');
+    for (const [label, value] of [
+      ['Make task unchecked', false],
+      ['Mark task complete', true],
+      ['Remove task', undefined],
+      ['Make task unchecked', false],
+    ] as const) {
+      const button = gutter.querySelector('button')!;
+      expect(button.getAttribute('aria-label')).toBe(label);
+      expect(button.querySelector('svg') !== null).toBe(item.checked !== undefined);
+      if (item.checked === undefined) button.querySelector('span')!.click();
+      else button.querySelector('svg')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await element.updateComplete;
+      expect(item.checked).toBe(value);
+    }
+    element.remove();
+  });
   test('a parent signal update preserves keyed children, focus, and selection', async () => {
     const tree = new MarkdownTree({
       type: 'document',

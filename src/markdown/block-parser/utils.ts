@@ -64,8 +64,11 @@ export function currentSectionContainer(state: BlockParseState): ViewModelNode {
   return state.sectionStack.at(-1) ?? state.root;
 }
 
-export function listContinuationPrefix(item?: ListItemViewModelNode): string {
-  return ' '.repeat(item?.marker.length ?? 0);
+export function listContinuationPrefix(
+  state: BlockParseState,
+  item?: ListItemViewModelNode,
+): string {
+  return ' '.repeat(item ? (state.sourceMarkerWidths.get(item) ?? item.marker.length) : 0);
 }
 
 export function nextListPathItem(
