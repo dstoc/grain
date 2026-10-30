@@ -1,6 +1,6 @@
-import { defineConfig, defineProject, mergeConfig } from 'vitest/config';
+import { defineConfig, defineProject, mergeConfig } from 'vite-plus/test/config';
 import viteConfig from './vite.config';
-import { playwright } from '@vitest/browser-playwright';
+import { playwright } from 'vite-plus/test/browser-playwright';
 
 export default mergeConfig(
   viteConfig,
@@ -11,12 +11,7 @@ export default mergeConfig(
           test: {
             name: 'node',
             include: ['src/**/*.test.ts'],
-            exclude: [
-              'src/**/*.browser.test.ts',
-              'pkmapp/**',
-              'node_modules/**',
-              'dist/**',
-            ],
+            exclude: ['src/**/*.browser.test.ts', 'pkmapp/**', 'node_modules/**', 'dist/**'],
             environment: 'node',
           },
         }),

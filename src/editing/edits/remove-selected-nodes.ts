@@ -12,8 +12,7 @@ export function removeSelectedNodes(context: EditContext) {
   const candidates = [];
   context.startEditing();
   for (const node of nodes) {
-    node[viewModel].previousSibling &&
-      candidates.push(node[viewModel].previousSibling);
+    node[viewModel].previousSibling && candidates.push(node[viewModel].previousSibling);
     node[viewModel].parent && candidates.push(node[viewModel].parent);
     if (node.type === 'section' && node[viewModel].parent) {
       for (const child of children(node)) {
@@ -39,7 +38,6 @@ export function removeSelectedNodes(context: EditContext) {
     const next = findNextEditable(context.root, context.root, true);
     if (next) {
       context.focus(next, 0);
-      // eslint-disable-next-line no-useless-assignment
       didFocus = true;
     }
   }

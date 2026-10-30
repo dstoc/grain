@@ -47,10 +47,7 @@ export function isAncestorOf(ancestor: ViewModelNode, node: ViewModelNode) {
   return false;
 }
 
-export function* ancestors(
-  node: ViewModelNode,
-  root: ViewModelNode = node[viewModel].tree.root,
-) {
+export function* ancestors(node: ViewModelNode, root: ViewModelNode = node[viewModel].tree.root) {
   while (node[viewModel].parent) {
     yield node[viewModel].parent;
     node = node[viewModel].parent;
@@ -123,11 +120,7 @@ export function* shallowTraverse(node: ViewModelNode, root: ViewModelNode) {
   } while (true);
 }
 
-export function findAncestor(
-  node: ViewModelNode,
-  root: ViewModelNode,
-  ...type: string[]
-) {
+export function findAncestor(node: ViewModelNode, root: ViewModelNode, ...type: string[]) {
   const path = [node];
   for (const ancestor of ancestors(node, root)) {
     if (type.includes(ancestor.type)) {
@@ -178,10 +171,7 @@ export function findNextDfs<T extends ViewModelNode>(
   root: ViewModelNode,
   predicate: (node: ViewModelNode) => node is T,
 ) {
-  for (const next of dfs(
-    node,
-    root[viewModel].nextSibling ?? root[viewModel].parent,
-  )) {
+  for (const next of dfs(node, root[viewModel].nextSibling ?? root[viewModel].parent)) {
     if (next !== node && predicate(next)) return next;
   }
   return null;
@@ -252,10 +242,7 @@ export function cloneNode(
   return result;
 }
 
-export function compareDocumentOrder(
-  node1: ViewModelNode,
-  node2: ViewModelNode,
-) {
+export function compareDocumentOrder(node1: ViewModelNode, node2: ViewModelNode) {
   if (node1 === node2) return 0;
   const node1Chain = [node1, ...ancestors(node1)];
   const node2Chain = [node2, ...ancestors(node2)];
@@ -279,10 +266,7 @@ export function compareDocumentOrder(
 }
 
 export function nextLogicalInsertionPoint(node: ViewModelNode) {
-  if (
-    !node[viewModel].nextSibling &&
-    node[viewModel].parent?.type === 'list-item'
-  ) {
+  if (!node[viewModel].nextSibling && node[viewModel].parent?.type === 'list-item') {
     const listItem = node[viewModel].parent;
     return {
       parent: cast(listItem[viewModel].parent),
@@ -295,10 +279,7 @@ export function nextLogicalInsertionPoint(node: ViewModelNode) {
   };
 }
 
-export function performLogicalInsertion(
-  context: ViewModelNode,
-  nodes: ViewModelNode[],
-) {
+export function performLogicalInsertion(context: ViewModelNode, nodes: ViewModelNode[]) {
   let { parent, nextSibling } = nextLogicalInsertionPoint(context);
   if (context.type === 'section') {
     // Insertion into a section is append-only. Mainly so that send-to section

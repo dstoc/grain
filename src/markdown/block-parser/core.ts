@@ -1,10 +1,6 @@
 import { viewModel } from '../view-model-node.js';
 import type { ViewModelNode } from '../view-model-node.js';
-import type {
-  BlockParseState,
-  ProjectedPendingState,
-  LinePrefixResult,
-} from './types.js';
+import type { BlockParseState, ProjectedPendingState, LinePrefixResult } from './types.js';
 import {
   parseQuotedListContinuation,
   parseBlankLinePrefix,
@@ -26,11 +22,7 @@ import {
 } from './handlers/code-blocks.js';
 import { projectPendingQuoteOpen, closeQuote } from './handlers/quotes.js';
 import { projectPendingResolvedContent } from './projected-state.js';
-import {
-  tryPromoteSetextHeading,
-  parseAtxHeading,
-  openSection,
-} from './handlers/sections.js';
+import { tryPromoteSetextHeading, parseAtxHeading, openSection } from './handlers/sections.js';
 import { parseListItem, appendListItem, closeList } from './handlers/lists.js';
 
 export function parseLine(state: BlockParseState, line: string) {
@@ -51,11 +43,7 @@ export function parseLine(state: BlockParseState, line: string) {
   }
   const quotedListContinuation = parseQuotedListContinuation(state, line);
   if (quotedListContinuation) {
-    syncQuoteStack(
-      state,
-      quotedListContinuation.quoteBase,
-      quotedListContinuation.quoteDepth,
-    );
+    syncQuoteStack(state, quotedListContinuation.quoteBase, quotedListContinuation.quoteDepth);
     state.currentListPath = quotedListContinuation.listPath;
     const parentBlock = state.currentListPath.at(-1)?.[viewModel].parent;
     state.currentList = parentBlock?.type === 'list' ? parentBlock : undefined;
@@ -80,10 +68,7 @@ export function parseLine(state: BlockParseState, line: string) {
     } else if (shouldPreserveListPathOnQuotedBlankLine(state, blankPrefix)) {
       state.currentListPath = [...state.currentListPath];
     } else {
-      state.currentListPath = state.currentListPath.slice(
-        0,
-        blankPrefix.listDepth,
-      );
+      state.currentListPath = state.currentListPath.slice(0, blankPrefix.listDepth);
     }
     if (blankPrefix.quoteDepth > 0) {
       syncQuoteStack(state, blankPrefix.quoteBase, blankPrefix.quoteDepth);
@@ -101,11 +86,7 @@ export function parseLine(state: BlockParseState, line: string) {
   }
   const prefix = parseLinePrefix(state, line);
   if (!(state.currentCodeBlock && state.currentCodeFence)) {
-    if (
-      prefix.prefixes.length === 0 &&
-      prefix.listDepth === 0 &&
-      !prefix.continuedListIndent
-    ) {
+    if (prefix.prefixes.length === 0 && prefix.listDepth === 0 && !prefix.continuedListIndent) {
       exitDetachedContainerContexts(state);
     }
     if (prefix.continuedListIndent) {
@@ -145,11 +126,7 @@ export function projectPendingLine(
 
   const quotedListContinuation = parseQuotedListContinuation(state, line);
   if (quotedListContinuation) {
-    syncQuoteStack(
-      state,
-      quotedListContinuation.quoteBase,
-      quotedListContinuation.quoteDepth,
-    );
+    syncQuoteStack(state, quotedListContinuation.quoteBase, quotedListContinuation.quoteDepth);
     state.currentListPath = quotedListContinuation.listPath;
     const parentBlock = state.currentListPath.at(-1)?.[viewModel].parent;
     state.currentList = parentBlock?.type === 'list' ? parentBlock : undefined;
@@ -175,11 +152,7 @@ export function projectPendingLine(
   if (prefix.content.trim() === '') {
     return;
   }
-  if (
-    prefix.prefixes.length === 0 &&
-    prefix.listDepth === 0 &&
-    !prefix.continuedListIndent
-  ) {
+  if (prefix.prefixes.length === 0 && prefix.listDepth === 0 && !prefix.continuedListIndent) {
     exitDetachedContainerContexts(state);
   }
   if (prefix.continuedListIndent) {
@@ -230,15 +203,11 @@ function expandCurrentListPathFromTree(state: BlockParseState) {
     if (state.currentListPath.includes(nestedItem)) return;
     state.currentListPath = [...state.currentListPath, nestedItem];
     const parentBlock = nestedItem[viewModel].parent;
-    state.currentList =
-      parentBlock?.type === 'list' ? parentBlock : state.currentList;
+    state.currentList = parentBlock?.type === 'list' ? parentBlock : state.currentList;
   }
 }
 
-function shouldRestartQuotedListBranch(
-  state: BlockParseState,
-  line: string,
-): boolean {
+function shouldRestartQuotedListBranch(state: BlockParseState, line: string): boolean {
   return (
     line.trimStart().startsWith('>') &&
     state.currentParagraph?.[viewModel].parent?.type === 'block-quote' &&
@@ -290,13 +259,7 @@ function parseResolvedContainerContent(
   const listItem = parseListItem(content);
   if (listItem) {
     closeParagraph(state);
-    appendListItem(
-      state,
-      container,
-      listItem.marker,
-      listItem.checked,
-      listItem.content,
-    );
+    appendListItem(state, container, listItem.marker, listItem.checked, listItem.content);
     return;
   }
 
