@@ -1,9 +1,8 @@
-import { consume, provide } from '@lit/context';
+import { ContextConsumer, ContextProvider } from '@lit/context';
 import { html, LitElement, render } from 'lit';
-import { customElement, property } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 
-import { sigprop, type SigpropHost } from '../signal-utils.js';
+import { setSignalProperty, type SigpropHost } from '../signal-utils.js';
 import { HostContext, hostContext } from './host-context.js';
 import { MarkdownInline } from './inline-render.js';
 import { isInlineNode } from './node.js';
@@ -14,18 +13,35 @@ import { viewModel } from './view-model-node.js';
 import './transclusion.js';
 import './block-ui.js';
 
-@customElement('md-block')
 export class MarkdownBlock extends LitElement implements SigpropHost {
-  @property({ type: Boolean, reflect: true }) accessor root:
-    | boolean
-    | undefined;
-  @property({ type: String, reflect: true }) accessor type = '';
-
-  @consume({ context: hostContext, subscribe: true })
-  @property({ attribute: false })
-  accessor hostContext: HostContext | undefined;
-
-  @sigprop accessor node: ViewModelNode | undefined;
+  static override properties = {
+    root: { type: Boolean, reflect: true },
+    type: { type: String, reflect: true },
+    hostContext: { attribute: false },
+  };
+  declare root: boolean | undefined;
+  declare type: string;
+  declare hostContext: HostContext | undefined;
+  private readonly contextConsumer = new ContextConsumer(this, {
+    context: hostContext,
+    subscribe: true,
+    callback: (value) => {
+      this.hostContext = value;
+    },
+  });
+  private _node: ViewModelNode | undefined;
+  get node(): ViewModelNode | undefined {
+    return this._node;
+  }
+  set node(value: ViewModelNode | undefined) {
+    setSignalProperty(this, this._node, value, (next) => {
+      this._node = next;
+    });
+  }
+  constructor() {
+    super();
+    this.type = '';
+  }
 
   effectDispose?: () => void;
 
@@ -102,22 +118,33 @@ export class MarkdownBlock extends LitElement implements SigpropHost {
   }
 }
 
-@customElement('md-block-render')
 export class MarkdownRenderer extends LitElement {
   static override styles = styles;
 
-  @provide({ context: hostContext })
-  accessor hostContext = new HostContext();
-
-  @property({ attribute: false })
-  accessor renderDelegate: MarkdownRenderDelegate | undefined;
-
-  @property({ attribute: false }) accessor block!: ViewModelNode;
-  @property({ attribute: false }) accessor version = 0;
-
+  static override properties = {
+    renderDelegate: { attribute: false },
+    block: { attribute: false },
+    version: { attribute: false },
+  };
+  declare renderDelegate: MarkdownRenderDelegate | undefined;
+  declare block: ViewModelNode;
+  declare version: number;
+  private _hostContext = new HostContext();
+  private readonly contextProvider = new ContextProvider(this, {
+    context: hostContext,
+    initialValue: this._hostContext,
+  });
+  get hostContext() {
+    return this._hostContext;
+  }
+  set hostContext(value: HostContext) {
+    this.contextProvider.setValue(value);
+    this._hostContext = value;
+  }
   constructor() {
     super();
     this.hostContext = new HostContext();
+    this.version = 0;
   }
 
   protected override createRenderRoot() {
@@ -177,3 +204,6 @@ declare global {
     'md-block-focus': CustomEvent<InlineViewModelNode>;
   }
 }
+
+customElements.define('md-block', MarkdownBlock);
+customElements.define('md-block-render', MarkdownRenderer);

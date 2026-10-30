@@ -1,6 +1,5 @@
 import { css, html, LitElement } from 'lit';
 import { SignalWatcher } from '@lit-labs/preact-signals';
-import { customElement, property } from 'lit/decorators.js';
 import { templateContent } from 'lit/directives/template-content.js';
 
 import { template } from '../icons/material-symbols-rounded/template.js';
@@ -8,7 +7,6 @@ import { ListItemNode } from './node.js';
 import type { ViewModelNode } from './view-model-node.js';
 import { viewModel } from './view-model-node.js';
 
-@customElement('md-section-ui')
 export class Section extends SignalWatcher(LitElement) {
   static override readonly styles = css`
     :host {
@@ -37,8 +35,8 @@ export class Section extends SignalWatcher(LitElement) {
     }
   `;
 
-  @property({ attribute: false })
-  accessor node!: ViewModelNode;
+  static override properties = { node: { attribute: false } };
+  declare node: ViewModelNode;
 
   protected override render() {
     this.node[viewModel].renderSignal.value;
@@ -78,7 +76,6 @@ const checkedIcon = template(`
 const bulletIcon = template(`
 <svg xmlns="http://www.w3.org/2000/svg" viewbox="0 0 16 16" width="12" height="12"><g transform="matrix(1,0,0,1,0.000000238,0.000000238)"><g><g><g><g><path d="M480.230011,-288.000000C533.410004,-288.000000 578.666667,-306.743337 616.000000,-344.230011 C653.333333,-381.710012 672.000000,-427.043345 672.000000,-480.230011 C672.000000,-533.410004 653.256673,-578.666667 615.770020,-616.000000 C578.289998,-653.333333 532.956655,-672.000000 479.769989,-672.000000 C426.589996,-672.000000 381.333333,-653.256673 344.000000,-615.770020 C306.666667,-578.289998 288.000000,-532.956655 288.000000,-479.769989 C288.000000,-426.589996 306.743337,-381.333333 344.230011,-344.000000 C381.710012,-306.666667 427.043345,-288.000000 480.230011,-288.000000 ZM480.279999,-96.000000C427.426666,-96.000000 377.666667,-106.000000 331.000000,-126.000000 C284.333333,-146.000000 243.500000,-173.500000 208.500000,-208.500000 C173.500000,-243.500000 146.000000,-284.319997 126.000000,-330.959991 C106.000000,-377.600006 96.000000,-427.433339 96.000000,-480.459991 C96.000000,-533.486664 106.000000,-583.166667 126.000000,-629.500000 C146.000000,-675.833333 173.500000,-716.500000 208.500000,-751.500000 C243.500000,-786.500000 284.319997,-814.000000 330.959991,-834.000000 C377.600006,-854.000000 427.433339,-864.000000 480.459991,-864.000000 C533.486664,-864.000000 583.166667,-854.000000 629.500000,-834.000000 C675.833333,-814.000000 716.500000,-786.500000 751.500000,-751.500000 C786.500000,-716.500000 814.000000,-675.760010 834.000000,-629.280029 C854.000000,-582.793335 864.000000,-533.126658 864.000000,-480.279999 C864.000000,-427.426666 854.000000,-377.666667 834.000000,-331.000000 C814.000000,-284.333333 786.500000,-243.500000 751.500000,-208.500000 C716.500000,-173.500000 675.760010,-146.000000 629.280029,-126.000000 C582.793335,-106.000000 533.126658,-96.000000 480.279999,-96.000000 ZM480.000000,-168.000000C566.666667,-168.000000 640.333333,-198.333333 701.000000,-259.000000 C761.666667,-319.666667 792.000000,-393.333333 792.000000,-480.000000 C792.000000,-566.666667 761.666667,-640.333333 701.000000,-701.000000 C640.333333,-761.666667 566.666667,-792.000000 480.000000,-792.000000 C393.333333,-792.000000 319.666667,-761.666667 259.000000,-701.000000 C198.333333,-640.333333 168.000000,-566.666667 168.000000,-480.000000 C168.000000,-393.333333 198.333333,-319.666667 259.000000,-259.000000 C319.666667,-198.333333 393.333333,-168.000000 480.000000,-168.000000 Z" transform="matrix(0.020833334,0,0,0.020833334,-2.000000298,18.000000298)"/></g></g></g></g></g></svg>`);
 
-@customElement('md-list-item-ui')
 export class ListItem extends SignalWatcher(LitElement) {
   static override readonly styles = css`
     :host {
@@ -94,8 +91,8 @@ export class ListItem extends SignalWatcher(LitElement) {
     }
   `;
 
-  @property({ attribute: false })
-  accessor node!: ListItemNode & ViewModelNode;
+  static override properties = { node: { attribute: false } };
+  declare node: ListItemNode & ViewModelNode;
 
   protected override render() {
     this.node[viewModel].renderSignal.value;
@@ -135,3 +132,6 @@ export class ListItem extends SignalWatcher(LitElement) {
     });
   };
 }
+
+customElements.define('md-section-ui', Section);
+customElements.define('md-list-item-ui', ListItem);

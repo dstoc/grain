@@ -16,7 +16,6 @@ import '../markdown/block-render.js';
 
 import { assert, cast } from '../asserts.js';
 import { css, html, LitElement } from 'lit';
-import { property, customElement, query } from 'lit/decorators.js';
 import { MarkdownRenderer } from '../markdown/block-render.js';
 import { HostContext, focusNode } from '../markdown/host-context.js';
 import type { MarkdownRenderDelegate } from '../markdown/render-delegate.js';
@@ -53,7 +52,7 @@ import {
   serializeSelection,
 } from './copy-paste-util.js';
 import { Focus } from '../markdown/view-model-ops.js';
-import { sigprop } from '../signal-utils.js';
+import { setSignalProperty } from '../signal-utils.js';
 import { normalizeKeys } from './keyboard.js';
 
 // eslint-disable-next-line
@@ -74,16 +73,27 @@ export interface EditContext {
   readonly root: ViewModelNode;
 }
 
-@customElement('md-editor')
 export class Editor extends LitElement {
   defaultName?: string;
-  @property({ type: String, reflect: true })
-  accessor status: 'loading' | 'loaded' | 'error' | undefined;
-  @sigprop accessor root: ViewModelNode | undefined;
-  @property({ attribute: false })
-  accessor renderDelegate: MarkdownRenderDelegate | undefined;
-  @query('md-block-render')
-  private accessor markdownRenderer!: MarkdownRenderer;
+  static override properties = {
+    status: { type: String, reflect: true },
+    renderDelegate: { attribute: false },
+  };
+  declare status: 'loading' | 'loaded' | 'error' | undefined;
+  declare renderDelegate: MarkdownRenderDelegate | undefined;
+  effectDispose?: () => void;
+  private _root: ViewModelNode | undefined;
+  get root(): ViewModelNode | undefined {
+    return this._root;
+  }
+  set root(value: ViewModelNode | undefined) {
+    setSignalProperty(this, this._root, value, (next) => {
+      this._root = next;
+    });
+  }
+  private get markdownRenderer(): MarkdownRenderer {
+    return (this.renderRoot?.querySelector('md-block-render') ?? null)!;
+  }
   static override get styles() {
     return [
       css`
@@ -518,3 +528,5 @@ declare global {
     'md-editor': Editor;
   }
 }
+
+customElements.define('md-editor', Editor);

@@ -47,3 +47,16 @@ export function notify<This, Return>(
     return result;
   };
 }
+
+// Apply the same change and effect lifecycle as sigprop without decorator syntax.
+export function setSignalProperty<T>(
+  host: SigpropHost,
+  previous: T,
+  value: T,
+  store: (value: T) => void,
+) {
+  if (previous === value) return;
+  store(value);
+  host.effectDispose?.();
+  host.effectDispose = effect(() => host.effect());
+}

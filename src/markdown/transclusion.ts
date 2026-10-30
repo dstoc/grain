@@ -13,34 +13,40 @@
 // limitations under the License.
 
 import { css, html, LitElement } from 'lit';
-import { property, customElement, query } from 'lit/decorators.js';
 import { MarkdownRenderer } from './block-render.js';
 import type { InlineViewModelNode, ViewModelNode } from './view-model-node.js';
 import { CodeBlockNode } from './node.js';
 import './block-render.js';
-import { consume } from '@lit/context';
+import { ContextConsumer } from '@lit/context';
 import { HostContext, hostContext } from './host-context.js';
 import { findNextEditable, findFinalEditable } from './view-model-util.js';
 import { viewModel } from './view-model-node.js';
 
-@customElement('md-transclusion')
 export class MarkdownTransclusion extends LitElement {
-  @property({ attribute: false }) accessor node:
-    | (InlineViewModelNode & CodeBlockNode)
-    | undefined;
-
-  @property({ type: Boolean, reflect: true })
-  accessor selected = false;
-
-  @consume({ context: hostContext, subscribe: true })
-  @property({ attribute: false })
-  accessor hostContext: HostContext | undefined;
-
-  @property({ attribute: false })
-  accessor root: ViewModelNode | undefined;
-
-  @query('md-block-render')
-  private accessor markdownRenderer!: MarkdownRenderer;
+  static override properties = {
+    node: { attribute: false },
+    selected: { type: Boolean, reflect: true },
+    hostContext: { attribute: false },
+    root: { attribute: false },
+  };
+  declare node: (InlineViewModelNode & CodeBlockNode) | undefined;
+  declare selected: boolean;
+  declare hostContext: HostContext | undefined;
+  declare root: ViewModelNode | undefined;
+  private readonly contextConsumer = new ContextConsumer(this, {
+    context: hostContext,
+    subscribe: true,
+    callback: (value) => {
+      this.hostContext = value;
+    },
+  });
+  private get markdownRenderer(): MarkdownRenderer {
+    return (this.renderRoot?.querySelector('md-block-render') ?? null)!;
+  }
+  constructor() {
+    super();
+    this.selected = false;
+  }
 
   override render() {
     return this.root
@@ -105,3 +111,5 @@ declare global {
     'md-transclusion': MarkdownTransclusion;
   }
 }
+
+customElements.define('md-transclusion', MarkdownTransclusion);

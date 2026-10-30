@@ -1,11 +1,10 @@
-import { consume } from '@lit/context';
+import { ContextConsumer } from '@lit/context';
 import { html, LitElement, type TemplateResult } from 'lit';
-import { customElement, property, query, queryAll } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 
 import { noAwait } from '../async.js';
 import { cast } from '../asserts.js';
-import { sigprop, type SigpropHost } from '../signal-utils.js';
+import { setSignalProperty, type SigpropHost } from '../signal-utils.js';
 import { HostContext, hostContext } from './host-context.js';
 import type { InlineTreeNode } from './inline-parser.js';
 import { type InlineViewModelNode, viewModel } from './view-model-node.js';
@@ -43,7 +42,6 @@ declare global {
   }
 }
 
-@customElement('md-inline')
 export class MarkdownInline extends LitElement implements SigpropHost {
   constructor() {
     super();
@@ -53,17 +51,31 @@ export class MarkdownInline extends LitElement implements SigpropHost {
     this.setAttribute('contenteditable', '');
   }
 
-  @consume({ context: hostContext, subscribe: true })
-  @property({ attribute: false })
-  accessor hostContext: HostContext | undefined;
-
-  @property({ type: Boolean, reflect: true }) accessor selected:
-    | boolean
-    | undefined;
-
-  @query('md-span') accessor span!: MarkdownSpan;
-
-  @sigprop accessor node: InlineViewModelNode | undefined;
+  static override properties = {
+    hostContext: { attribute: false },
+    selected: { type: Boolean, reflect: true },
+  };
+  declare hostContext: HostContext | undefined;
+  declare selected: boolean | undefined;
+  private readonly contextConsumer = new ContextConsumer(this, {
+    context: hostContext,
+    subscribe: true,
+    callback: (value) => {
+      this.hostContext = value;
+    },
+  });
+  get span(): MarkdownSpan {
+    return (this.renderRoot?.querySelector('md-span') ?? null)!;
+  }
+  private _node: InlineViewModelNode | undefined;
+  get node(): InlineViewModelNode | undefined {
+    return this._node;
+  }
+  set node(value: InlineViewModelNode | undefined) {
+    setSignalProperty(this, this._node, value, (next) => {
+      this._node = next;
+    });
+  }
 
   effectDispose?: () => void;
 
@@ -337,16 +349,25 @@ export class MarkdownInline extends LitElement implements SigpropHost {
   };
 }
 
-@customElement('md-span')
 export class MarkdownSpan extends LitElement {
-  @property({ type: Boolean, reflect: true }) accessor formatting = false;
-  @property({ type: String, reflect: true }) accessor type = '';
-  @property({ attribute: false }) accessor node: InlineTreeNode | undefined;
-
-  @queryAll(':scope > md-span') accessor spans!: NodeListOf<MarkdownSpan>;
+  static override properties = {
+    formatting: { type: Boolean, reflect: true },
+    type: { type: String, reflect: true },
+    node: { attribute: false },
+  };
+  declare formatting: boolean;
+  declare type: string;
+  declare node: InlineTreeNode | undefined;
+  get spans(): NodeListOf<MarkdownSpan> {
+    return (
+      this.renderRoot ?? document.createDocumentFragment()
+    ).querySelectorAll<MarkdownSpan>(':scope > md-span');
+  }
 
   constructor() {
     super();
+    this.formatting = false;
+    this.type = '';
     this.addEventListener('pointerdown', (e) => {
       this.handlePointerDown(e);
     });
@@ -526,3 +547,6 @@ declare global {
     'md-span': MarkdownSpan;
   }
 }
+
+customElements.define('md-inline', MarkdownInline);
+customElements.define('md-span', MarkdownSpan);
