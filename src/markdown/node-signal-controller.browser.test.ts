@@ -140,7 +140,9 @@ describe('node signal controller on mounted components', () => {
     ] as const) {
       const button = gutter.querySelector('button')!;
       expect(button.getAttribute('aria-label')).toBe(label);
-      button.click();
+      expect(button.querySelector('svg') !== null).toBe(item.checked !== undefined);
+      if (item.checked === undefined) button.querySelector('span')!.click();
+      else button.querySelector('svg')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await element.updateComplete;
       expect(item.checked).toBe(value);
     }

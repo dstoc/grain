@@ -120,9 +120,9 @@ export class ListItem extends LitElement {
       ${
         marker
           ? html`<div id="gutter">
-              <span>${marker}</span>
               <button aria-label=${label} @click=${this.#handleClick}>
-                ${this.#icon(this.node.checked)}
+                <span>${marker}</span>
+                ${this.node.checked === undefined ? '' : this.#icon(this.node.checked)}
               </button>
             </div>`
           : html`<div id="gutter" @click=${this.#handleClick}>
