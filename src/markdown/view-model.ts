@@ -254,9 +254,13 @@ export class InlineViewModel extends ViewModel {
     this.self = self;
   }
   private inlineTree_?: InlineTree;
+  private inlineTreeContent?: string;
   get inlineTree(): InlineTree {
     assert(this.connected);
-    this.inlineTree_ ??= inlineParser.parse(this.self.content);
+    if (!this.inlineTree_ || this.inlineTreeContent !== this.self.content) {
+      this.inlineTreeContent = this.self.content;
+      this.inlineTree_ = inlineParser.parse(this.self.content);
+    }
     return this.inlineTree_;
   }
   override disconnect() {
