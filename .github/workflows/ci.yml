@@ -24,4 +24,5 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm run test
-      - run: npm run test:browser -- --maxWorkers=1
+      - run: |
+          npm run test:browser -- --maxWorkers=1 > /tmp/test-log 2>&1 || { python3 -c "import pathlib; s=pathlib.Path('/tmp/test-log').read_text(); print('::error::' + s.replace('%', '%25').replace('\n', '%0A').replace('\r', '%0D'))"; exit 1; }
