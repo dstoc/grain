@@ -2,6 +2,8 @@ import type { LitElement } from 'lit';
 import { batch } from '@preact/signals-core';
 import { describe, expect, test, vi } from 'vitest';
 import './block-render.js';
+import '../editing/editor.js';
+import { MarkdownInline } from './inline-render.js';
 import { MarkdownTree } from './view-model.js';
 import { viewModel, type ViewModelNode } from './view-model-node.js';
 import type { ListItem } from './block-ui.js';
@@ -12,22 +14,33 @@ function nodes(): ViewModelNode[] {
     { type: 'section', marker: '##', content: '', children: [] },
     { type: 'list-item', marker: '-', checked: false, children: [] },
     { type: 'list-item', marker: '-', checked: true, children: [] },
+    { type: 'paragraph', content: 'first' },
+    { type: 'paragraph', content: 'second' },
+    { type: 'document', children: [{ type: 'paragraph', content: 'first' }] },
+    { type: 'document', children: [{ type: 'paragraph', content: 'second' }] },
   ].map((node) => new MarkdownTree(node as ConstructorParameters<typeof MarkdownTree>[0]).root);
 }
 
 describe('node signal controller on mounted components', () => {
-  for (const [tag, firstIndex, secondIndex] of [
-    ['md-block', 0, 1],
-    ['md-section-ui', 0, 1],
-    ['md-list-item-ui', 2, 3],
+  for (const [tag, property, firstIndex, secondIndex] of [
+    ['md-block', 'node', 0, 1],
+    ['md-section-ui', 'node', 0, 1],
+    ['md-list-item-ui', 'node', 2, 3],
+    ['md-inline', 'node', 4, 5],
+    ['md-editor', 'root', 6, 7],
   ] as const) {
     test(`${tag} replaces and disposes subscriptions and reconnects`, async () => {
       const all = nodes();
       const first = all[firstIndex];
       const second = all[secondIndex];
-      const element = document.createElement(tag) as LitElement & { node: ViewModelNode };
+      const element = (
+        tag === 'md-inline' ? new MarkdownInline() : document.createElement(tag)
+      ) as LitElement & {
+        node?: ViewModelNode;
+        root?: ViewModelNode;
+      };
       // All selected elements accept the corresponding node type.
-      element.node = first;
+      element[property] = first;
       document.body.append(element);
       await element.updateComplete;
       const requests = vi.spyOn(element, 'requestUpdate');
@@ -37,7 +50,7 @@ describe('node signal controller on mounted components', () => {
       });
       expect(requests).toHaveBeenCalledTimes(1);
       await element.updateComplete;
-      element.node = second;
+      element[property] = second;
       requests.mockClear();
       first[viewModel].renderSignal.value++;
       expect(requests).not.toHaveBeenCalled();
@@ -48,11 +61,20 @@ describe('node signal controller on mounted components', () => {
       second[viewModel].renderSignal.value++;
       expect(requests).toHaveBeenCalledTimes(1);
       await element.updateComplete;
+      if (tag === 'md-inline' || tag === 'md-editor') {
+        element[property] = undefined;
+        await element.updateComplete;
+        requests.mockClear();
+        second[viewModel].renderSignal.value++;
+        expect(requests).not.toHaveBeenCalled();
+        element[property] = second;
+        await element.updateComplete;
+      }
       element.remove();
       requests.mockClear();
       second[viewModel].renderSignal.value++;
       expect(requests).not.toHaveBeenCalled();
-      element.node = first;
+      element[property] = first;
       requests.mockClear();
       document.body.append(element);
       await element.updateComplete;
