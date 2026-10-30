@@ -18,10 +18,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm install
+      - run: git restore package-lock.json
       - run: ./node_modules/.bin/playwright install --with-deps chromium
       - run: npm run build
       - run: npm run build:web
       - run: npm run lint
-      - run: |
-          npm run format:check || { npm run format; git diff | while IFS= read -r line; do echo "::warning::$line"; done; exit 1; }
+      - run: npm run format:check
       - run: npm run test:all
