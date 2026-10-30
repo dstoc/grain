@@ -18,11 +18,9 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm install
-      - run: git restore package-lock.json
       - run: ./node_modules/.bin/playwright install --with-deps chromium
       - run: npm run build
       - run: npm run build:web
       - run: npm run lint
-      - run: |
-          npm run format:check || { ./node_modules/.bin/prettier src/markdown/block-parser.permutations.test.ts --write; git diff -- src/markdown/block-parser.permutations.test.ts | while IFS= read -r line; do echo "::warning::$line"; done; exit 1; }
+      - run: npm run format:check
       - run: npm run test:all
