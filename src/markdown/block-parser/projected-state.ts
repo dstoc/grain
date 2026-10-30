@@ -142,6 +142,7 @@ function discardProjectedListItem(state: BlockParseState) {
   if (!item) return;
   const list = item[viewModel].parent;
   item[viewModel].remove();
+  state.sourceMarkerWidths.delete(item);
   state.currentParagraph = undefined;
   state.currentListPath.pop();
   if (list?.type === 'list' && !list.children?.length) {
@@ -210,6 +211,7 @@ function projectPendingListItem(
     children: [],
   }) as ListItemViewModelNode;
   item[viewModel].insertBefore(list);
+  state.sourceMarkerWidths.set(item, marker.length);
   state.currentListPath = buildListPath(state, parent, item);
   parseInitialListItemContent(state, item, content);
   state.sawContent = true;

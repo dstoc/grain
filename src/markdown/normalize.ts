@@ -128,6 +128,16 @@ export function normalizeTree(tree: MarkdownTree, options: NormalizeTreeOptions 
         }
         next[viewModel].remove();
       }
+      const first = node[viewModel].firstChild;
+      if (first?.type === 'list-item') {
+        const numeric = /^(\d+)([.)])\s*$/.exec(first.marker);
+        let number = numeric ? BigInt(numeric[1]) : 0n;
+        for (const item of children(node)) {
+          if (item.type !== 'list-item') continue;
+          const marker = numeric ? `${number++}${numeric[2]} ` : first.marker;
+          if (item.marker !== marker) item[viewModel].updateMarker(marker);
+        }
+      }
     }
     if (node.type === 'block-quote') {
       while (node[viewModel].nextSibling?.type === 'block-quote') {

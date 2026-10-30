@@ -92,6 +92,10 @@ export function createBlockParser(snapshot?: BlockParserSnapshot): BlockParser {
         currentListPath: state.currentListPath
           .map((node) => pathForNode(state.root, node))
           .filter(isDefined),
+        sourceMarkerWidths: [...state.sourceMarkerWidths].flatMap(([item, width]) => {
+          const path = pathForNode(state.root, item);
+          return path ? [{ path, width }] : [];
+        }),
         currentQuoteBasePath: pathForNode(state.root, state.currentQuoteBase),
         currentQuoteStackPaths: state.currentQuoteStack
           .map((node) => pathForNode(state.root, node))

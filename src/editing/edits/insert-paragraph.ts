@@ -42,7 +42,21 @@ function unindentIfEmptyListItem(context: EditContext): boolean {
   if (parent?.type !== 'list-item' || parent === context.root) return false;
   if (parent.children!.length > 1) return false;
   context.startEditing();
+  const list = parent[viewModel].parent;
+  const firstMarker = list?.[viewModel].firstChild === parent ? parent.marker : undefined;
+  const next = parent[viewModel].nextSibling;
   unindent(node, context.root);
+  if (firstMarker && next?.type === 'list-item' && !parent[viewModel].parent) {
+    const match = /^(\d+)([.)])\s*$/.exec(firstMarker);
+    if (match) {
+      let number = BigInt(match[1]);
+      for (let item: ViewModelNode | undefined = next; item; item = item[viewModel].nextSibling) {
+        if (item.type !== 'list-item' || !new RegExp(`^\\d+\\${match[2]}\\s*$`).test(item.marker))
+          break;
+        item[viewModel].updateMarker(`${number++}${match[2]} `);
+      }
+    }
+  }
   // TODO: 0 was undefined before
   context.focus(node, 0);
   return true;
@@ -171,7 +185,7 @@ function insertParagraphInList(context: EditContext, startIndex: number): boolea
   if (firstListItem && firstListItem.type !== 'list-item') return false;
   const newListItem = node[viewModel].tree.add({
     type: 'list-item',
-    marker: firstListItem?.marker ?? '* ',
+    marker: firstListItem?.type === 'list-item' ? firstListItem.marker : '* ',
   });
   newListItem[viewModel].insertBefore(targetList, targetListItemNextSibling);
   if (

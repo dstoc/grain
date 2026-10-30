@@ -17,6 +17,7 @@ export function createInitialState(tree: MarkdownTree): BlockParseState {
     root: tree.root,
     sawContent: false,
     currentListPath: [],
+    sourceMarkerWidths: new Map(),
     currentQuoteStack: [],
     sectionStack: [],
   };
@@ -31,6 +32,10 @@ export function restoreState(tree: MarkdownTree, snapshot: BlockParserSnapshot):
   state.currentListPath = snapshot.currentListPath
     .map((path) => nodeAtPath(state.root, path) as ListItemViewModelNode | undefined)
     .filter(isDefined);
+  for (const { path, width } of snapshot.sourceMarkerWidths ?? []) {
+    const item = nodeAtPath(state.root, path);
+    if (item?.type === 'list-item') state.sourceMarkerWidths.set(item, width);
+  }
   state.currentQuoteBase = nodeAtPath(state.root, snapshot.currentQuoteBasePath);
   state.currentQuoteStack = snapshot.currentQuoteStackPaths
     .map((path) => nodeAtPath(state.root, path) as BlockQuoteViewModelNode | undefined)
