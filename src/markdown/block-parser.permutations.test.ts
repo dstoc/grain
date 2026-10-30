@@ -654,7 +654,9 @@ function selectExtensiveSmokeCases(
   return smokeCases;
 }
 
-function generatedCanonicalCasesForMode(mode: GeneratedMode): NamedGeneratedCase[] {
+function generatedCanonicalCasesForMode(
+  mode: GeneratedMode,
+): NamedGeneratedCase[] {
   const seenMarkdown = new Set<string>();
   const cases: NamedGeneratedCase[] = [];
   const chains = [...chainPermutations(2), ...chainPermutations(3)];
