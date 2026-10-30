@@ -93,6 +93,9 @@ export class ListItem extends LitElement {
       user-select: none;
       fill: currentcolor;
     }
+    #gutter:has(button) {
+      padding-right: 4px;
+    }
     button {
       cursor: pointer;
       border: 0;

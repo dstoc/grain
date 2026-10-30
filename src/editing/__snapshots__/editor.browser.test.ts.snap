@@ -1,0 +1,21 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Editor > list items > removing an empty first numbered item retains the list start 1`] = `
+<!-- -->
+
+1. test
+
+`;
+
+exports[`Editor > list items > removing an empty first numbered item retains the list start 2`] = `
+1. <!-- -->
+2. test
+
+`;
+
+exports[`Editor > list items > removing an empty first numbered item retains the list start 3`] = `
+<!-- -->
+
+1. test
+
+`;

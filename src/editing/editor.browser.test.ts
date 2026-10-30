@@ -215,6 +215,28 @@ describe('Editor', () => {
       await state.input.press('Control+y');
       expect(renderedText()).toEqual(['', 'aaa', 'bbb']);
     });
+    test('removing an empty first numbered item retains the list start', async () => {
+      await state.input.insert('1. test');
+      await state.input.press('ArrowLeft', 4);
+      await state.input.insertParagraph();
+      await state.input.insertParagraph();
+      expect(serializeEditor(state.editor)).toMatchSnapshot();
+      await state.input.press('Control+z');
+      expect(serializeEditor(state.editor)).toMatchSnapshot();
+      await state.input.press('Control+y');
+      expect(serializeEditor(state.editor)).toMatchSnapshot();
+    });
+    test('retains a non-default start after removing the first empty item', async () => {
+      await state.input.insert('5. test');
+      await state.input.press('ArrowLeft', 4);
+      await state.input.insertParagraph();
+      await state.input.insertParagraph();
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        <!-- -->
+
+        5. test
+      `);
+    });
     test('continues a numbered list and undoes the insertion', async () => {
       await state.input.insert('5. hello');
       await state.input.insertParagraph();
