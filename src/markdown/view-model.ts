@@ -540,7 +540,7 @@ export class MarkdownTree extends EventTarget {
     }
     const removedRoots = new Set<ViewModelNode>();
     for (const node of this.removed.values()) {
-      if (!node[viewModel].parent) {
+      if (!node[viewModel].parent || !node[viewModel].parent![viewModel].connected) {
         removedRoots.add(node);
       }
     }

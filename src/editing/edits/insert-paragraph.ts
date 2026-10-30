@@ -15,7 +15,7 @@ import {
   swapNodes,
 } from '../../markdown/view-model-util.js';
 import { viewModel } from '../../markdown/view-model-node.js';
-import { numberInsertedItems } from '../../markdown/ordered-list.js';
+import { numberInsertedItems, numberListMoves } from '../../markdown/ordered-list.js';
 
 export function insertParagraph(context: EditContext, index: number) {
   if (
@@ -43,7 +43,7 @@ function unindentIfEmptyListItem(context: EditContext): boolean {
   if (parent?.type !== 'list-item' || parent === context.root) return false;
   if (parent.children!.length > 1) return false;
   context.startEditing();
-  unindent(node, context.root);
+  numberListMoves(context.root, () => unindent(node, context.root));
   // TODO: 0 was undefined before
   context.focus(node, 0);
   return true;
