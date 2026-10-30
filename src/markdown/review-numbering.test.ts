@@ -66,7 +66,7 @@ test('indent selected paragraphs as a batch into an ordered run', () => {
   checkHistory(tree, before, '5. a\n6. b\n7. c\n');
 });
 
-test('Enter in a bullet run retains a bullet marker through undo and redo', () => {
+test('Enter in a normalized ordered list retains numbering through undo and redo', () => {
   const tree = new MarkdownTree({
     type: 'document',
     children: [{ type: 'list', children: [item('5. ', 'a'), item('* ', 'b'), item('* ', 'c')] }],
@@ -83,7 +83,7 @@ test('Enter in a bullet run retains a bullet marker through undo and redo', () =
     insertParagraph(context, 1);
     return {};
   });
-  checkHistory(tree, before, '5. a\n* b\n* c\n* <!-- -->\n');
+  checkHistory(tree, before, '5. a\n6. b\n7. c\n8. <!-- -->\n');
 });
 
 test.each([

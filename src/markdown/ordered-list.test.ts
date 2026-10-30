@@ -1,12 +1,11 @@
 import { describe, expect, test } from 'vitest';
 import { MarkdownTree } from './view-model.js';
 import { viewModel } from './view-model-node.js';
-import { renumberInsertedItems } from './ordered-list.js';
 import { serializeToString } from './block-serializer.js';
 import { performLogicalInsertion } from './view-model-util.js';
 
 describe('numbered list insertion', () => {
-  test('canonicalizes the selected run while preserving other runs and node identity', () => {
+  test('normalizes every item while preserving node identity', () => {
     const tree = new MarkdownTree({
       type: 'document',
       children: [
@@ -29,13 +28,12 @@ describe('numbered list insertion', () => {
         children: [{ type: 'paragraph', content: 'new' }],
       });
       item[viewModel].insertBefore(list, b);
-      renumberInsertedItems([item]);
       return {};
     });
     expect(list.children![0]).toBe(a);
     expect(list.children![2]).toBe(b);
     expect(list.children![3]).toBe(c);
-    expect(serializeToString(tree.serialize())).toBe('5. a\n6. new\n7. b\n20) c\n');
+    expect(serializeToString(tree.serialize())).toBe('5. a\n6. new\n7. b\n8. c\n');
   });
 
   test('uses arbitrary precision and canonical digits', () => {
@@ -62,7 +60,6 @@ describe('numbered list insertion', () => {
         children: [{ type: 'paragraph', content: 'b' }],
       });
       item[viewModel].insertBefore(list);
-      renumberInsertedItems([item]);
       return {};
     });
     expect(serializeToString(tree.serialize())).toBe(
@@ -99,7 +96,7 @@ test('logical insertion numbers a pasted list as one batch and restores it on un
     performLogicalInsertion(a.children![0], [pasted]);
     return {};
   });
-  const after = '5. a\n6. x\n7. y\n8. b\n20) c\n';
+  const after = '5. a\n6. x\n7. y\n8. b\n9. c\n';
   expect(serializeToString(tree.serialize())).toBe(after);
   expect(list.children![0]).toBe(a);
   expect(list.children![3]).toBe(b);
@@ -112,7 +109,6 @@ test('logical insertion numbers a pasted list as one batch and restores it on un
 
 test('unindent numbers the source and destination once, preserving transferred sibling markers', async () => {
   const { unindent } = await import('../indent-util.js');
-  const { renumberListMoves } = await import('./ordered-list.js');
   const tree = new MarkdownTree({
     type: 'document',
     children: [
@@ -160,7 +156,7 @@ test('unindent numbers the source and destination once, preserving transferred s
   const b = list.children![0].children![1].children![1];
   const before = serializeToString(tree.serialize());
   tree.edit(() => {
-    renumberListMoves(tree.root, () => unindent(b.children![0], tree.root));
+    unindent(b.children![0], tree.root);
     return {};
   });
   const after = serializeToString(tree.serialize());
@@ -172,7 +168,6 @@ test('unindent numbers the source and destination once, preserving transferred s
 });
 
 test('moves a batch into another run and restores both runs on undo and redo', async () => {
-  const { renumberListMoves } = await import('./ordered-list.js');
   const item = (marker: string, content: string) => ({
     type: 'list-item' as const,
     marker,
@@ -191,13 +186,11 @@ test('moves a batch into another run and restores both runs on undo and redo', a
   const y = destination.children![1];
   const before = serializeToString(tree.serialize());
   tree.edit(() => {
-    renumberListMoves(tree.root, () => {
-      a[viewModel].insertBefore(destination, y);
-      b[viewModel].insertBefore(destination, y);
-    });
+    a[viewModel].insertBefore(destination, y);
+    b[viewModel].insertBefore(destination, y);
     return {};
   });
-  expect(source.children![0]).toMatchObject({ marker: '5. ' });
+  expect(source.children![0]).toMatchObject({ marker: '7. ' });
   expect(destination.children!.map((node) => node.type === 'list-item' && node.marker)).toEqual([
     '20. ',
     '21. ',
@@ -211,8 +204,7 @@ test('moves a batch into another run and restores both runs on undo and redo', a
   expect(serializeToString(tree.serialize())).toBe(after);
 });
 
-test('moving the first two items within a run preserves its captured start', async () => {
-  const { renumberListMoves } = await import('./ordered-list.js');
+test('moving the first two items uses the new first marker as the start', async () => {
   const tree = new MarkdownTree({
     type: 'document',
     children: [
@@ -229,13 +221,11 @@ test('moving the first two items within a run preserves its captured start', asy
   const list = tree.root.children![0];
   const [a, b] = list.children!;
   tree.edit(() => {
-    renumberListMoves(tree.root, () => {
-      a[viewModel].insertBefore(list);
-      b[viewModel].insertBefore(list);
-    });
+    a[viewModel].insertBefore(list);
+    b[viewModel].insertBefore(list);
     return {};
   });
-  const after = '5. c\n6. a\n7. b\n';
+  const after = '7. c\n8. a\n9. b\n';
   expect(serializeToString(tree.serialize())).toBe(after);
   tree.undo(tree.root);
   expect(serializeToString(tree.serialize())).toBe('5. a\n6. b\n7. c\n');
@@ -252,4 +242,46 @@ test('mixed numbered lists survive incremental parsing and structural serializat
   expect(parser.finish().serialize()).toEqual(expected);
   const serialized = serializeToString(expected);
   expect(parseBlocks(serialized).node).toEqual(expected);
+});
+
+test('normalizes nonconsecutive source markers across chunk schedules and snapshot resume', async () => {
+  const { createBlockParser, parseBlocks } = await import('./block-parser/api.js');
+  const source = '5. a\n99. b\n3. c\n';
+  const expected = parseBlocks(source).node;
+  expect(serializeToString(expected)).toBe('5. a\n6. b\n7. c\n');
+  for (let split = 0; split <= source.length; split++) {
+    const parser = createBlockParser();
+    parser.push(source.slice(0, split));
+    const resumed = createBlockParser(parser.snapshot());
+    resumed.push(source.slice(split));
+    expect(resumed.finish().serialize()).toEqual(expected);
+  }
+  const parser = createBlockParser();
+  for (const char of source) parser.push(char);
+  expect(parser.finish().serialize()).toEqual(expected);
+});
+
+test('deleting an item renumbers the remaining items and undo restores them', () => {
+  const tree = new MarkdownTree({
+    type: 'document',
+    children: [
+      {
+        type: 'list',
+        children: [
+          { type: 'list-item', marker: '5. ', children: [{ type: 'paragraph', content: 'a' }] },
+          { type: 'list-item', marker: '6. ', children: [{ type: 'paragraph', content: 'b' }] },
+          { type: 'list-item', marker: '7. ', children: [{ type: 'paragraph', content: 'c' }] },
+        ],
+      },
+    ],
+  });
+  tree.edit(() => {
+    tree.root.children![0].children![1][viewModel].remove();
+    return {};
+  });
+  expect(serializeToString(tree.serialize())).toBe('5. a\n6. c\n');
+  tree.undo(tree.root);
+  expect(serializeToString(tree.serialize())).toBe('5. a\n6. b\n7. c\n');
+  tree.redo(tree.root);
+  expect(serializeToString(tree.serialize())).toBe('5. a\n6. c\n');
 });

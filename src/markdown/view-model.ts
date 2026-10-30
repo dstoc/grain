@@ -395,7 +395,7 @@ export class MarkdownTree extends EventTarget {
         return {};
       },
       fireTreeEditEvent,
-      { preserveMergedListMarkers: true },
+      {},
     );
   }
 
@@ -431,7 +431,7 @@ export class MarkdownTree extends EventTarget {
           return {};
         },
         true,
-        { preserveMergedListMarkers: true },
+        {},
       );
       assert(newOps.length === 0);
     }
@@ -463,7 +463,7 @@ export class MarkdownTree extends EventTarget {
           return {};
         },
         true,
-        { preserveMergedListMarkers: true },
+        {},
       );
       assert(newOps.length === 0);
     }

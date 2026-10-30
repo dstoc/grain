@@ -15,7 +15,6 @@ import {
   swapNodes,
 } from '../../markdown/view-model-util.js';
 import { viewModel } from '../../markdown/view-model-node.js';
-import { renumberInsertedItems, renumberListMoves } from '../../markdown/ordered-list.js';
 
 export function insertParagraph(context: EditContext, index: number) {
   if (
@@ -46,7 +45,7 @@ function unindentIfEmptyListItem(context: EditContext): boolean {
   const list = parent[viewModel].parent;
   const firstMarker = list?.[viewModel].firstChild === parent ? parent.marker : undefined;
   const next = parent[viewModel].nextSibling;
-  renumberListMoves(context.root, () => unindent(node, context.root));
+  unindent(node, context.root);
   if (firstMarker && next?.type === 'list-item' && !parent[viewModel].parent) {
     const match = /^(\d+)([.)])\s*$/.exec(firstMarker);
     if (match) {
@@ -81,7 +80,6 @@ function splitBlockQuoteOrListItemOnEmptyParagraph(context: EditContext): boolea
   context.startEditing();
   const [_self, ...tail] = shallowTraverse(node, ancestor);
   let target: ViewModelNode;
-  const inserted: ViewModelNode[] = [];
   if (ancestor.type === 'list-item') {
     // Insert a new list-item to hold the empty paragraph.
     target = node[viewModel].tree.add({
@@ -92,7 +90,6 @@ function splitBlockQuoteOrListItemOnEmptyParagraph(context: EditContext): boolea
       cast(ancestor[viewModel].parent),
       ancestor[viewModel].nextSibling,
     );
-    inserted.push(target);
     node[viewModel].insertBefore(target);
   } else {
     // Insert the empty paragraph after the block quote.
@@ -108,12 +105,10 @@ function splitBlockQuoteOrListItemOnEmptyParagraph(context: EditContext): boolea
       cast(ancestor[viewModel].parent),
       target[viewModel].nextSibling,
     );
-    if (tailTarget.type === 'list-item') inserted.push(tailTarget);
     for (const node of tail) {
       node[viewModel].insertBefore(tailTarget);
     }
   }
-  renumberInsertedItems(inserted);
   context.focus(node, 0);
   return true;
 }
@@ -190,10 +185,9 @@ function insertParagraphInList(context: EditContext, startIndex: number): boolea
   if (firstListItem && firstListItem.type !== 'list-item') return false;
   const newListItem = node[viewModel].tree.add({
     type: 'list-item',
-    marker: '* ',
+    marker: firstListItem?.type === 'list-item' ? firstListItem.marker : '* ',
   });
   newListItem[viewModel].insertBefore(targetList, targetListItemNextSibling);
-  renumberInsertedItems([newListItem]);
   if (
     newListItem[viewModel].previousSibling?.type === 'list-item' &&
     newListItem[viewModel].previousSibling.checked !== undefined

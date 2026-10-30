@@ -22,7 +22,6 @@ import { cast } from '../asserts.js';
 export interface NormalizeTreeOptions {
   force?: boolean;
   preserveEmptyBlocks?: boolean;
-  preserveMergedListMarkers?: boolean;
 }
 
 function moveTrailingNodesIntoSections(tree: MarkdownTree) {
@@ -124,22 +123,20 @@ export function normalizeTree(tree: MarkdownTree, options: NormalizeTreeOptions 
     if (node.type === 'list') {
       while (node[viewModel].nextSibling?.type === 'list') {
         const next = node[viewModel].nextSibling;
-        if (!options.preserveMergedListMarkers) {
-          const first = node[viewModel].firstChild;
-          if (first?.type === 'list-item') {
-            const numeric = /^(\d+)([.)])\s*$/.exec(first.marker);
-            let number = numeric ? BigInt(numeric[1]) : 0n;
-            for (const item of [...(node.children ?? []), ...(next.children ?? [])]) {
-              if (item.type !== 'list-item') continue;
-              const marker = numeric ? `${number++}${numeric[2]} ` : first.marker;
-              if (item.marker !== marker) item[viewModel].updateMarker(marker);
-            }
-          }
-        }
         while (next[viewModel].firstChild) {
           next[viewModel].firstChild[viewModel].insertBefore(node);
         }
         next[viewModel].remove();
+      }
+      const first = node[viewModel].firstChild;
+      if (first?.type === 'list-item') {
+        const numeric = /^(\d+)([.)])\s*$/.exec(first.marker);
+        let number = numeric ? BigInt(numeric[1]) : 0n;
+        for (const item of children(node)) {
+          if (item.type !== 'list-item') continue;
+          const marker = numeric ? `${number++}${numeric[2]} ` : first.marker;
+          if (item.marker !== marker) item[viewModel].updateMarker(marker);
+        }
       }
     }
     if (node.type === 'block-quote') {

@@ -49,7 +49,7 @@ export function createBlockParser(snapshot?: BlockParserSnapshot): BlockParser {
           return {};
         },
         false,
-        { preserveEmptyBlocks: true, preserveMergedListMarkers: true },
+        { preserveEmptyBlocks: true },
       );
       return tree;
     },
@@ -70,7 +70,7 @@ export function createBlockParser(snapshot?: BlockParserSnapshot): BlockParser {
           return {};
         },
         false,
-        { force: true, preserveMergedListMarkers: true },
+        { force: true },
       );
       finished = true;
       return tree;
