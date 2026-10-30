@@ -24,4 +24,5 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm run test
-      - run: npm run test:browser
+      - run: |
+          npm run test:browser > /tmp/test-log 2>&1 || { tail -100 /tmp/test-log | while IFS= read -r line; do echo "::warning::$line"; done; exit 1; }
