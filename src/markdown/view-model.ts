@@ -474,6 +474,8 @@ export class MarkdownTree extends EventTarget {
     editFn: () => { startFocus?: Focus; endFocus?: Focus },
     fireTreeEditEvent = true,
     normalizeOptions?: NormalizeTreeOptions,
+    // Runs synchronously after normalization, without mutating the tree, before history is saved.
+    resolveEndFocus?: (focus: Focus | undefined, hasOperations: boolean) => Focus | undefined,
   ): Op[] {
     assert(this.state === 'idle');
     this.editStartVersion = this.root[viewModel].version;
@@ -481,7 +483,13 @@ export class MarkdownTree extends EventTarget {
     this.removed.clear();
     return batch(() => {
       const { startFocus, endFocus } = editFn();
-      return this.finishEdit(startFocus, endFocus, fireTreeEditEvent, normalizeOptions);
+      return this.finishEdit(
+        startFocus,
+        endFocus,
+        fireTreeEditEvent,
+        normalizeOptions,
+        resolveEndFocus,
+      );
     });
   }
 
@@ -545,11 +553,13 @@ export class MarkdownTree extends EventTarget {
     endFocus: Focus | undefined,
     fireTreeEditEvent = true,
     normalizeOptions?: NormalizeTreeOptions,
+    resolveEndFocus?: (focus: Focus | undefined, hasOperations: boolean) => Focus | undefined,
   ) {
     assert(this.state === 'editing');
     if (normalizeOptions?.force || this.root[viewModel].version > this.editStartVersion) {
       normalizeTree(this, normalizeOptions);
     }
+    if (resolveEndFocus) endFocus = resolveEndFocus(endFocus, this.editOperations.length > 0);
     const removedRoots = new Set<ViewModelNode>();
     for (const node of this.removed.values()) {
       // A moved node can have a new ancestor that has not connected yet.
