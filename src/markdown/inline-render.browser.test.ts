@@ -9,6 +9,33 @@ async function settle(element: HTMLElementTagNameMap['md-inline']) {
 }
 
 describe('MarkdownInline', () => {
+  test('renders changes made while detached and follows replacement nodes', async () => {
+    const first = createBlockParser();
+    first.push('```js\nfirst');
+    const second = createBlockParser();
+    second.push('```js\nsecond');
+    const inline = new MarkdownInline();
+    inline.node = first.getTree().root.children![0] as InlineViewModelNode;
+    document.body.append(inline);
+    await settle(inline);
+    expect(inline.textContent).toBe('first');
+    inline.remove();
+    first.push(' changed');
+    document.body.append(inline);
+    await settle(inline);
+    expect(inline.textContent).toBe('first changed');
+    inline.remove();
+    inline.node = second.getTree().root.children![0] as InlineViewModelNode;
+    second.push(' updated');
+    document.body.append(inline);
+    await settle(inline);
+    expect(inline.textContent).toBe('second updated');
+    inline.node = undefined;
+    await settle(inline);
+    expect(inline.textContent).toBe('');
+    inline.remove();
+  });
+
   test('updates a mounted code block as projected content is replaced and settled', async () => {
     const parser = createBlockParser();
     parser.push('```js\n');

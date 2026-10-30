@@ -39,7 +39,7 @@ import { insertLineBreak, insertParagraph } from './edits/insert-paragraph.js';
 import { deleteContentBackwards } from './edits/delete-content-backwards.js';
 import { copyMarkdownToClipboard, insertMarkdown, serializeSelection } from './copy-paste-util.js';
 import { Focus } from '../markdown/view-model-ops.js';
-import { sigprop } from '../signal-utils.js';
+import { NodeSignalController } from '../markdown/node-signal-controller.js';
 import { normalizeKeys } from './keyboard.js';
 
 type ExcludeFirst<T extends Parameters<any>> = T extends [any, ...infer Rest] ? Rest : never;
@@ -62,7 +62,8 @@ export class Editor extends LitElement {
   defaultName?: string;
   @property({ type: String, reflect: true })
   accessor status: 'loading' | 'loaded' | 'error' | undefined;
-  @sigprop accessor root: ViewModelNode | undefined;
+  @property({ attribute: false }) accessor root: ViewModelNode | undefined;
+  private nodeSignal = new NodeSignalController(this, () => this.root);
   @property({ attribute: false })
   accessor renderDelegate: MarkdownRenderDelegate | undefined;
   @query('md-block-render')
@@ -85,13 +86,6 @@ export class Editor extends LitElement {
         }
       `,
     ];
-  }
-  constructor() {
-    super();
-  }
-  effect() {
-    this.root?.[viewModel].renderSignal.value;
-    this.requestUpdate();
   }
   override render() {
     return html` <pkm-title .node=${this.root}></pkm-title>
