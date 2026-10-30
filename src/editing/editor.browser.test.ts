@@ -187,6 +187,18 @@ describe('Editor', () => {
   });
 
   describe('list items', () => {
+    test('continues a numbered list and undoes the insertion', async () => {
+      await state.input.insert('5. hello');
+      await state.input.insertParagraph();
+      await state.input.insert('world');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        5. hello
+        6. world
+      `);
+      await state.input.press('Control+z');
+      await state.input.press('Control+z');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`5. hello`);
+    });
     test('insertParagraph adds new list items', async () => {
       await state.input.insert('* hello');
       await state.input.insertParagraph();

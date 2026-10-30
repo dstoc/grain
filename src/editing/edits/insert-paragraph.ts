@@ -15,6 +15,7 @@ import {
   swapNodes,
 } from '../../markdown/view-model-util.js';
 import { viewModel } from '../../markdown/view-model-node.js';
+import { numberInsertedItems } from '../../markdown/ordered-list.js';
 
 export function insertParagraph(context: EditContext, index: number) {
   if (
@@ -66,6 +67,7 @@ function splitBlockQuoteOrListItemOnEmptyParagraph(context: EditContext): boolea
   context.startEditing();
   const [_self, ...tail] = shallowTraverse(node, ancestor);
   let target: ViewModelNode;
+  const inserted: ViewModelNode[] = [];
   if (ancestor.type === 'list-item') {
     // Insert a new list-item to hold the empty paragraph.
     target = node[viewModel].tree.add({
@@ -76,6 +78,7 @@ function splitBlockQuoteOrListItemOnEmptyParagraph(context: EditContext): boolea
       cast(ancestor[viewModel].parent),
       ancestor[viewModel].nextSibling,
     );
+    inserted.push(target);
     node[viewModel].insertBefore(target);
   } else {
     // Insert the empty paragraph after the block quote.
@@ -91,10 +94,12 @@ function splitBlockQuoteOrListItemOnEmptyParagraph(context: EditContext): boolea
       cast(ancestor[viewModel].parent),
       target[viewModel].nextSibling,
     );
+    if (tailTarget.type === 'list-item') inserted.push(tailTarget);
     for (const node of tail) {
       node[viewModel].insertBefore(tailTarget);
     }
   }
+  numberInsertedItems(inserted);
   context.focus(node, 0);
   return true;
 }
@@ -174,6 +179,7 @@ function insertParagraphInList(context: EditContext, startIndex: number): boolea
     marker: firstListItem?.marker ?? '* ',
   });
   newListItem[viewModel].insertBefore(targetList, targetListItemNextSibling);
+  numberInsertedItems([newListItem]);
   if (
     newListItem[viewModel].previousSibling?.type === 'list-item' &&
     newListItem[viewModel].previousSibling.checked !== undefined

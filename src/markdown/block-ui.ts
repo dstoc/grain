@@ -84,13 +84,21 @@ export class ListItem extends LitElement {
   static override readonly styles = css`
     :host {
       display: grid;
-      grid-template-columns: 18px 1fr;
+      grid-template-columns: max-content minmax(0, 1fr);
       align-items: baseline;
     }
     #gutter {
+      min-width: 18px;
       color: var(--md-accent-color);
       user-select: none;
+      fill: currentcolor;
+    }
+    button {
       cursor: pointer;
+      border: 0;
+      padding: 0;
+      background: transparent;
+      color: inherit;
       fill: currentcolor;
     }
   `;
@@ -101,8 +109,26 @@ export class ListItem extends LitElement {
   private nodeSignal = new NodeSignalController(this, () => this.node);
 
   protected override render() {
+    const marker = /^(\d+[.)])\s*$/.exec(this.node.marker)?.[1];
+    const label =
+      this.node.checked === undefined
+        ? 'Make task unchecked'
+        : this.node.checked
+          ? 'Remove task'
+          : 'Mark task complete';
     return html`
-      <div id="gutter" @click=${this.#handleClick}>${this.#icon(this.node.checked)}</div>
+      ${
+        marker
+          ? html`<div id="gutter">
+              <span>${marker}</span>
+              <button aria-label=${label} @click=${this.#handleClick}>
+                ${this.#icon(this.node.checked)}
+              </button>
+            </div>`
+          : html`<div id="gutter" @click=${this.#handleClick}>
+              ${this.#icon(this.node.checked)}
+            </div>`
+      }
       <div>
         <slot></slot>
       </div>
