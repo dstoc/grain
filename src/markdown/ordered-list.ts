@@ -65,6 +65,12 @@ export function numberListMoves(root: ViewModelNode, edit: () => void) {
       .filter(([item, parent]) => item[viewModel].parent !== parent)
       .map(([item]) => item),
   );
+  // Wrappers created during indentation have no pre-edit parent to compare.
+  function collectNewItems(node: ViewModelNode) {
+    if (node.type === 'list-item' && !parents.has(node)) moved.add(node);
+    for (const child of node.children ?? []) collectNewItems(child);
+  }
+  collectNewItems(root);
   const renumber = (items: ViewModelNode[], marker: string) => {
     const parsed = /^(\d+)([.)])/.exec(marker)!;
     let n = BigInt(parsed[1]);

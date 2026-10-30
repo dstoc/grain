@@ -176,7 +176,7 @@ function insertParagraphInList(context: EditContext, startIndex: number): boolea
   if (firstListItem && firstListItem.type !== 'list-item') return false;
   const newListItem = node[viewModel].tree.add({
     type: 'list-item',
-    marker: firstListItem?.marker ?? '* ',
+    marker: '* ',
   });
   newListItem[viewModel].insertBefore(targetList, targetListItemNextSibling);
   numberInsertedItems([newListItem]);
