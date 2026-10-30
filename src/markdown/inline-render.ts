@@ -5,7 +5,7 @@ import { repeat } from 'lit/directives/repeat.js';
 
 import { noAwait } from '../async.js';
 import { cast } from '../asserts.js';
-import { sigprop, type SigpropHost } from '../signal-utils.js';
+import { NodeSignalController } from './node-signal-controller.js';
 import { HostContext, hostContext } from './host-context.js';
 import type { InlineTreeNode } from './inline-parser.js';
 import { type InlineViewModelNode, viewModel } from './view-model-node.js';
@@ -44,7 +44,7 @@ declare global {
 }
 
 @customElement('md-inline')
-export class MarkdownInline extends LitElement implements SigpropHost {
+export class MarkdownInline extends LitElement {
   constructor() {
     super();
     this.addEventListener('beforeinput', this.onBeforeInput, { capture: true });
@@ -61,19 +61,9 @@ export class MarkdownInline extends LitElement implements SigpropHost {
 
   @query('md-span') accessor span!: MarkdownSpan;
 
-  @sigprop accessor node: InlineViewModelNode | undefined;
+  @property({ attribute: false }) accessor node: InlineViewModelNode | undefined;
 
-  effectDispose?: () => void;
-
-  effect() {
-    this.node?.[viewModel].renderSignal.value;
-    this.requestUpdate();
-  }
-
-  override disconnectedCallback(): void {
-    super.disconnectedCallback();
-    this.effectDispose?.();
-  }
+  private nodeSignal = new NodeSignalController(this, () => this.node);
 
   override render() {
     if (!this.node) return;

@@ -1,11 +1,9 @@
-import { describe, expect, test, vi } from 'vitest';
-import { signal } from '@preact/signals-core';
+import { describe, expect, test } from 'vitest';
 import './editing/editor.js';
 import { parseMarkdownTree } from './markdown/block-parser/api.js';
 import { HostContext } from './markdown/host-context.js';
 import { MarkdownBlock, MarkdownRenderer } from './markdown/block-render.js';
 import { MarkdownSpan } from './markdown/inline-render.js';
-import { sigprop } from './signal-utils.js';
 
 describe('standard decorator behavior', () => {
   test('registers components, reflects properties, and resolves queries after update', async () => {
@@ -55,28 +53,5 @@ describe('standard decorator behavior', () => {
     await block.updateComplete;
     expect(block.hostContext).toBe(replacement);
     renderer.remove();
-  });
-
-  test('sigprop observes the current signal and disposes replaced and cleaned-up effects', () => {
-    class Host {
-      @sigprop accessor current: ReturnType<typeof signal<number>> | undefined;
-      effectDispose?: () => void;
-      effect = vi.fn(() => this.current?.value);
-    }
-    const host = new Host();
-    const first = signal(1);
-    const second = signal(2);
-    host.current = first;
-    first.value++;
-    expect(host.effect).toHaveBeenCalledTimes(2);
-    host.current = second;
-    expect(host.effect).toHaveBeenCalledTimes(3);
-    first.value++;
-    expect(host.effect).toHaveBeenCalledTimes(3);
-    second.value++;
-    expect(host.effect).toHaveBeenCalledTimes(4);
-    host.effectDispose?.();
-    second.value++;
-    expect(host.effect).toHaveBeenCalledTimes(4);
   });
 });
