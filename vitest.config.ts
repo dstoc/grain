@@ -21,6 +21,7 @@ export default mergeConfig(
           },
         }),
         defineProject({
+          extends: true,
           test: {
             name: 'browser',
             include: ['src/**/*.browser.test.ts'],
