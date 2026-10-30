@@ -15,7 +15,7 @@ import {
   swapNodes,
 } from '../../markdown/view-model-util.js';
 import { viewModel } from '../../markdown/view-model-node.js';
-import { numberInsertedItems, numberListMoves } from '../../markdown/ordered-list.js';
+import { renumberInsertedItems, renumberListMoves } from '../../markdown/ordered-list.js';
 
 export function insertParagraph(context: EditContext, index: number) {
   if (
@@ -46,7 +46,7 @@ function unindentIfEmptyListItem(context: EditContext): boolean {
   const list = parent[viewModel].parent;
   const firstMarker = list?.[viewModel].firstChild === parent ? parent.marker : undefined;
   const next = parent[viewModel].nextSibling;
-  numberListMoves(context.root, () => unindent(node, context.root));
+  renumberListMoves(context.root, () => unindent(node, context.root));
   if (firstMarker && next?.type === 'list-item' && !parent[viewModel].parent) {
     const match = /^(\d+)([.)])\s*$/.exec(firstMarker);
     if (match) {
@@ -113,7 +113,7 @@ function splitBlockQuoteOrListItemOnEmptyParagraph(context: EditContext): boolea
       node[viewModel].insertBefore(tailTarget);
     }
   }
-  numberInsertedItems(inserted);
+  renumberInsertedItems(inserted);
   context.focus(node, 0);
   return true;
 }
@@ -193,7 +193,7 @@ function insertParagraphInList(context: EditContext, startIndex: number): boolea
     marker: '* ',
   });
   newListItem[viewModel].insertBefore(targetList, targetListItemNextSibling);
-  numberInsertedItems([newListItem]);
+  renumberInsertedItems([newListItem]);
   if (
     newListItem[viewModel].previousSibling?.type === 'list-item' &&
     newListItem[viewModel].previousSibling.checked !== undefined

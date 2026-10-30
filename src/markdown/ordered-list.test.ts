@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { MarkdownTree } from './view-model.js';
 import { viewModel } from './view-model-node.js';
-import { numberInsertedItems } from './ordered-list.js';
+import { renumberInsertedItems } from './ordered-list.js';
 import { serializeToString } from './block-serializer.js';
 import { performLogicalInsertion } from './view-model-util.js';
 
@@ -29,7 +29,7 @@ describe('numbered list insertion', () => {
         children: [{ type: 'paragraph', content: 'new' }],
       });
       item[viewModel].insertBefore(list, b);
-      numberInsertedItems([item]);
+      renumberInsertedItems([item]);
       return {};
     });
     expect(list.children![0]).toBe(a);
@@ -62,7 +62,7 @@ describe('numbered list insertion', () => {
         children: [{ type: 'paragraph', content: 'b' }],
       });
       item[viewModel].insertBefore(list);
-      numberInsertedItems([item]);
+      renumberInsertedItems([item]);
       return {};
     });
     expect(serializeToString(tree.serialize())).toBe(
@@ -112,7 +112,7 @@ test('logical insertion numbers a pasted list as one batch and restores it on un
 
 test('unindent numbers the source and destination once, preserving transferred sibling markers', async () => {
   const { unindent } = await import('../indent-util.js');
-  const { numberListMoves } = await import('./ordered-list.js');
+  const { renumberListMoves } = await import('./ordered-list.js');
   const tree = new MarkdownTree({
     type: 'document',
     children: [
@@ -160,7 +160,7 @@ test('unindent numbers the source and destination once, preserving transferred s
   const b = list.children![0].children![1].children![1];
   const before = serializeToString(tree.serialize());
   tree.edit(() => {
-    numberListMoves(tree.root, () => unindent(b.children![0], tree.root));
+    renumberListMoves(tree.root, () => unindent(b.children![0], tree.root));
     return {};
   });
   const after = serializeToString(tree.serialize());
@@ -172,7 +172,7 @@ test('unindent numbers the source and destination once, preserving transferred s
 });
 
 test('moves a batch into another run and restores both runs on undo and redo', async () => {
-  const { numberListMoves } = await import('./ordered-list.js');
+  const { renumberListMoves } = await import('./ordered-list.js');
   const item = (marker: string, content: string) => ({
     type: 'list-item' as const,
     marker,
@@ -191,7 +191,7 @@ test('moves a batch into another run and restores both runs on undo and redo', a
   const y = destination.children![1];
   const before = serializeToString(tree.serialize());
   tree.edit(() => {
-    numberListMoves(tree.root, () => {
+    renumberListMoves(tree.root, () => {
       a[viewModel].insertBefore(destination, y);
       b[viewModel].insertBefore(destination, y);
     });
@@ -212,7 +212,7 @@ test('moves a batch into another run and restores both runs on undo and redo', a
 });
 
 test('moving the first two items within a run preserves its captured start', async () => {
-  const { numberListMoves } = await import('./ordered-list.js');
+  const { renumberListMoves } = await import('./ordered-list.js');
   const tree = new MarkdownTree({
     type: 'document',
     children: [
@@ -229,7 +229,7 @@ test('moving the first two items within a run preserves its captured start', asy
   const list = tree.root.children![0];
   const [a, b] = list.children!;
   tree.edit(() => {
-    numberListMoves(tree.root, () => {
+    renumberListMoves(tree.root, () => {
       a[viewModel].insertBefore(list);
       b[viewModel].insertBefore(list);
     });

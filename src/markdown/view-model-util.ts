@@ -22,7 +22,7 @@ import {
   viewModel,
 } from './view-model-node.js';
 import type { MarkdownNode } from './node.js';
-import { numberInsertedItems } from './ordered-list.js';
+import { renumberInsertedItems } from './ordered-list.js';
 
 export function swapNodes(node1: ViewModelNode, node2: ViewModelNode) {
   if (node1[viewModel].nextSibling === node2) {
@@ -312,7 +312,7 @@ export function performLogicalInsertion(context: ViewModelNode, nodes: ViewModel
         marker: '* ',
       });
       listItem[viewModel].insertBefore(parent, nextSibling);
-      numberInsertedItems([listItem]);
+      renumberInsertedItems([listItem]);
       parent = listItem;
       nextSibling = undefined;
     }
@@ -320,5 +320,5 @@ export function performLogicalInsertion(context: ViewModelNode, nodes: ViewModel
   for (const node of nodes) {
     node[viewModel].insertBefore(parent, nextSibling);
   }
-  if (parent.type === 'list') numberInsertedItems(nodes);
+  if (parent.type === 'list') renumberInsertedItems(nodes);
 }

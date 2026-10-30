@@ -1,7 +1,7 @@
 import { type ViewModelNode, viewModel } from './view-model-node.js';
 
 /** Number a newly inserted batch using its pre-existing adjacent run. */
-export function numberInsertedItems(items: ViewModelNode[]) {
+export function renumberInsertedItems(items: ViewModelNode[]) {
   if (!items.length) return;
   const first = items[0];
   const last = items[items.length - 1];
@@ -33,7 +33,7 @@ export function numberInsertedItems(items: ViewModelNode[]) {
 }
 
 /** Capture list runs before an edit and reconcile runs affected by item transfers. */
-export function numberListMoves(root: ViewModelNode, edit: () => void) {
+export function renumberListMoves(root: ViewModelNode, edit: () => void) {
   type Run = { items: ViewModelNode[]; markers: string[]; parent: ViewModelNode };
   const runs: Run[] = [];
   const parents = new Map<ViewModelNode, ViewModelNode>();
@@ -120,7 +120,7 @@ export function numberListMoves(root: ViewModelNode, edit: () => void) {
       if (!moved.has(children[i])) continue;
       const batch: ViewModelNode[] = [];
       while (i < children.length && moved.has(children[i])) batch.push(children[i++]);
-      numberInsertedItems(batch);
+      renumberInsertedItems(batch);
       i--;
     }
   }

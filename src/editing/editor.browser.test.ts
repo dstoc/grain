@@ -220,11 +220,22 @@ describe('Editor', () => {
       await state.input.press('ArrowLeft', 4);
       await state.input.insertParagraph();
       await state.input.insertParagraph();
-      expect(serializeEditor(state.editor)).toMatchSnapshot();
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        <!-- -->
+
+        1. test
+      `);
       await state.input.press('Control+z');
-      expect(serializeEditor(state.editor)).toMatchSnapshot();
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        1. <!-- -->
+        2. test
+      `);
       await state.input.press('Control+y');
-      expect(serializeEditor(state.editor)).toMatchSnapshot();
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        <!-- -->
+
+        1. test
+      `);
     });
     test('retains a non-default start after removing the first empty item', async () => {
       await state.input.insert('5. test');
