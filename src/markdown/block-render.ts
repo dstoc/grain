@@ -3,7 +3,7 @@ import { html, LitElement, render } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
 
-import { sigprop, type SigpropHost } from '../signal-utils.js';
+import { NodeSignalController } from './node-signal-controller.js';
 import { HostContext, hostContext } from './host-context.js';
 import { MarkdownInline } from './inline-render.js';
 import { isInlineNode } from './node.js';
@@ -15,7 +15,7 @@ import './transclusion.js';
 import './block-ui.js';
 
 @customElement('md-block')
-export class MarkdownBlock extends LitElement implements SigpropHost {
+export class MarkdownBlock extends LitElement {
   @property({ type: Boolean, reflect: true }) accessor root: boolean | undefined;
   @property({ type: String, reflect: true }) accessor type = '';
 
@@ -23,19 +23,9 @@ export class MarkdownBlock extends LitElement implements SigpropHost {
   @property({ attribute: false })
   accessor hostContext: HostContext | undefined;
 
-  @sigprop accessor node: ViewModelNode | undefined;
+  @property({ attribute: false }) accessor node: ViewModelNode | undefined;
 
-  effectDispose?: () => void;
-
-  effect() {
-    this.node?.[viewModel].renderSignal.value;
-    this.requestUpdate();
-  }
-
-  override disconnectedCallback(): void {
-    super.disconnectedCallback();
-    this.effectDispose?.();
-  }
+  private nodeSignal = new NodeSignalController(this, () => this.node);
 
   override render() {
     const node = this.node;
