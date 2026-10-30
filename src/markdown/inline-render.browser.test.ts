@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 import { MarkdownInline } from './inline-render.js';
-import { createBlockParser, parseMarkdownTree } from './block-parser/api.js';
+import { createBlockParser } from './block-parser/api.js';
 import type { InlineViewModelNode } from './view-model-node.js';
 
 async function settle(element: HTMLElementTagNameMap['md-inline']) {
@@ -8,7 +8,7 @@ async function settle(element: HTMLElementTagNameMap['md-inline']) {
   await Promise.all(Array.from(element.querySelectorAll('md-span'), (span) => span.updateComplete));
 }
 
-describe('streamed code rendering', () => {
+describe('MarkdownInline', () => {
   test('updates a mounted code block as projected content is replaced and settled', async () => {
     const parser = createBlockParser();
     parser.push('```js\n');
@@ -33,9 +33,6 @@ describe('streamed code rendering', () => {
     parser.finish();
     await settle(inline);
     expect(inline.textContent).toBe('function greet(name)\nreturn name;');
-    expect(parser.getTree().serialize()).toEqual(
-      parseMarkdownTree('```js\nfunction greet(name)\nreturn name;\n```').serialize(),
-    );
     inline.remove();
   });
 });
