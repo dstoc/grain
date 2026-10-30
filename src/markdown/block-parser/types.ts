@@ -12,8 +12,7 @@ import type { ViewModelNode } from '../view-model-node.js';
 
 export type ParagraphViewModelNode = ParagraphNode & ViewModelNode;
 export type SectionViewModelNode = SectionNode & ViewModelNode;
-export type ListViewModelNode = Extract<MarkdownNode, { type: 'list' }> &
-  ViewModelNode;
+export type ListViewModelNode = Extract<MarkdownNode, { type: 'list' }> & ViewModelNode;
 export type ListItemViewModelNode = ListItemNode & ViewModelNode;
 export type BlockQuoteViewModelNode = BlockQuoteNode & ViewModelNode;
 export type CodeBlockViewModelNode = CodeBlockNode & ViewModelNode;

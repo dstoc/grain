@@ -26,20 +26,10 @@ import {
   InlineKeyDown,
   InlineLinkClick,
 } from '../markdown/inline-render.js';
-import {
-  findNextEditable,
-  findPreviousEditable,
-} from '../markdown/view-model-util.js';
-import {
-  ViewModelNode,
-  InlineViewModelNode,
-  viewModel,
-} from '../markdown/view-model-node.js';
+import { findNextEditable, findPreviousEditable } from '../markdown/view-model-util.js';
+import { ViewModelNode, InlineViewModelNode, viewModel } from '../markdown/view-model-node.js';
 import { getContainingTransclusion } from '../markdown/transclusion.js';
-import {
-  expandSelection,
-  getBlockSelectionTarget,
-} from './block-selection-util.js';
+import { expandSelection, getBlockSelectionTarget } from './block-selection-util.js';
 import { noAwait } from '../async.js';
 import { editBlockSelectionIndent } from './edits/indent-block-selection.js';
 import { editInlineIndent } from './edits/indent-inline.js';
@@ -47,19 +37,12 @@ import { removeSelectedNodes } from './edits/remove-selected-nodes.js';
 import { editInlineNode } from './edits/edit-inline-node.js';
 import { insertLineBreak, insertParagraph } from './edits/insert-paragraph.js';
 import { deleteContentBackwards } from './edits/delete-content-backwards.js';
-import {
-  copyMarkdownToClipboard,
-  insertMarkdown,
-  serializeSelection,
-} from './copy-paste-util.js';
+import { copyMarkdownToClipboard, insertMarkdown, serializeSelection } from './copy-paste-util.js';
 import { Focus } from '../markdown/view-model-ops.js';
 import { sigprop } from '../signal-utils.js';
 import { normalizeKeys } from './keyboard.js';
 
-// eslint-disable-next-line
-type ExcludeFirst<T extends Parameters<any>> = T extends [any, ...infer Rest]
-  ? Rest
-  : never;
+type ExcludeFirst<T extends Parameters<any>> = T extends [any, ...infer Rest] ? Rest : never;
 
 export interface EditContext {
   // TODO: maybe change the API so that the other functions are
@@ -116,17 +99,12 @@ export class Editor extends LitElement {
         .block=${this.root}
         .renderDelegate=${this.renderDelegate}
         @inline-input=${(e: CustomEvent<InlineInput>) => this.onInlineInput(e)}
-        @inline-link-click=${(e: CustomEvent<InlineLinkClick>) =>
-          this.onInlineLinkClick(e)}
-        @inline-keydown=${(e: CustomEvent<InlineKeyDown>) =>
-          this.onInlineKeyDown(e)}
+        @inline-link-click=${(e: CustomEvent<InlineLinkClick>) => this.onInlineLinkClick(e)}
+        @inline-keydown=${(e: CustomEvent<InlineKeyDown>) => this.onInlineKeyDown(e)}
       ></md-block-render>`;
   }
   runEditAction<
-    T extends (
-      state: EditContext,
-      ...args: ExcludeFirst<Parameters<T>>
-    ) => ReturnType<T>,
+    T extends (state: EditContext, ...args: ExcludeFirst<Parameters<T>>) => ReturnType<T>,
   >(
     element: Element & { hostContext?: HostContext; node?: ViewModelNode },
     action: T,
@@ -210,9 +188,7 @@ export class Editor extends LitElement {
     }
     return actionResult!;
   }
-  onInlineLinkClick({
-    detail: { destination: _destination },
-  }: CustomEvent<InlineLinkClick>) {
+  onInlineLinkClick({ detail: { destination: _destination } }: CustomEvent<InlineLinkClick>) {
     // TODO editor-port
     // if (/^(\w)+:/i.test(destination)) {
     //   window.open(destination);
@@ -230,22 +206,16 @@ export class Editor extends LitElement {
     const hostContext = cast(inline.hostContext);
 
     assert(inline.node);
-    if (
-      ['ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight'].includes(keyDown.key)
-    ) {
+    if (['ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight'].includes(keyDown.key)) {
       keyboardEvent.preventDefault();
-      const direction = ['ArrowUp', 'ArrowLeft'].includes(keyDown.key)
-        ? 'backward'
-        : 'forward';
+      const direction = ['ArrowUp', 'ArrowLeft'].includes(keyDown.key) ? 'backward' : 'forward';
       const alter = keyDown.shiftKey ? 'extend' : 'move';
       const granularity = ['ArrowUp', 'ArrowDown'].includes(keyDown.key)
         ? 'line'
         : keyDown.ctrlKey
           ? 'word'
           : 'character';
-      const result = hostContext.hasSelection
-        ? 0
-        : inline.moveCaret(alter, direction, granularity);
+      const result = hostContext.hasSelection ? 0 : inline.moveCaret(alter, direction, granularity);
       if (result === true) {
         hostContext.clearSelection();
       } else {
@@ -286,11 +256,7 @@ export class Editor extends LitElement {
             }
           }
         }
-        const {
-          node: updatedNode,
-          element,
-          next,
-        } = updateFocus(inline, node, result);
+        const { node: updatedNode, element, next } = updateFocus(inline, node, result);
         if (next && alter === 'extend') {
           const hostContext = cast(element.hostContext);
           if (hostContext.selectionAnchor) {
@@ -336,17 +302,13 @@ export class Editor extends LitElement {
         focus.node[viewModel].renderSignal.value++;
       }
     } else if (keyDown.key === 'a' && keyDown.ctrlKey) {
-      const { hostContext: selectedHostContext } =
-        getBlockSelectionTarget(inline) ?? {};
+      const { hostContext: selectedHostContext } = getBlockSelectionTarget(inline) ?? {};
       if (selectedHostContext?.hasSelection) {
         keyboardEvent.preventDefault();
         expandSelection(selectedHostContext);
       } else {
         const selection = inline.getSelection();
-        if (
-          selection?.start.index === 0 &&
-          selection?.end.index === inline.node.content.length
-        ) {
+        if (selection?.start.index === 0 && selection?.end.index === inline.node.content.length) {
           keyboardEvent.preventDefault();
           focusNode(hostContext, inline.node, 0);
           hostContext.setSelection(node, node);
@@ -361,11 +323,7 @@ export class Editor extends LitElement {
       const selectionTarget = getBlockSelectionTarget(inline);
       if (!selectionTarget?.hostContext) return;
       keyboardEvent.preventDefault();
-      noAwait(
-        copyMarkdownToClipboard(
-          serializeSelection(selectionTarget.hostContext),
-        ),
-      );
+      noAwait(copyMarkdownToClipboard(serializeSelection(selectionTarget.hostContext)));
       this.runEditAction(selectionTarget, removeSelectedNodes);
     } else if (keyDown.key === 'Escape') {
       hostContext.clearSelection();
@@ -385,9 +343,7 @@ export class Editor extends LitElement {
     forceMarkdown = false,
   ) {
     const content = await navigator.clipboard.read();
-    const mdItem = content.find((item) =>
-      item.types.includes('web text/markdown'),
-    );
+    const mdItem = content.find((item) => item.types.includes('web text/markdown'));
     let mdText: string | undefined;
     if (mdItem) {
       const blob = await mdItem.getType('web text/markdown');
@@ -429,8 +385,7 @@ export class Editor extends LitElement {
 
     // TODO: Most edit types could be handled here. E.g. insertText
     // could replace the selection.
-    const { hostContext: selectionHostContext } =
-      getBlockSelectionTarget(inline) ?? {};
+    const { hostContext: selectionHostContext } = getBlockSelectionTarget(inline) ?? {};
     selectionHostContext?.clearSelection();
     if (this.handleInlineInputAsBlockEdit(event)) {
       return;
@@ -455,9 +410,7 @@ export class Editor extends LitElement {
       } else if (inputEvent.inputType === 'insertFromPaste') {
         // Note: We can't use dataTransfer here because not all types are
         // exposed. 'web text/markdown' for example.
-        noAwait(
-          this.triggerPaste(inline, inline.node, { startIndex, oldEndIndex }),
-        );
+        noAwait(this.triggerPaste(inline, inline.node, { startIndex, oldEndIndex }));
         return;
       } else if (inputEvent.inputType === 'deleteWordBackward') {
         inline.moveCaret('move', 'backward', 'word');

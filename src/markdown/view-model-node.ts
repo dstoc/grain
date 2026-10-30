@@ -32,14 +32,11 @@ interface InlineViewModelNodeParts extends ViewModelNodeParts {
 }
 
 export type ViewModelNode =
-  | ((DocumentNode | ListNode | BlockQuoteNode | ListItemNode) &
-      ViewModelNodeParts)
+  | ((DocumentNode | ListNode | BlockQuoteNode | ListItemNode) & ViewModelNodeParts)
   | InlineViewModelNode;
 
 export type InlineViewModelNode = InlineNode & InlineViewModelNodeParts;
 
-export function isInlineViewModelNode(
-  node: ViewModelNode,
-): node is InlineViewModelNode {
+export function isInlineViewModelNode(node: ViewModelNode): node is InlineViewModelNode {
   return isInlineNode(node);
 }

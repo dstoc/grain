@@ -7,10 +7,7 @@ import {
 } from '../types.js';
 import { currentSectionContainer } from '../utils.js';
 import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
-import {
-  syncSectionStack,
-  popSectionsToLevel,
-} from '../container-management.js';
+import { syncSectionStack, popSectionsToLevel } from '../container-management.js';
 import { closeParagraph } from './paragraphs.js';
 
 export function tryPromoteSetextHeading(
@@ -63,9 +60,7 @@ export function promoteParagraphToSection(
   state.sawContent = true;
 }
 
-export function parseAtxHeading(
-  line: string,
-): { level: number; content: string } | undefined {
+export function parseAtxHeading(line: string): { level: number; content: string } | undefined {
   const match = /^(#{1,6})\s+(.*)$/.exec(line);
   if (!match) return;
   return {
@@ -74,11 +69,7 @@ export function parseAtxHeading(
   };
 }
 
-export function openSection(
-  state: BlockParseState,
-  level: number,
-  content: string,
-) {
+export function openSection(state: BlockParseState, level: number, content: string) {
   popSectionsToLevel(state, level);
   const parent = currentSectionContainer(state);
   ensurePlaceholderRemoved(state);

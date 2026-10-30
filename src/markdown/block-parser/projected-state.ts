@@ -11,18 +11,10 @@ import {
   pruneDetachedState,
   removeEmptyRootParagraph as ensurePlaceholderRemoved,
 } from './cleanup.js';
-import {
-  syncQuoteStack,
-  ensureListContainer,
-  buildListPath,
-} from './container-management.js';
+import { syncQuoteStack, ensureListContainer, buildListPath } from './container-management.js';
 import { appendInlineText, closeParagraph } from './handlers/paragraphs.js';
 import { openCodeBlock, parseFenceStart } from './handlers/code-blocks.js';
-import {
-  closeList,
-  parseInitialListItemContent,
-  parseListItem,
-} from './handlers/lists.js';
+import { closeList, parseInitialListItemContent, parseListItem } from './handlers/lists.js';
 import { parseAtxHeading } from './handlers/sections.js';
 
 export function projectPendingResolvedContent(
@@ -41,24 +33,13 @@ export function projectPendingResolvedContent(
   }
   const atxHeading = parseAtxHeading(content);
   if (atxHeading) {
-    projectPendingSectionText(
-      state,
-      container,
-      atxHeading.level,
-      atxHeading.content,
-    );
+    projectPendingSectionText(state, container, atxHeading.level, atxHeading.content);
     return { kind: 'section', text: line };
   }
 
   const listItem = parseListItem(content);
   if (listItem) {
-    projectPendingListItem(
-      state,
-      container,
-      listItem.marker,
-      listItem.checked,
-      listItem.content,
-    );
+    projectPendingListItem(state, container, listItem.marker, listItem.checked, listItem.content);
     return { kind: 'list-item', text: content };
   }
 
@@ -71,8 +52,7 @@ export function projectPendingResolvedContent(
   if (!canProjectPendingParagraph(content)) {
     return;
   }
-  const paragraphContent =
-    container.type === 'block-quote' ? content.trimStart() : content;
+  const paragraphContent = container.type === 'block-quote' ? content.trimStart() : content;
   return {
     kind: 'paragraph',
     text: appendPendingParagraphText(state, container, paragraphContent),

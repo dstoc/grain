@@ -21,12 +21,7 @@ export type MarkdownNode =
   | BlockQuoteNode
   | ListItemNode;
 export type InlineNode = ParagraphNode | CodeBlockNode | SectionNode;
-export type ParentNode =
-  | DocumentNode
-  | ListNode
-  | BlockQuoteNode
-  | ListItemNode
-  | SectionNode;
+export type ParentNode = DocumentNode | ListNode | BlockQuoteNode | ListItemNode | SectionNode;
 
 export function isInlineNode(node: MarkdownNode): node is InlineNode {
   switch (node.type) {

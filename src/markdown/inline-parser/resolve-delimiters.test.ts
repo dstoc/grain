@@ -159,9 +159,7 @@ describe('resolveDelimiters', () => {
   });
 
   it('resolves explicit inline links and images into structured nodes', () => {
-    expect(
-      resolveDelimiters(scanInline('[link](dest "title") ![alt](image.png)')),
-    ).toMatchObject([
+    expect(resolveDelimiters(scanInline('[link](dest "title") ![alt](image.png)'))).toMatchObject([
       {
         type: 'inline_link',
         text: '[link](dest "title")',

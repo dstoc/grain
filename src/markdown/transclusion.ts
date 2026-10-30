@@ -25,9 +25,7 @@ import { viewModel } from './view-model-node.js';
 
 @customElement('md-transclusion')
 export class MarkdownTransclusion extends LitElement {
-  @property({ attribute: false }) accessor node:
-    | (InlineViewModelNode & CodeBlockNode)
-    | undefined;
+  @property({ attribute: false }) accessor node: (InlineViewModelNode & CodeBlockNode) | undefined;
 
   @property({ type: Boolean, reflect: true })
   accessor selected = false;
@@ -80,8 +78,7 @@ export class MarkdownTransclusion extends LitElement {
         ? findFinalEditable(this.root, this.root, true)
         : findNextEditable(this.root, this.root, true);
     this.markdownRenderer.hostContext.focusNode = node ?? undefined;
-    this.markdownRenderer.hostContext.focusOffset =
-      this.hostContext.focusOffset;
+    this.markdownRenderer.hostContext.focusOffset = this.hostContext.focusOffset;
     this.hostContext.focusNode = undefined;
     this.hostContext.focusOffset = undefined;
     node && node[viewModel].renderSignal.value++;

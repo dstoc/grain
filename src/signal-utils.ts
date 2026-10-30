@@ -26,9 +26,7 @@ export function sigprop<This extends SigpropHost, Return>(
   return result;
 }
 
-export function notify<This, Return>(
-  callback: (target: This, value: Return) => void,
-) {
+export function notify<This, Return>(callback: (target: This, value: Return) => void) {
   return (
     target: ClassAccessorDecoratorTarget<This, Return>,
     _context: ClassAccessorDecoratorContext<This, Return>,

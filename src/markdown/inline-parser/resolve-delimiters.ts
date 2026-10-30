@@ -80,10 +80,7 @@ function resolveDelimitedRuns(tokens: ResolvedInline[]): ResolvedInline[] {
     }
 
     const opener = openersForKey[openersForKey.length - 1];
-    if (
-      !isValidDelimitedPair(opener.token, token) ||
-      index - opener.index <= 1
-    ) {
+    if (!isValidDelimitedPair(opener.token, token) || index - opener.index <= 1) {
       openersForKey.push({ index, token });
       continue;
     }
@@ -121,10 +118,7 @@ function isDelimitedToken(token: ResolvedInline): token is SyntaxToken {
   return token.type === 'syntax' && token.kind === 'delimiter';
 }
 
-function isValidDelimitedPair(
-  opener: SyntaxToken,
-  closer: SyntaxToken,
-): boolean {
+function isValidDelimitedPair(opener: SyntaxToken, closer: SyntaxToken): boolean {
   if (opener.marker !== closer.marker || opener.length !== closer.length) {
     return false;
   }

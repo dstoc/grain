@@ -9,13 +9,7 @@ import { DEFAULT_UNSUPPORTED_GENERATED_CASE_NAMES } from './block-parser.permuta
 
 type ChainToken = 'section' | 'quote' | 'bullet' | 'ordered';
 type LeafToken = 'paragraph' | 'code-block';
-type SiblingKind =
-  | 'paragraph'
-  | 'empty-paragraph'
-  | 'quote'
-  | 'bullet'
-  | 'ordered'
-  | 'code-block';
+type SiblingKind = 'paragraph' | 'empty-paragraph' | 'quote' | 'bullet' | 'ordered' | 'code-block';
 type Augmentation =
   | { kind: 'root-block'; position: 'before' | 'after'; sibling: SiblingKind }
   | {
@@ -120,11 +114,7 @@ function buildRoundtripDocument(
     const token = chain[i];
     switch (token) {
       case 'section': {
-        const children = withContainerBlockAugmentations(
-          [node],
-          augmentations,
-          i,
-        );
+        const children = withContainerBlockAugmentations([node], augmentations, i);
         node = {
           type: 'section',
           marker: '#'.repeat(sectionDepths.get(i) ?? 1),
@@ -134,11 +124,7 @@ function buildRoundtripDocument(
         break;
       }
       case 'quote': {
-        const children = withContainerBlockAugmentations(
-          [node],
-          augmentations,
-          i,
-        );
+        const children = withContainerBlockAugmentations([node], augmentations, i);
         node = {
           type: 'block-quote',
           marker: '> ',
@@ -148,22 +134,14 @@ function buildRoundtripDocument(
       }
       case 'bullet':
       case 'ordered': {
-        const itemChildren = withContainerBlockAugmentations(
-          [node],
-          augmentations,
-          i,
-        );
+        const itemChildren = withContainerBlockAugmentations([node], augmentations, i);
         const item = {
           type: 'list-item' as const,
           marker: token === 'bullet' ? '- ' : '1. ',
           checked: undefined,
           children: itemChildren,
         };
-        const children = withListSiblingItemAugmentations(
-          [item],
-          augmentations,
-          i,
-        );
+        const children = withListSiblingItemAugmentations([item], augmentations, i);
         node = {
           type: 'list',
           children,
@@ -235,10 +213,7 @@ function buildSiblingNode(kind: SiblingKind, label: string): MarkdownNode {
   }
 }
 
-function withRootBlockAugmentations(
-  children: MarkdownNode[],
-  augmentations: Augmentation[],
-) {
+function withRootBlockAugmentations(children: MarkdownNode[], augmentations: Augmentation[]) {
   return applyBlockAugmentations(children, augmentations, (augmentation) =>
     augmentation.kind === 'root-block'
       ? buildSiblingNode(
@@ -337,13 +312,9 @@ function supportsGeneratedRoundtrip(
   );
 }
 
-function supportsGeneratedIncremental(
-  chain: ChainToken[],
-  augmentations: Augmentation[],
-): boolean {
+function supportsGeneratedIncremental(chain: ChainToken[], augmentations: Augmentation[]): boolean {
   return (
-    supportsSectionPrefixOnly(chain) &&
-    supportsStableQuoteIncrementalShapes(chain, augmentations)
+    supportsSectionPrefixOnly(chain) && supportsStableQuoteIncrementalShapes(chain, augmentations)
   );
 }
 
@@ -364,10 +335,7 @@ function supportsGeneratedAugmentations(
   augmentations: Augmentation[],
 ): boolean {
   for (const augmentation of augmentations) {
-    if (
-      augmentation.sibling === 'empty-paragraph' &&
-      augmentation.position === 'before'
-    ) {
+    if (augmentation.sibling === 'empty-paragraph' && augmentation.position === 'before') {
       return false;
     }
   }
@@ -395,9 +363,7 @@ function canonicalizeGeneratedDocument(doc: DocumentNode): DocumentNode {
 }
 
 function isCanonicalGeneratedDocument(doc: DocumentNode): boolean {
-  return (
-    JSON.stringify(canonicalizeGeneratedDocument(doc)) === JSON.stringify(doc)
-  );
+  return JSON.stringify(canonicalizeGeneratedDocument(doc)) === JSON.stringify(doc);
 }
 
 function augmentationPermutationsForMode(
@@ -413,8 +379,7 @@ function augmentationPermutationsForMode(
     'ordered',
     'code-block',
   ];
-  const siblingKinds =
-    mode === 'default' ? simpleSiblingKinds : extensiveSiblingKinds;
+  const siblingKinds = mode === 'default' ? simpleSiblingKinds : extensiveSiblingKinds;
   const singles: Augmentation[] = [];
 
   for (const sibling of siblingKinds) {
@@ -511,9 +476,7 @@ function isUnresolvedDoublyQuotedListPair(
       augmentation.kind === 'container-block' &&
       augmentation.depth === 1 &&
       augmentation.position === 'after' &&
-      ['paragraph', 'bullet', 'ordered', 'code-block'].includes(
-        augmentation.sibling,
-      ),
+      ['paragraph', 'bullet', 'ordered', 'code-block'].includes(augmentation.sibling),
   );
   const hasDepth2AfterQuote = augmentations.some(
     (augmentation) =>
@@ -576,10 +539,7 @@ function generatedCaseContextFeatures(chain: ChainToken[]): string[] {
 }
 
 function generatedCaseCoverageFeatures(testCase: NamedGeneratedCase): string[] {
-  const features = [
-    `leaf:${testCase.leaf}`,
-    ...generatedCaseContextFeatures(testCase.chain),
-  ];
+  const features = [`leaf:${testCase.leaf}`, ...generatedCaseContextFeatures(testCase.chain)];
 
   for (const augmentation of testCase.augmentations) {
     features.push(`aug-kind:${augmentation.kind}`);
@@ -595,20 +555,14 @@ function generatedCaseCoverageFeatures(testCase: NamedGeneratedCase): string[] {
     features.push(`pair-kind:${first.kind}+${second.kind}`);
     features.push(`pair-position:${first.position}+${second.position}`);
     features.push(`pair-sibling:${first.sibling}+${second.sibling}`);
-    features.push(
-      `pair-depth:${augmentationDepthTag(first)}+${augmentationDepthTag(second)}`,
-    );
+    features.push(`pair-depth:${augmentationDepthTag(first)}+${augmentationDepthTag(second)}`);
   }
 
   return features;
 }
 
-function selectExtensiveSmokeCases(
-  extensiveCases: NamedGeneratedCase[],
-): NamedGeneratedCase[] {
-  const smokeCases = extensiveCases.filter(
-    (testCase) => testCase.augmentations.length <= 1,
-  );
+function selectExtensiveSmokeCases(extensiveCases: NamedGeneratedCase[]): NamedGeneratedCase[] {
+  const smokeCases = extensiveCases.filter((testCase) => testCase.augmentations.length <= 1);
   const selectedNames = new Set(smokeCases.map((testCase) => testCase.name));
   const coveredFeatures = new Set<string>();
 
@@ -654,9 +608,7 @@ function selectExtensiveSmokeCases(
   return smokeCases;
 }
 
-function generatedCanonicalCasesForMode(
-  mode: GeneratedMode,
-): NamedGeneratedCase[] {
+function generatedCanonicalCasesForMode(mode: GeneratedMode): NamedGeneratedCase[] {
   const seenMarkdown = new Set<string>();
   const cases: NamedGeneratedCase[] = [];
   const chains = [...chainPermutations(2), ...chainPermutations(3)];
@@ -664,10 +616,7 @@ function generatedCanonicalCasesForMode(
 
   for (const chain of chains) {
     for (const leaf of leaves) {
-      for (const augmentations of augmentationPermutationsForMode(
-        chain,
-        mode,
-      )) {
+      for (const augmentations of augmentationPermutationsForMode(chain, mode)) {
         if (!supportsGeneratedRoundtrip(chain, leaf, augmentations)) {
           continue;
         }
@@ -724,17 +673,11 @@ function describeAugmentation(augmentation: Augmentation): string {
   }
 }
 
-function collectVisibleContentSnapshots(
-  tree: MarkdownTree,
-): VisibleContentSnapshot[] {
+function collectVisibleContentSnapshots(tree: MarkdownTree): VisibleContentSnapshot[] {
   const snapshots: VisibleContentSnapshot[] = [];
 
   function visit(node: MarkdownNode, path: string): void {
-    if (
-      node.type === 'paragraph' ||
-      node.type === 'code-block' ||
-      node.type === 'section'
-    ) {
+    if (node.type === 'paragraph' || node.type === 'code-block' || node.type === 'section') {
       const nodeId =
         (
           node as MarkdownNode & {
@@ -851,10 +794,7 @@ function splitBeforeFirstNewline(markdown: string): string[] {
   if (newlineIndex === -1) {
     return markdown ? [markdown] : [];
   }
-  return compactChunks([
-    markdown.slice(0, newlineIndex),
-    markdown.slice(newlineIndex),
-  ]);
+  return compactChunks([markdown.slice(0, newlineIndex), markdown.slice(newlineIndex)]);
 }
 
 function splitThroughFirstNewline(markdown: string): string[] {
@@ -862,10 +802,7 @@ function splitThroughFirstNewline(markdown: string): string[] {
   if (newlineIndex === -1) {
     return markdown ? [markdown] : [];
   }
-  return compactChunks([
-    markdown.slice(0, newlineIndex + 1),
-    markdown.slice(newlineIndex + 1),
-  ]);
+  return compactChunks([markdown.slice(0, newlineIndex + 1), markdown.slice(newlineIndex + 1)]);
 }
 
 function splitFirstLineThenNextChar(markdown: string): string[] {
@@ -897,10 +834,7 @@ function runIncrementalSchedule(
   for (const chunk of schedule.chunks(markdown)) {
     parser.push(chunk);
     consumedLength += chunk.length;
-    checkpoints.set(
-      consumedLength,
-      parser.getTree().serialize() as DocumentNode,
-    );
+    checkpoints.set(consumedLength, parser.getTree().serialize() as DocumentNode);
   }
 
   const finalTree = parser.finish().serialize() as DocumentNode;
@@ -919,8 +853,7 @@ function assertScheduleCoverageAcrossIncrementalParse(
   const runs = DEFAULT_INCREMENTAL_SCHEDULES.map((schedule) =>
     runIncrementalSchedule(markdown, schedule),
   );
-  const baselineRun =
-    runs.find((run) => run.name === 'char-by-char') ?? runs[0];
+  const baselineRun = runs.find((run) => run.name === 'char-by-char') ?? runs[0];
   if (!baselineRun) {
     return;
   }
@@ -972,17 +905,14 @@ function assertVisibleContentGrowth(
   previousSnapshot: VisibleContentSnapshot[],
   currentSnapshot: VisibleContentSnapshot[],
 ): void {
-  const previousByNodeId = new Map(
-    previousSnapshot.map((snapshot) => [snapshot.nodeId, snapshot]),
-  );
+  const previousByNodeId = new Map(previousSnapshot.map((snapshot) => [snapshot.nodeId, snapshot]));
   const previousByIdentity = new Map(
     previousSnapshot.map((snapshot) => [snapshot.identity, snapshot]),
   );
 
   for (const snapshot of currentSnapshot) {
     const previous =
-      previousByNodeId.get(snapshot.nodeId) ??
-      previousByIdentity.get(snapshot.identity);
+      previousByNodeId.get(snapshot.nodeId) ?? previousByIdentity.get(snapshot.identity);
     if (!previous) {
       if (snapshot.contentLength !== 1) {
         throw formatVisibleContentGrowthFailure(
@@ -1030,21 +960,13 @@ function assertVisibleContentGrowthAcrossIncrementalParse(
     parser.push(char);
     const currentSnapshot = collectVisibleContentSnapshots(parser.getTree());
     if (shouldAssertVisibleContentGrowthCheckpoint(markdown, index)) {
-      assertVisibleContentGrowth(
-        caseName,
-        markdown,
-        previousSnapshot,
-        currentSnapshot,
-      );
+      assertVisibleContentGrowth(caseName, markdown, previousSnapshot, currentSnapshot);
     }
     previousSnapshot = currentSnapshot;
   }
 }
 
-function shouldAssertVisibleContentGrowthCheckpoint(
-  markdown: string,
-  charIndex: number,
-): boolean {
+function shouldAssertVisibleContentGrowthCheckpoint(markdown: string, charIndex: number): boolean {
   const lineStart = markdown.lastIndexOf('\n', charIndex - 1) + 1;
   const contentStart = getVisibleContentStartIndex(markdown, lineStart);
   if (contentStart === -1 || charIndex < contentStart) {
@@ -1054,10 +976,7 @@ function shouldAssertVisibleContentGrowthCheckpoint(
   return true;
 }
 
-function getVisibleContentStartIndex(
-  markdown: string,
-  lineStart: number,
-): number {
+function getVisibleContentStartIndex(markdown: string, lineStart: number): number {
   let index = lineStart;
   while (index < markdown.length) {
     const char = markdown[index];
@@ -1224,12 +1143,7 @@ describe('block parser content growth heuristic helpers', () => {
     ];
 
     expect(() =>
-      assertVisibleContentGrowth(
-        'helper progression',
-        'abc',
-        previousSnapshot,
-        currentSnapshot,
-      ),
+      assertVisibleContentGrowth('helper progression', 'abc', previousSnapshot, currentSnapshot),
     ).not.toThrow();
   });
 
@@ -1304,15 +1218,9 @@ describe('block parser content growth heuristic helpers', () => {
     expect(shouldAssertVisibleContentGrowthCheckpoint('- item', 0)).toBe(false);
     expect(shouldAssertVisibleContentGrowthCheckpoint('- item', 1)).toBe(false);
     expect(shouldAssertVisibleContentGrowthCheckpoint('- item', 2)).toBe(true);
-    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 0)).toBe(
-      false,
-    );
-    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 2)).toBe(
-      false,
-    );
-    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 4)).toBe(
-      true,
-    );
+    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 0)).toBe(false);
+    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 2)).toBe(false);
+    expect(shouldAssertVisibleContentGrowthCheckpoint('> - item', 4)).toBe(true);
   });
 });
 
@@ -1321,11 +1229,7 @@ describe('block parser generated permutations', () => {
     for (const testCase of generatedCanonicalCasesForMode('default')) {
       const { expected, markdown, name, leaf } = testCase;
       if (
-        isUnsupportedDefaultRoundtripNestedQuoteCase(
-          testCase.chain,
-          leaf,
-          testCase.augmentations,
-        )
+        isUnsupportedDefaultRoundtripNestedQuoteCase(testCase.chain, leaf, testCase.augmentations)
       ) {
         continue;
       }
@@ -1333,13 +1237,7 @@ describe('block parser generated permutations', () => {
       try {
         expect(reparsed).toEqual(expected);
       } catch (error) {
-        throw formatGeneratedCaseFailure(
-          name,
-          markdown,
-          expected,
-          reparsed,
-          error,
-        );
+        throw formatGeneratedCaseFailure(name, markdown, expected, reparsed, error);
       }
     }
   });
@@ -1347,19 +1245,10 @@ describe('block parser generated permutations', () => {
   it('matches full parse for generated paragraph nested and sibling-bearing permutations under char-by-char append', () => {
     for (const testCase of generatedCanonicalCasesForMode('default')) {
       const { chain, leaf, expected, markdown, name } = testCase;
-      if (
-        isUnsupportedDefaultIncrementalNestedQuoteCase(
-          chain,
-          leaf,
-          testCase.augmentations,
-        )
-      ) {
+      if (isUnsupportedDefaultIncrementalNestedQuoteCase(chain, leaf, testCase.augmentations)) {
         continue;
       }
-      if (
-        leaf !== 'paragraph' ||
-        !supportsGeneratedIncremental(chain, testCase.augmentations)
-      ) {
+      if (leaf !== 'paragraph' || !supportsGeneratedIncremental(chain, testCase.augmentations)) {
         continue;
       }
       assertScheduleCoverageAcrossIncrementalParse(name, markdown, expected);
@@ -1383,19 +1272,10 @@ describe('block parser generated permutations', () => {
   it('matches full parse for generated code-block nested and sibling-bearing permutations under char-by-char append', () => {
     for (const testCase of generatedCanonicalCasesForMode('default')) {
       const { chain, leaf, expected, markdown, name } = testCase;
-      if (
-        isUnsupportedDefaultCodeBlockIncrementalCase(
-          chain,
-          leaf,
-          testCase.augmentations,
-        )
-      ) {
+      if (isUnsupportedDefaultCodeBlockIncrementalCase(chain, leaf, testCase.augmentations)) {
         continue;
       }
-      if (
-        leaf !== 'code-block' ||
-        !supportsGeneratedIncremental(chain, testCase.augmentations)
-      ) {
+      if (leaf !== 'code-block' || !supportsGeneratedIncremental(chain, testCase.augmentations)) {
         continue;
       }
       assertScheduleCoverageAcrossIncrementalParse(name, markdown, expected);
@@ -1450,9 +1330,7 @@ function isUnsupportedDefaultCodeBlockIncrementalCase(
 if (RUN_EXTENSIVE_SMOKE) {
   describe('block parser extensive smoke generated permutations', () => {
     const smokeCases = generatedCanonicalCasesForMode('extensive-smoke');
-    const namedSmokeCases = smokeCases.map(
-      (testCase) => [testCase.name, testCase] as const,
-    );
+    const namedSmokeCases = smokeCases.map((testCase) => [testCase.name, testCase] as const);
 
     it.each(namedSmokeCases)(
       'roundtrips %s through serialize and parse',
@@ -1464,8 +1342,7 @@ if (RUN_EXTENSIVE_SMOKE) {
 
     const smokeParagraphCases = smokeCases.filter(
       ({ chain, leaf, augmentations }) =>
-        leaf === 'paragraph' &&
-        supportsGeneratedIncremental(chain, augmentations),
+        leaf === 'paragraph' && supportsGeneratedIncremental(chain, augmentations),
     );
     const namedSmokeParagraphCases = smokeParagraphCases.map(
       (testCase) => [testCase.name, testCase] as const,
@@ -1484,8 +1361,7 @@ if (RUN_EXTENSIVE_SMOKE) {
 
     const smokeCodeBlockCases = smokeCases.filter(
       ({ chain, leaf, augmentations }) =>
-        leaf === 'code-block' &&
-        supportsGeneratedIncremental(chain, augmentations),
+        leaf === 'code-block' && supportsGeneratedIncremental(chain, augmentations),
     );
     const namedSmokeCodeBlockCases = smokeCodeBlockCases.map(
       (testCase) => [testCase.name, testCase] as const,
@@ -1521,8 +1397,7 @@ if (RUN_EXTENSIVE) {
 
     const extensiveParagraphCases = extensiveCases.filter(
       ({ chain, leaf, augmentations }) =>
-        leaf === 'paragraph' &&
-        supportsGeneratedIncremental(chain, augmentations),
+        leaf === 'paragraph' && supportsGeneratedIncremental(chain, augmentations),
     );
     const namedExtensiveParagraphCases = extensiveParagraphCases.map(
       (testCase) => [testCase.name, testCase] as const,
@@ -1541,8 +1416,7 @@ if (RUN_EXTENSIVE) {
 
     const extensiveCodeBlockCases = extensiveCases.filter(
       ({ chain, leaf, augmentations }) =>
-        leaf === 'code-block' &&
-        supportsGeneratedIncremental(chain, augmentations),
+        leaf === 'code-block' && supportsGeneratedIncremental(chain, augmentations),
     );
     const namedExtensiveCodeBlockCases = extensiveCodeBlockCases.map(
       (testCase) => [testCase.name, testCase] as const,

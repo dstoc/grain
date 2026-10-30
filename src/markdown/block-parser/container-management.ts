@@ -87,10 +87,7 @@ export function buildListPath(
   return [item];
 }
 
-export function syncSectionStack(
-  state: BlockParseState,
-  parent: ViewModelNode,
-) {
+export function syncSectionStack(state: BlockParseState, parent: ViewModelNode) {
   if (parent.type !== 'section') {
     state.sectionStack.length = 0;
     return;

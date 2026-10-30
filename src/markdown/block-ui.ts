@@ -100,9 +100,7 @@ export class ListItem extends SignalWatcher(LitElement) {
   protected override render() {
     this.node[viewModel].renderSignal.value;
     return html`
-      <div id="gutter" @click=${this.#handleClick}>
-        ${this.#icon(this.node.checked)}
-      </div>
+      <div id="gutter" @click=${this.#handleClick}>${this.#icon(this.node.checked)}</div>
       <div>
         <slot></slot>
       </div>
