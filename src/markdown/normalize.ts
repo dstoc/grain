@@ -41,20 +41,14 @@ function moveTrailingNodesIntoSections(tree: MarkdownTree) {
  * Given a contiguous run of sections, update their heirarichy so that it
  * matches their section markers.
  */
-function normalizeContiguousSections(
-  sections: (SectionNode & ViewModelNode)[],
-) {
+function normalizeContiguousSections(sections: (SectionNode & ViewModelNode)[]) {
   const activeSections: (SectionNode & ViewModelNode)[] = [];
   function activeSection() {
     return cast(activeSections.at(-1));
   }
-  function contains(
-    parent: SectionNode & ViewModelNode,
-    node: SectionNode & ViewModelNode,
-  ) {
+  function contains(parent: SectionNode & ViewModelNode, node: SectionNode & ViewModelNode) {
     return (
-      (!parent[viewModel].previousSibling &&
-        parent[viewModel].parent!.type !== 'section') ||
+      (!parent[viewModel].previousSibling && parent[viewModel].parent!.type !== 'section') ||
       node.marker.length > parent.marker.length
     );
   }
@@ -70,10 +64,7 @@ function normalizeContiguousSections(
         // If we run out of sections, insert it as the next
         // sibling of the last one we saw. This happens when we have a
         // run of sections that are not contained by another section.
-        section[viewModel].insertBefore(
-          last![viewModel].parent!,
-          last![viewModel].nextSibling,
-        );
+        section[viewModel].insertBefore(last![viewModel].parent!, last![viewModel].nextSibling);
       }
     }
     if (activeSections.length && contains(activeSection(), section)) {
@@ -81,10 +72,7 @@ function normalizeContiguousSections(
       if (last?.[viewModel].parent === activeSection()) {
         // Place it next to the last section, if that section was also contained
         // by the active section.
-        section[viewModel].insertBefore(
-          last[viewModel].parent,
-          last[viewModel].nextSibling,
-        );
+        section[viewModel].insertBefore(last[viewModel].parent, last[viewModel].nextSibling);
       } else {
         // Otherwise ensure it's the first section child of the active
         // section. Find the first section and place it before that. Otherwise,
@@ -127,10 +115,7 @@ function normalizeSections(tree: MarkdownTree) {
   }
 }
 
-export function normalizeTree(
-  tree: MarkdownTree,
-  options: NormalizeTreeOptions = {},
-) {
+export function normalizeTree(tree: MarkdownTree, options: NormalizeTreeOptions = {}) {
   normalizeSections(tree);
 
   for (const node of dfs(tree.root)) {
@@ -156,10 +141,7 @@ export function normalizeTree(
     if (node.type === 'list-item') {
       // Ensure checked is not set, rather than set to undefined
       // since it could serialize as null.
-      if (
-        node.checked === null ||
-        (node.checked === undefined && 'checked' in node)
-      ) {
+      if (node.checked === null || (node.checked === undefined && 'checked' in node)) {
         node[viewModel].updateChecked(undefined);
       }
     }

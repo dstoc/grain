@@ -13,10 +13,7 @@
 // limitations under the License.
 
 import { HostContext } from '../markdown/host-context.js';
-import type {
-  InlineViewModelNode,
-  ViewModelNode,
-} from '../markdown/view-model-node.js';
+import type { InlineViewModelNode, ViewModelNode } from '../markdown/view-model-node.js';
 import { getContainingTransclusion } from '../markdown/transclusion.js';
 import { assert, cast } from '../asserts.js';
 import { dfs } from '../markdown/view-model-util.js';
@@ -69,10 +66,7 @@ export function expandSelection(hostContext: HostContext) {
       }
       if (!visited.has(next)) {
         for (const candidate of dfs(next, next, (node) => !visited.has(node))) {
-          if (
-            isInlineNode(candidate) &&
-            !hostContext.selection.has(candidate)
-          ) {
+          if (isInlineNode(candidate) && !hostContext.selection.has(candidate)) {
             newNodes.add(candidate);
           }
         }

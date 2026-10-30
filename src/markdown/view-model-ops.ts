@@ -119,8 +119,7 @@ export function classify(root: ViewModelNode, batch: OpBatch): Classification {
   function merge(node?: ViewModelNode) {
     if (!node) return;
     if (!node[viewModel].connected) return;
-    const value =
-      root === node || isAncestorOf(root, node) ? 'inside' : 'outside';
+    const value = root === node || isAncestorOf(root, node) ? 'inside' : 'outside';
     if (result === undefined) {
       result = value;
     } else if (result !== value) {

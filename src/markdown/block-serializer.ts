@@ -44,11 +44,7 @@ function separator(prev: MarkdownNode, next: MarkdownNode): string {
   if (next.type === 'list-item') return '';
   if (prev.type === 'paragraph' && prev.content === '') return '\n';
   if (prev.type === 'paragraph' && next.type === 'list') return '';
-  if (
-    prev.type === 'list' &&
-    next.type === 'paragraph' &&
-    next.content === ''
-  ) {
+  if (prev.type === 'list' && next.type === 'paragraph' && next.content === '') {
     return '\n';
   }
   if (prev.type === 'list' && next.type === 'paragraph') return '\n\n';
@@ -194,12 +190,7 @@ function serialize(
       // TODO: assert not reached?
       assert(false);
   }
-  const serializedChild = serializeBlocks(
-    node.children ?? [],
-    indents,
-    result,
-    predicate,
-  );
+  const serializedChild = serializeBlocks(node.children ?? [], indents, result, predicate);
   return shouldSerializeNodeContent || serializedChild;
 }
 

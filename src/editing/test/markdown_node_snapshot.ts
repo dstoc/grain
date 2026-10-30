@@ -8,10 +8,6 @@ expect.addSnapshotSerializer({
     return serializeToString(target, undefined, indentation);
   },
   test(val: unknown) {
-    return (
-      val !== null &&
-      typeof val === 'object' &&
-      Symbol.for('markdown-tree') in val
-    );
+    return val !== null && typeof val === 'object' && Symbol.for('markdown-tree') in val;
   },
 });

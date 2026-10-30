@@ -16,10 +16,7 @@ export function unindent(node: ViewModelNode, root: ViewModelNode) {
       targetListItemSibling[viewModel].nextSibling,
     );
   } else {
-    target[viewModel].insertBefore(
-      cast(list[viewModel].parent),
-      list[viewModel].nextSibling,
-    );
+    target[viewModel].insertBefore(cast(list[viewModel].parent), list[viewModel].nextSibling);
     listItem[viewModel].remove();
   }
   if (nextSibling) {

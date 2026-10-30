@@ -1,12 +1,6 @@
 const isMac = /Mac|iPhone/i.test(navigator.platform);
 
-export function normalizeKeys({
-  key,
-  shiftKey,
-  ctrlKey,
-  altKey,
-  metaKey,
-}: KeyboardEvent) {
+export function normalizeKeys({ key, shiftKey, ctrlKey, altKey, metaKey }: KeyboardEvent) {
   if (isMac) {
     if (altKey && !ctrlKey) {
       if (['ArrowLeft', 'ArrowRight', 'Backpace', 'Delete'].includes(key)) {

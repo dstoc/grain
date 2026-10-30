@@ -233,9 +233,7 @@ describe('scanInline', () => {
 
   it('recognizes URI autolinks and leaves other angle-bracket text alone', () => {
     expect(
-      scanInline(
-        'link <https://example.com> and <not a link> plus <mailto:test@example.com>',
-      ),
+      scanInline('link <https://example.com> and <not a link> plus <mailto:test@example.com>'),
     ).toEqual([
       {
         type: 'text',

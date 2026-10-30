@@ -20,24 +20,12 @@ import type {
   Caches,
 } from './view-model-node.js';
 
-import {
-  parser as inlineParser,
-  type InlineTree,
-  type InlineTreeNode,
-} from './inline-parser.js';
+import { parser as inlineParser, type InlineTree, type InlineTreeNode } from './inline-parser.js';
 import { parseBlocks } from './block-parser/api.js';
 import { assert, cast } from '../asserts.js';
 import { type NormalizeTreeOptions, normalizeTree } from './normalize.js';
 import { dfs } from './view-model-util.js';
-import {
-  Focus,
-  Op,
-  OpBatch,
-  canCoalesce,
-  classify,
-  doOp,
-  undoOp,
-} from './view-model-ops.js';
+import { Focus, Op, OpBatch, canCoalesce, classify, doOp, undoOp } from './view-model-ops.js';
 import { viewModel } from './view-model-node.js';
 import { batch, signal } from '../signals.js';
 import { TypedCustomEvent } from '../event-utils.js';
@@ -90,11 +78,7 @@ export class ViewModel {
       parent[viewModel].version = this.version;
       parent = parent[viewModel].parent;
     }
-    for (const node of dfs(
-      this.self,
-      this.self,
-      (node) => !node[viewModel].connected,
-    )) {
+    for (const node of dfs(this.self, this.self, (node) => !node[viewModel].connected)) {
       node[viewModel].version = this.version;
     }
     if (notify) {
@@ -127,10 +111,8 @@ export class ViewModel {
     }
     const index = this.parent.children!.indexOf(this.self);
     this.parent.children!.splice(index, 1);
-    if (!this.previousSibling)
-      this.parent[viewModel].firstChild = this.nextSibling;
-    if (!this.nextSibling)
-      this.parent[viewModel].lastChild = this.previousSibling;
+    if (!this.previousSibling) this.parent[viewModel].firstChild = this.nextSibling;
+    if (!this.nextSibling) this.parent[viewModel].lastChild = this.previousSibling;
     const parent = this.parent;
     const nextSibling = this.nextSibling;
     this.signalMutation(
@@ -281,10 +263,7 @@ export class InlineViewModel extends ViewModel {
     super.disconnect();
     this.inlineTree_ = undefined;
   }
-  edit(
-    { startIndex, newEndIndex, oldEndIndex, newText }: InlineEdit,
-    replaceWithBlocks = true,
-  ) {
+  edit({ startIndex, newEndIndex, oldEndIndex, newText }: InlineEdit, replaceWithBlocks = true) {
     assert(this.tree.state === 'editing');
     const oldText = this.self.content.substring(startIndex, oldEndIndex);
     const result = {
@@ -340,10 +319,7 @@ export class InlineViewModel extends ViewModel {
 }
 
 export interface MarkdownTreeDelegate {
-  postEditUpdate(
-    node: ViewModelNode,
-    change: 'connected' | 'disconnected' | 'changed',
-  ): void;
+  postEditUpdate(node: ViewModelNode, change: 'connected' | 'disconnected' | 'changed'): void;
 }
 
 export type TreeChange = 'edit' | 'cache';
@@ -489,12 +465,7 @@ export class MarkdownTree extends EventTarget {
     this.removed.clear();
     return batch(() => {
       const { startFocus, endFocus } = editFn();
-      return this.finishEdit(
-        startFocus,
-        endFocus,
-        fireTreeEditEvent,
-        normalizeOptions,
-      );
+      return this.finishEdit(startFocus, endFocus, fireTreeEditEvent, normalizeOptions);
     });
   }
 
@@ -521,16 +492,10 @@ export class MarkdownTree extends EventTarget {
         this.caches.delete(node);
       }
     }
-    this.dispatchEvent(
-      new TypedCustomEvent('tree-change', { detail: 'cache' }),
-    );
+    this.dispatchEvent(new TypedCustomEvent('tree-change', { detail: 'cache' }));
   }
 
-  setCache<K extends keyof Caches>(
-    node: ViewModelNode,
-    key: K,
-    value?: Caches[K],
-  ) {
+  setCache<K extends keyof Caches>(node: ViewModelNode, key: K, value?: Caches[K]) {
     assert(this.state === 'post-edit');
     assert(node[viewModel].tree === this);
     assert(!this.#disconnected);
@@ -566,10 +531,7 @@ export class MarkdownTree extends EventTarget {
     normalizeOptions?: NormalizeTreeOptions,
   ) {
     assert(this.state === 'editing');
-    if (
-      normalizeOptions?.force ||
-      this.root[viewModel].version > this.editStartVersion
-    ) {
+    if (normalizeOptions?.force || this.root[viewModel].version > this.editStartVersion) {
       normalizeTree(this, normalizeOptions);
     }
     const removedRoots = new Set<ViewModelNode>();
@@ -614,11 +576,7 @@ export class MarkdownTree extends EventTarget {
       result = [...this.editOperations];
       const now = Date.now();
       const last = this.undoStack.at(-1);
-      if (
-        last &&
-        now - last.timestamp < 1000 &&
-        canCoalesce(last, this.editOperations)
-      ) {
+      if (last && now - last.timestamp < 1000 && canCoalesce(last, this.editOperations)) {
         last.ops = [...last.ops, ...this.editOperations];
         last.timestamp = now;
         last.endFocus = endFocus;
@@ -637,14 +595,10 @@ export class MarkdownTree extends EventTarget {
     this.state = 'idle';
     if (fireTreeEditEvent) {
       if (this.root[viewModel].version > this.editStartVersion) {
-        this.dispatchEvent(
-          new TypedCustomEvent('tree-change', { detail: 'edit' }),
-        );
+        this.dispatchEvent(new TypedCustomEvent('tree-change', { detail: 'edit' }));
       } else if (this.editChangedCaches) {
         this.editChangedCaches = false;
-        this.dispatchEvent(
-          new TypedCustomEvent('tree-change', { detail: 'cache' }),
-        );
+        this.dispatchEvent(new TypedCustomEvent('tree-change', { detail: 'cache' }));
       }
     } else {
       this.editChangedCaches = false;
@@ -652,11 +606,7 @@ export class MarkdownTree extends EventTarget {
     return result;
   }
 
-  private addDom<T extends MarkdownNode>(
-    node: T,
-    parent?: ViewModelNode,
-    childIndex?: number,
-  ) {
+  private addDom<T extends MarkdownNode>(node: T, parent?: ViewModelNode, childIndex?: number) {
     const result = node as T & ViewModelNode;
     if (isInlineNode(result)) {
       assert(!result[viewModel]);
@@ -721,9 +671,7 @@ interface Edit {
 
 function apply(text: string, edit: Edit) {
   return (
-    text.substring(0, edit.startIndex) +
-    (edit.newText ?? '') +
-    text.substring(edit.oldEndIndex)
+    text.substring(0, edit.startIndex) + (edit.newText ?? '') + text.substring(edit.oldEndIndex)
   );
 }
 

@@ -54,20 +54,13 @@ function unindentIfEmptyListItem(context: EditContext): boolean {
  * subequent sibling is created to hold the tail of items following the
  * empty paragraph but within the container.
  */
-function splitBlockQuoteOrListItemOnEmptyParagraph(
-  context: EditContext,
-): boolean {
+function splitBlockQuoteOrListItemOnEmptyParagraph(context: EditContext): boolean {
   const node = context.node;
   assert(isInlineViewModelNode(node));
   if (node.type !== 'paragraph') return false;
   if (node.content.length > 0) return false;
   if (!node[viewModel].parent) return false;
-  const { ancestor } = findAncestor(
-    node,
-    context.root,
-    'list-item',
-    'block-quote',
-  );
+  const { ancestor } = findAncestor(node, context.root, 'list-item', 'block-quote');
   if (!ancestor) return false;
   if (ancestor === context.root) return false;
   context.startEditing();
@@ -87,18 +80,13 @@ function splitBlockQuoteOrListItemOnEmptyParagraph(
   } else {
     // Insert the empty paragraph after the block quote.
     assert(ancestor.type === 'block-quote');
-    node[viewModel].insertBefore(
-      cast(ancestor[viewModel].parent),
-      ancestor[viewModel].nextSibling,
-    );
+    node[viewModel].insertBefore(cast(ancestor[viewModel].parent), ancestor[viewModel].nextSibling);
     target = node;
   }
   if (tail.length) {
     // Construct a new block-quote or list-item to hold the tail
     // of nodes following the empty paragraph.
-    const tailTarget = node[viewModel].tree.add(
-      cloneNode(ancestor, () => false),
-    );
+    const tailTarget = node[viewModel].tree.add(cloneNode(ancestor, () => false));
     tailTarget[viewModel].insertBefore(
       cast(ancestor[viewModel].parent),
       target[viewModel].nextSibling,
@@ -131,10 +119,7 @@ function insertSiblingParagraph(context: EditContext, startIndex: number) {
     }
     newParagraph[viewModel].insertBefore(node, node[viewModel].firstChild);
   } else {
-    newParagraph[viewModel].insertBefore(
-      cast(node[viewModel].parent),
-      node[viewModel].nextSibling,
-    );
+    newParagraph[viewModel].insertBefore(cast(node[viewModel].parent), node[viewModel].nextSibling);
   }
   finishInsertParagraph(context, node, newParagraph, startIndex);
 }
@@ -144,10 +129,7 @@ function insertSiblingParagraph(context: EditContext, startIndex: number) {
  * is the first-child of list-item and its next sibling, if any, is
  * a list.
  */
-function insertParagraphInList(
-  context: EditContext,
-  startIndex: number,
-): boolean {
+function insertParagraphInList(context: EditContext, startIndex: number): boolean {
   const node = context.node;
   assert(isInlineViewModelNode(node));
   const { ancestor, path } = findAncestor(node, context.root, 'list');
@@ -158,8 +140,7 @@ function insertParagraphInList(
       path?.length === 2 &&
       path[0].type === 'list-item' &&
       path[1].type === 'paragraph' &&
-      (path[0].children?.length === 1 ||
-        path[1][viewModel].nextSibling?.type === 'list')
+      (path[0].children?.length === 1 || path[1][viewModel].nextSibling?.type === 'list')
     )
   ) {
     // Abort if we're dealing with something other than the simple list
@@ -177,10 +158,7 @@ function insertParagraphInList(
       targetList = node[viewModel].tree.add({
         type: 'list',
       });
-      targetList[viewModel].insertBefore(
-        cast(node[viewModel].parent),
-        node[viewModel].nextSibling,
-      );
+      targetList[viewModel].insertBefore(cast(node[viewModel].parent), node[viewModel].nextSibling);
       targetListItemNextSibling = undefined;
     }
   } else {
@@ -211,15 +189,8 @@ function insertParagraphInList(
   return true;
 }
 
-function areAncestorAndDescendant(
-  node: ViewModelNode,
-  node2: ViewModelNode,
-  root: ViewModelNode,
-) {
-  return (
-    [...ancestors(node, root)].includes(node2) ||
-    [...ancestors(node2, root)].includes(node)
-  );
+function areAncestorAndDescendant(node: ViewModelNode, node2: ViewModelNode, root: ViewModelNode) {
+  return [...ancestors(node, root)].includes(node2) || [...ancestors(node2, root)].includes(node);
 }
 
 function finishInsertParagraph(

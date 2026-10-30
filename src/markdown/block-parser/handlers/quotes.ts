@@ -3,10 +3,7 @@ import { type BlockParseState } from '../types.js';
 import { hasContainerAncestor } from '../utils.js';
 import { syncQuoteStack, resetQuoteStack } from '../container-management.js';
 
-export function projectPendingQuoteOpen(
-  state: BlockParseState,
-  parent: ViewModelNode,
-) {
+export function projectPendingQuoteOpen(state: BlockParseState, parent: ViewModelNode) {
   syncQuoteStack(state, parent, 1);
 }
 

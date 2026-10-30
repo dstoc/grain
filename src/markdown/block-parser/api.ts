@@ -3,10 +3,7 @@ import { MarkdownTree } from '../view-model.js';
 
 export { type BlockParser, type BlockParserSnapshot } from './types.js';
 import { isDefined, pathForNode } from './utils.js';
-import {
-  cleanupInactiveEmptyBlocks,
-  removeEmptyRootParagraph,
-} from './cleanup.js';
+import { cleanupInactiveEmptyBlocks, removeEmptyRootParagraph } from './cleanup.js';
 import { createInitialState, restoreState } from './state.js';
 import { parseLine, projectPendingLine, closeLeafBlocks } from './core.js';
 import { discardProjectedPendingLine } from './projected-state.js';
@@ -20,9 +17,7 @@ export function createBlockParser(snapshot?: BlockParserSnapshot): BlockParser {
       children: [{ type: 'paragraph', content: '' }],
     },
   );
-  const state = snapshot
-    ? restoreState(tree, snapshot)
-    : createInitialState(tree);
+  const state = snapshot ? restoreState(tree, snapshot) : createInitialState(tree);
 
   let pendingText = snapshot?.pendingText ?? '';
   let finished = snapshot?.finished ?? false;

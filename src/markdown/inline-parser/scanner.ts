@@ -11,14 +11,12 @@ export function scanInline(text: string): InlineToken[] {
   const tokens: InlineToken[] = [];
   let textStart = 0;
 
-  for (let index = 0; index < text.length; ) {
+  for (let index = 0; index < text.length;) {
     const char = text[index];
 
     if (char === '[' || char === ']' || char === '(' || char === ')') {
       pushTextToken(tokens, text, textStart, index);
-      tokens.push(
-        createSyntaxToken(text, index, char, charToSyntaxKind(char), 1),
-      );
+      tokens.push(createSyntaxToken(text, index, char, charToSyntaxKind(char), 1));
       index += 1;
       textStart = index;
       continue;
@@ -35,9 +33,7 @@ export function scanInline(text: string): InlineToken[] {
     if (char === '*' || char === '_' || char === '~') {
       const runEnd = scanRepeatedRun(text, index, char);
       pushTextToken(tokens, text, textStart, index);
-      tokens.push(
-        createSyntaxToken(text, index, char, 'delimiter', runEnd - index),
-      );
+      tokens.push(createSyntaxToken(text, index, char, 'delimiter', runEnd - index));
       index = runEnd;
       textStart = index;
       continue;
@@ -46,15 +42,7 @@ export function scanInline(text: string): InlineToken[] {
     if (char === '`') {
       const runEnd = scanRepeatedRun(text, index, char);
       pushTextToken(tokens, text, textStart, index);
-      tokens.push(
-        createSyntaxToken(
-          text,
-          index,
-          char,
-          'code_span_delimiter',
-          runEnd - index,
-        ),
-      );
+      tokens.push(createSyntaxToken(text, index, char, 'code_span_delimiter', runEnd - index));
       index = runEnd;
       textStart = index;
       continue;
@@ -172,11 +160,7 @@ function charToSyntaxKind(char: string): SyntaxTokenKind {
   }
 }
 
-function scanRepeatedRun(
-  text: string,
-  startIndex: number,
-  marker: string,
-): number {
+function scanRepeatedRun(text: string, startIndex: number, marker: string): number {
   let endIndex = startIndex + 1;
   while (endIndex < text.length && text[endIndex] === marker) {
     endIndex += 1;
@@ -232,10 +216,7 @@ function isUriAutolink(inner: string): boolean {
   return /^[A-Za-z][A-Za-z0-9+.-]*:[^\s<>]+$/u.test(inner);
 }
 
-function readCodePoint(
-  text: string,
-  index: number,
-): { char: string; nextIndex: number } | null {
+function readCodePoint(text: string, index: number): { char: string; nextIndex: number } | null {
   const codePoint = text.codePointAt(index);
   if (codePoint === undefined) {
     return null;

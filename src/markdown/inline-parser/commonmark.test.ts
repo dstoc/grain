@@ -23,8 +23,7 @@ const INLINE_RELEVANT_SECTIONS = new Set([
   'Autolinks',
 ]);
 
-const { default: commonmarkSpec } =
-  await import('../../../data/commonmark.0.31.2.spec.json?raw');
+const { default: commonmarkSpec } = await import('../../../data/commonmark.0.31.2.spec.json?raw');
 const fixtures = JSON.parse(commonmarkSpec) as CommonMarkFixture[];
 
 const selectedFixtures = fixtures.filter((fixture) =>
@@ -48,17 +47,13 @@ describe('commonmark html serializer', () => {
     console.info(
       `[commonmark] total=${selectedFixtures.length} executed=${executedFixtures.length} skipped=${skippedFixtures.length}`,
     );
-    expect(executedFixtures.length + skippedFixtures.length).toBe(
-      selectedFixtures.length,
-    );
+    expect(executedFixtures.length + skippedFixtures.length).toBe(selectedFixtures.length);
   });
 
   for (const fixture of selectedFixtures) {
     const skipReason =
       DEFAULT_COMMONMARK_SKIP_REASONS.get(fixture.example) ??
-      (DEFAULT_COMMONMARK_SKIP_EXAMPLES.has(fixture.example)
-        ? 'default skip'
-        : undefined);
+      (DEFAULT_COMMONMARK_SKIP_EXAMPLES.has(fixture.example) ? 'default skip' : undefined);
     const test = skipReason === undefined ? it : it.skip;
     test(`${fixture.example} ${fixture.section}`, () => {
       expect(serializeCommonMarkHtml(fixture.markdown)).toBe(fixture.html);

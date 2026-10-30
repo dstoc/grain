@@ -103,9 +103,7 @@ export const styles = [
     md-block + md-block[type='list'] {
       margin-block-start: -0.25lh !important;
     }
-    md-block[type='list-item']
-      > md-block[type='paragraph']
-      + md-block[type='list'] {
+    md-block[type='list-item'] > md-block[type='paragraph'] + md-block[type='list'] {
       margin-block-start: -0.25lh !important;
     }
     md-block[type='section'] > md-block:nth-child(2) {
@@ -121,9 +119,7 @@ export const styles = [
       background: var(--md-block-selection-bgcolor);
       caret-color: transparent;
     }
-    md-block:not(
-      :has(md-inline:not([selected]), md-transclusion:not([selected]))
-    ) {
+    md-block:not(:has(md-inline:not([selected]), md-transclusion:not([selected]))) {
       --md-accent-color: currentcolor;
       --md-active-block-color: var(--md-block-selection-bgcolor);
       --md-block-quote-bgcolor: var(--md-block-selection-bgcolor);

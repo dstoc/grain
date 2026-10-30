@@ -1,19 +1,12 @@
 import { viewModel } from '../view-model-node.js';
 import type { ViewModelNode } from '../view-model-node.js';
-import type {
-  BlockParseState,
-  ListItemViewModelNode,
-  BlockQuoteViewModelNode,
-} from './types.js';
+import type { BlockParseState, ListItemViewModelNode, BlockQuoteViewModelNode } from './types.js';
 
 export function isBlankLine(line: string): boolean {
   return /^\s*$/.test(line);
 }
 
-export function isInsideListPath(
-  node: ViewModelNode,
-  ancestor?: ListItemViewModelNode,
-): boolean {
+export function isInsideListPath(node: ViewModelNode, ancestor?: ListItemViewModelNode): boolean {
   if (!ancestor) return false;
   let parent: ViewModelNode | undefined = node;
   while (parent) {
@@ -39,10 +32,7 @@ export function hasContainerAncestor(
   return false;
 }
 
-export function pathForNode(
-  root: ViewModelNode,
-  node?: ViewModelNode,
-): number[] | undefined {
+export function pathForNode(root: ViewModelNode, node?: ViewModelNode): number[] | undefined {
   if (!node) return;
   const path: number[] = [];
   while (node !== root) {
@@ -56,10 +46,7 @@ export function pathForNode(
   return path;
 }
 
-export function nodeAtPath(
-  root: ViewModelNode,
-  path?: number[],
-): ViewModelNode | undefined {
+export function nodeAtPath(root: ViewModelNode, path?: number[]): ViewModelNode | undefined {
   if (!path) return;
   let node: ViewModelNode | undefined = root;
   for (const index of path) {
@@ -129,15 +116,11 @@ export function activeQuoteChainForBase(
 
   const chain = path
     .reverse()
-    .filter(
-      (node): node is BlockQuoteViewModelNode => node.type === 'block-quote',
-    );
+    .filter((node): node is BlockQuoteViewModelNode => node.type === 'block-quote');
   return chain.length ? chain : trailingQuoteChainFromBase(base);
 }
 
-function trailingQuoteChainFromBase(
-  base: ViewModelNode,
-): BlockQuoteViewModelNode[] {
+function trailingQuoteChainFromBase(base: ViewModelNode): BlockQuoteViewModelNode[] {
   const quotes: BlockQuoteViewModelNode[] = [];
   let current = base.children?.at(-1);
   while (current?.type === 'block-quote') {

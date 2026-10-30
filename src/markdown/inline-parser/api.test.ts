@@ -226,9 +226,7 @@ describe('inline parser api', () => {
   });
 
   it('keeps inner punctuation literal inside code spans', () => {
-    expect(
-      parse('`a * [b] #tag <https://example.com>`').rootNode,
-    ).toMatchObject({
+    expect(parse('`a * [b] #tag <https://example.com>`').rootNode).toMatchObject({
       type: 'code_span',
       text: '`a * [b] #tag <https://example.com>`',
       startIndex: 0,

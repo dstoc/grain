@@ -33,9 +33,7 @@ interface ResolvedStructure {
   endTokenIndex: number;
 }
 
-export function resolveLinksAndImages(
-  resolved: ResolvedInline[],
-): ResolvedInline[] {
+export function resolveLinksAndImages(resolved: ResolvedInline[]): ResolvedInline[] {
   const openers: LinkOpener[] = [];
   const structures = new Map<number, ResolvedStructure>();
   const consumed = new Set<number>();
@@ -60,19 +58,13 @@ export function resolveLinksAndImages(
 
     const tailStartIndex = index + 1;
     const hasExplicitTail = hasParenOpen(resolved, tailStartIndex, consumed);
-    const parsedTail = hasExplicitTail
-      ? parseLinkTail(resolved, tailStartIndex)
-      : null;
+    const parsedTail = hasExplicitTail ? parseLinkTail(resolved, tailStartIndex) : null;
 
     if (hasExplicitTail && parsedTail === null) {
       continue;
     }
 
-    for (
-      let openerIndex = openers.length - 1;
-      openerIndex >= 0;
-      openerIndex -= 1
-    ) {
+    for (let openerIndex = openers.length - 1; openerIndex >= 0; openerIndex -= 1) {
       const opener = openers[openerIndex];
       if (consumed.has(opener.index)) {
         continue;
@@ -157,9 +149,7 @@ function createExplicitNode(
 ): ResolvedInlineLink | ResolvedImage | null {
   const startTokenIndex = opener.imageMarkerIndex ?? opener.index;
   const label = resolved.slice(opener.index + 1, closerIndex);
-  const text = joinTokenText(
-    resolved.slice(startTokenIndex, parsedTail.endTokenIndex + 1),
-  );
+  const text = joinTokenText(resolved.slice(startTokenIndex, parsedTail.endTokenIndex + 1));
 
   const common = {
     text,
@@ -200,10 +190,7 @@ function createExplicitNode(
       };
 }
 
-function parseLinkTail(
-  resolved: ResolvedInline[],
-  startIndex: number,
-): ParsedLinkTail | null {
+function parseLinkTail(resolved: ResolvedInline[], startIndex: number): ParsedLinkTail | null {
   const tail = resolved.slice(startIndex);
   if (tail.length === 0 || !isParenOpen(tail[0])) {
     return null;
@@ -245,10 +232,7 @@ function parseLinkTail(
   return {
     endTokenIndex: startIndex + closeTokenIndex,
     destination: mapSpanToSource(destination, tail, tokenOffsets),
-    title:
-      title === undefined
-        ? undefined
-        : mapSpanToSource(title, tail, tokenOffsets),
+    title: title === undefined ? undefined : mapSpanToSource(title, tail, tokenOffsets),
   };
 }
 
@@ -410,11 +394,7 @@ function offsetToTokenIndex(
   return -1;
 }
 
-function consumeRange(
-  consumed: Set<number>,
-  startIndex: number,
-  endIndex: number,
-): void {
+function consumeRange(consumed: Set<number>, startIndex: number, endIndex: number): void {
   for (let index = startIndex; index <= endIndex; index += 1) {
     consumed.add(index);
   }
@@ -437,16 +417,8 @@ function getImageMarkerIndex(
   return index - 1;
 }
 
-function hasParenOpen(
-  resolved: ResolvedInline[],
-  index: number,
-  consumed: Set<number>,
-): boolean {
-  return (
-    index < resolved.length &&
-    !consumed.has(index) &&
-    isParenOpen(resolved[index])
-  );
+function hasParenOpen(resolved: ResolvedInline[], index: number, consumed: Set<number>): boolean {
+  return index < resolved.length && !consumed.has(index) && isParenOpen(resolved[index]);
 }
 
 function joinTokenText(tokens: ResolvedInline[]): string {

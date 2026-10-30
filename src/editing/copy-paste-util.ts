@@ -4,11 +4,7 @@ import { serializeToString } from '../markdown/block-serializer.js';
 import { HostContext } from '../markdown/host-context.js';
 import { MarkdownNode } from '../markdown/node.js';
 import { MarkdownTree } from '../markdown/view-model.js';
-import {
-  ViewModelNode,
-  isInlineViewModelNode,
-  viewModel,
-} from '../markdown/view-model-node.js';
+import { ViewModelNode, isInlineViewModelNode, viewModel } from '../markdown/view-model-node.js';
 import {
   ancestors,
   cloneNode,
@@ -22,9 +18,7 @@ export function insertMarkdown(markdown: string, node: ViewModelNode) {
   const { node: root } = parseBlocks(markdown + '\n');
   if (!root) return;
   assert(root.type === 'document' && root.children);
-  const newNodes = root.children.map((newNode) =>
-    node[viewModel].tree.add<MarkdownNode>(newNode),
-  );
+  const newNodes = root.children.map((newNode) => node[viewModel].tree.add<MarkdownNode>(newNode));
 
   const newInlineNodes = newNodes
     .flatMap((node) => [...dfs(node, node)])
@@ -85,9 +79,7 @@ export function serializeSelection(hostContext: HostContext) {
         return true;
     }
   };
-  const roots = removeDescendantNodes(
-    [...hostContext.selection.values()].map(expand),
-  )
+  const roots = removeDescendantNodes([...hostContext.selection.values()].map(expand))
     .toSorted(compareDocumentOrder)
     .map((node) => cloneNode(node, predicate));
   const tree = new MarkdownTree({

@@ -4,9 +4,7 @@ import { type BlockParseState } from '../types.js';
 import { listContinuationPrefix } from '../utils.js';
 import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
 
-export function parseFenceStart(
-  line: string,
-): { marker: string; info: string | null } | undefined {
+export function parseFenceStart(line: string): { marker: string; info: string | null } | undefined {
   const match = /^(```+)(.*)$/.exec(line);
   if (!match) return;
   const info = match[2].trim();
@@ -34,10 +32,7 @@ export function openCodeBlock(
   state.sawContent = true;
 }
 
-export function appendCodeBlockLine(
-  state: BlockParseState,
-  line: string,
-): string {
+export function appendCodeBlockLine(state: BlockParseState, line: string): string {
   const node = state.currentCodeBlock;
   if (!node) return '';
   const inserted = node.content === '' ? line : `\n${line}`;
@@ -47,10 +42,7 @@ export function appendCodeBlockLine(
   return inserted;
 }
 
-export function stripActiveCodeBlockContinuation(
-  state: BlockParseState,
-  line: string,
-): string {
+export function stripActiveCodeBlockContinuation(state: BlockParseState, line: string): string {
   const parent = state.currentCodeBlock?.[viewModel].parent;
   const currentListItem = state.currentListPath.at(-1);
   if (

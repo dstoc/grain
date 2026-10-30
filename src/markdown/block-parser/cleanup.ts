@@ -12,29 +12,18 @@ export function removeEmptyRootParagraph(state: BlockParseState) {
 }
 
 export function pruneDetachedState(state: BlockParseState) {
-  state.sectionStack = state.sectionStack.filter((node) =>
-    isAttached(state.root, node),
-  );
+  state.sectionStack = state.sectionStack.filter((node) => isAttached(state.root, node));
 
-  if (
-    state.currentParagraph &&
-    !isAttached(state.root, state.currentParagraph)
-  ) {
+  if (state.currentParagraph && !isAttached(state.root, state.currentParagraph)) {
     state.currentParagraph = undefined;
   }
 
-  if (
-    state.currentCodeBlock &&
-    !isAttached(state.root, state.currentCodeBlock)
-  ) {
+  if (state.currentCodeBlock && !isAttached(state.root, state.currentCodeBlock)) {
     state.currentCodeBlock = undefined;
     state.currentCodeFence = undefined;
   }
 
-  if (
-    state.currentQuoteBase &&
-    !isAttached(state.root, state.currentQuoteBase)
-  ) {
+  if (state.currentQuoteBase && !isAttached(state.root, state.currentQuoteBase)) {
     state.currentQuoteBase = undefined;
     state.currentQuoteStack = [];
   } else {
@@ -43,9 +32,7 @@ export function pruneDetachedState(state: BlockParseState) {
     );
   }
 
-  state.currentListPath = state.currentListPath.filter((node) =>
-    isAttached(state.root, node),
-  );
+  state.currentListPath = state.currentListPath.filter((node) => isAttached(state.root, node));
 
   if (state.currentList && !isAttached(state.root, state.currentList)) {
     state.currentList = undefined;
@@ -113,8 +100,7 @@ export function exitDetachedContainerContexts(state: BlockParseState) {
   resetQuoteStack(state);
   state.sectionStack = state.sectionStack.filter(
     (node) =>
-      !hasContainerAncestor(node, 'list-item') &&
-      !hasContainerAncestor(node, 'block-quote'),
+      !hasContainerAncestor(node, 'list-item') && !hasContainerAncestor(node, 'block-quote'),
   );
   pruneDetachedState(state);
 }

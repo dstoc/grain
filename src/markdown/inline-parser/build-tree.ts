@@ -28,31 +28,19 @@ function createPlainTextNode(text: string): InlineLeafNode<'text'> {
   return createSyntaxNode('text', text) as InlineLeafNode<'text'>;
 }
 
-function createInlineRootNode(
-  text: string,
-  namedChildren: InlineTreeNode[],
-): InlineRootNode {
-  return createSyntaxNode(
-    'inline_root',
-    text,
-    0,
-    namedChildren,
-  ) as InlineRootNode;
+function createInlineRootNode(text: string, namedChildren: InlineTreeNode[]): InlineRootNode {
+  return createSyntaxNode('inline_root', text, 0, namedChildren) as InlineRootNode;
 }
 
 function createPlainTextTree(text: string): InlineTree {
   return createTree(createPlainTextNode(text));
 }
 
-function createNodesFromResolvedInline(
-  resolved: ResolvedInline[],
-): InlineTreeNode[] {
+function createNodesFromResolvedInline(resolved: ResolvedInline[]): InlineTreeNode[] {
   return resolved.map(createNodeFromResolvedInline);
 }
 
-function createNodeFromResolvedInline(
-  resolved: ResolvedInline,
-): InlineTreeNode {
+function createNodeFromResolvedInline(resolved: ResolvedInline): InlineTreeNode {
   switch (resolved.type) {
     case 'code_span':
       return createCodeSpanNode(resolved);
@@ -69,11 +57,7 @@ function createNodeFromResolvedInline(
     case 'strikethrough':
       return createDelimitedNode(resolved);
     case 'tag':
-      return createSyntaxNode(
-        'tag',
-        resolved.text,
-        resolved.startIndex,
-      ) as InlineLeafNode<'tag'>;
+      return createSyntaxNode('tag', resolved.text, resolved.startIndex) as InlineLeafNode<'tag'>;
     case 'uri_autolink':
       return createSyntaxNode(
         'uri_autolink',
@@ -87,15 +71,9 @@ function createNodeFromResolvedInline(
         resolved.startIndex,
       ) as InlineLeafNode<'syntax'>;
     case 'text':
-      return createSyntaxNode(
-        'text',
-        resolved.text,
-        resolved.startIndex,
-      ) as InlineLeafNode<'text'>;
+      return createSyntaxNode('text', resolved.text, resolved.startIndex) as InlineLeafNode<'text'>;
     default:
-      throw new Error(
-        `Unsupported inline token type: ${(resolved as { type: string }).type}`,
-      );
+      throw new Error(`Unsupported inline token type: ${(resolved as { type: string }).type}`);
   }
 }
 
@@ -116,12 +94,7 @@ function createInlineTextNode(
   startIndex: number,
   namedChildren: InlineTreeNode[] = [],
 ): InlineTreeNode {
-  return createSyntaxNode(
-    type,
-    text,
-    startIndex,
-    namedChildren,
-  ) as InlineTreeNode;
+  return createSyntaxNode(type, text, startIndex, namedChildren) as InlineTreeNode;
 }
 
 function createCodeSpanNode(codeSpan: ResolvedCodeSpan): CodeSpanNode {
@@ -131,9 +104,7 @@ function createCodeSpanNode(codeSpan: ResolvedCodeSpan): CodeSpanNode {
     codeSpan.innerStartIndex,
   ) as InlineLeafNode<'text'>;
 
-  return createSyntaxNode('code_span', codeSpan.text, codeSpan.startIndex, [
-    child,
-  ]) as CodeSpanNode;
+  return createSyntaxNode('code_span', codeSpan.text, codeSpan.startIndex, [child]) as CodeSpanNode;
 }
 
 function createDelimitedNode(
@@ -150,29 +121,16 @@ function createDelimitedNode(
 function createInlineLinkNode(link: ResolvedInlineLink): InlineLinkNode {
   const children = [
     createLinkTextNode(link.label, link.startIndex + 1),
-    createInlineTextNode(
-      'link_destination',
-      link.destination,
-      link.destinationStartIndex,
-    ),
+    createInlineTextNode('link_destination', link.destination, link.destinationStartIndex),
   ];
 
   if (link.title !== undefined) {
     children.push(
-      createInlineTextNode(
-        'link_title',
-        link.title,
-        link.titleStartIndex ?? link.startIndex,
-      ),
+      createInlineTextNode('link_title', link.title, link.titleStartIndex ?? link.startIndex),
     );
   }
 
-  return createSyntaxNode(
-    'inline_link',
-    link.text,
-    link.startIndex,
-    children,
-  ) as InlineLinkNode;
+  return createSyntaxNode('inline_link', link.text, link.startIndex, children) as InlineLinkNode;
 }
 
 function createShortcutLinkNode(link: ResolvedShortcutLink): ShortcutLinkNode {
@@ -184,54 +142,28 @@ function createShortcutLinkNode(link: ResolvedShortcutLink): ShortcutLinkNode {
 function createImageNode(image: ResolvedImage): ImageNode {
   const children = [
     createLinkTextNode(image.label, image.startIndex + 2),
-    createInlineTextNode(
-      'link_destination',
-      image.destination,
-      image.destinationStartIndex,
-    ),
+    createInlineTextNode('link_destination', image.destination, image.destinationStartIndex),
   ];
 
   if (image.title !== undefined) {
     children.push(
-      createInlineTextNode(
-        'link_title',
-        image.title,
-        image.titleStartIndex ?? image.startIndex,
-      ),
+      createInlineTextNode('link_title', image.title, image.titleStartIndex ?? image.startIndex),
     );
   }
 
-  return createSyntaxNode(
-    'image',
-    image.text,
-    image.startIndex,
-    children,
-  ) as ImageNode;
+  return createSyntaxNode('image', image.text, image.startIndex, children) as ImageNode;
 }
 
-function createLinkTextNode(
-  label: ResolvedInline[],
-  fallbackStartIndex: number,
-): LinkTextNode {
+function createLinkTextNode(label: ResolvedInline[], fallbackStartIndex: number): LinkTextNode {
   const namedChildren = createNodesFromResolvedInline(label);
   const text = label.map((token) => token.text).join('');
   const startIndex = label[0]?.startIndex ?? fallbackStartIndex;
-  return createSyntaxNode(
-    'link_text',
-    text,
-    startIndex,
-    namedChildren,
-  ) as LinkTextNode;
+  return createSyntaxNode('link_text', text, startIndex, namedChildren) as LinkTextNode;
 }
 
-export function buildInlineTree(
-  text: string,
-  resolved: ResolvedInline[] = [],
-): InlineTree {
+export function buildInlineTree(text: string, resolved: ResolvedInline[] = []): InlineTree {
   const nodes = createNodesFromResolvedInline(resolved);
-  const hasStructuredNode = nodes.some(
-    (node) => node.type !== 'text' && node.type !== 'syntax',
-  );
+  const hasStructuredNode = nodes.some((node) => node.type !== 'text' && node.type !== 'syntax');
 
   if (!hasStructuredNode) {
     return createPlainTextTree(text);

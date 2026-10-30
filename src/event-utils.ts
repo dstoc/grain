@@ -9,13 +9,13 @@ export interface TypedEventTarget<Target, EventMap> {
     listener: (this: Target, ev: EventMap[K]) => void,
     options?: boolean | EventListenerOptions,
   ): void;
-  dispatchEvent<K extends keyof EventMap>(
-    event: EventMap[K] & Event & { type: K },
-  ): boolean;
+  dispatchEvent<K extends keyof EventMap>(event: EventMap[K] & Event & { type: K }): boolean;
 }
 
-export type TypedEventTargetConstructor<Target, EventMap> =
-  new () => TypedEventTarget<Target, EventMap>;
+export type TypedEventTargetConstructor<Target, EventMap> = new () => TypedEventTarget<
+  Target,
+  EventMap
+>;
 
 export const TypedCustomEvent = CustomEvent as {
   prototype: CustomEvent;

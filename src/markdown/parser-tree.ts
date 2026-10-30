@@ -29,9 +29,7 @@ export function createSyntaxNode(
   };
 }
 
-export function createTree<Node extends ParserSyntaxNode>(
-  rootNode: Node,
-): ParserTree<Node> {
+export function createTree<Node extends ParserSyntaxNode>(rootNode: Node): ParserTree<Node> {
   return {
     rootNode,
   };

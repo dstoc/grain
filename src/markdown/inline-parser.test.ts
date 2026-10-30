@@ -1,10 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { parse, parser } from './inline-parser.js';
-import {
-  parse as parseFromIndex,
-  parser as parserFromIndex,
-} from './inline-parser/index.js';
+import { parse as parseFromIndex, parser as parserFromIndex } from './inline-parser/index.js';
 
 describe('inline parser scaffold', () => {
   it('preserves the plain text fallback tree', () => {

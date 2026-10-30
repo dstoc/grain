@@ -1,15 +1,8 @@
 import { assert, cast } from '../../asserts.js';
 import { EditContext } from '../editor.js';
 import { InlineNode } from '../../markdown/node.js';
-import {
-  ViewModelNode,
-  isInlineViewModelNode,
-} from '../../markdown/view-model-node.js';
-import {
-  children,
-  findAncestor,
-  reverseDfs,
-} from '../../markdown/view-model-util.js';
+import { ViewModelNode, isInlineViewModelNode } from '../../markdown/view-model-node.js';
+import { children, findAncestor, reverseDfs } from '../../markdown/view-model-util.js';
 import { viewModel } from '../../markdown/view-model-node.js';
 
 export function deleteContentBackwards(context: EditContext): boolean {
@@ -18,9 +11,7 @@ export function deleteContentBackwards(context: EditContext): boolean {
   // Turn sections and code-blocks into paragraphs.
   if (node.type === 'section') {
     context.startEditing();
-    node[viewModel].updateMarker(
-      node.marker.substring(0, node.marker.length - 1),
-    );
+    node[viewModel].updateMarker(node.marker.substring(0, node.marker.length - 1));
     if (node.marker === '') {
       const paragraph = node[viewModel].tree.add({
         type: 'paragraph',
@@ -80,11 +71,7 @@ function maybeMergeContentInto(
   node: InlineNode & ViewModelNode,
   target: ViewModelNode,
 ): boolean {
-  if (
-    target.type === 'code-block' ||
-    target.type === 'paragraph' ||
-    target.type === 'section'
-  ) {
+  if (target.type === 'code-block' || target.type === 'paragraph' || target.type === 'section') {
     assert(isInlineViewModelNode(target));
     context.startEditing();
     target[viewModel].edit({

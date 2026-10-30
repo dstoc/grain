@@ -22,10 +22,7 @@ function makeCodeBlock(): ViewModelNode & CodeBlockNode {
   return tree.root.children![0] as ViewModelNode & CodeBlockNode;
 }
 
-function renderBlock(
-  node: ViewModelNode,
-  hostContext: HostContext,
-): TemplateResult | undefined {
+function renderBlock(node: ViewModelNode, hostContext: HostContext): TemplateResult | undefined {
   return MarkdownBlock.prototype.render.call({
     node,
     hostContext,
@@ -67,15 +64,9 @@ describe('MarkdownBlock', () => {
     const node = makeCodeBlock();
     const hostContext = new HostContext();
     const renderCodeBlock = vi.fn(
-      ({
-        node,
-        selected,
-      }: {
-        node: ViewModelNode & CodeBlockNode;
-        selected: boolean;
-      }) => {
+      ({ node, selected }: { node: ViewModelNode & CodeBlockNode; selected: boolean }) => {
         if (node.info !== 'md') return undefined;
-        // prettier-ignore
+        // oxfmt-ignore
         return html`<md-transclusion .node=${node} .root=${parseMarkdownTree(node.content).root} ?selected=${selected}></md-transclusion>`;
       },
     );

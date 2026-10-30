@@ -2,10 +2,7 @@ import { LitElement, css, html } from 'lit';
 
 import './editing/editor.js';
 import './markdown/transclusion.js';
-import {
-  createBlockParser,
-  parseMarkdownTree,
-} from './markdown/block-parser/api.js';
+import { createBlockParser, parseMarkdownTree } from './markdown/block-parser/api.js';
 import type { BlockParser } from './markdown/block-parser/api.js';
 import { serializeToString } from './markdown/block-serializer.js';
 import type { MarkdownRenderDelegate } from './markdown/render-delegate.js';
@@ -102,22 +99,13 @@ class MarkdownDevHarness extends LitElement {
     }
 
     .editor {
-      border-right: 1px solid
-        color-mix(in srgb, var(--root-color) 10%, transparent);
-      background: color-mix(
-        in srgb,
-        var(--root-background-color) 84%,
-        transparent
-      );
+      border-right: 1px solid color-mix(in srgb, var(--root-color) 10%, transparent);
+      background: color-mix(in srgb, var(--root-background-color) 84%, transparent);
       backdrop-filter: blur(18px);
     }
 
     .preview {
-      background: color-mix(
-        in srgb,
-        var(--root-background-color) 92%,
-        transparent
-      );
+      background: color-mix(in srgb, var(--root-background-color) 92%, transparent);
     }
 
     h1 {
@@ -152,13 +140,8 @@ class MarkdownDevHarness extends LitElement {
       resize: vertical;
       border: 1px solid color-mix(in srgb, var(--root-color) 14%, transparent);
       border-radius: 18px;
-      background: color-mix(
-        in srgb,
-        var(--root-background-color) 90%,
-        transparent
-      );
-      box-shadow: inset 0 1px 0
-        color-mix(in srgb, var(--root-background-color) 70%, white);
+      background: color-mix(in srgb, var(--root-background-color) 90%, transparent);
+      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--root-background-color) 70%, white);
       padding: 1rem 1.05rem;
       color: var(--root-color);
       font:
@@ -169,8 +152,7 @@ class MarkdownDevHarness extends LitElement {
     }
 
     textarea:focus {
-      outline: 2px solid
-        color-mix(in srgb, var(--md-accent-color) 25%, transparent);
+      outline: 2px solid color-mix(in srgb, var(--md-accent-color) 25%, transparent);
       outline-offset: 2px;
     }
 
@@ -235,15 +217,10 @@ class MarkdownDevHarness extends LitElement {
       min-height: 68vh;
       border: 1px solid color-mix(in srgb, var(--root-color) 8%, transparent);
       border-radius: 24px;
-      background: color-mix(
-        in srgb,
-        var(--root-background-color) 90%,
-        transparent
-      );
+      background: color-mix(in srgb, var(--root-background-color) 90%, transparent);
       box-shadow:
         0 24px 60px color-mix(in srgb, var(--root-color) 8%, transparent),
-        inset 0 1px 0
-          color-mix(in srgb, var(--root-background-color) 65%, white);
+        inset 0 1px 0 color-mix(in srgb, var(--root-background-color) 65%, white);
       padding: 1.35rem 1.35rem 1.6rem;
     }
 
@@ -274,8 +251,7 @@ class MarkdownDevHarness extends LitElement {
     .tab[selected] {
       background: var(--root-background-color);
       color: var(--md-accent-color);
-      box-shadow: 0 6px 18px
-        color-mix(in srgb, var(--root-color) 8%, transparent);
+      box-shadow: 0 6px 18px color-mix(in srgb, var(--root-color) 8%, transparent);
     }
 
     .serialized {
@@ -313,8 +289,7 @@ class MarkdownDevHarness extends LitElement {
 
       .editor {
         border-right: 0;
-        border-bottom: 1px solid
-          color-mix(in srgb, var(--root-color) 8%, transparent);
+        border-bottom: 1px solid color-mix(in srgb, var(--root-color) 8%, transparent);
       }
 
       textarea,
@@ -374,8 +349,8 @@ class MarkdownDevHarness extends LitElement {
         <section class="panel editor">
           <h1>Block Render Harness</h1>
           <p class="lede">
-            This page reparses markdown on every input change using the new
-            chunk-based block parser and renders only block structure.
+            This page reparses markdown on every input change using the new chunk-based block parser
+            and renders only block structure.
           </p>
           <label class="label" for="source">Markdown Source</label>
           <textarea
@@ -396,8 +371,7 @@ class MarkdownDevHarness extends LitElement {
             </button>
             <label class="slider-wrap">
               <span class="slider-label"
-                >Playback progress:
-                ${this.playbackIndex}/${this.source.length}</span
+                >Playback progress: ${this.playbackIndex}/${this.source.length}</span
               >
               <input
                 type="range"
@@ -437,16 +411,18 @@ class MarkdownDevHarness extends LitElement {
             </button>
           </div>
           <div class="preview-card">
-            ${this.activeTab === 'render'
-              ? this.root
-                ? html`<md-editor
-                    .root=${this.root}
-                    .renderDelegate=${transclusionRenderDelegate}
-                  ></md-editor>`
-                : html``
-              : this.activeTab === 'serialize'
-                ? html`<pre class="serialized">${this.serializedMarkdown}</pre>`
-                : html`<pre class="tree">${this.treeJson}</pre>`}
+            ${
+              this.activeTab === 'render'
+                ? this.root
+                  ? html`<md-editor
+                      .root=${this.root}
+                      .renderDelegate=${transclusionRenderDelegate}
+                    ></md-editor>`
+                  : html``
+                : this.activeTab === 'serialize'
+                  ? html`<pre class="serialized">${this.serializedMarkdown}</pre>`
+                  : html`<pre class="tree">${this.treeJson}</pre>`
+            }
           </div>
         </section>
       </main>
@@ -530,11 +506,7 @@ class MarkdownDevHarness extends LitElement {
   }
 
   private reparse(markdown: string, forceFull = false) {
-    if (
-      !forceFull &&
-      !this.parserDirtyFromRenderEdit &&
-      markdown.startsWith(this.source)
-    ) {
+    if (!forceFull && !this.parserDirtyFromRenderEdit && markdown.startsWith(this.source)) {
       const appended = markdown.slice(this.source.length);
       this.source = markdown;
       this.parser.push(appended);
