@@ -93,6 +93,65 @@ async function createHarness(value: string) {
   return { harness, source };
 }
 
+test.each(['alpha  ', 'alpha  \n'])(
+  'editing outside code preserves literal content: %j',
+  async (code) => {
+    const { harness, source } = await createHarness(`\`\`\`js\n${code}\n\`\`\`\n\nother`);
+    await nextTask();
+    const renderer = harness
+      .shadowRoot!.querySelector('md-editor')!
+      .shadowRoot!.querySelector('md-block-render')!;
+    const inline = Array.from(renderer.shadowRoot!.querySelectorAll<HTMLElement>('md-inline')).find(
+      (node) => node.textContent === 'other',
+    )!;
+    inline.focus();
+    await userEvent.keyboard('{End}X');
+    await nextTask();
+    await harness.updateComplete;
+    const expected = `\`\`\`js\n${code}\n\`\`\`\n\notherX\n`;
+    expect(source.value).toBe(expected);
+    harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab')[1]!.click();
+    await harness.updateComplete;
+    expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe(expected);
+  },
+);
+test('outdenting a multi-block item updates Source, Render and Serialize', async () => {
+  const { harness, source } = await createHarness(
+    '- alpha\n\n  beta\n\n  gamma\n  - child\n- tail\n',
+  );
+  await nextTask();
+  const renderer = harness
+    .shadowRoot!.querySelector('md-editor')!
+    .shadowRoot!.querySelector('md-block-render')!;
+  renderer.shadowRoot!.querySelector('md-inline')!.focus();
+  await userEvent.keyboard('{Shift>}{Tab}{/Shift}');
+  await nextTask();
+  await harness.updateComplete;
+  const expected = 'alpha\n\nbeta\n\ngamma\n- child\n- tail\n';
+  expect(source.value).toBe(expected);
+  expect(
+    [...renderer.shadowRoot!.querySelectorAll('md-inline')].map((inline) =>
+      inline.textContent?.trim(),
+    ),
+  ).toEqual(['alpha', 'beta', 'gamma', 'child', 'tail']);
+  harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab')[1]!.click();
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe(expected);
+});
+
+test('block selection outdents an item between siblings without losing their order', async () => {
+  const { harness, source } = await createHarness('- anchor\n- alpha\n\n  beta\n- tail\n');
+  await nextTask();
+  const renderer = harness
+    .shadowRoot!.querySelector('md-editor')!
+    .shadowRoot!.querySelector('md-block-render')!;
+  renderer.shadowRoot!.querySelectorAll('md-inline')[1]!.focus();
+  await userEvent.keyboard('{Home}{Shift>}{ArrowDown}{/Shift}{Shift>}{Tab}{/Shift}');
+  await nextTask();
+  await harness.updateComplete;
+  expect(source.value).toBe('- anchor\n\n\nalpha\n\nbeta\n- tail\n');
+});
+
 async function expectDocument(harness: LitElement, source: HTMLTextAreaElement, value: string) {
   expect(source.value).toBe(value);
   const tabs = harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab');

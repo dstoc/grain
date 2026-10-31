@@ -226,6 +226,48 @@ describe('Editor', () => {
     });
   });
 
+  describe('outdenting multi-block list items', () => {
+    test.each([
+      ['alpha', false],
+      ['beta', false],
+      ['alpha', true],
+      ['beta', true],
+    ] as const)(
+      'preserves content and history from %s (block selection: %s)',
+      async (content, selected) => {
+        const source = '- alpha\n\n  beta\n\n  gamma\n  - child\n- tail\n';
+        const tree = parseMarkdownTree(source);
+        const before = serializeToString(tree.serialize());
+        state.editor.root = tree.root;
+        await nextTask();
+        const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+        const inline = [...renderer.shadowRoot!.querySelectorAll('md-inline')].find(
+          (element) => element.node?.content === content,
+        )!;
+        inline.focus();
+        if (selected) {
+          await userEvent.keyboard('{Home}{Shift>}{ArrowDown}{/Shift}');
+          await nextTask();
+          expect(inline.hostContext!.selection.size).toBeGreaterThan(0);
+        }
+        await userEvent.keyboard('{Shift>}{Tab}{/Shift}');
+        await nextTask();
+        const serialize = () => serializeToString(tree.serialize());
+        const after = serialize();
+        expect(after).toBe('alpha\n\nbeta\n\ngamma\n- child\n- tail\n');
+        expect(
+          [...renderer.shadowRoot!.querySelectorAll('md-inline')].map((el) => el.node?.content),
+        ).toEqual(['alpha', 'beta', 'gamma', 'child', 'tail']);
+        await userEvent.keyboard('{Control>}z{/Control}');
+        await nextTask();
+        expect(serialize()).toBe(before);
+        await userEvent.keyboard('{Control>}y{/Control}');
+        await nextTask();
+        expect(serialize()).toBe(after);
+      },
+    );
+  });
+
   describe('Enter with an inline selection', () => {
     test('splits a selected prefix before a block marker and preserves history', async () => {
       const tree = new MarkdownTree({
@@ -432,6 +474,38 @@ describe('Editor', () => {
   });
 
   describe('undo', () => {
+    test('copies and cuts blocks through trusted keyboard events', async () => {
+      await state.input.insert('hello');
+      await state.input.insertParagraph();
+      await state.input.insert('world');
+      await state.input.selectAll();
+      await state.input.press('Control+a', 2);
+      await userEvent.keyboard('{Control>}c{/Control}');
+      const destination = document.createElement('textarea');
+      document.body.append(destination);
+      destination.focus();
+      await userEvent.keyboard('{Control>}v{/Control}');
+      expect(destination.value).toBe('hello\n\nworld\n');
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inline = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline | null;
+      // Focus was moved to the destination; restore it without changing the block selection.
+      (inline ?? renderer.shadowRoot!.querySelectorAll('md-inline')[1]).focus();
+      await userEvent.keyboard('{Control>}x{/Control}');
+      await nextTask();
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`<!-- -->`);
+      await userEvent.keyboard('{Control>}v{/Control}');
+      await nextTask();
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        <!-- -->
+
+        hello
+
+        world
+      `);
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`<!-- -->`);
+    });
     test.each(['undo', 'redo'] as const)(
       '%s of a task toggle preserves the current paragraph and caret',
       async (direction) => {
@@ -607,20 +681,71 @@ describe('Editor', () => {
     });
 
     test('keeps an editable focused after cutting all blocks', async () => {
-      const write = vi.spyOn(navigator.clipboard, 'write').mockResolvedValue();
-      try {
-        await state.input.insert('hello');
-        await state.input.insertParagraph();
-        await state.input.insert('world');
-        await state.input.selectAll();
-        await state.input.press('Control+a', 2);
-        await state.input.press('Control+x');
-        expect(write).toHaveBeenCalledOnce();
-        await state.input.insert('again');
-        expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`again`);
-      } finally {
-        write.mockRestore();
-      }
+      await state.input.insert('hello');
+      await state.input.insertParagraph();
+      await state.input.insert('world');
+      await state.input.selectAll();
+      await state.input.press('Control+a', 2);
+      const inline = state.editor
+        .shadowRoot!.querySelector('md-block-render')!
+        .shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      const data = new DataTransfer();
+      inline.dispatchEvent(
+        new ClipboardEvent('cut', {
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+          clipboardData: data,
+        }),
+      );
+      await nextTask();
+      expect(data.getData('text/plain')).toBe('hello\n\nworld\n');
+      await state.input.press('Control+z');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+          hello
+
+          world
+        `);
+      await state.input.press('Control+y');
+      await state.input.insert('again');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`again`);
+    });
+
+    test('retains selected blocks when cut has no clipboard data', async () => {
+      await state.input.insert('hello');
+      await state.input.selectAll();
+      await state.input.press('Control+a');
+      const inline = state.editor
+        .shadowRoot!.querySelector('md-block-render')!
+        .shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      const event = new ClipboardEvent('cut', { bubbles: true, composed: true, cancelable: true });
+      inline.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(inline.hostContext!.selection.size).toBe(1);
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`hello`);
+    });
+
+    test('retains selected blocks when writing plain text throws', async () => {
+      await state.input.insert('hello');
+      await state.input.selectAll();
+      await state.input.press('Control+a');
+      const inline = state.editor
+        .shadowRoot!.querySelector('md-block-render')!
+        .shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      const data = new DataTransfer();
+      vi.spyOn(data, 'setData').mockImplementation(() => {
+        throw new Error('denied');
+      });
+      const event = new ClipboardEvent('cut', {
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+        clipboardData: data,
+      });
+      inline.dispatchEvent(event);
+      expect(event.defaultPrevented).toBe(true);
+      expect(inline.hostContext!.selection.size).toBe(1);
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`hello`);
     });
 
     test('retains focus through split, merge, indent and unindent', async () => {
