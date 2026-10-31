@@ -92,6 +92,59 @@ describe('Editor', () => {
     return { editor, input };
   });
 
+  describe('Enter with an inline selection', () => {
+    test.each([
+      ['forward', false, false],
+      ['reverse', true, false],
+      ['ordered list', false, true],
+    ])('replaces the selection and keeps the caret usable (%s)', async (_name, reverse, list) => {
+      const paragraph = { type: 'paragraph' as const, content: 'alpha BETA omega' };
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: list
+          ? [
+              {
+                type: 'list',
+                children: [{ type: 'list-item', marker: '1. ', children: [paragraph] }],
+              },
+            ]
+          : [paragraph],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inline = renderer.shadowRoot!.querySelector('md-inline')!;
+      inline.focus();
+      await userEvent.keyboard(
+        reverse
+          ? '{Home}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{Shift>}{ArrowLeft}{ArrowLeft}{ArrowLeft}{ArrowLeft}{/Shift}'
+          : '{Home}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{Shift>}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{/Shift}',
+      );
+      expect(inline.getSelection()?.start.index).toBe(6);
+      expect(inline.getSelection()?.end.index).toBe(10);
+      await userEvent.keyboard('{Enter}');
+      await nextTask();
+      const serialized = () => serializeToString(state.editor.root![viewModel].tree.serialize());
+      const expected = list ? '1. alpha \n2.  omega\n' : 'alpha \n\n omega\n';
+      expect(serialized()).toBe(expected);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(serialized()).toBe(list ? '1. alpha \n2. X omega\n' : 'alpha \n\nX omega\n');
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serialized()).toBe(expected);
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serialized()).toBe(list ? '1. alpha BETA omega\n' : 'alpha BETA omega\n');
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(serialized()).toBe(expected);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(serialized()).toBe(list ? '1. alpha \n2. X omega\n' : 'alpha \n\nX omega\n');
+    });
+  });
+
   describe('inline Backspace', () => {
     async function seed(content: string) {
       const tree = new MarkdownTree({
