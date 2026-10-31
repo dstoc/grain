@@ -24,9 +24,13 @@ function allInlines(root) {
 function snapshot() {
   const app = document.querySelector('md-dev-harness');
   const selection = document.getSelection();
+  const roots = [];
+  function collectRoots(node) { if (node.shadowRoot) { roots.push(node.shadowRoot); collectRoots(node.shadowRoot); } for (const child of node.children ?? []) collectRoots(child); }
+  collectRoots(app);
+  const ranges = selection?.getComposedRanges?.({ shadowRoots: roots }).map(range => ({ startNode: range.startContainer.nodeName, startText: range.startContainer.textContent, startOffset: range.startOffset, endNode: range.endContainer.nodeName, endText: range.endContainer.textContent, endOffset: range.endOffset })) ?? null;
   let model = null, serialized = null;
   try { model = app.root?.[viewModel].tree.serialize() ?? null; if (model) serialized = serializeToString(model); } catch (error) { model = { error: String(error) }; }
-  return { renderInlines: allInlines(app), source: app.shadowRoot?.querySelector('#source')?.value ?? null, model, serialized, activeTab: app.activeTab, selection: selection && { text: selection.toString(), anchorNode: selection.anchorNode?.nodeName, anchorText: selection.anchorNode?.textContent, anchorOffset: selection.anchorOffset, focusNode: selection.focusNode?.nodeName, focusText: selection.focusNode?.textContent, focusOffset: selection.focusOffset } };
+  return { renderInlines: allInlines(app), source: app.shadowRoot?.querySelector('#source')?.value ?? null, model, serialized, activeTab: app.activeTab, selection: selection && { composedRanges: ranges, text: selection.toString(), anchorNode: selection.anchorNode?.nodeName, anchorText: selection.anchorNode?.textContent, anchorOffset: selection.anchorOffset, focusNode: selection.focusNode?.nodeName, focusText: selection.focusNode?.textContent, focusOffset: selection.focusOffset } };
 }
 function add(entry) { entries.push({ order: ++sequence, time: performance.now(), ...entry }); }
 function handler(event) {
@@ -34,7 +38,7 @@ function handler(event) {
   const target = event.composedPath().find(node => node instanceof Element && node.matches('md-inline'));
   if (!target) return;
   const id = sequence + 1;
-  const details = { id, type: event.type, eventTime: event.timeStamp, data: event.data ?? null, inputType: event.inputType ?? null, key: event.key ?? null, isComposing: event.isComposing ?? null, cancelable: event.cancelable, defaultPrevented: event.defaultPrevented, isTrusted: event.isTrusted };
+  const details = { id, targetText: target.textContent, targetConnected: target.isConnected, type: event.type, eventTime: event.timeStamp, data: event.data ?? null, inputType: event.inputType ?? null, key: event.key ?? null, isComposing: event.isComposing ?? null, cancelable: event.cancelable, defaultPrevented: event.defaultPrevented, isTrusted: event.isTrusted };
   add({ phase: 'capture', ...details, snapshot: snapshot() });
   queueMicrotask(() => { if (recording) add({ id, phase: 'microtask', defaultPrevented: event.defaultPrevented, snapshot: snapshot() }); });
   setTimeout(() => { if (recording) add({ id, phase: 'next-task', defaultPrevented: event.defaultPrevented, snapshot: snapshot() }); }, 0);
@@ -45,7 +49,7 @@ document.addEventListener('click', event => {
   add({ phase: 'tab-click', snapshot: snapshot() });
   setTimeout(() => { if (recording) add({ phase: 'tab-settled', snapshot: snapshot() }); }, 0);
 }, true);
-panel.querySelector('#start').onclick = () => { if (!recording) { session = metadata(); recording = true; add({ phase: 'start', snapshot: snapshot() }); status.textContent = 'Recording'; } };
+panel.querySelector('#start').onclick = () => { if (!recording) { if (!session) session = metadata(); recording = true; add({ phase: 'start', snapshot: snapshot() }); status.textContent = 'Recording'; } };
 panel.querySelector('#stop').onclick = () => { if (recording) { add({ phase: 'stop', snapshot: snapshot() }); recording = false; status.textContent = 'Stopped'; } };
 panel.querySelector('#clear').onclick = () => { entries = []; sequence = 0; session = recording ? metadata() : null; output.value = ''; status.textContent = recording ? 'Recording; trace cleared' : 'Trace cleared'; };
 panel.querySelector('#copy').onclick = async () => {
