@@ -45,14 +45,22 @@ export function appendCodeBlockLine(state: BlockParseState, line: string, settle
 }
 
 export function stripActiveCodeBlockContinuation(state: BlockParseState, line: string): string {
-  const parent = state.currentCodeBlock?.[viewModel].parent;
-  const currentListItem = state.currentListPath.at(-1);
-  if (
-    parent?.type === 'list-item' &&
-    currentListItem === parent &&
-    line.startsWith(listContinuationPrefix(state, currentListItem))
-  ) {
-    return line.slice(listContinuationPrefix(state, currentListItem).length);
+  const ancestors: ViewModelNode[] = [];
+  let parent = state.currentCodeBlock?.[viewModel].parent;
+  while (parent) {
+    if (parent.type === 'list-item' || parent.type === 'block-quote') ancestors.unshift(parent);
+    parent = parent[viewModel].parent;
+  }
+  for (const ancestor of ancestors) {
+    if (ancestor.type === 'block-quote') {
+      const match = /^> ?/.exec(line);
+      if (!match) break;
+      line = line.slice(match[0].length);
+    } else if (ancestor.type === 'list-item') {
+      const prefix = listContinuationPrefix(state, ancestor);
+      if (!line.startsWith(prefix)) break;
+      line = line.slice(prefix.length);
+    }
   }
   return line;
 }
