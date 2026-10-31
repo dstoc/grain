@@ -864,6 +864,7 @@ describe('parseBlocks', () => {
     ['123. ```js\n       indented\n     > literal\n     ```\n', '  indented\n> literal'],
     ['> - > ```text\n>   > > literal\n>   > ```\n', '> literal'],
     ['- > ```text\n  > > literal\n  > ```\n', '> literal'],
+    ['>\t> ```text\n>\t> literal\n>\t> ```\n', 'literal'],
   ])('preserves fenced code content and container boundaries for %j', (source, content) => {
     const findCode = (node: DocumentNode): string[] => {
       const result: string[] = [];
@@ -897,6 +898,15 @@ describe('parseBlocks', () => {
       type: 'document',
       children: [{ type: 'code-block', info: 'text', content: '> literal\n> ```' }],
     });
+  });
+
+  it('projects code inside tab-separated nested quotes before newline', () => {
+    const parser = createBlockParser();
+    const expected = parseBlocks('>\t> ```text\n>\t> literal\n>\t> ```\n').node;
+    expect(parser.push('>\t> ```text\n>\t> literal').serialize()).toEqual(expected);
+    const resumed = createBlockParser(parser.snapshot());
+    expect(resumed.push('\n>\t> ```\n').serialize()).toEqual(expected);
+    expect(resumed.finish().serialize()).toEqual(expected);
   });
 
   it('continues a list item paragraph on indented lines', () => {

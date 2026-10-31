@@ -53,7 +53,7 @@ export function stripActiveCodeBlockContinuation(state: BlockParseState, line: s
   }
   for (const ancestor of ancestors) {
     if (ancestor.type === 'block-quote') {
-      const match = /^> ?/.exec(line);
+      const match = /^>\s?/.exec(line);
       if (!match) break;
       line = line.slice(match[0].length);
     } else if (ancestor.type === 'list-item') {
