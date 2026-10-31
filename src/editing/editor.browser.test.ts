@@ -93,6 +93,46 @@ describe('Editor', () => {
   });
 
   describe('undo', () => {
+    test.each(['undo', 'redo'] as const)(
+      '%s of a task toggle preserves the current paragraph and caret',
+      async (direction) => {
+        const tree = parseMarkdownTree('1. [ ] first\n\nsecond');
+        state.editor.root = tree.root;
+        await nextTask();
+        const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+        const item = tree.root.children![0].children![0];
+        if (item.type !== 'list-item') throw new Error('Expected a list item');
+        const itemBlock = [...renderer.shadowRoot!.querySelectorAll('md-block')].find(
+          (block) => block.node === item,
+        )!;
+        const itemUI = itemBlock.shadowRoot!.querySelector('md-list-item-ui')!;
+        (itemUI.shadowRoot!.querySelector('button') as HTMLButtonElement).click();
+        await nextTask();
+        expect(item.checked).toBe(true);
+        const inlines = renderer.shadowRoot!.querySelectorAll('md-inline');
+        const paragraph = inlines[inlines.length - 1] as MarkdownInline;
+        paragraph.focus();
+        await userEvent.keyboard('{End}');
+        await nextTask();
+        if (direction === 'redo') {
+          await userEvent.keyboard('{Control>}z{/Control}');
+          await nextTask();
+          expect(item.checked).toBe(false);
+        }
+        await userEvent.keyboard(
+          direction === 'undo' ? '{Control>}z{/Control}' : '{Control>}y{/Control}',
+        );
+        await nextTask();
+        expect(item.checked).toBe(direction === 'redo');
+        expect(renderer.shadowRoot!.querySelector('md-inline:focus')).toBe(paragraph);
+        expect(paragraph.getSelection()?.start.index).toBe(6);
+        await userEvent.keyboard('Q');
+        await nextTask();
+        expect(paragraph.node!.content).toBe('secondQ');
+        expect((inlines[0] as MarkdownInline).node!.content).toBe('first');
+      },
+    );
+
     test('initial undo preserves focus and permits typing', async () => {
       const tree = parseMarkdownTree('alpha');
       state.editor.root = tree.root;

@@ -292,13 +292,13 @@ export class Editor extends LitElement {
       if (!root) return;
       keyboardEvent.preventDefault();
       const tree = root[viewModel].tree;
+      const current = inline.node;
       const currentOffset = inline.getSelection()?.start.index ?? hostContext.focusOffset ?? 0;
       const result = keyDown.key === 'z' ? tree.undo(root) : tree.redo(root);
       if (result) {
         const valid = (node: InlineViewModelNode) =>
           node[viewModel].connected && (node === root || isAncestorOf(root, node));
         const recorded = result.focus;
-        const current = hostContext.focusNode;
         const focus =
           recorded && valid(recorded.node)
             ? recorded
