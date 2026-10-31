@@ -32,6 +32,7 @@ export interface BlockParseState {
   currentQuoteStack: BlockQuoteViewModelNode[];
   currentCodeBlock?: CodeBlockViewModelNode;
   currentCodeFence?: string;
+  currentCodeHasLines?: boolean;
   sectionStack: SectionViewModelNode[];
 }
 
@@ -77,5 +78,6 @@ export interface BlockParserSnapshot {
   currentQuoteStackPaths: number[][];
   currentCodeBlockPath?: number[];
   currentCodeFence?: string;
+  currentCodeHasLines?: boolean;
   sectionStackPaths: number[][];
 }

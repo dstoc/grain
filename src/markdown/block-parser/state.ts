@@ -46,6 +46,8 @@ export function restoreState(tree: MarkdownTree, snapshot: BlockParserSnapshot):
     | CodeBlockViewModelNode
     | undefined;
   state.currentCodeFence = snapshot.currentCodeFence;
+  state.currentCodeHasLines =
+    snapshot.currentCodeHasLines ?? Boolean(state.currentCodeBlock?.content);
   state.sectionStack = snapshot.sectionStackPaths
     .map((path) => nodeAtPath(state.root, path) as SectionViewModelNode | undefined)
     .filter(isDefined);

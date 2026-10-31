@@ -155,6 +155,25 @@ describe('MarkdownInline', () => {
     inline.remove();
   });
 
+  test('renders leading empty code lines during playback', async () => {
+    const parser = createBlockParser();
+    parser.push('```js\n');
+    const inline = new MarkdownInline();
+    inline.node = parser.getTree().root.children![0] as InlineViewModelNode;
+    document.body.append(inline);
+    for (const char of '\n\nalpha\n```') {
+      parser.push(char);
+      await settle(inline);
+      if (char === 'a' && parser.getPendingText() === 'a') {
+        expect(inline.textContent).toBe('\n\na');
+      }
+    }
+    parser.finish();
+    await settle(inline);
+    expect(inline.textContent).toBe('\n\nalpha');
+    inline.remove();
+  });
+
   test('updates a mounted code block as projected content is replaced and settled', async () => {
     const parser = createBlockParser();
     parser.push('```js\n');

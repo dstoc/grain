@@ -115,7 +115,7 @@ export function projectPendingLine(
     }
     return {
       kind: 'code-block',
-      text: appendCodeBlockLine(state, codeLine),
+      text: appendCodeBlockLine(state, codeLine, false),
     };
   }
 
