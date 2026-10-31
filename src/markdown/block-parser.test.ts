@@ -1481,6 +1481,30 @@ describe('parseBlocks', () => {
     });
   });
 
+  it.each(['alpha  ', 'alpha\n', 'alpha  \n\n', 'alpha ` ```  '])(
+    'preserves trailing fenced code content in a nested round trip: %j',
+    (content) => {
+      const expected: DocumentNode = {
+        type: 'document',
+        children: [
+          {
+            type: 'list',
+            children: [
+              {
+                type: 'list-item',
+                marker: '- ',
+                checked: undefined,
+                children: [{ type: 'code-block', info: 'js', content }],
+              },
+            ],
+          },
+        ],
+      };
+      const serialized = serializeToString(expected);
+      expect(parseBlocks(serialized).node).toEqual(expected);
+    },
+  );
+
   it('roundtrips a fenced code block inside a bullet list item', () => {
     const expected: DocumentNode = {
       type: 'document',

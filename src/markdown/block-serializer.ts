@@ -176,7 +176,7 @@ function serialize(
           result.push(node.info);
         }
         result.push('\n');
-        for (const line of node.content.trimEnd().split('\n')) {
+        for (const line of node.content.split('\n')) {
           indent();
           result.push(line);
           result.push('\n');
