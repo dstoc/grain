@@ -287,31 +287,29 @@ export class Editor extends LitElement {
       } else {
         this.runEditAction(inline, editInlineIndent, mode);
       }
-    } else if (keyDown.key === 'z' && keyDown.ctrlKey) {
-      if (!hostContext.root) return;
-      event.preventDefault();
-      const focus = hostContext.root[viewModel].tree.undo(hostContext.root);
-      if (focus) {
+    } else if ((keyDown.key === 'z' || keyDown.key === 'y') && keyDown.ctrlKey) {
+      const root = hostContext.root;
+      if (!root) return;
+      keyboardEvent.preventDefault();
+      const tree = root[viewModel].tree;
+      const current = inline.node;
+      const currentOffset = inline.getSelection()?.start.index ?? hostContext.focusOffset ?? 0;
+      const result = keyDown.key === 'z' ? tree.undo(root) : tree.redo(root);
+      if (result) {
+        const valid = (node: InlineViewModelNode) =>
+          node[viewModel].connected && (node === root || isAncestorOf(root, node));
+        const recorded = result.focus;
+        const focus =
+          recorded && valid(recorded.node)
+            ? recorded
+            : current && valid(current)
+              ? { node: current, offset: currentOffset }
+              : { node: findNextEditable(root, root, true), offset: 0 };
         hostContext.clearSelection();
-        if (focus.selection) {
-          hostContext.expandSelection(focus.selection);
+        if (recorded === focus && recorded.selection?.every(valid)) {
+          hostContext.expandSelection(recorded.selection);
         }
-        hostContext.focusNode = focus.node;
-        hostContext.focusOffset = focus.offset;
-        focus.node[viewModel].renderSignal.value++;
-      }
-    } else if (keyDown.key === 'y' && keyDown.ctrlKey) {
-      if (!hostContext.root) return;
-      event.preventDefault();
-      const focus = hostContext.root[viewModel].tree.redo(hostContext.root);
-      if (focus) {
-        hostContext.clearSelection();
-        if (focus.selection) {
-          hostContext.expandSelection(focus.selection);
-        }
-        hostContext.focusNode = focus.node;
-        hostContext.focusOffset = focus.offset;
-        focus.node[viewModel].renderSignal.value++;
+        if (focus.node) focusNode(hostContext, focus.node, focus.offset);
       }
     } else if (keyDown.key === 'a' && keyDown.ctrlKey) {
       const { hostContext: selectedHostContext } = getBlockSelectionTarget(inline) ?? {};
@@ -473,7 +471,7 @@ export class Editor extends LitElement {
       if (inputStart.index !== 0 || inputEnd.index !== 0) return false;
       return this.runEditAction(inline, deleteContentBackwards);
     } else if (inputEvent.inputType === 'insertParagraph') {
-      this.runEditAction(inline, insertParagraph, inputStart.index);
+      this.runEditAction(inline, insertParagraph, inputStart.index, inputEnd.index);
       return true;
     } else if (inputEvent.inputType === 'insertLineBreak') {
       this.runEditAction(inline, insertLineBreak, inputStart.index);

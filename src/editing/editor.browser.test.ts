@@ -1,5 +1,6 @@
 import { test, describe, expect, vi } from 'vitest';
 import { userEvent } from 'vitest/browser';
+import { parseMarkdownTree } from '../markdown/block-parser/api.js';
 import { Editor } from './editor.js';
 import { testState } from './test/test_state.js';
 import { MarkdownTree } from '../markdown/view-model.js';
@@ -160,7 +161,147 @@ describe('Editor', () => {
     });
   });
 
+  describe('Enter with an inline selection', () => {
+    test('splits a selected prefix before a block marker and preserves history', async () => {
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: [{ type: 'paragraph', content: 'alpha * beta' }],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const inline = state.editor
+        .shadowRoot!.querySelector('md-block-render')!
+        .shadowRoot!.querySelector('md-inline')!;
+      inline.focus();
+      await userEvent.keyboard(
+        '{Home}{Shift>}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{/Shift}',
+      );
+      expect(inline.getSelection()?.start.index).toBe(0);
+      expect(inline.getSelection()?.end.index).toBe(6);
+      const paragraphs = () => tree.serialize().children;
+      await userEvent.keyboard('{Enter}');
+      await nextTask();
+      expect(paragraphs()).toEqual([
+        { type: 'paragraph', content: '' },
+        { type: 'paragraph', content: '* beta' },
+      ]);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(paragraphs()).toEqual([
+        { type: 'paragraph', content: '' },
+        { type: 'paragraph', content: 'X* beta' },
+      ]);
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(paragraphs()).toEqual([{ type: 'paragraph', content: 'alpha * beta' }]);
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(paragraphs()).toEqual([
+        { type: 'paragraph', content: '' },
+        { type: 'paragraph', content: '* beta' },
+      ]);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(paragraphs()).toEqual([
+        { type: 'paragraph', content: '' },
+        { type: 'paragraph', content: 'X* beta' },
+      ]);
+    });
+
+    test.each([
+      ['forward', false, false],
+      ['reverse', true, false],
+      ['ordered list', false, true],
+    ])('replaces the selection and keeps the caret usable (%s)', async (_name, reverse, list) => {
+      const paragraph = { type: 'paragraph' as const, content: 'alpha BETA omega' };
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: list
+          ? [
+              {
+                type: 'list',
+                children: [{ type: 'list-item', marker: '1. ', children: [paragraph] }],
+              },
+            ]
+          : [paragraph],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inline = renderer.shadowRoot!.querySelector('md-inline')!;
+      inline.focus();
+      await userEvent.keyboard(
+        reverse
+          ? '{Home}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{Shift>}{ArrowLeft}{ArrowLeft}{ArrowLeft}{ArrowLeft}{/Shift}'
+          : '{Home}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{Shift>}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{/Shift}',
+      );
+      expect(inline.getSelection()?.start.index).toBe(6);
+      expect(inline.getSelection()?.end.index).toBe(10);
+      await userEvent.keyboard('{Enter}');
+      await nextTask();
+      const serialized = () => serializeToString(state.editor.root![viewModel].tree.serialize());
+      const expected = list ? '1. alpha \n2.  omega\n' : 'alpha \n\n omega\n';
+      expect(serialized()).toBe(expected);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(serialized()).toBe(list ? '1. alpha \n2. X omega\n' : 'alpha \n\nX omega\n');
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serialized()).toBe(expected);
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serialized()).toBe(list ? '1. alpha BETA omega\n' : 'alpha BETA omega\n');
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(serialized()).toBe(expected);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(serialized()).toBe(list ? '1. alpha \n2. X omega\n' : 'alpha \n\nX omega\n');
+    });
+  });
+
   describe('inline Backspace', () => {
+    test('joins paragraphs at the caret and restores the join through undo and redo', async () => {
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: [
+          { type: 'paragraph', content: 'alpha' },
+          { type: 'paragraph', content: 'beta' },
+        ],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const focused = () => renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      (renderer.shadowRoot!.querySelectorAll('md-inline')[1] as MarkdownInline).focus();
+      await userEvent.keyboard('{Home}{Backspace}');
+      await nextTask();
+      expect(serializeToString(tree.serialize())).toBe('alphabeta\n');
+      expect(focused().getSelection()?.start.index).toBe(5);
+      expect(focused().getSelection()?.end.index).toBe(5);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(serializeToString(tree.serialize())).toBe('alphaXbeta\n');
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serializeToString(tree.serialize())).toBe('alphabeta\n');
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serializeToString(tree.serialize())).toBe('alpha\n\nbeta\n');
+      expect(focused().node!.content).toBe('beta');
+      expect(focused().getSelection()?.start.index).toBe(0);
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(serializeToString(tree.serialize())).toBe('alphabeta\n');
+      expect(focused().getSelection()?.start.index).toBe(5);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(serializeToString(tree.serialize())).toBe('alphaXbeta\n');
+      expect(focused().textContent).toContain('alphaXbeta');
+    });
+
     async function seed(content: string) {
       const tree = new MarkdownTree({
         type: 'document',
@@ -226,6 +367,84 @@ describe('Editor', () => {
   });
 
   describe('undo', () => {
+    test.each(['undo', 'redo'] as const)(
+      '%s of a task toggle preserves the current paragraph and caret',
+      async (direction) => {
+        const tree = parseMarkdownTree('1. [ ] first\n\nsecond');
+        state.editor.root = tree.root;
+        await nextTask();
+        const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+        const item = tree.root.children![0].children![0];
+        if (item.type !== 'list-item') throw new Error('Expected a list item');
+        const itemBlock = [...renderer.shadowRoot!.querySelectorAll('md-block')].find(
+          (block) => block.node === item,
+        )!;
+        const itemUI = itemBlock.shadowRoot!.querySelector('md-list-item-ui')!;
+        (itemUI.shadowRoot!.querySelector('button') as HTMLButtonElement).click();
+        await nextTask();
+        expect(item.checked).toBe(true);
+        const inlines = renderer.shadowRoot!.querySelectorAll('md-inline');
+        const paragraph = inlines[inlines.length - 1] as MarkdownInline;
+        paragraph.focus();
+        await userEvent.keyboard('{End}');
+        await nextTask();
+        if (direction === 'redo') {
+          await userEvent.keyboard('{Control>}z{/Control}');
+          await nextTask();
+          expect(item.checked).toBe(false);
+        }
+        await userEvent.keyboard(
+          direction === 'undo' ? '{Control>}z{/Control}' : '{Control>}y{/Control}',
+        );
+        await nextTask();
+        expect(item.checked).toBe(direction === 'redo');
+        expect(renderer.shadowRoot!.querySelector('md-inline:focus')).toBe(paragraph);
+        expect(paragraph.getSelection()?.start.index).toBe(6);
+        await userEvent.keyboard('Q');
+        await nextTask();
+        expect(paragraph.node!.content).toBe('secondQ');
+        expect((inlines[0] as MarkdownInline).node!.content).toBe('first');
+      },
+    );
+
+    test('initial undo preserves focus and permits typing', async () => {
+      const tree = parseMarkdownTree('alpha');
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inline = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
+      inline.focus();
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(renderer.shadowRoot!.querySelector('md-inline:focus')).toBe(inline);
+      expect(inline.node!.content).toBe('alpha');
+      await userEvent.keyboard('Q');
+      await nextTask();
+      expect(inline.node!.content).toContain('Q');
+    });
+
+    test('history with missing focus falls back to an editable after undo and redo', async () => {
+      const tree = state.editor.root![viewModel].tree;
+      const node = tree.root.children![0];
+      tree.edit(() => {
+        node[viewModel].remove();
+        return {};
+      });
+      await nextTask();
+      // The edit detached the original focused node; restore a target for the shortcut.
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      (renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline).focus();
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(renderer.shadowRoot!.querySelector('md-inline:focus')).toBeTruthy();
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(renderer.shadowRoot!.querySelector('md-inline:focus')).toBeTruthy();
+      await userEvent.keyboard('Q');
+      await nextTask();
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`Q`);
+    });
+
     test.each(['', 'first\n**bold**'])(
       'edits literal code and restores it through undo and redo',
       async (content) => {
