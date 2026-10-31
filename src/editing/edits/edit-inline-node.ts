@@ -16,9 +16,10 @@ export function editInlineNode(context: EditContext, edit: InlineEdit) {
     if (next) {
       // Conversion starts at the beginning of the paragraph. Count its leading
       // block markers instead of searching for content that may occur again.
-      const contentStart = /^(?:(?:(?:\d+[.)]|[-+*]) (?:\[[ x]\] )?|> )+(?:#+ +)?|#+ +)/.exec(
-        node.content,
-      )?.[0].length;
+      const contentStart =
+        /^(?:(?:(?:\d+[.)]|[-+*]) (?:\[[ x]\] )?|> )+(?:#{1,6} +)?|#{1,6} +)/.exec(
+          node.content,
+        )?.[0].length;
       context.focus(
         next,
         contentStart === undefined
