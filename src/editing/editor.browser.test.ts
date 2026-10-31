@@ -93,6 +93,54 @@ describe('Editor', () => {
   });
 
   describe('Enter with an inline selection', () => {
+    test('splits a selected prefix before a block marker and preserves history', async () => {
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: [{ type: 'paragraph', content: 'alpha * beta' }],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const inline = state.editor
+        .shadowRoot!.querySelector('md-block-render')!
+        .shadowRoot!.querySelector('md-inline')!;
+      inline.focus();
+      await userEvent.keyboard(
+        '{Home}{Shift>}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{/Shift}',
+      );
+      expect(inline.getSelection()?.start.index).toBe(0);
+      expect(inline.getSelection()?.end.index).toBe(6);
+      const paragraphs = () => tree.serialize().children;
+      await userEvent.keyboard('{Enter}');
+      await nextTask();
+      expect(paragraphs()).toEqual([
+        { type: 'paragraph', content: '' },
+        { type: 'paragraph', content: '* beta' },
+      ]);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(paragraphs()).toEqual([
+        { type: 'paragraph', content: '' },
+        { type: 'paragraph', content: 'X* beta' },
+      ]);
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(paragraphs()).toEqual([{ type: 'paragraph', content: 'alpha * beta' }]);
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(paragraphs()).toEqual([
+        { type: 'paragraph', content: '' },
+        { type: 'paragraph', content: '* beta' },
+      ]);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(paragraphs()).toEqual([
+        { type: 'paragraph', content: '' },
+        { type: 'paragraph', content: 'X* beta' },
+      ]);
+    });
+
     test.each([
       ['forward', false, false],
       ['reverse', true, false],

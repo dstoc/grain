@@ -233,12 +233,16 @@ function finishInsertParagraph(
     !areAncestorAndDescendant(node, newParagraph, context.root);
   if (shouldSwap) {
     if (endIndex > startIndex) {
-      node[viewModel].edit({
-        startIndex,
-        oldEndIndex: endIndex,
-        newEndIndex: startIndex,
-        newText: '',
-      });
+      // Keep the split target attached until the swap is complete.
+      node[viewModel].edit(
+        {
+          startIndex,
+          oldEndIndex: endIndex,
+          newEndIndex: startIndex,
+          newText: '',
+        },
+        false,
+      );
     }
     swapNodes(node, newParagraph);
   } else {
@@ -257,5 +261,5 @@ function finishInsertParagraph(
     });
   }
   // TODO: Offset was undefined before
-  context.focus(newParagraph, 0);
+  context.focus(shouldSwap && endIndex > startIndex ? node : newParagraph, 0);
 }
