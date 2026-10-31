@@ -91,6 +91,32 @@ describe('Editor', () => {
   });
 
   describe('undo', () => {
+    test.each(['', 'first\n**bold**'])(
+      'edits literal code and restores it through undo and redo',
+      async (content) => {
+        const tree = new MarkdownTree({
+          type: 'document',
+          children: [{ type: 'code-block', info: 'js', content }],
+        });
+        state.editor.root = tree.root;
+        await nextTask();
+        const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+        const inline = renderer.shadowRoot!.querySelector('md-inline')!;
+        inline.focus();
+        const range = document.createRange();
+        range.selectNodeContents(inline);
+        range.collapse(false);
+        window.getSelection()!.removeAllRanges();
+        window.getSelection()!.addRange(range);
+        await state.input.insert('[x](url)');
+        expect(inline.innerText).toBe(content + '[x](url)');
+        expect(inline.getSelection()?.start.index).toBe(content.length + 8);
+        await state.input.press('Control+z');
+        expect(inline.innerText).toBe(content);
+        await state.input.press('Control+y');
+        expect(inline.innerText).toBe(content + '[x](url)');
+      },
+    );
     test('restores focus and block selection across deletion, undo and redo', async () => {
       await state.input.insert('hello');
       await state.input.insertParagraph();
