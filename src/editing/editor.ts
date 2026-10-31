@@ -435,6 +435,11 @@ export class Editor extends LitElement {
         newText = '';
         if (startIndex === oldEndIndex) {
           startIndex--;
+          const low = inline.node.content.charCodeAt(startIndex);
+          const high = inline.node.content.charCodeAt(startIndex - 1);
+          if (low >= 0xdc00 && low <= 0xdfff && high >= 0xd800 && high <= 0xdbff) {
+            startIndex--;
+          }
         }
         startIndex = Math.max(0, startIndex);
       } else {
