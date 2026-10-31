@@ -91,6 +91,7 @@ export function createBlockParser(snapshot?: BlockParserSnapshot): BlockParser {
         pendingText,
         projectedPending,
         sawContent: state.sawContent,
+        hasExplicitRootParagraph: state.hasExplicitRootParagraph,
         finished,
         currentParagraphPath: pathForNode(state.root, state.currentParagraph),
         currentListPath: state.currentListPath

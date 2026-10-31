@@ -16,6 +16,7 @@ export function createInitialState(tree: MarkdownTree): BlockParseState {
     tree,
     root: tree.root,
     sawContent: false,
+    hasExplicitRootParagraph: false,
     currentListPath: [],
     sourceMarkerWidths: new Map(),
     currentQuoteStack: [],
@@ -26,6 +27,7 @@ export function createInitialState(tree: MarkdownTree): BlockParseState {
 export function restoreState(tree: MarkdownTree, snapshot: BlockParserSnapshot): BlockParseState {
   const state = createInitialState(tree);
   state.sawContent = snapshot.sawContent;
+  state.hasExplicitRootParagraph = snapshot.hasExplicitRootParagraph ?? false;
   state.currentParagraph = nodeAtPath(state.root, snapshot.currentParagraphPath) as
     | ParagraphViewModelNode
     | undefined;
