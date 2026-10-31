@@ -41,7 +41,7 @@ import { removeSelectedNodes } from './edits/remove-selected-nodes.js';
 import { editInlineNode } from './edits/edit-inline-node.js';
 import { insertLineBreak, insertParagraph } from './edits/insert-paragraph.js';
 import { deleteContentBackwards } from './edits/delete-content-backwards.js';
-import { copyMarkdownToClipboard, insertMarkdown, serializeSelection } from './copy-paste-util.js';
+import { insertMarkdown, serializeSelection } from './copy-paste-util.js';
 import { Focus } from '../markdown/view-model-ops.js';
 import { NodeSignalController } from '../markdown/node-signal-controller.js';
 import { normalizeKeys } from './keyboard.js';
@@ -99,6 +99,9 @@ export class Editor extends LitElement {
         @inline-input=${(e: CustomEvent<InlineInput>) => this.onInlineInput(e)}
         @inline-link-click=${(e: CustomEvent<InlineLinkClick>) => this.onInlineLinkClick(e)}
         @inline-keydown=${(e: CustomEvent<InlineKeyDown>) => this.onInlineKeyDown(e)}
+        @copy=${(e: ClipboardEvent) => this.onClipboard(e)}
+        @cut=${(e: ClipboardEvent) => this.onClipboard(e)}
+        @paste=${(e: ClipboardEvent) => this.onPaste(e)}
       ></md-block-render>`;
   }
   runEditAction<
@@ -326,17 +329,6 @@ export class Editor extends LitElement {
           hostContext.setSelection(node, node);
         }
       }
-    } else if (keyDown.key === 'c' && keyDown.ctrlKey) {
-      const { hostContext } = getBlockSelectionTarget(inline) ?? {};
-      if (!hostContext) return;
-      keyboardEvent.preventDefault();
-      noAwait(copyMarkdownToClipboard(serializeSelection(hostContext)));
-    } else if (keyDown.key === 'x' && keyDown.ctrlKey) {
-      const selectionTarget = getBlockSelectionTarget(inline);
-      if (!selectionTarget?.hostContext) return;
-      keyboardEvent.preventDefault();
-      noAwait(copyMarkdownToClipboard(serializeSelection(selectionTarget.hostContext)));
-      this.runEditAction(selectionTarget, removeSelectedNodes);
     } else if (keyDown.key === 'Escape') {
       hostContext.clearSelection();
     } else if (keyDown.key === 'Backspace') {
@@ -347,6 +339,44 @@ export class Editor extends LitElement {
     } else {
       return;
     }
+  }
+  onClipboard(event: ClipboardEvent) {
+    if (event.defaultPrevented) return;
+    const inline = event.composedPath().find((target) => target instanceof MarkdownInline);
+    if (!(inline instanceof MarkdownInline)) return;
+    const target = getBlockSelectionTarget(inline);
+    if (!target?.hostContext) return;
+    event.preventDefault();
+    try {
+      if (!event.clipboardData) return;
+      const markdown = serializeSelection(target.hostContext);
+      event.clipboardData.setData('text/plain', markdown);
+      try {
+        event.clipboardData.setData('text/markdown', markdown);
+      } catch {
+        // Plain text is sufficient for copy and cut.
+      }
+    } catch {
+      return;
+    }
+    if (event.type === 'cut') this.runEditAction(target, removeSelectedNodes);
+  }
+  onPaste(event: ClipboardEvent) {
+    if (event.defaultPrevented || !event.isTrusted) return;
+    const inline = event.composedPath().find((target) => target instanceof MarkdownInline);
+    if (!(inline instanceof MarkdownInline) || !inline.node) return;
+    const markdown = event.clipboardData?.getData('text/markdown');
+    if (!markdown) return;
+    event.preventDefault();
+    this.pasteMarkdown(inline, inline.node, markdown);
+  }
+  private pasteMarkdown(inline: MarkdownInline, node: InlineViewModelNode, markdown: string) {
+    this.runEditAction(inline, (context: EditContext) => {
+      context.startEditing();
+      const { newFocus, newInlineNodes } = insertMarkdown(markdown, node) ?? {};
+      if (newFocus) context.focus(newFocus, Infinity);
+      if (newInlineNodes?.length) context.setSelection(newInlineNodes);
+    });
   }
   async triggerPaste(
     inline: MarkdownInline,
@@ -368,16 +398,7 @@ export class Editor extends LitElement {
       mdText = await navigator.clipboard.readText();
     }
     if (mdText) {
-      this.runEditAction(inline, (context: EditContext) => {
-        context.startEditing();
-        const { newFocus, newInlineNodes } = insertMarkdown(mdText, node) ?? {};
-        if (newFocus) {
-          context.focus(newFocus, Infinity);
-        }
-        if (newInlineNodes?.length) {
-          context.setSelection(newInlineNodes);
-        }
-      });
+      this.pasteMarkdown(inline, node, mdText);
     } else {
       let text = await navigator.clipboard.readText();
       // TODO: Escape block creation.
