@@ -438,7 +438,6 @@ export class Editor extends LitElement {
       return;
     }
     const nextStart = Math.min(currentStart, start);
-    const leftExtension = currentStart - nextStart;
     const rightExtension = Math.max(0, end - currentEnd);
     const expandedText =
       pending.before.slice(nextStart, currentStart) +
@@ -450,7 +449,7 @@ export class Editor extends LitElement {
     const replacementText =
       expandedText.slice(0, localStart) + inserted + expandedText.slice(localEnd);
     const replacementStart = nextStart;
-    const replacementEnd = session.replacementEnd + leftExtension + rightExtension;
+    const replacementEnd = session.replacementEnd + rightExtension;
     const expectedAfter =
       session.content.slice(0, replacementStart) +
       replacementText +

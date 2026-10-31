@@ -1458,16 +1458,29 @@ describe('composition recovery', () => {
     anchor: number,
     focus: number,
     data: string,
+    targetRange?: { start: number; end: number },
   ) {
     setSelection(inline, anchor, focus);
-    inline.dispatchEvent(
-      new InputEvent('beforeinput', {
-        bubbles: true,
-        inputType: 'insertCompositionText',
-        data,
-        isComposing: true,
-      }),
-    );
+    const beforeInput = new InputEvent('beforeinput', {
+      bubbles: true,
+      inputType: 'insertCompositionText',
+      data,
+      isComposing: true,
+    });
+    if (targetRange) {
+      const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode()!;
+      Object.defineProperty(beforeInput, 'getTargetRanges', {
+        value: () => [
+          new StaticRange({
+            startContainer: text,
+            startOffset: targetRange.start,
+            endContainer: text,
+            endOffset: targetRange.end,
+          }),
+        ],
+      });
+    }
+    inline.dispatchEvent(beforeInput);
     mutate();
     setSelection(inline, anchor + data.length, anchor + data.length);
     inline.dispatchEvent(
@@ -1535,6 +1548,88 @@ describe('composition recovery', () => {
     await userEvent.keyboard('!');
     await nextTask();
     expect(serializeToString(tree.root)).toBe('Block Harness Test!\n');
+  });
+
+  test.each([
+    ['target range', true],
+    ['selection fallback', false],
+  ])(
+    'expands the replacement left without moving its right endpoint (%s)',
+    async (_, useTargetRange) => {
+      const { editor, tree, inline } = await setup('alpha beta omega', 10);
+      inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+      compositionInput(
+        inline,
+        () => {
+          const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode() as Text;
+          text.textContent = 'alpha BETA omega';
+        },
+        6,
+        10,
+        'BETA',
+        useTargetRange ? { start: 6, end: 10 } : undefined,
+      );
+      inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'BETA' }));
+      await nextTask();
+
+      expect(serializeToString(tree.root)).toBe('alpha BETA omega\n');
+      expect(getInline(editor).textContent).toBe('alpha BETA omega');
+      expect(getInline(editor).matches(':focus')).toBe(true);
+
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serializeToString(tree.root)).toBe('alpha beta omega\n');
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(serializeToString(tree.root)).toBe('alpha BETA omega\n');
+
+      await userEvent.keyboard('!');
+      await nextTask();
+      expect(serializeToString(tree.root)).toBe('alpha BETA! omega\n');
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serializeToString(tree.root)).toBe('alpha BETA omega\n');
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serializeToString(tree.root)).toBe('alpha beta omega\n');
+    },
+  );
+
+  test('preserves a rightward replacement envelope extension', async () => {
+    const { editor, tree, inline } = await setup('alpha beta omega', 6);
+    inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    compositionInput(
+      inline,
+      () => {
+        const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode() as Text;
+        text.textContent = 'alpha BEbeta omega';
+      },
+      6,
+      6,
+      'BE',
+    );
+    compositionInput(
+      inline,
+      () => {
+        const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode() as Text;
+        text.textContent = 'alpha BETA omega';
+      },
+      6,
+      12,
+      'BETA',
+      { start: 6, end: 12 },
+    );
+    inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'BETA' }));
+    await nextTask();
+
+    expect(serializeToString(tree.root)).toBe('alpha BETA omega\n');
+    expect(getInline(editor).textContent).toBe('alpha BETA omega');
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('alpha beta omega\n');
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('alpha BETA omega\n');
   });
 
   test('commits an empty-inline replay once and removes native inline-boundary text', async () => {
