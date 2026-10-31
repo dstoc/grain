@@ -93,6 +93,29 @@ async function createHarness(value: string) {
   return { harness, source };
 }
 
+test.each(['alpha  ', 'alpha  \n'])(
+  'editing outside code preserves literal content: %j',
+  async (code) => {
+    const { harness, source } = await createHarness(`\`\`\`js\n${code}\n\`\`\`\n\nother`);
+    await nextTask();
+    const renderer = harness
+      .shadowRoot!.querySelector('md-editor')!
+      .shadowRoot!.querySelector('md-block-render')!;
+    const inline = Array.from(renderer.shadowRoot!.querySelectorAll<HTMLElement>('md-inline')).find(
+      (node) => node.textContent === 'other',
+    )!;
+    inline.focus();
+    await userEvent.keyboard('{End}X');
+    await nextTask();
+    await harness.updateComplete;
+    const expected = `\`\`\`js\n${code}\n\`\`\`\n\notherX\n`;
+    expect(source.value).toBe(expected);
+    harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab')[1]!.click();
+    await harness.updateComplete;
+    expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe(expected);
+  },
+);
+
 async function expectDocument(harness: LitElement, source: HTMLTextAreaElement, value: string) {
   expect(source.value).toBe(value);
   const tabs = harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab');
