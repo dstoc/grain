@@ -1,4 +1,5 @@
 import { test, describe, expect, vi } from 'vitest';
+import { userEvent } from 'vitest/browser';
 import { Editor } from './editor.js';
 import { testState } from './test/test_state.js';
 import { MarkdownTree } from '../markdown/view-model.js';
@@ -6,6 +7,7 @@ import { MarkdownInline } from '../markdown/inline-render.js';
 import { nextTask } from './test/lifecycle.js';
 import './test/markdown_node_snapshot.js';
 import { viewModel } from '../markdown/view-model-node.js';
+import { serializeToString } from '../markdown/block-serializer.js';
 
 describe('Editor', () => {
   function serializeEditor(editor: Editor) {
@@ -88,6 +90,71 @@ describe('Editor', () => {
       },
     };
     return { editor, input };
+  });
+
+  describe('inline Backspace', () => {
+    async function seed(content: string) {
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: [{ type: 'paragraph', content }],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      (renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline).focus();
+    }
+
+    async function deleteAt(start: number, end = start) {
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inline = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode()!;
+      const range = document.createRange();
+      range.setStart(text, start);
+      range.setEnd(text, end);
+      const selection = window.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+      inline.onBeforeInput(new InputEvent('beforeinput', { inputType: 'deleteContentBackward' }));
+      await nextTask();
+      return inline;
+    }
+
+    test('deletes an emoji with keyboard input', async () => {
+      await seed('A😀B');
+      await userEvent.keyboard('{End}{ArrowLeft}{Backspace}');
+      await nextTask();
+      expect(serializeToString(state.editor.root![viewModel].tree.serialize())).toBe('AB\n');
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serializeToString(state.editor.root![viewModel].tree.serialize())).toBe('A😀B\n');
+    });
+
+    test('deletes a whole supplementary character and restores it on undo', async () => {
+      await seed('A😀B');
+      const inline = await deleteAt(3);
+      expect(inline.node!.content).toBe('AB');
+      expect(inline.textContent).toContain('AB');
+      expect(inline.getSelection()?.start.index).toBe(1);
+      expect(serializeToString(state.editor.root![viewModel].tree.serialize())).toBe('AB\n');
+      await state.input.press('Control+z');
+      expect(inline.node!.content).toBe('A😀B');
+      await state.input.press('Control+y');
+      expect(inline.node!.content).toBe('AB');
+    });
+
+    test('deletes a selected emoji and restores it on undo', async () => {
+      await seed('A😀B');
+      const inline = await deleteAt(1, 3);
+      expect(inline.node!.content).toBe('AB');
+      await state.input.press('Control+z');
+      expect(inline.node!.content).toBe('A😀B');
+    });
+
+    test('deletes only the combining mark', async () => {
+      await seed('AéB');
+      const inline = await deleteAt(3);
+      expect(inline.node!.content).toBe('AeB');
+    });
   });
 
   describe('undo', () => {
