@@ -93,6 +93,48 @@ describe('Editor', () => {
     return { editor, input };
   });
 
+  describe('outdenting multi-block list items', () => {
+    test.each([
+      ['alpha', false],
+      ['beta', false],
+      ['alpha', true],
+      ['beta', true],
+    ] as const)(
+      'preserves content and history from %s (block selection: %s)',
+      async (content, selected) => {
+        const source = '- alpha\n\n  beta\n\n  gamma\n  - child\n- tail\n';
+        const tree = parseMarkdownTree(source);
+        const before = serializeToString(tree.serialize());
+        state.editor.root = tree.root;
+        await nextTask();
+        const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+        const inline = [...renderer.shadowRoot!.querySelectorAll('md-inline')].find(
+          (element) => element.node?.content === content,
+        )!;
+        inline.focus();
+        if (selected) {
+          await userEvent.keyboard('{Home}{Shift>}{ArrowDown}{/Shift}');
+          await nextTask();
+          expect(inline.hostContext!.selection.size).toBeGreaterThan(0);
+        }
+        await userEvent.keyboard('{Shift>}{Tab}{/Shift}');
+        await nextTask();
+        const serialize = () => serializeToString(tree.serialize());
+        const after = serialize();
+        expect(after).toBe('alpha\n\nbeta\n\ngamma\n- child\n- tail\n');
+        expect(
+          [...renderer.shadowRoot!.querySelectorAll('md-inline')].map((el) => el.node?.content),
+        ).toEqual(['alpha', 'beta', 'gamma', 'child', 'tail']);
+        await userEvent.keyboard('{Control>}z{/Control}');
+        await nextTask();
+        expect(serialize()).toBe(before);
+        await userEvent.keyboard('{Control>}y{/Control}');
+        await nextTask();
+        expect(serialize()).toBe(after);
+      },
+    );
+  });
+
   describe('Enter with an inline selection', () => {
     test('splits a selected prefix before a block marker and preserves history', async () => {
       const tree = new MarkdownTree({
