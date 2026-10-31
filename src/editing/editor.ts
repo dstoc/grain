@@ -48,6 +48,81 @@ import { normalizeKeys } from './keyboard.js';
 
 type ExcludeFirst<T extends Parameters<any>> = T extends [any, ...infer Rest] ? Rest : never;
 
+// Native selections can cover the inline while shadow-root offsets omit a final newline.
+// Only use composed ranges when the rendered text and ownership can be established.
+function hasCompleteCodeSelection(
+  editor: Editor,
+  inline: MarkdownInline,
+  node: InlineViewModelNode,
+) {
+  try {
+    const context = inline.hostContext;
+    if (
+      !inline.isConnected ||
+      !!inline.shadowRoot ||
+      inline.node !== node ||
+      node.type !== 'code-block' ||
+      !node.content ||
+      !context?.root ||
+      !(node === context.root || isAncestorOf(context.root, node))
+    )
+      return false;
+
+    const roots: ShadowRoot[] = [];
+    let current: Node = inline;
+    let belongsToEditor = false;
+    while (true) {
+      const root = current.getRootNode();
+      if (root instanceof Document) {
+        if (root !== inline.ownerDocument || (current === inline && root.activeElement !== inline))
+          return false;
+        break;
+      }
+      if (!(root instanceof ShadowRoot)) return false;
+      if (current === inline && root.activeElement !== inline) return false;
+      roots.push(root);
+      if (root.host === editor) belongsToEditor = true;
+      current = root.host;
+    }
+    if (!belongsToEditor) return false;
+
+    const texts: Text[] = [];
+    const inspect = (parent: Node): boolean => {
+      for (const child of parent.childNodes) {
+        if (child.nodeType === Node.TEXT_NODE) texts.push(child as Text);
+        else if (child.nodeType === Node.COMMENT_NODE) continue;
+        else if (
+          child instanceof HTMLElement &&
+          child.localName === 'md-span' &&
+          !child.shadowRoot
+        ) {
+          if (!inspect(child)) return false;
+        } else return false;
+      }
+      return true;
+    };
+    if (!inspect(inline) || texts.map((text) => text.data).join('') !== node.content) return false;
+    const nonempty = texts.filter((text) => text.length);
+    const first = nonempty[0];
+    const last = nonempty.at(-1);
+    if (!first || !last) return false;
+
+    const selection = inline.ownerDocument.getSelection();
+    if (!selection || typeof selection.getComposedRanges !== 'function') return false;
+    const ranges = selection.getComposedRanges({ shadowRoots: roots });
+    if (ranges.length !== 1 || ranges[0].collapsed) return false;
+    const composed = ranges[0];
+    if (!inline.contains(composed.startContainer) || !inline.contains(composed.endContainer))
+      return false;
+    const range = inline.ownerDocument.createRange();
+    range.setStart(composed.startContainer, composed.startOffset);
+    range.setEnd(composed.endContainer, composed.endOffset);
+    return range.comparePoint(first, 0) !== -1 && range.comparePoint(last, last.length) !== 1;
+  } catch {
+    return false;
+  }
+}
+
 export interface EditContext {
   // TODO: maybe change the API so that the other functions are
   // available as a result of calling startEditing...
@@ -321,7 +396,10 @@ export class Editor extends LitElement {
         expandSelection(selectedHostContext);
       } else {
         const selection = inline.getSelection();
-        if (selection?.start.index === 0 && selection?.end.index === inline.node.content.length) {
+        if (
+          (selection?.start.index === 0 && selection?.end.index === inline.node.content.length) ||
+          hasCompleteCodeSelection(this, inline, node)
+        ) {
           keyboardEvent.preventDefault();
           focusNode(hostContext, inline.node, 0);
           hostContext.setSelection(node, node);
