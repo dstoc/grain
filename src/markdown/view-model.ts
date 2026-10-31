@@ -480,7 +480,7 @@ export class MarkdownTree extends EventTarget {
     normalizeOptions?: NormalizeTreeOptions,
     // Runs synchronously after normalization, without mutating the tree, before history is saved.
     resolveEndFocus?: (focus: Focus | undefined, hasOperations: boolean) => Focus | undefined,
-    history: 'record' | 'construction' = 'record',
+    history: 'record' | 'construction' | 'isolated' = 'record',
   ): Op[] {
     assert(this.state === 'idle');
     this.editStartVersion = this.root[viewModel].version;
@@ -560,7 +560,7 @@ export class MarkdownTree extends EventTarget {
     fireTreeEditEvent = true,
     normalizeOptions?: NormalizeTreeOptions,
     resolveEndFocus?: (focus: Focus | undefined, hasOperations: boolean) => Focus | undefined,
-    history: 'record' | 'construction' = 'record',
+    history: 'record' | 'construction' | 'isolated' = 'record',
   ) {
     assert(this.state === 'editing');
     if (normalizeOptions?.force || this.root[viewModel].version > this.editStartVersion) {
@@ -613,7 +613,13 @@ export class MarkdownTree extends EventTarget {
       } else {
         const now = Date.now();
         const last = this.undoStack.at(-1);
-        if (last && now - last.timestamp < 1000 && canCoalesce(last, this.editOperations)) {
+        if (
+          history !== 'isolated' &&
+          last &&
+          !last.isolated &&
+          now - last.timestamp < 1000 &&
+          canCoalesce(last, this.editOperations)
+        ) {
           last.ops = [...last.ops, ...this.editOperations];
           last.timestamp = now;
           last.endFocus = endFocus;
@@ -621,6 +627,7 @@ export class MarkdownTree extends EventTarget {
           this.undoStack.push({
             ops: [...this.editOperations],
             timestamp: Date.now(),
+            isolated: history === 'isolated',
             startFocus,
             endFocus,
           });

@@ -14,6 +14,7 @@ export interface Focus {
 export interface OpBatch {
   ops: Op[];
   timestamp: number;
+  isolated?: boolean;
   startFocus?: Focus;
   endFocus?: Focus;
 }
