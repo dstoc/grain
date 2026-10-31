@@ -289,7 +289,7 @@ export class Editor extends LitElement {
       }
     } else if (keyDown.key === 'z' && keyDown.ctrlKey) {
       if (!hostContext.root) return;
-      event.preventDefault();
+      keyboardEvent.preventDefault();
       const focus = hostContext.root[viewModel].tree.undo(hostContext.root);
       if (focus) {
         hostContext.clearSelection();
@@ -302,7 +302,7 @@ export class Editor extends LitElement {
       }
     } else if (keyDown.key === 'y' && keyDown.ctrlKey) {
       if (!hostContext.root) return;
-      event.preventDefault();
+      keyboardEvent.preventDefault();
       const focus = hostContext.root[viewModel].tree.redo(hostContext.root);
       if (focus) {
         hostContext.clearSelection();
