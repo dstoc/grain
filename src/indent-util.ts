@@ -4,9 +4,8 @@ import { findAncestor, ancestors } from './markdown/view-model-util.js';
 import { viewModel } from './markdown/view-model-node.js';
 
 export function unindent(node: ViewModelNode, root: ViewModelNode) {
-  const { ancestor: listItem, path } = findAncestor(node, root, 'list-item');
-  if (!listItem || !path) return;
-  const target = path[0];
+  const { ancestor: listItem } = findAncestor(node, root, 'list-item');
+  if (!listItem) return;
   const nextSibling = listItem[viewModel].nextSibling;
   const list = listItem[viewModel].parent!;
   const targetListItemSibling = list[viewModel].parent!;
@@ -15,9 +14,6 @@ export function unindent(node: ViewModelNode, root: ViewModelNode) {
       cast(targetListItemSibling[viewModel].parent),
       targetListItemSibling[viewModel].nextSibling,
     );
-  } else {
-    target[viewModel].insertBefore(cast(list[viewModel].parent), list[viewModel].nextSibling);
-    listItem[viewModel].remove();
   }
   if (nextSibling) {
     let next: ViewModelNode | undefined = nextSibling;
@@ -35,11 +31,13 @@ export function unindent(node: ViewModelNode, root: ViewModelNode) {
       toMove[viewModel].insertBefore(targetList);
     }
   }
-  if (listItem.children?.length && !listItem[viewModel].parent) {
-    listItem[viewModel].firstChild?.[viewModel].insertBefore(
-      cast(target[viewModel].parent),
-      target[viewModel].nextSibling,
-    );
+  if (targetListItemSibling?.type !== 'list-item') {
+    const parent = cast(list[viewModel].parent);
+    const before = list[viewModel].nextSibling;
+    while (listItem[viewModel].firstChild) {
+      listItem[viewModel].firstChild[viewModel].insertBefore(parent, before);
+    }
+    listItem[viewModel].remove();
   }
   if (!list.children?.length) {
     list[viewModel].remove();
