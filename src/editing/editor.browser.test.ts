@@ -9,6 +9,7 @@ import { nextTask } from './test/lifecycle.js';
 import './test/markdown_node_snapshot.js';
 import { viewModel } from '../markdown/view-model-node.js';
 import { serializeToString } from '../markdown/block-serializer.js';
+import { html } from 'lit';
 
 describe('Editor', () => {
   function serializeEditor(editor: Editor) {
@@ -91,6 +92,219 @@ describe('Editor', () => {
       },
     };
     return { editor, input };
+  });
+
+  describe('code block select all', () => {
+    async function setup(content: string) {
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: [
+          { type: 'code-block', info: 'text', content },
+          { type: 'paragraph', content: 'beta' },
+        ],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inline = renderer.shadowRoot!.querySelector('md-inline')!;
+      inline.focus();
+      return { tree, inline, renderer };
+    }
+
+    test.each(['alpha', 'alpha\n', 'alpha\n\n', 'alpha\nbeta\n', ''])(
+      'promotes native selection without changing code %j',
+      async (content) => {
+        const { tree, inline } = await setup(content);
+        const before = serializeToString(tree.root);
+        await userEvent.keyboard('{Control>}a{/Control}');
+        await nextTask();
+        expect(inline.hostContext!.selection.size).toBe(content ? 0 : 1);
+        expect(serializeToString(tree.root)).toBe(before);
+        if (content) {
+          await userEvent.keyboard('{Control>}a{/Control}');
+          await nextTask();
+          expect(inline.hostContext!.selection.has(inline.node!)).toBe(true);
+        }
+        expect(inline.matches(':focus')).toBe(true);
+        expect(serializeToString(tree.root)).toBe(before);
+        await userEvent.keyboard('{Control>}a{/Control}');
+        await nextTask();
+        expect(inline.hostContext!.selection.size).toBe(2);
+        expect(serializeToString(tree.root)).toBe(before);
+      },
+    );
+
+    test.each([
+      [0, 5],
+      [1, 6],
+      [1, 5],
+    ])('does not promote partial text offsets %i–%i', async (start, end) => {
+      const { inline } = await setup('alpha\n');
+      const text = inline.querySelector('md-span')!.childNodes;
+      const target = [...text].find(
+        (node) => node.nodeType === Node.TEXT_NODE && node.textContent === 'alpha\n',
+      )!;
+      const range = document.createRange();
+      range.setStart(target, start);
+      range.setEnd(target, end);
+      window.getSelection()!.removeAllRanges();
+      window.getSelection()!.addRange(range);
+      await userEvent.keyboard('{Control>}a{/Control}');
+      await nextTask();
+      expect(inline.hostContext!.selection.size).toBe(0);
+      await userEvent.keyboard('{Control>}a{/Control}');
+      await nextTask();
+      expect(inline.hostContext!.selection.has(inline.node!)).toBe(true);
+    });
+
+    test.each([false, true])(
+      'promotes full text boundaries across wrappers (reverse: %s)',
+      async (reverse) => {
+        const { inline } = await setup('alpha\n');
+        const span = inline.querySelector('md-span')!;
+        span.replaceChildren(document.createComment('before'), document.createTextNode('al'));
+        const wrapper = document.createElement('md-span');
+        wrapper.node = span.node;
+        const last = document.createTextNode('pha\n');
+        wrapper.append(last);
+        span.append(wrapper, document.createComment('after'));
+        const first = span.childNodes[1];
+        const selection = window.getSelection()!;
+        selection.setBaseAndExtent(
+          reverse ? last : first,
+          reverse ? last.length : 0,
+          reverse ? first : last,
+          reverse ? 0 : last.length,
+        );
+        await state.input.press('Control+a');
+        expect(inline.hostContext!.selection.has(inline.node!)).toBe(true);
+      },
+    );
+
+    test.each(['unavailable', 'throws', 'external', 'mismatch', 'unsupported'])(
+      'declines ambiguous composed selection: %s',
+      async (reason) => {
+        const { inline, renderer } = await setup('alpha\n');
+        const selection = document.getSelection()!;
+        const text = [...inline.querySelector('md-span')!.childNodes].find(
+          (node) => node.nodeType === Node.TEXT_NODE && node.textContent === 'alpha\n',
+        )!;
+        const range = document.createRange();
+        range.setStart(text, 0);
+        range.setEnd(text, 5);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        if (reason === 'mismatch') text.textContent = 'alphb\n';
+        if (reason === 'unsupported')
+          inline.querySelector('md-span')!.append(document.createElement('b'));
+        const spy = vi.spyOn(selection, 'getComposedRanges');
+        if (reason === 'unavailable') spy.mockImplementation(undefined as never);
+        else if (reason === 'throws')
+          spy.mockImplementation(() => {
+            throw new Error('unavailable');
+          });
+        else if (reason === 'external') {
+          const other = renderer.shadowRoot!.querySelectorAll('md-inline')[1];
+          spy.mockReturnValue([
+            new StaticRange({
+              startContainer: inline,
+              startOffset: 0,
+              endContainer: other,
+              endOffset: 0,
+            }),
+          ]);
+        } else {
+          spy.mockReturnValue([
+            new StaticRange({
+              startContainer: inline,
+              startOffset: 0,
+              endContainer: inline,
+              endOffset: inline.childNodes.length,
+            }),
+          ]);
+        }
+        try {
+          await state.input.press('Control+a');
+          expect(inline.hostContext!.selection.size).toBe(0);
+        } finally {
+          spy.mockRestore();
+        }
+      },
+    );
+
+    test('deletes the selected code and restores it with undo and redo', async () => {
+      const { tree, inline } = await setup('alpha\n');
+      const before = serializeToString(tree.root);
+      await userEvent.keyboard('{Control>}a{/Control}{Control>}a{/Control}');
+      await nextTask();
+      expect(inline.hostContext!.selection.has(inline.node!)).toBe(true);
+      await userEvent.keyboard('{Backspace}');
+      await nextTask();
+      expect(serializeToString(tree.root)).not.toBe(before);
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serializeToString(tree.root)).toBe(before);
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(serializeToString(tree.root)).not.toBe(before);
+    });
+
+    test.each(['fallback', 'inline', 'replacement'])(
+      'keeps code delegate behavior for %s',
+      async (mode) => {
+        state.editor.renderDelegate = {
+          renderCodeBlock: ({ node }) =>
+            mode === 'fallback'
+              ? undefined
+              : mode === 'inline'
+                ? html`<md-inline .node=${node}></md-inline>`
+                : html`<b>replacement</b>`,
+        };
+        const { renderer } = await setup('alpha\n');
+        if (mode === 'replacement') {
+          expect(renderer.shadowRoot!.querySelector('b')!.textContent).toBe('replacement');
+          expect(renderer.shadowRoot!.querySelectorAll('md-inline')).toHaveLength(1);
+          return;
+        }
+        const inline = renderer.shadowRoot!.querySelector('md-inline')!;
+        inline.focus();
+        await userEvent.keyboard('{Control>}a{/Control}{Control>}a{/Control}');
+        await nextTask();
+        expect(inline.hostContext!.selection.has(inline.node!)).toBe(true);
+      },
+    );
+
+    test('selects within a nested host without selecting its containing block', async () => {
+      const nested = new MarkdownTree({
+        type: 'document',
+        children: [{ type: 'code-block', info: 'text', content: 'alpha\n' }],
+      });
+      state.editor.renderDelegate = {
+        renderCodeBlock: ({ node }) =>
+          node.info === 'nested'
+            ? html`<md-transclusion .node=${node} .root=${nested.root}></md-transclusion>`
+            : undefined,
+      };
+      await setup('outer');
+      const outer = new MarkdownTree({
+        type: 'document',
+        children: [
+          { type: 'code-block', info: 'nested', content: 'outer' },
+          { type: 'paragraph', content: 'beta' },
+        ],
+      });
+      state.editor.root = outer.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const transclusion = renderer.shadowRoot!.querySelector('md-transclusion')!;
+      const innerRenderer = transclusion.shadowRoot!.querySelector('md-block-render')!;
+      const inline = innerRenderer.shadowRoot!.querySelector('md-inline')!;
+      inline.focus();
+      await userEvent.keyboard('{Control>}a{/Control}{Control>}a{/Control}');
+      await nextTask();
+      expect(inline.hostContext!.selection.has(inline.node!)).toBe(true);
+      expect(renderer.hostContext.selection.size).toBe(0);
+    });
   });
 
   describe('block prefix conversion', () => {
