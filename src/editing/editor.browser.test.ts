@@ -531,6 +531,114 @@ describe('Editor', () => {
   });
 
   describe('undo', () => {
+    test.each([
+      [
+        '# main\n## section A\ntext\n\n## section B\n',
+        'section B',
+        'text',
+        '# main\n## section A\ntextX\n',
+      ],
+      [
+        '# main\n## section A\n### nested\nlast\n\n## section B\n',
+        'section B',
+        'last',
+        '# main\n## section A\n### nested\nlastX\n',
+      ],
+      [
+        '# main\n## section A\n\n## section B\n',
+        'section B',
+        'section A',
+        '# main\n## section AX\n',
+      ],
+      ['before\n\n- item\n\nafter\n', 'after', 'item', 'before\n- itemX\n'],
+    ])(
+      'focuses the final preceding editable after block deletion',
+      async (source, target, preceding, expected) => {
+        const tree = parseMarkdownTree(source);
+        const before = serializeToString(tree.serialize());
+        state.editor.root = tree.root;
+        await nextTask();
+        const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+        const focused = () =>
+          renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+        const inline = [...renderer.shadowRoot!.querySelectorAll('md-inline')].find(
+          (el) => el.node?.content === target,
+        )!;
+        inline.focus();
+        await state.input.selectAll();
+        await state.input.press('Control+a');
+        await state.input.press('Backspace');
+        expect(focused().node!.content).toBe(preceding);
+        expect(focused().getSelection()?.start.index).toBe(preceding.length);
+        const after = serializeToString(tree.serialize());
+        await state.input.press('Control+z');
+        expect(serializeToString(tree.serialize())).toBe(before);
+        await state.input.press('Control+y');
+        expect(serializeToString(tree.serialize())).toBe(after);
+        expect(focused().node!.content).toBe(preceding);
+        await state.input.insert('X');
+        expect(serializeToString(tree.serialize())).toBe(expected);
+      },
+    );
+
+    test('uses document order for a reversed block selection and successful cut', async () => {
+      const tree = parseMarkdownTree('# main\n## A\ntext\n\n## B\n\n## C\n');
+      const before = serializeToString(tree.serialize());
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inlines = [...renderer.shadowRoot!.querySelectorAll('md-inline')];
+      const b = inlines.find((el) => el.node?.content === 'B')!;
+      const c = inlines.find((el) => el.node?.content === 'C')!;
+      c.focus();
+      c.hostContext!.expandSelection([c.node!, b.node!]);
+      const data = new DataTransfer();
+      c.dispatchEvent(
+        new ClipboardEvent('cut', {
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+          clipboardData: data,
+        }),
+      );
+      await nextTask();
+      expect(data.getData('text/plain')).toContain('## B');
+      const focused = () => renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      expect(focused().node!.content).toBe('text');
+      expect(focused().getSelection()?.start.index).toBe(4);
+      const after = serializeToString(tree.serialize());
+      await state.input.press('Control+z');
+      expect(serializeToString(tree.serialize())).toBe(before);
+      await state.input.press('Control+y');
+      expect(serializeToString(tree.serialize())).toBe(after);
+      await state.input.insert('X');
+      expect(focused().node!.content).toBe('textX');
+    });
+
+    test('keeps promoted section children after deleting its heading', async () => {
+      const tree = parseMarkdownTree('# main\n## A\ntext\n\n## B\nkeep\n');
+      const before = serializeToString(tree.serialize());
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const b = [...renderer.shadowRoot!.querySelectorAll('md-inline')].find(
+        (el) => el.node?.content === 'B',
+      )!;
+      b.focus();
+      await state.input.selectAll();
+      await state.input.press('Control+a');
+      await state.input.press('Backspace');
+      const after = serializeToString(tree.serialize());
+      expect(after).toContain('keep');
+      await state.input.press('Control+z');
+      expect(serializeToString(tree.serialize())).toBe(before);
+      await state.input.press('Control+y');
+      expect(serializeToString(tree.serialize())).toBe(after);
+      await state.input.insert('X');
+      expect(serializeToString(tree.serialize())).toContain('textX');
+      expect(serializeToString(tree.serialize())).toContain('keep');
+    });
+
     test('copies and cuts blocks through trusted keyboard events', async () => {
       await state.input.insert('hello');
       await state.input.insertParagraph();
