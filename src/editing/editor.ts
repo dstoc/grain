@@ -199,6 +199,7 @@ export class Editor extends LitElement {
     this.composition = undefined;
     session.tree.removeEventListener('tree-change', session.invalidate);
     session.inline.removeEventListener('composition-invalidated', session.invalidate);
+    session.inline.composing = false;
     if (restore && session.inline.isConnected) session.inline.reconcileComposition();
   }
 
@@ -215,6 +216,7 @@ export class Editor extends LitElement {
         ? inline.getSelection()
         : undefined;
     if (!node || !selection || !inline.isConnected || !node[viewModel].connected) {
+      inline.composing = false;
       inline.reconcileComposition();
       return;
     }

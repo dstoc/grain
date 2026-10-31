@@ -1510,6 +1510,33 @@ describe('composition recovery', () => {
     expect(inline.textContent).toBe('anchorX');
   });
 
+  test('resumes typing after invalidation without a composition end', async () => {
+    const { tree, inline, text } = await setup('anchor', 3);
+    inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    text.textContent = 'ancéhor';
+    const node = inline.node!;
+    tree.edit(() => {
+      node[viewModel].edit({ startIndex: 6, oldEndIndex: 6, newEndIndex: 7, newText: '!' });
+      return {};
+    });
+    await nextTask();
+    expect(inline.textContent).toBe('anchor!');
+    expect(inline.getSelection()?.start.index).toBe(0);
+    await userEvent.keyboard('X');
+    await nextTask();
+    expect(inline.textContent).toBe('Xanchor!');
+    expect(node.content).toBe('Xanchor!');
+    expect(serializeToString(tree.root)).toBe('Xanchor!\n');
+    expect(inline.getSelection()?.start.index).toBe(1);
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('anchor\n');
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    expect(inline.textContent).toBe('Xanchor!');
+    expect(serializeToString(tree.root)).toBe('Xanchor!\n');
+  });
+
   test('a no-op completion restores the DOM without creating a history boundary', async () => {
     const { tree, inline } = await setup('anchor', 6);
     await userEvent.keyboard('X');
