@@ -74,14 +74,15 @@ function maybeMergeContentInto(
   if (target.type === 'code-block' || target.type === 'paragraph' || target.type === 'section') {
     assert(isInlineViewModelNode(target));
     context.startEditing();
+    const joinOffset = target.content.length;
     target[viewModel].edit({
-      startIndex: target.content.length,
-      oldEndIndex: target.content.length,
-      newEndIndex: target.content.length + node.content.length,
+      startIndex: joinOffset,
+      oldEndIndex: joinOffset,
+      newEndIndex: joinOffset + node.content.length,
       newText: node.content,
     });
     node[viewModel].remove();
-    context.focus(target, target.content.length);
+    context.focus(target, joinOffset);
     return true;
   }
   return false;

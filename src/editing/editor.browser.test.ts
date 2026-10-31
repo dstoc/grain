@@ -194,6 +194,45 @@ describe('Editor', () => {
   });
 
   describe('inline Backspace', () => {
+    test('joins paragraphs at the caret and restores the join through undo and redo', async () => {
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: [
+          { type: 'paragraph', content: 'alpha' },
+          { type: 'paragraph', content: 'beta' },
+        ],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const focused = () => renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      (renderer.shadowRoot!.querySelectorAll('md-inline')[1] as MarkdownInline).focus();
+      await userEvent.keyboard('{Home}{Backspace}');
+      await nextTask();
+      expect(serializeToString(tree.serialize())).toBe('alphabeta\n');
+      expect(focused().getSelection()?.start.index).toBe(5);
+      expect(focused().getSelection()?.end.index).toBe(5);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(serializeToString(tree.serialize())).toBe('alphaXbeta\n');
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serializeToString(tree.serialize())).toBe('alphabeta\n');
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(serializeToString(tree.serialize())).toBe('alpha\n\nbeta\n');
+      expect(focused().node!.content).toBe('beta');
+      expect(focused().getSelection()?.start.index).toBe(0);
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(serializeToString(tree.serialize())).toBe('alphabeta\n');
+      expect(focused().getSelection()?.start.index).toBe(5);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(serializeToString(tree.serialize())).toBe('alphaXbeta\n');
+      expect(focused().textContent).toContain('alphaXbeta');
+    });
+
     async function seed(content: string) {
       const tree = new MarkdownTree({
         type: 'document',
