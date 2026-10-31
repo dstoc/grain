@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createBlockParser, parseBlocks } from './block-parser/api.js';
 import { serializeToString } from './block-serializer.js';
-import type { DocumentNode } from './node.js';
+import type { DocumentNode, MarkdownNode } from './node.js';
 
 function expectCharByCharAppendMatchesFullParse(source: string) {
   const full = parseBlocks(source).node;
@@ -26,6 +26,35 @@ function expectScheduledAppendMatchesFullParse(source: string, schedules: string
 }
 
 describe('parseBlocks', () => {
+  it.each([
+    ['```js\n\nalpha\n```', '\nalpha'],
+    ['```js\n\n\nalpha\n```', '\n\nalpha'],
+    ['```js\n  \nalpha\n```', '  \nalpha'],
+    ['```js\n```', ''],
+    ['> ```js\n> \n> alpha\n> ```', '\nalpha'],
+  ])('preserves fenced code lines through parsing and resume: %j', (source, content) => {
+    const findCode = (node: any): any =>
+      node.type === 'code-block' ? node : node.children?.map(findCode).find(Boolean);
+    expect(findCode(parseBlocks(source).node)?.content).toBe(content);
+    let parser = createBlockParser();
+    for (const char of source) {
+      parser.push(char);
+      parser = createBlockParser(parser.snapshot());
+    }
+    const tree = parser.finish().serialize() as DocumentNode;
+    expect(findCode(tree)?.content).toBe(content);
+    expect(findCode(parseBlocks(serializeToString(tree)).node)?.content).toBe(content);
+  });
+
+  it('shows leading blank code lines while projecting and replacing pending text', () => {
+    const parser = createBlockParser();
+    parser.push('```js\n\n');
+    parser.push('a');
+    expect(parser.getTree().serialize().children?.[0]).toMatchObject({ content: '\na' });
+    parser.push('lpha');
+    expect(parser.getTree().serialize().children?.[0]).toMatchObject({ content: '\nalpha' });
+  });
+
   it('returns an empty paragraph for empty input', () => {
     const { node } = parseBlocks('');
     expect(node).toEqual({
@@ -825,6 +854,59 @@ describe('parseBlocks', () => {
         },
       ],
     });
+  });
+
+  it.each([
+    ['```text\n> literal\n>> nested\n>= compare\n```\n', '> literal\n>> nested\n>= compare'],
+    ['```text\nalpha\n> ```\nbeta\n```\n', 'alpha\n> ```\nbeta'],
+    ['> ```text\n> > literal\n> >> nested\n> ```\n', '> literal\n>> nested'],
+    ['- ```js\n    indented\n  plain\n  ```\n- tail\n', '  indented\nplain'],
+    ['123. ```js\n       indented\n     > literal\n     ```\n', '  indented\n> literal'],
+    ['> - > ```text\n>   > > literal\n>   > ```\n', '> literal'],
+    ['- > ```text\n  > > literal\n  > ```\n', '> literal'],
+    ['>\t> ```text\n>\t> literal\n>\t> ```\n', 'literal'],
+  ])('preserves fenced code content and container boundaries for %j', (source, content) => {
+    const findCode = (node: DocumentNode): string[] => {
+      const result: string[] = [];
+      const visit = (value: MarkdownNode) => {
+        if (value.type === 'code-block') result.push(value.content);
+        if ('children' in value) for (const child of value.children ?? []) visit(child);
+      };
+      visit(node);
+      return result;
+    };
+    const full = parseBlocks(source).node;
+    expect(findCode(full)).toEqual([content]);
+    expectCharByCharAppendMatchesFullParse(source);
+    for (let split = 0; split <= source.length; split++) {
+      const parser = createBlockParser();
+      parser.push(source.slice(0, split));
+      const resumed = createBlockParser(parser.snapshot());
+      resumed.push(source.slice(split));
+      expect(resumed.finish().serialize()).toEqual(full);
+    }
+    expect(parseBlocks(serializeToString(full)).node).toEqual(full);
+  });
+
+  it('projects literal quote markers in an active code fence before newline', () => {
+    const parser = createBlockParser();
+    expect(parser.push('```text\n> literal').serialize()).toEqual({
+      type: 'document',
+      children: [{ type: 'code-block', info: 'text', content: '> literal' }],
+    });
+    expect(parser.push('\n> ```').serialize()).toEqual({
+      type: 'document',
+      children: [{ type: 'code-block', info: 'text', content: '> literal\n> ```' }],
+    });
+  });
+
+  it('projects code inside tab-separated nested quotes before newline', () => {
+    const parser = createBlockParser();
+    const expected = parseBlocks('>\t> ```text\n>\t> literal\n>\t> ```\n').node;
+    expect(parser.push('>\t> ```text\n>\t> literal').serialize()).toEqual(expected);
+    const resumed = createBlockParser(parser.snapshot());
+    expect(resumed.push('\n>\t> ```\n').serialize()).toEqual(expected);
+    expect(resumed.finish().serialize()).toEqual(expected);
   });
 
   it('continues a list item paragraph on indented lines', () => {

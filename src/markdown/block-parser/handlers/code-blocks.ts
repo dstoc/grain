@@ -29,13 +29,15 @@ export function openCodeBlock(
   node[viewModel].insertBefore(parent);
   state.currentCodeBlock = node;
   state.currentCodeFence = marker;
+  state.currentCodeHasLines = false;
   state.sawContent = true;
 }
 
-export function appendCodeBlockLine(state: BlockParseState, line: string): string {
+export function appendCodeBlockLine(state: BlockParseState, line: string, settled = true): string {
   const node = state.currentCodeBlock;
   if (!node) return '';
-  const inserted = node.content === '' ? line : `\n${line}`;
+  const inserted = state.currentCodeHasLines ? `\n${line}` : line;
+  if (settled) state.currentCodeHasLines = true;
   const newContent = `${node.content}${inserted}`;
   (node as { content: string }).content = newContent;
   node[viewModel].renderSignal.value++;
@@ -43,14 +45,22 @@ export function appendCodeBlockLine(state: BlockParseState, line: string): strin
 }
 
 export function stripActiveCodeBlockContinuation(state: BlockParseState, line: string): string {
-  const parent = state.currentCodeBlock?.[viewModel].parent;
-  const currentListItem = state.currentListPath.at(-1);
-  if (
-    parent?.type === 'list-item' &&
-    currentListItem === parent &&
-    line.startsWith(listContinuationPrefix(state, currentListItem))
-  ) {
-    return line.slice(listContinuationPrefix(state, currentListItem).length);
+  const ancestors: ViewModelNode[] = [];
+  let parent = state.currentCodeBlock?.[viewModel].parent;
+  while (parent) {
+    if (parent.type === 'list-item' || parent.type === 'block-quote') ancestors.unshift(parent);
+    parent = parent[viewModel].parent;
+  }
+  for (const ancestor of ancestors) {
+    if (ancestor.type === 'block-quote') {
+      const match = /^>\s?/.exec(line);
+      if (!match) break;
+      line = line.slice(match[0].length);
+    } else if (ancestor.type === 'list-item') {
+      const prefix = listContinuationPrefix(state, ancestor);
+      if (!line.startsWith(prefix)) break;
+      line = line.slice(prefix.length);
+    }
   }
   return line;
 }
@@ -66,4 +76,5 @@ function escapeRegExp(text: string): string {
 export function closeCodeBlock(state: BlockParseState) {
   state.currentCodeBlock = undefined;
   state.currentCodeFence = undefined;
+  state.currentCodeHasLines = undefined;
 }

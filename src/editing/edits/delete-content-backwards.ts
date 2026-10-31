@@ -75,12 +75,16 @@ function maybeMergeContentInto(
     assert(isInlineViewModelNode(target));
     context.startEditing();
     const joinOffset = target.content.length;
-    target[viewModel].edit({
-      startIndex: joinOffset,
-      oldEndIndex: joinOffset,
-      newEndIndex: joinOffset + node.content.length,
-      newText: node.content,
-    });
+    // A structural join appends literal content to the existing destination.
+    target[viewModel].edit(
+      {
+        startIndex: joinOffset,
+        oldEndIndex: joinOffset,
+        newEndIndex: joinOffset + node.content.length,
+        newText: node.content,
+      },
+      false,
+    );
     node[viewModel].remove();
     context.focus(target, joinOffset);
     return true;
