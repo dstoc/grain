@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createBlockParser, parseBlocks } from './block-parser/api.js';
 import { serializeToString } from './block-serializer.js';
-import type { DocumentNode } from './node.js';
+import type { DocumentNode, MarkdownNode } from './node.js';
 
 function expectCharByCharAppendMatchesFullParse(source: string) {
   const full = parseBlocks(source).node;
@@ -854,6 +854,59 @@ describe('parseBlocks', () => {
         },
       ],
     });
+  });
+
+  it.each([
+    ['```text\n> literal\n>> nested\n>= compare\n```\n', '> literal\n>> nested\n>= compare'],
+    ['```text\nalpha\n> ```\nbeta\n```\n', 'alpha\n> ```\nbeta'],
+    ['> ```text\n> > literal\n> >> nested\n> ```\n', '> literal\n>> nested'],
+    ['- ```js\n    indented\n  plain\n  ```\n- tail\n', '  indented\nplain'],
+    ['123. ```js\n       indented\n     > literal\n     ```\n', '  indented\n> literal'],
+    ['> - > ```text\n>   > > literal\n>   > ```\n', '> literal'],
+    ['- > ```text\n  > > literal\n  > ```\n', '> literal'],
+    ['>\t> ```text\n>\t> literal\n>\t> ```\n', 'literal'],
+  ])('preserves fenced code content and container boundaries for %j', (source, content) => {
+    const findCode = (node: DocumentNode): string[] => {
+      const result: string[] = [];
+      const visit = (value: MarkdownNode) => {
+        if (value.type === 'code-block') result.push(value.content);
+        if ('children' in value) for (const child of value.children ?? []) visit(child);
+      };
+      visit(node);
+      return result;
+    };
+    const full = parseBlocks(source).node;
+    expect(findCode(full)).toEqual([content]);
+    expectCharByCharAppendMatchesFullParse(source);
+    for (let split = 0; split <= source.length; split++) {
+      const parser = createBlockParser();
+      parser.push(source.slice(0, split));
+      const resumed = createBlockParser(parser.snapshot());
+      resumed.push(source.slice(split));
+      expect(resumed.finish().serialize()).toEqual(full);
+    }
+    expect(parseBlocks(serializeToString(full)).node).toEqual(full);
+  });
+
+  it('projects literal quote markers in an active code fence before newline', () => {
+    const parser = createBlockParser();
+    expect(parser.push('```text\n> literal').serialize()).toEqual({
+      type: 'document',
+      children: [{ type: 'code-block', info: 'text', content: '> literal' }],
+    });
+    expect(parser.push('\n> ```').serialize()).toEqual({
+      type: 'document',
+      children: [{ type: 'code-block', info: 'text', content: '> literal\n> ```' }],
+    });
+  });
+
+  it('projects code inside tab-separated nested quotes before newline', () => {
+    const parser = createBlockParser();
+    const expected = parseBlocks('>\t> ```text\n>\t> literal\n>\t> ```\n').node;
+    expect(parser.push('>\t> ```text\n>\t> literal').serialize()).toEqual(expected);
+    const resumed = createBlockParser(parser.snapshot());
+    expect(resumed.push('\n>\t> ```\n').serialize()).toEqual(expected);
+    expect(resumed.finish().serialize()).toEqual(expected);
   });
 
   it('continues a list item paragraph on indented lines', () => {

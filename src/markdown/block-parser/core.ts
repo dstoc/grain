@@ -27,8 +27,7 @@ import { parseListItem, appendListItem, closeList } from './handlers/lists.js';
 
 export function parseLine(state: BlockParseState, line: string) {
   if (state.currentCodeBlock && state.currentCodeFence) {
-    const prefix = parseLinePrefix(state, line);
-    const codeLine = stripActiveCodeBlockContinuation(state, prefix.content);
+    const codeLine = stripActiveCodeBlockContinuation(state, line);
     if (isClosingFence(codeLine, state.currentCodeFence)) {
       closeCodeBlock(state);
     } else {
@@ -108,8 +107,7 @@ export function projectPendingLine(
   }
 
   if (state.currentCodeBlock && state.currentCodeFence) {
-    const prefix = parseLinePrefix(state, line);
-    const codeLine = stripActiveCodeBlockContinuation(state, prefix.content);
+    const codeLine = stripActiveCodeBlockContinuation(state, line);
     if (isClosingFence(codeLine, state.currentCodeFence)) {
       return;
     }
