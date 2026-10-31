@@ -128,6 +128,36 @@ describe('Editor', () => {
       await state.input.insert('Y');
       expect(focused.node!.content).toBe('XYhello');
     });
+
+    test('keeps the paste position when a later line repeats the heading text', async () => {
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: [{ type: 'paragraph', content: 'hello\nXhello' }],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inline = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
+      inline.focus();
+      await userEvent.keyboard('{Home}');
+      const read = vi.spyOn(navigator.clipboard, 'read').mockResolvedValue([]);
+      const readText = vi.spyOn(navigator.clipboard, 'readText').mockResolvedValue('# X');
+      try {
+        await state.editor.triggerPaste(inline, inline.node!, { startIndex: 0, oldEndIndex: 0 });
+        await nextTask();
+        const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+        expect(focused.getSelection()?.start.index).toBe(1);
+        await userEvent.keyboard('Y');
+        await nextTask();
+        expect(serializeToString(tree.serialize())).toBe('# XYhello\nXhello\n');
+        await state.input.press('Control+z');
+        await state.input.press('Control+y');
+        expect(serializeToString(tree.serialize())).toBe('# XYhello\nXhello\n');
+      } finally {
+        read.mockRestore();
+        readText.mockRestore();
+      }
+    });
   });
 
   describe('inline Backspace', () => {

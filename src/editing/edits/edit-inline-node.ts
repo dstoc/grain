@@ -14,13 +14,13 @@ export function editInlineNode(context: EditContext, edit: InlineEdit) {
     // Although normalization has not happened, it will never remove an editable.
     const next = findNextEditable(newNodes[0], context.root, true);
     if (next) {
-      // The parsed content normally follows the block markers.
-      // Map the insertion point into that suffix, clamping positions in the
-      // markers to the start of the editable content.
-      const contentStart = node.content.lastIndexOf(next.content);
+      // Conversion starts at the beginning of the paragraph. Count its leading
+      // block markers instead of searching for content that may occur again.
+      const contentStart = /^(?:#+ +|(?:\d+[.)]|[-+*]) (?:\[[ x]\] )?|> )/.exec(node.content)?.[0]
+        .length;
       context.focus(
         next,
-        contentStart < 0
+        contentStart === undefined
           ? next.content.length
           : Math.max(0, Math.min(next.content.length, edit.newEndIndex - contentStart)),
       );
