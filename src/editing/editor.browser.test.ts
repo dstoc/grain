@@ -237,6 +237,63 @@ describe('Editor', () => {
   });
 
   describe('inline Backspace', () => {
+    test.each([
+      ['separator', '---', 'after', false],
+      ['asterisks', '***', 'after', false],
+      ['created heading prefix', '#', ' heading', false],
+      ['nested quote', '---', 'after', true],
+    ])('keeps the destination and caret when joining %s', async (_name, before, after, nested) => {
+      const paragraphs = [
+        { type: 'paragraph' as const, content: before },
+        { type: 'paragraph' as const, content: after },
+      ];
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: [
+          { type: 'paragraph', content: 'earlier' },
+          ...(nested
+            ? [{ type: 'block-quote' as const, marker: '> ', children: paragraphs }]
+            : paragraphs),
+        ],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inlines = renderer.shadowRoot!.querySelectorAll('md-inline');
+      const destination = (inlines[1] as MarkdownInline).node!;
+      (inlines[2] as MarkdownInline).focus();
+      const focused = () => renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      const contents = () =>
+        [...renderer.shadowRoot!.querySelectorAll('md-inline')].map(
+          (inline) => inline.node!.content,
+        );
+      await userEvent.keyboard('{Home}{Backspace}');
+      await nextTask();
+      expect(contents()).toEqual(['earlier', before + after]);
+      expect(focused().node).toBe(destination);
+      expect(focused().node!.type).toBe('paragraph');
+      expect(focused().getSelection()?.start.index).toBe(before.length);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(contents()).toEqual(['earlier', before + 'X' + after]);
+      expect(serializeToString(tree.serialize())).toBe(
+        `earlier\n\n${nested ? '> ' : ''}${before}X${after}\n`,
+      );
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(contents()).toEqual(['earlier', before, after]);
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(contents()).toEqual(['earlier', before + after]);
+      expect(focused().node).toBe(destination);
+      expect(focused().getSelection()?.start.index).toBe(before.length);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(contents()).toEqual(['earlier', before + 'X' + after]);
+    });
+
     test('joins paragraphs at the caret and restores the join through undo and redo', async () => {
       const tree = new MarkdownTree({
         type: 'document',
