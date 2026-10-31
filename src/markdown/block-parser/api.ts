@@ -50,6 +50,8 @@ export function createBlockParser(snapshot?: BlockParserSnapshot): BlockParser {
         },
         false,
         { preserveEmptyBlocks: true },
+        undefined,
+        'construction',
       );
       return tree;
     },
@@ -71,6 +73,8 @@ export function createBlockParser(snapshot?: BlockParserSnapshot): BlockParser {
         },
         false,
         { force: true },
+        undefined,
+        'construction',
       );
       finished = true;
       return tree;

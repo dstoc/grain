@@ -25,8 +25,8 @@ test('resolves focus after normalization and records it for redo', () => {
       return { node: resolved, offset: 0 };
     },
   );
-  expect(tree.undo(tree.root)).toEqual({ node: original, offset: 2 });
-  expect(tree.redo(tree.root)).toEqual({ node: resolved, offset: 0 });
+  expect(tree.undo(tree.root)).toEqual({ focus: { node: original, offset: 2 } });
+  expect(tree.redo(tree.root)).toEqual({ focus: { node: resolved, offset: 0 } });
 });
 
 test('edits without a resolver preserve their focus and history behavior', () => {
@@ -39,6 +39,6 @@ test('edits without a resolver preserve their focus and history behavior', () =>
     original[viewModel].remove();
     return { startFocus: { node: original, offset: 1 } };
   });
-  expect(tree.undo(tree.root)).toEqual({ node: original, offset: 1 });
-  expect(tree.redo(tree.root)).toBeUndefined();
+  expect(tree.undo(tree.root)).toEqual({ focus: { node: original, offset: 1 } });
+  expect(tree.redo(tree.root)).toEqual({ focus: undefined });
 });

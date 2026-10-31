@@ -439,7 +439,7 @@ export class MarkdownTree extends EventTarget {
       );
       assert(newOps.length === 0);
     }
-    return batch.startFocus;
+    return { focus: batch.startFocus };
   }
 
   redo(root: ViewModelNode) {
@@ -471,7 +471,7 @@ export class MarkdownTree extends EventTarget {
       );
       assert(newOps.length === 0);
     }
-    return batch.endFocus;
+    return { focus: batch.endFocus };
   }
 
   edit(
@@ -480,6 +480,7 @@ export class MarkdownTree extends EventTarget {
     normalizeOptions?: NormalizeTreeOptions,
     // Runs synchronously after normalization, without mutating the tree, before history is saved.
     resolveEndFocus?: (focus: Focus | undefined, hasOperations: boolean) => Focus | undefined,
+    history: 'record' | 'construction' = 'record',
   ): Op[] {
     assert(this.state === 'idle');
     this.editStartVersion = this.root[viewModel].version;
@@ -493,6 +494,7 @@ export class MarkdownTree extends EventTarget {
         fireTreeEditEvent,
         normalizeOptions,
         resolveEndFocus,
+        history,
       );
     });
   }
@@ -558,6 +560,7 @@ export class MarkdownTree extends EventTarget {
     fireTreeEditEvent = true,
     normalizeOptions?: NormalizeTreeOptions,
     resolveEndFocus?: (focus: Focus | undefined, hasOperations: boolean) => Focus | undefined,
+    history: 'record' | 'construction' = 'record',
   ) {
     assert(this.state === 'editing');
     if (normalizeOptions?.force || this.root[viewModel].version > this.editStartVersion) {
@@ -605,19 +608,23 @@ export class MarkdownTree extends EventTarget {
     let result: Op[] = [];
     if (this.editOperations.length) {
       result = [...this.editOperations];
-      const now = Date.now();
-      const last = this.undoStack.at(-1);
-      if (last && now - last.timestamp < 1000 && canCoalesce(last, this.editOperations)) {
-        last.ops = [...last.ops, ...this.editOperations];
-        last.timestamp = now;
-        last.endFocus = endFocus;
+      if (history === 'construction') {
+        this.undoStack.length = 0;
       } else {
-        this.undoStack.push({
-          ops: [...this.editOperations],
-          timestamp: Date.now(),
-          startFocus,
-          endFocus,
-        });
+        const now = Date.now();
+        const last = this.undoStack.at(-1);
+        if (last && now - last.timestamp < 1000 && canCoalesce(last, this.editOperations)) {
+          last.ops = [...last.ops, ...this.editOperations];
+          last.timestamp = now;
+          last.endFocus = endFocus;
+        } else {
+          this.undoStack.push({
+            ops: [...this.editOperations],
+            timestamp: Date.now(),
+            startFocus,
+            endFocus,
+          });
+        }
       }
       this.editOperations.length = 0;
       this.redoStack.length = 0;
