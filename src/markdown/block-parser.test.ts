@@ -26,6 +26,35 @@ function expectScheduledAppendMatchesFullParse(source: string, schedules: string
 }
 
 describe('parseBlocks', () => {
+  it.each([
+    ['```js\n\nalpha\n```', '\nalpha'],
+    ['```js\n\n\nalpha\n```', '\n\nalpha'],
+    ['```js\n  \nalpha\n```', '  \nalpha'],
+    ['```js\n```', ''],
+    ['> ```js\n> \n> alpha\n> ```', '\nalpha'],
+  ])('preserves fenced code lines through parsing and resume: %j', (source, content) => {
+    const findCode = (node: any): any =>
+      node.type === 'code-block' ? node : node.children?.map(findCode).find(Boolean);
+    expect(findCode(parseBlocks(source).node)?.content).toBe(content);
+    let parser = createBlockParser();
+    for (const char of source) {
+      parser.push(char);
+      parser = createBlockParser(parser.snapshot());
+    }
+    const tree = parser.finish().serialize() as DocumentNode;
+    expect(findCode(tree)?.content).toBe(content);
+    expect(findCode(parseBlocks(serializeToString(tree)).node)?.content).toBe(content);
+  });
+
+  it('shows leading blank code lines while projecting and replacing pending text', () => {
+    const parser = createBlockParser();
+    parser.push('```js\n\n');
+    parser.push('a');
+    expect(parser.getTree().serialize().children?.[0]).toMatchObject({ content: '\na' });
+    parser.push('lpha');
+    expect(parser.getTree().serialize().children?.[0]).toMatchObject({ content: '\nalpha' });
+  });
+
   it('returns an empty paragraph for empty input', () => {
     const { node } = parseBlocks('');
     expect(node).toEqual({
