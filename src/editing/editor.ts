@@ -25,6 +25,7 @@ import {
   InlineInput,
   InlineKeyDown,
   InlineLinkClick,
+  InlineProjectionSelection,
 } from '../markdown/inline-render.js';
 import {
   findNextEditable,
@@ -136,18 +137,37 @@ export interface EditContext {
   readonly root: ViewModelNode;
 }
 
+interface CompositionPendingInput {
+  start: number;
+  end: number;
+  before: string;
+  inputType: string;
+}
+
+interface CompositionSession {
+  inline: MarkdownInline;
+  node: InlineViewModelNode;
+  content: string;
+  version: number;
+  start: number;
+  end: number;
+  anchor: number;
+  focus: number;
+  tree: InlineViewModelNode[typeof viewModel]['tree'];
+  currentText: string;
+  replacementStart: number;
+  replacementEnd: number;
+  replacementText: string;
+  pending?: CompositionPendingInput;
+  invalid: boolean;
+  invalidate: (event?: Event) => void;
+  beforeInput: (event: Event) => void;
+  input: (event: Event) => void;
+}
+
 @customElement('md-editor')
 export class Editor extends LitElement {
-  private composition?: {
-    inline: MarkdownInline;
-    node: InlineViewModelNode;
-    content: string;
-    version: number;
-    start: number;
-    end: number;
-    tree: InlineViewModelNode[typeof viewModel]['tree'];
-    invalidate: () => void;
-  };
+  private composition?: CompositionSession;
   private compositionFocus?: Focus;
   defaultName?: string;
   @property({ type: String, reflect: true })
@@ -186,7 +206,14 @@ export class Editor extends LitElement {
         @inline-link-click=${(e: CustomEvent<InlineLinkClick>) => this.onInlineLinkClick(e)}
         @inline-keydown=${(e: CustomEvent<InlineKeyDown>) => this.onInlineKeyDown(e)}
         @inline-composition-start=${(e: CustomEvent<{ inline: MarkdownInline }>) => this.startComposition(e.detail.inline)}
-        @inline-composition-end=${(e: CustomEvent<{ inline: MarkdownInline; event: CompositionEvent }>) => this.endComposition(e.detail.inline, e.detail.event)}
+        @inline-composition-end=${(
+          e: CustomEvent<{ inline: MarkdownInline; event: CompositionEvent }>,
+        ) =>
+          noAwait(
+            this.endComposition(e.detail.inline, e.detail.event).catch((error: unknown) =>
+              console.error('Composition completion failed:', error),
+            ),
+          )}
         @copy=${(e: ClipboardEvent) => this.onClipboard(e)}
         @cut=${(e: ClipboardEvent) => this.onClipboard(e)}
         @paste=${(e: ClipboardEvent) => this.onPaste(e)}
@@ -199,51 +226,73 @@ export class Editor extends LitElement {
     this.composition = undefined;
     session.tree.removeEventListener('tree-change', session.invalidate);
     session.inline.removeEventListener('composition-invalidated', session.invalidate);
+    session.inline.removeEventListener('beforeinput', session.beforeInput, true);
+    session.inline.removeEventListener('input', session.input, true);
     session.inline.composing = false;
-    if (restore && session.inline.isConnected) session.inline.reconcileComposition();
+    if (restore && session.inline.isConnected) {
+      const selection = this.currentCompositionSelection(session);
+      noAwait(session.inline.recoverComposition(selection));
+    }
   }
 
   private startComposition(inline: MarkdownInline) {
     this.clearComposition(true);
     inline.composing = true;
     const node = inline.node;
-    const nativeSelection = (inline.getRootNode() as Document).getSelection();
-    const selection =
-      nativeSelection?.anchorNode &&
-      nativeSelection.focusNode &&
-      inline.contains(nativeSelection.anchorNode) &&
-      inline.contains(nativeSelection.focusNode)
-        ? inline.getSelection()
-        : undefined;
-    if (!node || !selection || !inline.isConnected || !node[viewModel].connected) {
-      inline.composing = false;
-      inline.reconcileComposition();
+    const selection = inline.getTextSelection();
+    if (
+      !node ||
+      !selection ||
+      !inline.isConnected ||
+      !node[viewModel].connected ||
+      inline.textContent !== node.content
+    ) {
       return;
     }
     const tree = node[viewModel].tree;
-    const invalidate = () => this.clearComposition(true);
-    this.composition = {
+    const start = Math.min(selection.anchor, selection.focus);
+    const end = Math.max(selection.anchor, selection.focus);
+    const session = {
       inline,
       node,
       tree,
-      invalidate,
       content: node.content,
       version: node[viewModel].version,
-      start: selection.start.index,
-      end: selection.end.index,
+      start,
+      end,
+      anchor: selection.anchor,
+      focus: selection.focus,
+      currentText: node.content,
+      replacementStart: start,
+      replacementEnd: end,
+      replacementText: node.content.slice(start, end),
+      invalid: false,
+      invalidate: () => {},
+      beforeInput: (event: Event) => this.beforeCompositionInput(session, event as InputEvent),
+      input: (event: Event) => this.afterCompositionInput(session, event as InputEvent),
     };
-    tree.addEventListener('tree-change', invalidate);
-    inline.addEventListener('composition-invalidated', invalidate);
+    session.invalidate = (event?: Event) => {
+      if (event instanceof CustomEvent && event.detail === 'cache') return;
+      if (this.composition === session) this.clearComposition(true);
+    };
+    this.composition = session;
+    tree.addEventListener('tree-change', session.invalidate);
+    inline.addEventListener('composition-invalidated', session.invalidate);
+    inline.addEventListener('beforeinput', session.beforeInput, true);
+    inline.addEventListener('input', session.input, true);
   }
 
-  private endComposition(inline: MarkdownInline, event: CompositionEvent) {
+  private async endComposition(inline: MarkdownInline, event: CompositionEvent) {
     const session = this.composition;
     if (!session || session.inline !== inline) {
-      if (inline.isConnected) inline.reconcileComposition();
+      inline.composing = false;
+      if (inline.isConnected) {
+        noAwait(inline.recoverComposition(inline.getTextSelection() ?? { anchor: 0, focus: 0 }));
+      }
       return;
     }
     this.clearComposition(false);
-    const { node, start, end, content, version } = session;
+    const { node, content, version } = session;
     if (
       !inline.isConnected ||
       inline.node !== node ||
@@ -251,29 +300,200 @@ export class Editor extends LitElement {
       node[viewModel].version !== version ||
       node.content !== content
     ) {
-      if (inline.isConnected) inline.reconcileComposition();
+      if (inline.isConnected) {
+        noAwait(inline.recoverComposition(this.currentCompositionSelection(session)));
+      }
       return;
     }
-    if (!event.data || content.slice(start, end) === event.data) {
-      inline.reconcileComposition(event.data ? start + event.data.length : start);
+    const selection = { anchor: session.anchor, focus: session.focus };
+    const expectedText =
+      content.slice(0, session.replacementStart) +
+      session.replacementText +
+      content.slice(session.replacementEnd);
+    if (
+      !event.data ||
+      session.invalid ||
+      inline.textContent !== session.currentText ||
+      session.currentText !== expectedText ||
+      session.replacementText.length === 0 ||
+      content.slice(session.replacementStart, session.replacementEnd) === session.replacementText
+    ) {
+      noAwait(inline.recoverComposition(selection));
       return;
     }
+    const start = session.replacementStart;
+    const end = session.replacementEnd;
+    const newText = session.replacementText;
     this.compositionFocus = { node, offset: start };
     try {
-      this.runEditAction(inline, editInlineNode, {
+      await inline.recoverComposition(selection, false);
+      const target = this.inlineForNode(node);
+      if (
+        !target ||
+        !target.isConnected ||
+        !node[viewModel].connected ||
+        node[viewModel].version !== version ||
+        node.content !== content
+      ) {
+        if (target?.isConnected) {
+          noAwait(target.recoverComposition({ anchor: 0, focus: 0 }));
+        }
+        return;
+      }
+      this.runEditAction(target, editInlineNode, {
         startIndex: start,
         oldEndIndex: end,
-        newText: event.data,
-        newEndIndex: start + event.data.length,
+        newText,
+        newEndIndex: start + newText.length,
       });
+      const caret = start + newText.length;
+      noAwait(target.recoverComposition({ anchor: caret, focus: caret }));
     } finally {
       this.compositionFocus = undefined;
-      if (inline.isConnected) inline.reconcileComposition();
     }
   }
 
+  private inlineForNode(node: InlineViewModelNode) {
+    const inlines = [
+      ...this.markdownRenderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
+    ].filter((inline) => inline.node === node);
+    return inlines.find((inline) => inline.matches(':focus-within')) ?? inlines[0];
+  }
+
+  private currentCompositionSelection(session: CompositionSession): InlineProjectionSelection {
+    if (
+      session.node[viewModel].connected &&
+      session.inline.node === session.node &&
+      session.node[viewModel].tree === session.tree
+    ) {
+      if (
+        session.node[viewModel].version !== session.version ||
+        session.node.content !== session.content
+      ) {
+        return { anchor: 0, focus: 0 };
+      }
+      return { anchor: session.anchor, focus: session.focus };
+    }
+    if (session.inline.node && session.inline.node[viewModel].connected) {
+      const offset = Math.max(0, Math.min(session.start, session.inline.node.content.length));
+      return { anchor: offset, focus: offset };
+    }
+    return { anchor: 0, focus: 0 };
+  }
+
+  private beforeCompositionInput(session: CompositionSession, event: InputEvent) {
+    if (!this.isCompositionInput(event) || this.composition !== session) return;
+    if (session.invalid) return;
+    if (session.pending && session.inline.textContent !== session.pending.before) {
+      session.invalid = true;
+      return;
+    }
+    const before = session.inline.textContent ?? '';
+    if (before !== session.currentText) {
+      session.invalid = true;
+      return;
+    }
+    const range = this.compositionInputRange(session.inline, event);
+    if (!range || range.start < 0 || range.end < range.start || range.end > before.length) {
+      session.invalid = true;
+      return;
+    }
+    session.pending = {
+      start: range.start,
+      end: range.end,
+      before,
+      inputType: event.inputType,
+    };
+  }
+
+  private afterCompositionInput(session: CompositionSession, event: InputEvent) {
+    if (!this.isCompositionInput(event) || this.composition !== session) return;
+    const pending = session.pending;
+    session.pending = undefined;
+    if (session.invalid) return;
+    if (
+      !pending ||
+      pending.inputType !== event.inputType ||
+      pending.before !== session.currentText
+    ) {
+      session.invalid = true;
+      return;
+    }
+    const after = session.inline.textContent ?? '';
+    const { start, end } = pending;
+    const insertedLength = after.length - (pending.before.length - (end - start));
+    if (
+      insertedLength < 0 ||
+      pending.before.slice(0, start) !== after.slice(0, start) ||
+      pending.before.slice(end) !== after.slice(start + insertedLength)
+    ) {
+      session.invalid = true;
+      return;
+    }
+
+    const currentStart = session.replacementStart;
+    const currentEnd = currentStart + session.replacementText.length;
+    if (end < currentStart || start > currentEnd) {
+      session.invalid = true;
+      return;
+    }
+    const nextStart = Math.min(currentStart, start);
+    const leftExtension = currentStart - nextStart;
+    const rightExtension = Math.max(0, end - currentEnd);
+    const expandedText =
+      pending.before.slice(nextStart, currentStart) +
+      session.replacementText +
+      pending.before.slice(currentEnd, currentEnd + rightExtension);
+    const localStart = start - nextStart;
+    const localEnd = end - nextStart;
+    const inserted = after.slice(start, start + insertedLength);
+    const replacementText =
+      expandedText.slice(0, localStart) + inserted + expandedText.slice(localEnd);
+    const replacementStart = nextStart;
+    const replacementEnd = session.replacementEnd + leftExtension + rightExtension;
+    const expectedAfter =
+      session.content.slice(0, replacementStart) +
+      replacementText +
+      session.content.slice(replacementEnd);
+    if (after !== expectedAfter) {
+      session.invalid = true;
+      return;
+    }
+    session.replacementStart = replacementStart;
+    session.replacementEnd = replacementEnd;
+    session.replacementText = replacementText;
+    session.currentText = after;
+  }
+
+  private compositionInputRange(
+    inline: MarkdownInline,
+    event: InputEvent,
+  ): { start: number; end: number } | undefined {
+    try {
+      const ranges = event.getTargetRanges();
+      if (ranges.length === 1) {
+        const range = ranges[0]!;
+        const start = inline.textOffset(range.startContainer, range.startOffset);
+        const end = inline.textOffset(range.endContainer, range.endOffset);
+        if (start !== undefined && end !== undefined && start <= end) return { start, end };
+      }
+    } catch {
+      // Some input implementations do not expose target ranges.
+    }
+    const selection = inline.getTextSelection();
+    if (!selection) return;
+    return {
+      start: Math.min(selection.anchor, selection.focus),
+      end: Math.max(selection.anchor, selection.focus),
+    };
+  }
+
+  private isCompositionInput(event: InputEvent) {
+    return event.inputType === 'insertCompositionText' || event.isComposing;
+  }
+
   override disconnectedCallback() {
-    this.clearComposition(true);
+    this.clearComposition(false);
     super.disconnectedCallback();
   }
 

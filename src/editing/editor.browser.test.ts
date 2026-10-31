@@ -1434,6 +1434,58 @@ describe('Editor', () => {
 });
 
 describe('composition recovery', () => {
+  function setSelection(inline: MarkdownInline, anchor: number, focus = anchor) {
+    const walker = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT);
+    const nodes: Text[] = [];
+    let next: Node | null;
+    while ((next = walker.nextNode())) nodes.push(next as Text);
+    const pointAt = (requested: number): [Node, number] => {
+      let remaining = requested;
+      for (const node of nodes) {
+        if (remaining <= node.length) return [node, remaining];
+        remaining -= node.length;
+      }
+      return nodes.length ? [nodes.at(-1)!, nodes.at(-1)!.length] : [inline, 0];
+    };
+    const [anchorNode, anchorOffset] = pointAt(anchor);
+    const [focusNode, focusOffset] = pointAt(focus);
+    window.getSelection()!.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset);
+  }
+
+  function compositionInput(
+    inline: MarkdownInline,
+    mutate: () => void,
+    anchor: number,
+    focus: number,
+    data: string,
+  ) {
+    setSelection(inline, anchor, focus);
+    inline.dispatchEvent(
+      new InputEvent('beforeinput', {
+        bubbles: true,
+        inputType: 'insertCompositionText',
+        data,
+        isComposing: true,
+      }),
+    );
+    mutate();
+    setSelection(inline, anchor + data.length, anchor + data.length);
+    inline.dispatchEvent(
+      new InputEvent('input', {
+        bubbles: true,
+        inputType: 'insertCompositionText',
+        data,
+        isComposing: true,
+      }),
+    );
+  }
+
+  function getInline(editor: Editor) {
+    return editor
+      .shadowRoot!.querySelector('md-block-render')!
+      .shadowRoot!.querySelector('md-inline')!;
+  }
+
   async function setup(content: string, start: number, end = start) {
     const editor = new Editor();
     document.body.replaceChildren(editor);
@@ -1444,13 +1496,128 @@ describe('composition recovery', () => {
       .shadowRoot!.querySelector('md-block-render')!
       .shadowRoot!.querySelector('md-inline')!;
     inline.focus();
-    const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode()!;
-    window.getSelection()!.setBaseAndExtent(text, start, text, end);
-    return { editor, tree, inline, text };
+    const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode() as Text | null;
+    setSelection(inline, start, end);
+    return { editor, tree, inline, text: text! };
   }
 
+  test('replays the no-op and leading-space voice updates as one model-safe sequence', async () => {
+    const { editor, tree, inline } = await setup('Block Harness', 13);
+    inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    inline.dispatchEvent(
+      new CompositionEvent('compositionupdate', { bubbles: true, data: 'Harness' }),
+    );
+    inline.dispatchEvent(
+      new CompositionEvent('compositionend', { bubbles: true, data: 'Harness' }),
+    );
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('Block Harness\n');
+    expect(getInline(editor).textContent).toBe('Block Harness');
+
+    const current = getInline(editor);
+    const text = document.createTreeWalker(current, NodeFilter.SHOW_TEXT).nextNode() as Text;
+    current.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    compositionInput(current, () => (text.textContent = 'Block Harness Test'), 13, 13, ' Test');
+    compositionInput(current, () => (text.textContent = 'Block Harness Test'), 14, 18, 'Test');
+    current.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'Test' }));
+    await nextTask();
+    const recovered = getInline(editor);
+    expect(serializeToString(tree.root)).toBe('Block Harness Test\n');
+    expect(recovered.textContent).toBe('Block Harness Test');
+    expect(recovered.matches(':focus')).toBe(true);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('Block Harness\n');
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('Block Harness Test\n');
+    await userEvent.keyboard('!');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('Block Harness Test!\n');
+  });
+
+  test('commits an empty-inline replay once and removes native inline-boundary text', async () => {
+    const { editor, tree, inline } = await setup('', 0);
+    inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    let nativeText: Text | undefined;
+    compositionInput(
+      inline,
+      () => {
+        nativeText = document.createTextNode('Hello');
+        inline.append(nativeText);
+      },
+      0,
+      0,
+      'Hello',
+    );
+    compositionInput(inline, () => (nativeText!.textContent = 'Hello world'), 0, 5, 'Hello world');
+    compositionInput(
+      inline,
+      () => (nativeText!.textContent = 'Hello world!'),
+      0,
+      11,
+      'Hello world!',
+    );
+    compositionInput(
+      inline,
+      () => (nativeText!.textContent = 'Hello world!'),
+      0,
+      12,
+      'Hello world!',
+    );
+    inline.dispatchEvent(
+      new CompositionEvent('compositionend', { bubbles: true, data: 'Hello world!' }),
+    );
+    await nextTask();
+    let recovered = getInline(editor);
+    expect(serializeToString(tree.root)).toBe('Hello world!\n');
+    expect(recovered.textContent).toBe('Hello world!');
+    expect(recovered.querySelectorAll('md-span')).not.toHaveLength(0);
+    expect(recovered.matches(':focus')).toBe(true);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('<!-- -->\n');
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    recovered = getInline(editor);
+    expect(serializeToString(tree.root)).toBe('Hello world!\n');
+    expect(recovered.textContent).toBe('Hello world!');
+    tree.root[viewModel].renderSignal.value++;
+    await nextTask();
+    expect(getInline(editor).textContent).toBe('Hello world!');
+  });
+
+  test('recovery preserves unaffected inline identity', async () => {
+    const editor = new Editor();
+    document.body.replaceChildren(editor);
+    const tree = new MarkdownTree({
+      type: 'document',
+      children: [
+        { type: 'paragraph', content: 'first' },
+        { type: 'paragraph', content: 'second' },
+      ],
+    });
+    editor.root = tree.root;
+    await nextTask();
+    const renderer = editor.shadowRoot!.querySelector('md-block-render')!;
+    const inlines = [...renderer.shadowRoot!.querySelectorAll('md-inline')];
+    inlines[0]!.focus();
+    setSelection(inlines[0]!, 5);
+    inlines[0]!.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    const firstText = document
+      .createTreeWalker(inlines[0]!, NodeFilter.SHOW_TEXT)
+      .nextNode() as Text;
+    compositionInput(inlines[0]!, () => (firstText.textContent = 'first!'), 5, 5, '!');
+    inlines[0]!.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '!' }));
+    await nextTask();
+    expect(renderer.shadowRoot!.querySelectorAll('md-inline')[1]).toBe(inlines[1]);
+    expect(serializeToString(tree.root)).toBe('first!\n\nsecond\n');
+  });
+
   test('restores the projection and preserves redo on selected cancellation', async () => {
-    const { tree, inline } = await setup('anchor', 6);
+    const { editor, tree, inline } = await setup('anchor', 6);
     await userEvent.keyboard('X');
     await nextTask();
     await userEvent.keyboard('{Control>}z{/Control}');
@@ -1461,7 +1628,9 @@ describe('composition recovery', () => {
     text.textContent = 'aé'; // Emulate the browser's provisional selected-range mutation.
     inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '' }));
     await nextTask();
-    expect(inline.textContent).toBe('anchor');
+    const recovered = getInline(editor);
+    expect(recovered.textContent).toBe('anchor');
+    expect(recovered.getTextSelection()).toEqual({ anchor: 1, focus: 6 });
     expect(serializeToString(tree.root)).toBe('anchor\n');
     await userEvent.keyboard('{Control>}y{/Control}');
     await nextTask();
@@ -1469,13 +1638,15 @@ describe('composition recovery', () => {
   });
 
   test('commits one replacement and isolates adjacent edits in history', async () => {
-    const { tree, inline } = await setup('anchor', 6);
+    const { editor, tree } = await setup('anchor', 6);
     await userEvent.keyboard('X');
     await nextTask();
-    const active = inline.querySelector('md-span')!;
-    inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
-    active.textContent = 'anchorXé';
-    inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'é' }));
+    const current = getInline(editor);
+    const active = document.createTreeWalker(current, NodeFilter.SHOW_TEXT).nextNode() as Text;
+    setSelection(current, 7);
+    current.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
+    compositionInput(current, () => (active.textContent = 'anchorXé'), 7, 7, 'é');
+    current.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'é' }));
     await nextTask();
     expect(serializeToString(tree.root)).toBe('anchorXé\n');
     await userEvent.keyboard('é');
@@ -1493,7 +1664,7 @@ describe('composition recovery', () => {
   });
 
   test('ignores a late completion after a model change', async () => {
-    const { tree, inline, text } = await setup('anchor', 6);
+    const { editor, tree, inline, text } = await setup('anchor', 6);
     inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
     text.textContent = 'anchoré';
     const node = inline.node!;
@@ -1507,11 +1678,11 @@ describe('composition recovery', () => {
     inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'é' }));
     await nextTask();
     expect(serializeToString(tree.root)).toBe('anchorX\n');
-    expect(inline.textContent).toBe('anchorX');
+    expect(getInline(editor).textContent).toBe('anchorX');
   });
 
   test('resumes typing after invalidation without a composition end', async () => {
-    const { tree, inline, text } = await setup('anchor', 3);
+    const { editor, tree, inline, text } = await setup('anchor', 3);
     inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
     text.textContent = 'ancéhor';
     const node = inline.node!;
@@ -1520,25 +1691,25 @@ describe('composition recovery', () => {
       return {};
     });
     await nextTask();
-    expect(inline.textContent).toBe('anchor!');
-    expect(inline.getSelection()?.start.index).toBe(0);
+    expect(getInline(editor).textContent).toBe('anchor!');
+    expect(getInline(editor).getSelection()?.start.index).toBe(0);
     await userEvent.keyboard('X');
     await nextTask();
-    expect(inline.textContent).toBe('Xanchor!');
+    expect(getInline(editor).textContent).toBe('Xanchor!');
     expect(node.content).toBe('Xanchor!');
     expect(serializeToString(tree.root)).toBe('Xanchor!\n');
-    expect(inline.getSelection()?.start.index).toBe(1);
+    expect(getInline(editor).getSelection()?.start.index).toBe(1);
     await userEvent.keyboard('{Control>}z{/Control}');
     await nextTask();
     expect(serializeToString(tree.root)).toBe('anchor\n');
     await userEvent.keyboard('{Control>}y{/Control}');
     await nextTask();
-    expect(inline.textContent).toBe('Xanchor!');
+    expect(getInline(editor).textContent).toBe('Xanchor!');
     expect(serializeToString(tree.root)).toBe('Xanchor!\n');
   });
 
   test('a no-op completion restores the DOM without creating a history boundary', async () => {
-    const { tree, inline } = await setup('anchor', 6);
+    const { editor, tree, inline } = await setup('anchor', 6);
     await userEvent.keyboard('X');
     await nextTask();
     const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode()!;
@@ -1547,7 +1718,7 @@ describe('composition recovery', () => {
     text.textContent = 'anchorpreedit';
     inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'X' }));
     await nextTask();
-    expect(inline.textContent).toBe('anchorX');
+    expect(getInline(editor).textContent).toBe('anchorX');
     await userEvent.keyboard('Y');
     await nextTask();
     await userEvent.keyboard('{Control>}z{/Control}');
