@@ -224,6 +224,7 @@ function parseResolvedContainerContent(
   if (content.trim() === '<!-- -->') {
     closeLeafBlocks(state);
     appendParagraphLine(state, container, '');
+    if (container === state.root) state.hasExplicitRootParagraph = true;
     return;
   }
 

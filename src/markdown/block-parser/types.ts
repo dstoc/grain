@@ -21,6 +21,8 @@ export interface BlockParseState {
   tree: MarkdownTree;
   root: DocumentNode & ViewModelNode;
   sawContent: boolean;
+  // A parsed root sentinel must not be mistaken for the synthetic empty document.
+  hasExplicitRootParagraph: boolean;
   currentParagraph?: ParagraphViewModelNode;
   currentList?: ListViewModelNode;
   currentListPath: ListItemViewModelNode[];
@@ -66,6 +68,7 @@ export interface BlockParserSnapshot {
   pendingText: string;
   projectedPending?: ProjectedPendingState;
   sawContent: boolean;
+  hasExplicitRootParagraph?: boolean;
   finished: boolean;
   currentParagraphPath?: number[];
   currentListPath: number[][];

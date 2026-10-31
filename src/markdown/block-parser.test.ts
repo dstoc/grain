@@ -1004,6 +1004,86 @@ describe('parseBlocks', () => {
     });
   });
 
+  it('preserves explicit leading empty paragraphs across parsing, projection, and resume', () => {
+    const empty = { type: 'paragraph', content: '' };
+    const sources = [
+      '<!-- -->\n\nalpha\n',
+      '<!-- -->\n\n<!-- -->\n\nalpha\n',
+      '<!-- -->\n\n- item\n',
+      '<!-- -->\n\n> quote\n',
+      '<!-- -->\n\n```\ncode\n```\n',
+      '<!-- -->\n\n# One\none\n\n# Two\ntwo\n',
+    ];
+    for (const source of sources) {
+      const expected = parseBlocks(source).node;
+      expect(expected.children?.[0]).toEqual(empty);
+      if (source.includes('<!-- -->\n\n<!-- -->')) expect(expected.children?.[1]).toEqual(empty);
+      expect(parseBlocks(serializeToString(expected)).node).toEqual(expected);
+
+      let parser = createBlockParser();
+      for (const char of source) {
+        parser.push(char);
+        parser = createBlockParser(parser.snapshot());
+      }
+      expect(parser.finish().serialize()).toEqual(expected);
+    }
+
+    const parser = createBlockParser();
+    parser.push('<!-- -->\n\nalp');
+    expect(parser.getTree().serialize()).toEqual({
+      type: 'document',
+      children: [empty, { type: 'paragraph', content: 'alp' }],
+    });
+    expect(createBlockParser(parser.snapshot()).finish().serialize()).toEqual({
+      type: 'document',
+      children: [empty, { type: 'paragraph', content: 'alp' }],
+    });
+  });
+
+  it('retains peer sections following an explicit leading empty paragraph', () => {
+    const source = '<!-- -->\n\n# One\none\n\n# Two\ntwo\n';
+    const expected = {
+      type: 'document',
+      children: [
+        { type: 'paragraph', content: '' },
+        {
+          type: 'section',
+          marker: '#',
+          content: 'One',
+          children: [{ type: 'paragraph', content: 'one' }],
+        },
+        {
+          type: 'section',
+          marker: '#',
+          content: 'Two',
+          children: [{ type: 'paragraph', content: 'two' }],
+        },
+      ],
+    };
+    expect(parseBlocks(source).node).toEqual(expected);
+    expect(parseBlocks(serializeToString(expected as DocumentNode)).node).toEqual(expected);
+  });
+
+  it('preserves trailing sentinels without adding initialization paragraphs', () => {
+    for (const source of ['', '\n\n', 'alpha\n', 'alpha\n\n<!-- -->\n']) {
+      const expected = parseBlocks(source).node;
+      let parser = createBlockParser();
+      for (const char of source) {
+        parser.push(char);
+        parser = createBlockParser(parser.snapshot());
+      }
+      expect(parser.finish().serialize()).toEqual(expected);
+      expect(expected.children).toEqual(
+        source.startsWith('alpha')
+          ? [
+              { type: 'paragraph', content: 'alpha' },
+              ...(source.includes('<!-- -->') ? [{ type: 'paragraph', content: '' }] : []),
+            ]
+          : [{ type: 'paragraph', content: '' }],
+      );
+    }
+  });
+
   it('roundtrips separate lists through empty paragraph sentinels', () => {
     const source = '* list 1\n\n<!-- -->\n\n* list 2\n';
     const { node } = parseBlocks(source);

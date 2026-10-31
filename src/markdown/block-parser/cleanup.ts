@@ -5,6 +5,7 @@ import { type BlockParseState } from './types.js';
 import { resetQuoteStack } from './container-management.js';
 
 export function removeEmptyRootParagraph(state: BlockParseState) {
+  if (state.hasExplicitRootParagraph) return;
   if (state.root.children?.length !== 1) return;
   const onlyChild = state.root.children[0];
   if (onlyChild.type !== 'paragraph' || onlyChild.content !== '') return;
