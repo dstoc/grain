@@ -93,6 +93,28 @@ async function createHarness(value: string) {
   return { harness, source };
 }
 
+test.each(['alpha  ', 'alpha  \n'])(
+  'editing outside code preserves literal content: %j',
+  async (code) => {
+    const { harness, source } = await createHarness(`\`\`\`js\n${code}\n\`\`\`\n\nother`);
+    await nextTask();
+    const renderer = harness
+      .shadowRoot!.querySelector('md-editor')!
+      .shadowRoot!.querySelector('md-block-render')!;
+    const inline = Array.from(renderer.shadowRoot!.querySelectorAll<HTMLElement>('md-inline')).find(
+      (node) => node.textContent === 'other',
+    )!;
+    inline.focus();
+    await userEvent.keyboard('{End}X');
+    await nextTask();
+    await harness.updateComplete;
+    const expected = `\`\`\`js\n${code}\n\`\`\`\n\notherX\n`;
+    expect(source.value).toBe(expected);
+    harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab')[1]!.click();
+    await harness.updateComplete;
+    expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe(expected);
+  },
+);
 test('outdenting a multi-block item updates Source, Render and Serialize', async () => {
   const { harness, source } = await createHarness(
     '- alpha\n\n  beta\n\n  gamma\n  - child\n- tail\n',
