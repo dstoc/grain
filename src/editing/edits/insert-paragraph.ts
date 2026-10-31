@@ -16,15 +16,15 @@ import {
 } from '../../markdown/view-model-util.js';
 import { viewModel } from '../../markdown/view-model-node.js';
 
-export function insertParagraph(context: EditContext, index: number) {
+export function insertParagraph(context: EditContext, index: number, endIndex = index) {
   if (
     unindentIfEmptyListItem(context) ||
     splitBlockQuoteOrListItemOnEmptyParagraph(context) ||
-    insertParagraphInList(context, index)
+    insertParagraphInList(context, index, endIndex)
   ) {
     return;
   }
-  insertSiblingParagraph(context, index);
+  insertSiblingParagraph(context, index, endIndex);
 }
 
 export { insertSiblingParagraph as insertLineBreak };
@@ -113,7 +113,7 @@ function splitBlockQuoteOrListItemOnEmptyParagraph(context: EditContext): boolea
   return true;
 }
 
-function insertSiblingParagraph(context: EditContext, startIndex: number) {
+function insertSiblingParagraph(context: EditContext, startIndex: number, endIndex = startIndex) {
   const node = context.node;
   assert(isInlineViewModelNode(node));
   context.startEditing();
@@ -128,6 +128,14 @@ function insertSiblingParagraph(context: EditContext, startIndex: number) {
       // Inserting before the section is also special. Handle it directly rather than
       // in finishInsertParagraph.
       newParagraph[viewModel].insertBefore(cast(node[viewModel].parent), node);
+      if (endIndex > startIndex) {
+        node[viewModel].edit({
+          startIndex,
+          oldEndIndex: endIndex,
+          newEndIndex: startIndex,
+          newText: '',
+        });
+      }
       context.focus(newParagraph, 0);
       return;
     }
@@ -135,7 +143,7 @@ function insertSiblingParagraph(context: EditContext, startIndex: number) {
   } else {
     newParagraph[viewModel].insertBefore(cast(node[viewModel].parent), node[viewModel].nextSibling);
   }
-  finishInsertParagraph(context, node, newParagraph, startIndex);
+  finishInsertParagraph(context, node, newParagraph, startIndex, endIndex);
 }
 
 /**
@@ -143,7 +151,11 @@ function insertSiblingParagraph(context: EditContext, startIndex: number) {
  * is the first-child of list-item and its next sibling, if any, is
  * a list.
  */
-function insertParagraphInList(context: EditContext, startIndex: number): boolean {
+function insertParagraphInList(
+  context: EditContext,
+  startIndex: number,
+  endIndex: number,
+): boolean {
   const node = context.node;
   assert(isInlineViewModelNode(node));
   const { ancestor, path } = findAncestor(node, context.root, 'list');
@@ -199,7 +211,7 @@ function insertParagraphInList(context: EditContext, startIndex: number): boolea
     content: '',
   });
   newParagraph[viewModel].insertBefore(newListItem);
-  finishInsertParagraph(context, node, newParagraph, startIndex);
+  finishInsertParagraph(context, node, newParagraph, startIndex, endIndex);
   return true;
 }
 
@@ -212,6 +224,7 @@ function finishInsertParagraph(
   node: InlineViewModelNode,
   newParagraph: ParagraphNode & ViewModelNode,
   startIndex: number,
+  endIndex: number,
 ) {
   assert(isInlineViewModelNode(newParagraph));
   const shouldSwap =
@@ -219,13 +232,25 @@ function finishInsertParagraph(
     node.content.length > 0 &&
     !areAncestorAndDescendant(node, newParagraph, context.root);
   if (shouldSwap) {
+    if (endIndex > startIndex) {
+      // Keep the split target attached until the swap is complete.
+      node[viewModel].edit(
+        {
+          startIndex,
+          oldEndIndex: endIndex,
+          newEndIndex: startIndex,
+          newText: '',
+        },
+        false,
+      );
+    }
     swapNodes(node, newParagraph);
   } else {
     newParagraph[viewModel].edit({
       startIndex: 0,
-      newEndIndex: 0,
+      newEndIndex: node.content.length - endIndex,
       oldEndIndex: 0,
-      newText: node.content.substring(startIndex),
+      newText: node.content.substring(endIndex),
     });
 
     node[viewModel].edit({
@@ -236,5 +261,5 @@ function finishInsertParagraph(
     });
   }
   // TODO: Offset was undefined before
-  context.focus(newParagraph, 0);
+  context.focus(shouldSwap && endIndex > startIndex ? node : newParagraph, 0);
 }
