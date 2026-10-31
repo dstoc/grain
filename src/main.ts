@@ -323,7 +323,7 @@ class MarkdownDevHarness extends LitElement {
   declare private treeJson: string;
   private parser: BlockParser;
   private observedTree: MarkdownTree | undefined;
-  private parserDirtyFromRenderEdit = false;
+  private parserReusable = false;
   private playbackTimer: number | undefined;
   private readonly playbackDelayMs = 10;
 
@@ -466,6 +466,7 @@ class MarkdownDevHarness extends LitElement {
   private startPlayback() {
     this.stopPlayback();
     this.playing = true;
+    this.parserReusable = false;
     this.playbackIndex = 0;
     this.parser = createBlockParser();
     this.parseMode = 'append';
@@ -499,6 +500,7 @@ class MarkdownDevHarness extends LitElement {
 
   private finishPlayback() {
     this.stopPlayback();
+    this.parserReusable = false;
     this.parser.finish();
     this.playbackIndex = this.source.length;
     this.parseMode = 'play-finished';
@@ -506,7 +508,7 @@ class MarkdownDevHarness extends LitElement {
   }
 
   private reparse(markdown: string, forceFull = false) {
-    if (!forceFull && !this.parserDirtyFromRenderEdit && markdown.startsWith(this.source)) {
+    if (!forceFull && this.parserReusable && markdown.startsWith(this.source)) {
       const appended = markdown.slice(this.source.length);
       this.source = markdown;
       this.parser.push(appended);
@@ -518,12 +520,13 @@ class MarkdownDevHarness extends LitElement {
       this.parseMode = forceFull ? 'initial' : 'full';
     }
 
-    this.parserDirtyFromRenderEdit = false;
+    this.parserReusable = true;
     this.playbackIndex = this.source.length;
     this.updateFromParser();
   }
 
   private setPlaybackProgress(index: number, mode = 'scrub') {
+    this.parserReusable = false;
     const clamped = Math.max(0, Math.min(index, this.source.length));
     this.parser = createBlockParser();
     const partial = this.source.slice(0, clamped);
@@ -538,8 +541,8 @@ class MarkdownDevHarness extends LitElement {
     const serializedTree = tree.serialize();
     if (this.parseMode != 'append') {
       this.root = tree.root;
-      this.serializedMarkdown = serializeToString(serializedTree);
     }
+    this.serializedMarkdown = serializeToString(serializedTree);
     this.pendingText = this.parser.getPendingText();
     this.treeJson = JSON.stringify(serializedTree, null, 2);
     this.renderVersion++;
@@ -563,7 +566,7 @@ class MarkdownDevHarness extends LitElement {
     this.pendingText = '';
     this.parseMode = 'edited';
     this.playbackIndex = this.source.length;
-    this.parserDirtyFromRenderEdit = true;
+    this.parserReusable = false;
     this.requestUpdate();
   };
 }

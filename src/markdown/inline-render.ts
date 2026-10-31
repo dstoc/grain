@@ -439,6 +439,7 @@ export class MarkdownSpan extends LitElement {
   }
 
   private renderText(content: string): TemplateResult {
+    if (this.closest('md-inline')?.node?.type === 'code-block') return html`${content}`;
     const parts = content.split(/(\b(?:https?:\/|go|b|cl)\/[^\s]*[\w/=?])/u);
     if (parts.length === 1) {
       return html`${parts[0]}`;
