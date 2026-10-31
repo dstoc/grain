@@ -94,6 +94,59 @@ describe('Editor', () => {
     return { editor, input };
   });
 
+  describe('plain-text paste', () => {
+    test.each([
+      ['alpha BETA omega', 6, 10, 'X', false, 'alpha X omega'],
+      ['alpha BETA omega', 6, 10, 'X', true, 'alpha X omega'],
+      ['alpha omega', 6, 6, 'X', false, 'alpha Xomega'],
+      ['😀 BETA omega', 3, 7, '🦊', false, '😀 🦊 omega'],
+      ['alpha BETA omega', 6, 10, 'X\nZ', false, 'alpha X Z omega'],
+    ])(
+      'pastes into %s at offsets %i–%i with %s (reverse: %s)',
+      async (original, start, end, pasted, reverse, expected) => {
+        const tree = new MarkdownTree({
+          type: 'document',
+          children: [{ type: 'paragraph', content: original }],
+        });
+        state.editor.root = tree.root;
+        await nextTask();
+        const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+        const inline = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
+        inline.focus();
+        const walker = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT);
+        let text: Node | null;
+        do {
+          text = walker.nextNode();
+        } while (text && text.textContent !== original);
+        expect(text).not.toBeNull();
+        window
+          .getSelection()!
+          .setBaseAndExtent(text!, reverse ? end : start, text!, reverse ? start : end);
+        const read = vi.spyOn(navigator.clipboard, 'read').mockResolvedValue([]);
+        const readText = vi.spyOn(navigator.clipboard, 'readText').mockResolvedValue(pasted);
+        const content = () => inline.node!.content;
+        try {
+          inline.onBeforeInput(new InputEvent('beforeinput', { inputType: 'insertFromPaste' }));
+          await nextTask();
+          expect(content()).toBe(expected);
+          expect(inline.getSelection()?.start.index).toBe(start + pasted.length);
+          await userEvent.keyboard('Y');
+          await nextTask();
+          const withTyping =
+            expected.slice(0, start + pasted.length) + 'Y' + expected.slice(start + pasted.length);
+          expect(content()).toBe(withTyping);
+          await state.input.press('Control+z');
+          expect(content()).toBe(original);
+          await state.input.press('Control+y');
+          expect(content()).toBe(withTyping);
+        } finally {
+          read.mockRestore();
+          readText.mockRestore();
+        }
+      },
+    );
+  });
+
   describe('code block select all', () => {
     async function setup(content: string) {
       const tree = new MarkdownTree({
