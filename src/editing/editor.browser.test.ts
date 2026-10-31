@@ -1,4 +1,6 @@
 import { test, describe, expect, vi } from 'vitest';
+import { userEvent } from 'vitest/browser';
+import { parseMarkdownTree } from '../markdown/block-parser/api.js';
 import { Editor } from './editor.js';
 import { testState } from './test/test_state.js';
 import { MarkdownTree } from '../markdown/view-model.js';
@@ -91,6 +93,44 @@ describe('Editor', () => {
   });
 
   describe('undo', () => {
+    test('initial undo preserves focus and permits typing', async () => {
+      const tree = parseMarkdownTree('alpha');
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inline = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
+      inline.focus();
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(renderer.shadowRoot!.querySelector('md-inline:focus')).toBe(inline);
+      expect(inline.node!.content).toBe('alpha');
+      await userEvent.keyboard('Q');
+      await nextTask();
+      expect(inline.node!.content).toContain('Q');
+    });
+
+    test('history with missing focus falls back to an editable after undo and redo', async () => {
+      const tree = state.editor.root![viewModel].tree;
+      const node = tree.root.children![0];
+      tree.edit(() => {
+        node[viewModel].remove();
+        return {};
+      });
+      await nextTask();
+      // The edit detached the original focused node; restore a target for the shortcut.
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      (renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline).focus();
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(renderer.shadowRoot!.querySelector('md-inline:focus')).toBeTruthy();
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(renderer.shadowRoot!.querySelector('md-inline:focus')).toBeTruthy();
+      await userEvent.keyboard('Q');
+      await nextTask();
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`Q`);
+    });
+
     test('restores focus and block selection across deletion, undo and redo', async () => {
       await state.input.insert('hello');
       await state.input.insertParagraph();
