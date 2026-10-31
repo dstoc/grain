@@ -138,6 +138,17 @@ export interface EditContext {
 
 @customElement('md-editor')
 export class Editor extends LitElement {
+  private composition?: {
+    inline: MarkdownInline;
+    node: InlineViewModelNode;
+    content: string;
+    version: number;
+    start: number;
+    end: number;
+    tree: InlineViewModelNode[typeof viewModel]['tree'];
+    invalidate: () => void;
+  };
+  private compositionFocus?: Focus;
   defaultName?: string;
   @property({ type: String, reflect: true })
   accessor status: 'loading' | 'loaded' | 'error' | undefined;
@@ -174,11 +185,96 @@ export class Editor extends LitElement {
         @inline-input=${(e: CustomEvent<InlineInput>) => this.onInlineInput(e)}
         @inline-link-click=${(e: CustomEvent<InlineLinkClick>) => this.onInlineLinkClick(e)}
         @inline-keydown=${(e: CustomEvent<InlineKeyDown>) => this.onInlineKeyDown(e)}
+        @inline-composition-start=${(e: CustomEvent<{ inline: MarkdownInline }>) => this.startComposition(e.detail.inline)}
+        @inline-composition-end=${(e: CustomEvent<{ inline: MarkdownInline; event: CompositionEvent }>) => this.endComposition(e.detail.inline, e.detail.event)}
         @copy=${(e: ClipboardEvent) => this.onClipboard(e)}
         @cut=${(e: ClipboardEvent) => this.onClipboard(e)}
         @paste=${(e: ClipboardEvent) => this.onPaste(e)}
       ></md-block-render>`;
   }
+
+  private clearComposition(restore: boolean) {
+    const session = this.composition;
+    if (!session) return;
+    this.composition = undefined;
+    session.tree.removeEventListener('tree-change', session.invalidate);
+    session.inline.removeEventListener('composition-invalidated', session.invalidate);
+    if (restore && session.inline.isConnected) session.inline.reconcileComposition();
+  }
+
+  private startComposition(inline: MarkdownInline) {
+    this.clearComposition(true);
+    inline.composing = true;
+    const node = inline.node;
+    const nativeSelection = (inline.getRootNode() as Document).getSelection();
+    const selection =
+      nativeSelection?.anchorNode &&
+      nativeSelection.focusNode &&
+      inline.contains(nativeSelection.anchorNode) &&
+      inline.contains(nativeSelection.focusNode)
+        ? inline.getSelection()
+        : undefined;
+    if (!node || !selection || !inline.isConnected || !node[viewModel].connected) {
+      inline.reconcileComposition();
+      return;
+    }
+    const tree = node[viewModel].tree;
+    const invalidate = () => this.clearComposition(true);
+    this.composition = {
+      inline,
+      node,
+      tree,
+      invalidate,
+      content: node.content,
+      version: node[viewModel].version,
+      start: selection.start.index,
+      end: selection.end.index,
+    };
+    tree.addEventListener('tree-change', invalidate);
+    inline.addEventListener('composition-invalidated', invalidate);
+  }
+
+  private endComposition(inline: MarkdownInline, event: CompositionEvent) {
+    const session = this.composition;
+    if (!session || session.inline !== inline) {
+      if (inline.isConnected) inline.reconcileComposition();
+      return;
+    }
+    this.clearComposition(false);
+    const { node, start, end, content, version } = session;
+    if (
+      !inline.isConnected ||
+      inline.node !== node ||
+      !node[viewModel].connected ||
+      node[viewModel].version !== version ||
+      node.content !== content
+    ) {
+      if (inline.isConnected) inline.reconcileComposition();
+      return;
+    }
+    if (!event.data || content.slice(start, end) === event.data) {
+      inline.reconcileComposition(event.data ? start + event.data.length : start);
+      return;
+    }
+    this.compositionFocus = { node, offset: start };
+    try {
+      this.runEditAction(inline, editInlineNode, {
+        startIndex: start,
+        oldEndIndex: end,
+        newText: event.data,
+        newEndIndex: start + event.data.length,
+      });
+    } finally {
+      this.compositionFocus = undefined;
+      if (inline.isConnected) inline.reconcileComposition();
+    }
+  }
+
+  override disconnectedCallback() {
+    this.clearComposition(true);
+    super.disconnectedCallback();
+  }
+
   runEditAction<
     T extends (state: EditContext, ...args: ExcludeFirst<Parameters<T>>) => ReturnType<T>,
   >(
@@ -190,6 +286,7 @@ export class Editor extends LitElement {
     const renderer = this.markdownRenderer;
     let endFocus: Focus | undefined;
     let startFocus: Focus | undefined;
+    const compositionFocus = this.compositionFocus;
     const context: EditContext = {
       get root() {
         return cast(hostContext.root);
@@ -201,7 +298,9 @@ export class Editor extends LitElement {
         endFocus = { node, offset };
       },
       startEditing() {
-        if (element instanceof MarkdownInline) {
+        if (compositionFocus) {
+          startFocus = compositionFocus;
+        } else if (element instanceof MarkdownInline) {
           const selection = element.getSelection();
           if (selection) {
             startFocus = { node: element.node!, offset: selection.start.index };
@@ -268,6 +367,7 @@ export class Editor extends LitElement {
         }
         return endFocus;
       },
+      compositionFocus ? 'isolated' : 'record',
     );
     if (ops.length > 0 && !endFocus) {
       console.warn(`Edit action: "${action.name}" did not set final focus`);

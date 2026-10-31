@@ -1432,3 +1432,99 @@ describe('Editor', () => {
     });
   });
 });
+
+describe('composition recovery', () => {
+  async function setup(content: string, start: number, end = start) {
+    const editor = new Editor();
+    document.body.replaceChildren(editor);
+    const tree = new MarkdownTree({ type: 'document', children: [{ type: 'paragraph', content }] });
+    editor.root = tree.root;
+    await nextTask();
+    const inline = editor
+      .shadowRoot!.querySelector('md-block-render')!
+      .shadowRoot!.querySelector('md-inline')!;
+    inline.focus();
+    const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode()!;
+    window.getSelection()!.setBaseAndExtent(text, start, text, end);
+    return { editor, tree, inline, text };
+  }
+
+  test('restores the projection and preserves redo on selected cancellation', async () => {
+    const { tree, inline } = await setup('anchor', 6);
+    await userEvent.keyboard('X');
+    await nextTask();
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode()!;
+    window.getSelection()!.setBaseAndExtent(text, 1, text, 6);
+    inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
+    text.textContent = 'aé'; // Emulate the browser's provisional selected-range mutation.
+    inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '' }));
+    await nextTask();
+    expect(inline.textContent).toBe('anchor');
+    expect(serializeToString(tree.root)).toBe('anchor\n');
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('anchorX\n');
+  });
+
+  test('commits one replacement and isolates adjacent edits in history', async () => {
+    const { tree, inline } = await setup('anchor', 6);
+    await userEvent.keyboard('X');
+    await nextTask();
+    const active = inline.querySelector('md-span')!;
+    inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '' }));
+    active.textContent = 'anchorXé';
+    inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'é' }));
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('anchorXé\n');
+    await userEvent.keyboard('é');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('anchorXéé\n');
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('anchorXé\n');
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('anchorX\n');
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('anchor\n');
+  });
+
+  test('ignores a late completion after a model change', async () => {
+    const { tree, inline, text } = await setup('anchor', 6);
+    inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    text.textContent = 'anchoré';
+    const node = inline.node!;
+    tree.edit(() => {
+      node[viewModel].edit({ startIndex: 6, oldEndIndex: 6, newEndIndex: 7, newText: 'X' });
+      return {};
+    });
+    inline.dispatchEvent(
+      new InputEvent('beforeinput', { bubbles: true, inputType: 'deleteContentBackward' }),
+    );
+    inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'é' }));
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('anchorX\n');
+    expect(inline.textContent).toBe('anchorX');
+  });
+
+  test('a no-op completion restores the DOM without creating a history boundary', async () => {
+    const { tree, inline } = await setup('anchor', 6);
+    await userEvent.keyboard('X');
+    await nextTask();
+    const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode()!;
+    window.getSelection()!.setBaseAndExtent(text, 6, text, 7);
+    inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    text.textContent = 'anchorpreedit';
+    inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'X' }));
+    await nextTask();
+    expect(inline.textContent).toBe('anchorX');
+    await userEvent.keyboard('Y');
+    await nextTask();
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('anchor\n');
+  });
+});

@@ -2,6 +2,7 @@ import { consume } from '@lit/context';
 import { html, LitElement, type TemplateResult } from 'lit';
 import { customElement, property, query, queryAll } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
+import { keyed } from 'lit/directives/keyed.js';
 
 import { noAwait } from '../async.js';
 import { cast } from '../asserts.js';
@@ -50,6 +51,8 @@ export class MarkdownInline extends LitElement {
     this.addEventListener('beforeinput', this.onBeforeInput, { capture: true });
     this.addEventListener('keydown', this.onKeyDown, { capture: true });
     this.addEventListener('pointerdown', this.onPointerDown);
+    this.addEventListener('compositionstart', this.onCompositionStart);
+    this.addEventListener('compositionend', this.onCompositionEnd);
     this.setAttribute('contenteditable', '');
   }
 
@@ -64,12 +67,58 @@ export class MarkdownInline extends LitElement {
   @property({ attribute: false }) accessor node: InlineViewModelNode | undefined;
 
   private nodeSignal = new NodeSignalController(this, () => this.node);
+  private projectionVersion = 0;
+  composing = false;
+
+  reconcileComposition(offset?: number) {
+    this.projectionVersion++;
+    if (offset !== undefined && this.node && this.hostContext) {
+      this.hostContext.focusNode = this.node;
+      this.hostContext.focusOffset = offset;
+    }
+    this.requestUpdate();
+  }
+
+  private onCompositionStart = (event: CompositionEvent) => {
+    this.composing = true;
+    this.dispatchEvent(
+      new CustomEvent('inline-composition-start', {
+        detail: { inline: this, event },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  };
+
+  private onCompositionEnd = (event: CompositionEvent) => {
+    this.dispatchEvent(
+      new CustomEvent('inline-composition-end', {
+        detail: { inline: this, event },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+    this.composing = false;
+  };
+
+  override disconnectedCallback() {
+    if (this.composing) this.dispatchEvent(new Event('composition-invalidated'));
+    this.composing = false;
+    super.disconnectedCallback();
+  }
+
+  protected override willUpdate() {
+    if (this.composing) this.dispatchEvent(new Event('composition-invalidated'));
+  }
 
   override render() {
     if (!this.node) return;
     if (!this.node[viewModel].connected) return;
     this.selected = this.hostContext?.selection.has(this.node) ?? false;
-    return html`<md-span .node=${this.node[viewModel].inlineTree.rootNode}></md-span>`;
+    return keyed(
+      this.projectionVersion,
+      html`<md-span .node=${this.node[viewModel].inlineTree.rootNode}></md-span>`,
+    );
   }
 
   override updated() {
@@ -257,6 +306,7 @@ export class MarkdownInline extends LitElement {
   }
 
   onKeyDown = (e: KeyboardEvent) => {
+    if (this.composing || e.isComposing) return;
     if (!this.node) return;
     this.dispatchEvent(
       new CustomEvent('inline-keydown', {
@@ -273,6 +323,7 @@ export class MarkdownInline extends LitElement {
 
   onBeforeInput = (e: InputEvent) => {
     if (!this.node) return;
+    if (this.composing || e.isComposing) return;
     e.preventDefault();
     const selection = (this.getRootNode() as Document).getSelection()!;
     const { start: inputStart, end: inputEnd } = MarkdownInline.getSelectionRange(selection);
