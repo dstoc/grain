@@ -482,7 +482,7 @@ export class Editor extends LitElement {
       this.runEditAction(inline, editInlineNode, {
         ...edit,
         newText: text,
-        newEndIndex: edit.oldEndIndex + text.length,
+        newEndIndex: edit.startIndex + text.length,
       }); // TODO: wrong context
     }
   }
