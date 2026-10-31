@@ -2,6 +2,7 @@ import { consume } from '@lit/context';
 import { html, LitElement, type TemplateResult } from 'lit';
 import { customElement, property, query, queryAll } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
+import { keyed } from 'lit/directives/keyed.js';
 
 import { noAwait } from '../async.js';
 import { cast } from '../asserts.js';
@@ -35,6 +36,18 @@ export interface InlineLinkClick {
   destination: string;
 }
 
+export interface InlineProjectionSelection {
+  anchor: number;
+  focus: number;
+}
+
+export interface InlineProjectionRecovery {
+  inline: MarkdownInline;
+  selection: InlineProjectionSelection;
+  replayEvents: boolean;
+  complete: () => void;
+}
+
 declare global {
   interface HTMLElementEventMap {
     'inline-input': CustomEvent<InlineInput>;
@@ -50,6 +63,8 @@ export class MarkdownInline extends LitElement {
     this.addEventListener('beforeinput', this.onBeforeInput, { capture: true });
     this.addEventListener('keydown', this.onKeyDown, { capture: true });
     this.addEventListener('pointerdown', this.onPointerDown);
+    this.addEventListener('compositionstart', this.onCompositionStart);
+    this.addEventListener('compositionend', this.onCompositionEnd);
     this.setAttribute('contenteditable', '');
   }
 
@@ -64,12 +79,157 @@ export class MarkdownInline extends LitElement {
   @property({ attribute: false }) accessor node: InlineViewModelNode | undefined;
 
   private nodeSignal = new NodeSignalController(this, () => this.node);
+  private projectionVersion = 0;
+  private recovery?: Promise<void>;
+  private pendingRecoveryEvents: Array<KeyboardEvent | InputEvent> = [];
+  private holdRecoveryInputs = false;
+  composing = false;
+
+  private nativeSelection() {
+    const root = this.getRootNode() as (Document | ShadowRoot) & {
+      getSelection?: () => Selection | null;
+    };
+    return typeof root.getSelection === 'function' ? root.getSelection() : document.getSelection();
+  }
+
+  reconcileComposition(offset?: number) {
+    this.projectionVersion++;
+    if (offset !== undefined && this.node && this.hostContext) {
+      this.hostContext.focusNode = this.node;
+      this.hostContext.focusOffset = offset;
+    }
+    this.requestUpdate();
+  }
+
+  recoverComposition(selection: InlineProjectionSelection, replayEvents = true): Promise<void> {
+    if (this.recovery) return this.recovery;
+    this.recovery = new Promise<void>((resolve) => {
+      const event = new CustomEvent<InlineProjectionRecovery>('inline-projection-recovery', {
+        detail: { inline: this, selection, replayEvents, complete: resolve },
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+      });
+      this.dispatchEvent(event);
+      if (event.defaultPrevented) return;
+      this.projectionVersion++;
+      this.requestUpdate();
+      void this.updateComplete.then(async () => {
+        await this.maybeSetFocus();
+        this.focus();
+        this.setSelectionOffsets(selection.anchor, selection.focus);
+        if (replayEvents) this.replayRecoveryEvents();
+        else this.holdRecoveryInputs = true;
+        resolve();
+      });
+    }).finally(() => {
+      this.recovery = undefined;
+    });
+    return this.recovery!;
+  }
+
+  getTextSelection(): InlineProjectionSelection | undefined {
+    const selection = this.nativeSelection();
+    if (!selection?.anchorNode || !selection.focusNode) return;
+    const anchor = this.textOffset(selection.anchorNode, selection.anchorOffset);
+    const focus = this.textOffset(selection.focusNode, selection.focusOffset);
+    if (anchor === undefined || focus === undefined) return;
+    return { anchor, focus };
+  }
+
+  textOffset(container: Node, offset: number): number | undefined {
+    if (container !== this && !this.contains(container)) return;
+    try {
+      const range = document.createRange();
+      range.selectNodeContents(this);
+      range.setEnd(container, offset);
+      return range.toString().length;
+    } catch {
+      return;
+    }
+  }
+
+  setSelectionOffsets(anchorOffset: number, focusOffset: number) {
+    const pointAt = (requestedOffset: number): [Node, number] => {
+      let remaining = Math.max(0, Math.min(this.textContent?.length ?? 0, requestedOffset));
+      const walker = document.createTreeWalker(this, NodeFilter.SHOW_TEXT);
+      let next: Node | null;
+      let last: Text | undefined;
+      while ((next = walker.nextNode())) {
+        const text = next as Text;
+        last = text;
+        if (remaining <= text.length) return [text, remaining];
+        remaining -= text.length;
+      }
+      return last ? [last, last.length] : [this, 0];
+    };
+    const [anchor, anchorNodeOffset] = pointAt(anchorOffset);
+    const [focus, focusNodeOffset] = pointAt(focusOffset);
+    this.nativeSelection()!.setBaseAndExtent(anchor, anchorNodeOffset, focus, focusNodeOffset);
+  }
+
+  queueRecoveryInput(event: InputEvent) {
+    this.pendingRecoveryEvents.push(event);
+  }
+
+  queueRecoveryKeydown(event: KeyboardEvent) {
+    this.pendingRecoveryEvents.push(event);
+  }
+
+  holdRecoveryEventsFrom(events: Array<KeyboardEvent | InputEvent>) {
+    this.holdRecoveryInputs = true;
+    this.pendingRecoveryEvents.push(...events);
+  }
+
+  takeRecoveryEvents() {
+    return this.pendingRecoveryEvents.splice(0);
+  }
+
+  replayRecoveryEvents(pending = this.takeRecoveryEvents()) {
+    this.holdRecoveryInputs = false;
+    for (const event of pending) this.dispatchEvent(event);
+  }
+
+  private onCompositionStart = (event: CompositionEvent) => {
+    this.composing = true;
+    this.dispatchEvent(
+      new CustomEvent('inline-composition-start', {
+        detail: { inline: this, event },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+  };
+
+  private onCompositionEnd = (event: CompositionEvent) => {
+    this.dispatchEvent(
+      new CustomEvent('inline-composition-end', {
+        detail: { inline: this, event },
+        bubbles: true,
+        composed: true,
+      }),
+    );
+    this.composing = false;
+  };
+
+  override disconnectedCallback() {
+    if (this.composing) this.dispatchEvent(new Event('composition-invalidated'));
+    this.composing = false;
+    super.disconnectedCallback();
+  }
+
+  protected override willUpdate() {
+    if (this.composing) this.dispatchEvent(new Event('composition-invalidated'));
+  }
 
   override render() {
     if (!this.node) return;
     if (!this.node[viewModel].connected) return;
     this.selected = this.hostContext?.selection.has(this.node) ?? false;
-    return html`<md-span .node=${this.node[viewModel].inlineTree.rootNode}></md-span>`;
+    return keyed(
+      this.projectionVersion,
+      html`<md-span .node=${this.node[viewModel].inlineTree.rootNode}></md-span>`,
+    );
   }
 
   override updated() {
@@ -85,7 +245,7 @@ export class MarkdownInline extends LitElement {
     const walker = document.createTreeWalker(this, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
     let next: Node | null;
     let offset = 0;
-    const selection = (this.getRootNode() as Document).getSelection()!;
+    const selection = this.nativeSelection()!;
     let final: MarkdownSpan | Text | undefined;
     while ((next = walker.nextNode()) && next !== this) {
       if (next instanceof MarkdownSpan) {
@@ -114,9 +274,11 @@ export class MarkdownInline extends LitElement {
   }
 
   async maybeSetFocus() {
-    if (!this.node) return;
+    if (!this.node || !this.node[viewModel].connected) return;
     if (this.hostContext?.focusNode !== this.node) return;
-    await this.span.updateComplete;
+    const span = this.querySelector<MarkdownSpan>('md-span');
+    if (!span) return;
+    await span.updateComplete;
     if (this.hostContext?.focusNode !== this.node) return;
     if (!this.isConnected) return;
     const focusOffset = this.hostContext?.focusOffset;
@@ -125,7 +287,7 @@ export class MarkdownInline extends LitElement {
         this.setFocus(this.node.content.length);
       } else if (focusOffset < 0 || Object.is(focusOffset, -0)) {
         this.setFocus(this.node.content.length);
-        const selection = (this.getRootNode() as Document).getSelection()!;
+        const selection = this.nativeSelection()!;
         selection.modify('move', 'backward', 'lineboundary');
         if (focusOffset < 0) {
           const point = MarkdownInline.nodeOffsetToInputPoint(
@@ -156,6 +318,15 @@ export class MarkdownInline extends LitElement {
   static nodeOffsetToInputPoint(node: Node, offset: number): InlineInputPoint {
     if (node instanceof MarkdownInline) {
       return { index: 0 };
+    }
+    if (node instanceof MarkdownSpan && node.node) {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      range.setEnd(node, offset);
+      return {
+        span: node,
+        index: node.node.startIndex + range.toString().length,
+      };
     }
     let parent: HTMLElement = cast(node.parentElement);
     while (!(parent instanceof MarkdownSpan)) {
@@ -194,7 +365,7 @@ export class MarkdownInline extends LitElement {
     direction: 'backward' | 'forward',
     granularity: 'line' | 'character' | 'word',
   ): true | number {
-    const selection = (this.getRootNode() as Document).getSelection()!;
+    const selection = this.nativeSelection()!;
     const focusNode = selection.focusNode!;
     const focusOffset = selection.focusOffset;
     const initial = MarkdownInline.nodeOffsetToInputPoint(
@@ -240,16 +411,13 @@ export class MarkdownInline extends LitElement {
   }
 
   getSelection() {
-    const selection = (this.getRootNode() as Document).getSelection()!;
+    const selection = this.nativeSelection()!;
     if (!selection.focusNode) return;
     return MarkdownInline.getSelectionRange(selection);
   }
 
   getCaretPosition() {
-    let { x, y, height } = (this.getRootNode() as Document)
-      .getSelection()!
-      .getRangeAt(0)
-      .getBoundingClientRect();
+    let { x, y, height } = this.nativeSelection()!.getRangeAt(0).getBoundingClientRect();
     if (x === 0 && y === 0) {
       ({ x, y, height } = this.getBoundingClientRect());
     }
@@ -257,6 +425,12 @@ export class MarkdownInline extends LitElement {
   }
 
   onKeyDown = (e: KeyboardEvent) => {
+    if (this.recovery || this.holdRecoveryInputs) {
+      e.preventDefault();
+      this.queueRecoveryKeydown(e);
+      return;
+    }
+    if (this.composing || e.isComposing) return;
     if (!this.node) return;
     this.dispatchEvent(
       new CustomEvent('inline-keydown', {
@@ -272,9 +446,15 @@ export class MarkdownInline extends LitElement {
   };
 
   onBeforeInput = (e: InputEvent) => {
+    if (this.recovery || this.holdRecoveryInputs) {
+      e.preventDefault();
+      this.queueRecoveryInput(e);
+      return;
+    }
     if (!this.node) return;
+    if (this.composing || e.isComposing) return;
     e.preventDefault();
-    const selection = (this.getRootNode() as Document).getSelection()!;
+    const selection = this.nativeSelection()!;
     const { start: inputStart, end: inputEnd } = MarkdownInline.getSelectionRange(selection);
     this.dispatchEvent(
       new CustomEvent('inline-input', {

@@ -2,10 +2,11 @@ import { consume, provide } from '@lit/context';
 import { html, LitElement, render } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { repeat } from 'lit/directives/repeat.js';
+import { keyed } from 'lit/directives/keyed.js';
 
 import { NodeSignalController } from './node-signal-controller.js';
 import { HostContext, hostContext } from './host-context.js';
-import { MarkdownInline } from './inline-render.js';
+import { MarkdownInline, type InlineProjectionRecovery } from './inline-render.js';
 import { isInlineNode } from './node.js';
 import type { MarkdownRenderDelegate } from './render-delegate.js';
 import { styles } from './style.js';
@@ -26,6 +27,40 @@ export class MarkdownBlock extends LitElement {
   @property({ attribute: false }) accessor node: ViewModelNode | undefined;
 
   private nodeSignal = new NodeSignalController(this, () => this.node);
+  private inlineProjectionVersion = 0;
+
+  constructor() {
+    super();
+    this.addEventListener('inline-projection-recovery', this.onInlineProjectionRecovery);
+  }
+
+  private onInlineProjectionRecovery = (event: Event) => {
+    const recovery = (event as CustomEvent<InlineProjectionRecovery>).detail;
+    if (!recovery || recovery.inline.parentElement !== this) return;
+    event.stopPropagation();
+    event.preventDefault();
+    this.inlineProjectionVersion++;
+    if (recovery.inline.node && recovery.inline.hostContext) {
+      recovery.inline.hostContext.focusNode = recovery.inline.node;
+      recovery.inline.hostContext.focusOffset = recovery.selection.focus;
+    }
+    this.requestUpdate();
+    void this.updateComplete.then(async () => {
+      const next = this.querySelector(':scope > md-inline');
+      if (next instanceof MarkdownInline && next.node === recovery.inline.node) {
+        await next.updateComplete;
+        await next.maybeSetFocus();
+        next.focus();
+        next.setSelectionOffsets(recovery.selection.anchor, recovery.selection.focus);
+        const pending = recovery.inline.takeRecoveryEvents();
+        if (recovery.replayEvents) next.replayRecoveryEvents(pending);
+        else next.holdRecoveryEventsFrom(pending);
+      } else {
+        recovery.inline.takeRecoveryEvents();
+      }
+      recovery.complete();
+    });
+  };
 
   override render() {
     const node = this.node;
@@ -45,7 +80,12 @@ export class MarkdownBlock extends LitElement {
         }
       }
     }
-    return html`${isInlineNode(node) ? html`<md-inline .node=${node}></md-inline>` : ''}
+    const inline = isInlineNode(node)
+      ? (this.inlineProjectionVersion ?? 0) === 0
+        ? html`<md-inline .node=${node}></md-inline>`
+        : keyed(this.inlineProjectionVersion, html`<md-inline .node=${node}></md-inline>`)
+      : '';
+    return html`${inline}
     ${repeat(
       node.children ?? [],
       (child) => child[viewModel].id,
