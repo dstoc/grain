@@ -538,8 +538,8 @@ class MarkdownDevHarness extends LitElement {
     const serializedTree = tree.serialize();
     if (this.parseMode != 'append') {
       this.root = tree.root;
-      this.serializedMarkdown = serializeToString(serializedTree);
     }
+    this.serializedMarkdown = serializeToString(serializedTree);
     this.pendingText = this.parser.getPendingText();
     this.treeJson = JSON.stringify(serializedTree, null, 2);
     this.renderVersion++;
