@@ -473,7 +473,7 @@ export class Editor extends LitElement {
       if (inputStart.index !== 0 || inputEnd.index !== 0) return false;
       return this.runEditAction(inline, deleteContentBackwards);
     } else if (inputEvent.inputType === 'insertParagraph') {
-      this.runEditAction(inline, insertParagraph, inputStart.index);
+      this.runEditAction(inline, insertParagraph, inputStart.index, inputEnd.index);
       return true;
     } else if (inputEvent.inputType === 'insertLineBreak') {
       this.runEditAction(inline, insertLineBreak, inputStart.index);

@@ -80,12 +80,15 @@ export function undoOp(op: Op) {
       op.node[viewModel].updateChecked(op.oldChecked);
       break;
     case 'edit':
-      op.node[viewModel].edit({
-        startIndex: op.edit.startIndex,
-        newEndIndex: op.edit.oldEndIndex,
-        oldEndIndex: op.edit.newEndIndex,
-        newText: op.oldText,
-      });
+      op.node[viewModel].edit(
+        {
+          startIndex: op.edit.startIndex,
+          newEndIndex: op.edit.oldEndIndex,
+          oldEndIndex: op.edit.newEndIndex,
+          newText: op.oldText,
+        },
+        false,
+      );
       break;
     case 'insert':
       if (!op.hadParent) {
