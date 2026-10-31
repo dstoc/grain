@@ -92,6 +92,44 @@ describe('Editor', () => {
     return { editor, input };
   });
 
+  describe('block prefix conversion', () => {
+    test.each([
+      ['# ', '# '],
+      ['- ', '- '],
+      ['> ', '> '],
+    ])('keeps the caret before existing text after typing %s', async (prefix, serializedPrefix) => {
+      await state.input.insert('hello');
+      await userEvent.keyboard('{Home}');
+      await userEvent.keyboard(prefix);
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const focused = () => renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      expect(focused().getSelection()?.start.index).toBe(0);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(serializeToString(state.editor.root![viewModel].tree.serialize())).toBe(
+        serializedPrefix + 'Xhello\n',
+      );
+      await state.input.press('Control+z');
+      await state.input.press('Control+y');
+      expect(serializeToString(state.editor.root![viewModel].tree.serialize())).toBe(
+        serializedPrefix + 'Xhello\n',
+      );
+    });
+
+    test('keeps the caret within text inserted with a prefix', async () => {
+      await state.input.insert('hello');
+      await userEvent.keyboard('{Home}');
+      await state.input.insert('# X');
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      expect(focused.node!.content).toBe('Xhello');
+      expect(focused.getSelection()?.start.index).toBe(1);
+      await state.input.insert('Y');
+      expect(focused.node!.content).toBe('XYhello');
+    });
+  });
+
   describe('inline Backspace', () => {
     async function seed(content: string) {
       const tree = new MarkdownTree({

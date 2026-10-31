@@ -13,13 +13,17 @@ export function editInlineNode(context: EditContext, edit: InlineEdit) {
   if (newNodes) {
     // Although normalization has not happened, it will never remove an editable.
     const next = findNextEditable(newNodes[0], context.root, true);
-    // TODO: is the focus offset always 0? No, the input text might have been
-    // "* abc", in which case it should be 3.
-    // if (next) focusNode(hostContext, next, 0);
-    // But maybe seeking to the end is OK?
-    // TODO: No, it's not. The input might have added a prefix to existing content.
     if (next) {
-      context.focus(next, next.content.length);
+      // The parsed content normally follows the block markers.
+      // Map the insertion point into that suffix, clamping positions in the
+      // markers to the start of the editable content.
+      const contentStart = node.content.lastIndexOf(next.content);
+      context.focus(
+        next,
+        contentStart < 0
+          ? next.content.length
+          : Math.max(0, Math.min(next.content.length, edit.newEndIndex - contentStart)),
+      );
     }
   } else {
     // TODO: generalize this (inline block mutation)
