@@ -107,6 +107,7 @@ export function createBlockParser(snapshot?: BlockParserSnapshot): BlockParser {
           .filter(isDefined),
         currentCodeBlockPath: pathForNode(state.root, state.currentCodeBlock),
         currentCodeFence: state.currentCodeFence,
+        currentCodeHasLines: state.currentCodeHasLines,
         sectionStackPaths: state.sectionStack
           .map((node) => pathForNode(state.root, node))
           .filter(isDefined),

@@ -29,13 +29,15 @@ export function openCodeBlock(
   node[viewModel].insertBefore(parent);
   state.currentCodeBlock = node;
   state.currentCodeFence = marker;
+  state.currentCodeHasLines = false;
   state.sawContent = true;
 }
 
-export function appendCodeBlockLine(state: BlockParseState, line: string): string {
+export function appendCodeBlockLine(state: BlockParseState, line: string, settled = true): string {
   const node = state.currentCodeBlock;
   if (!node) return '';
-  const inserted = node.content === '' ? line : `\n${line}`;
+  const inserted = state.currentCodeHasLines ? `\n${line}` : line;
+  if (settled) state.currentCodeHasLines = true;
   const newContent = `${node.content}${inserted}`;
   (node as { content: string }).content = newContent;
   node[viewModel].renderSignal.value++;
@@ -66,4 +68,5 @@ function escapeRegExp(text: string): string {
 export function closeCodeBlock(state: BlockParseState) {
   state.currentCodeBlock = undefined;
   state.currentCodeFence = undefined;
+  state.currentCodeHasLines = undefined;
 }
