@@ -4,6 +4,7 @@ import { isInlineNode } from '../../markdown/node.js';
 import { findNextEditable } from '../../markdown/view-model-util.js';
 import { InlineEdit } from '../../markdown/view-model.js';
 import { viewModel } from '../../markdown/view-model-node.js';
+import { conversionContentStart } from '../../markdown/block-parser/conversion-boundary.js';
 
 export function editInlineNode(context: EditContext, edit: InlineEdit) {
   assert(isInlineNode(context.node));
@@ -13,13 +14,14 @@ export function editInlineNode(context: EditContext, edit: InlineEdit) {
   if (newNodes) {
     // Although normalization has not happened, it will never remove an editable.
     const next = findNextEditable(newNodes[0], context.root, true);
-    // TODO: is the focus offset always 0? No, the input text might have been
-    // "* abc", in which case it should be 3.
-    // if (next) focusNode(hostContext, next, 0);
-    // But maybe seeking to the end is OK?
-    // TODO: No, it's not. The input might have added a prefix to existing content.
     if (next) {
-      context.focus(next, next.content.length);
+      const contentStart = conversionContentStart(node.content);
+      context.focus(
+        next,
+        contentStart === undefined
+          ? next.content.length
+          : Math.max(0, Math.min(next.content.length, edit.newEndIndex - contentStart)),
+      );
     }
   } else {
     // TODO: generalize this (inline block mutation)

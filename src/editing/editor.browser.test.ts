@@ -93,6 +93,139 @@ describe('Editor', () => {
     return { editor, input };
   });
 
+  describe('block prefix conversion', () => {
+    test.each([
+      ['# ', '# '],
+      ['- ', '- '],
+      ['> ', '> '],
+    ])('keeps the caret before existing text after typing %s', async (prefix, serializedPrefix) => {
+      await state.input.insert('hello');
+      await userEvent.keyboard('{Home}');
+      await userEvent.keyboard(prefix);
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const focused = () => renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      expect(focused().getSelection()?.start.index).toBe(0);
+      await userEvent.keyboard('X');
+      await nextTask();
+      expect(serializeToString(state.editor.root![viewModel].tree.serialize())).toBe(
+        serializedPrefix + 'Xhello\n',
+      );
+      await state.input.press('Control+z');
+      await state.input.press('Control+y');
+      expect(serializeToString(state.editor.root![viewModel].tree.serialize())).toBe(
+        serializedPrefix + 'Xhello\n',
+      );
+    });
+
+    test('keeps the caret within text inserted with a prefix', async () => {
+      await state.input.insert('hello');
+      await userEvent.keyboard('{Home}');
+      await state.input.insert('# X');
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      expect(focused.node!.content).toBe('Xhello');
+      expect(focused.getSelection()?.start.index).toBe(1);
+      await state.input.insert('Y');
+      expect(focused.node!.content).toBe('XYhello');
+    });
+
+    test('keeps heading-like text after a heading marker at the caret', async () => {
+      await state.input.insert('hello');
+      await userEvent.keyboard('{Home}');
+      await state.input.insert('# # X');
+      await state.input.insert('Y');
+      expect(serializeToString(state.editor.root![viewModel].tree.serialize())).toBe(
+        '# # XYhello\n',
+      );
+    });
+
+    test.each(['> # X', '> ># X'])(
+      'keeps the paste position after stacked block markers %s and preserves history',
+      async (prefix) => {
+        await state.input.insert('hello');
+        await userEvent.keyboard('{Home}');
+        const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+        const inline = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+        const read = vi.spyOn(navigator.clipboard, 'read').mockResolvedValue([]);
+        const readText = vi.spyOn(navigator.clipboard, 'readText').mockResolvedValue(prefix);
+        try {
+          await state.editor.triggerPaste(inline, inline.node!, { startIndex: 0, oldEndIndex: 0 });
+          await nextTask();
+          const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+          expect(focused.getSelection()?.start.index).toBe(1);
+          await userEvent.keyboard('Y');
+          await nextTask();
+          const serialize = () => serializeToString(state.editor.root![viewModel].tree.serialize());
+          expect(serialize()).toBe('# XYhello\n');
+          await state.input.press('Control+z');
+          expect(serialize()).toBe('# Xhello\n');
+          await state.input.press('Control+y');
+          expect(serialize()).toBe('# XYhello\n');
+        } finally {
+          read.mockRestore();
+          readText.mockRestore();
+        }
+      },
+    );
+
+    test('keeps seven hashes as content after a container marker', async () => {
+      await state.input.insert('hello');
+      await userEvent.keyboard('{Home}');
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inline = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+      const read = vi.spyOn(navigator.clipboard, 'read').mockResolvedValue([]);
+      const readText = vi.spyOn(navigator.clipboard, 'readText').mockResolvedValue('> ####### X');
+      try {
+        await state.editor.triggerPaste(inline, inline.node!, { startIndex: 0, oldEndIndex: 0 });
+        await nextTask();
+        const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+        expect(focused.getSelection()?.start.index).toBe(9);
+        await userEvent.keyboard('Y');
+        await nextTask();
+        const serialize = () => serializeToString(state.editor.root![viewModel].tree.serialize());
+        expect(serialize()).toBe('> ####### XYhello\n');
+        await state.input.press('Control+z');
+        expect(serialize()).toBe('> ####### Xhello\n');
+        await state.input.press('Control+y');
+        expect(serialize()).toBe('> ####### XYhello\n');
+      } finally {
+        read.mockRestore();
+        readText.mockRestore();
+      }
+    });
+
+    test('keeps the paste position when a later line repeats the heading text', async () => {
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: [{ type: 'paragraph', content: 'hello\nXhello' }],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inline = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
+      inline.focus();
+      await userEvent.keyboard('{Home}');
+      const read = vi.spyOn(navigator.clipboard, 'read').mockResolvedValue([]);
+      const readText = vi.spyOn(navigator.clipboard, 'readText').mockResolvedValue('# X');
+      try {
+        await state.editor.triggerPaste(inline, inline.node!, { startIndex: 0, oldEndIndex: 0 });
+        await nextTask();
+        const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+        expect(focused.getSelection()?.start.index).toBe(1);
+        await userEvent.keyboard('Y');
+        await nextTask();
+        expect(serializeToString(tree.serialize())).toBe('# XYhello\nXhello\n');
+        await state.input.press('Control+z');
+        await state.input.press('Control+y');
+        expect(serializeToString(tree.serialize())).toBe('# XYhello\nXhello\n');
+      } finally {
+        read.mockRestore();
+        readText.mockRestore();
+      }
+    });
+  });
+
   describe('outdenting multi-block list items', () => {
     test.each([
       ['alpha', false],
