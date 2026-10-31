@@ -29,6 +29,7 @@ import { Focus, Op, OpBatch, canCoalesce, classify, doOp, undoOp } from './view-
 import { viewModel } from './view-model-node.js';
 import { batch, signal } from '../signals.js';
 import { TypedCustomEvent } from '../event-utils.js';
+import { createSyntaxNode, createTree } from './parser-tree.js';
 
 function emptyDocument(): DocumentNode {
   return { type: 'document', children: [{ type: 'paragraph', content: '' }] };
@@ -259,7 +260,10 @@ export class InlineViewModel extends ViewModel {
     assert(this.connected);
     if (!this.inlineTree_ || this.inlineTreeContent !== this.self.content) {
       this.inlineTreeContent = this.self.content;
-      this.inlineTree_ = inlineParser.parse(this.self.content);
+      this.inlineTree_ =
+        this.self.type === 'code-block'
+          ? createTree(createSyntaxNode('text', this.self.content) as InlineTreeNode)
+          : inlineParser.parse(this.self.content);
     }
     return this.inlineTree_;
   }
