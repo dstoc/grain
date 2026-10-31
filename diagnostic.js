@@ -4,12 +4,12 @@ import { serializeToString } from './src/markdown/block-serializer.js';
 const baseCommit = '855fb4f2d671ce284b32dc7a70b678eade340aa9';
 const panel = document.querySelector('#diagnostic');
 const status = panel.querySelector('[role=status]');
-const output = panel.querySelector('textarea');
+const output = panel.querySelector('#copy-output');
 const types = ['compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input', 'keydown', 'keyup'];
 let entries = [];
 let recording = false;
 let sequence = 0;
-const metadata = () => ({ baseCommit, diagnosticBuild: 'grain-35-android-preview-v1', url: location.href, startedAt: new Date().toISOString(), userAgent: navigator.userAgent, platform: navigator.platform, language: navigator.language, userAgentData: navigator.userAgentData?.toJSON?.() ?? null });
+const metadata = () => ({ baseCommit, diagnosticBuild: 'grain-35-android-preview-v2', url: location.href, startedAt: new Date().toISOString(), userAgent: navigator.userAgent, platform: navigator.platform, language: navigator.language, userAgentData: navigator.userAgentData?.toJSON?.() ?? null });
 let session;
 function allInlines(root) {
   const found = [];
@@ -56,4 +56,24 @@ panel.querySelector('#copy').onclick = async () => {
   const trace = JSON.stringify({ metadata: session, entries }, null, 2);
   try { await navigator.clipboard.writeText(trace); status.textContent = 'Trace copied'; }
   catch { output.value = trace; output.hidden = false; status.textContent = 'Copy unavailable: select and copy the trace below'; }
+};
+
+function downloadTrace(contents, filename) {
+  const url = URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+panel.querySelector('#download').onclick = () => {
+  downloadTrace(JSON.stringify({ metadata: session, entries }, null, 2), 'grain-recorded-trace.json');
+  status.textContent = 'Recorded trace download started';
+};
+panel.querySelector('#download-pasted').onclick = () => {
+  const pasted = panel.querySelector('#pasted-trace').value;
+  try { JSON.parse(pasted); }
+  catch { status.textContent = 'Invalid JSON. Check the pasted trace and try again.'; return; }
+  downloadTrace(pasted, 'grain-pasted-trace.json');
+  status.textContent = 'Pasted trace download started';
 };

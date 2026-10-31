@@ -8,11 +8,12 @@
   <body>
     <section id="diagnostic" style="font:16px system-ui;padding:1rem;background:#fff4d6;color:#222">
       <h1>Android composition diagnostic</h1>
-      <p>Use only non-sensitive test text. This recorder captures typed and composed text, key and input events, timing, selection, visible Render text, Source, the document model and serialization, plus browser/device metadata and build identity. Trace stays in this page's memory until you choose Copy trace. Closing or reloading loses it; nothing is uploaded automatically.</p>
+      <p>Use only non-sensitive test text. This recorder captures typed and composed text, key and input events, timing, selection, visible Render text, Source, the document model and serialization, plus browser/device metadata and build identity. Recorded and pasted traces stay in this page until you choose to copy or download them. Closing or reloading loses them; nothing is uploaded automatically.</p>
       <div style="display:flex;flex-wrap:wrap;gap:.5rem">
-        <button id="start">Start recording</button><button id="stop">Stop</button><button id="clear">Clear</button><button id="copy">Copy trace</button>
+        <button id="start">Start recording</button><button id="stop">Stop</button><button id="clear">Clear</button><button id="copy">Copy trace</button><button id="download">Download trace</button>
       </div>
-      <p role="status" aria-live="polite">Not recording</p><textarea hidden aria-label="Trace to copy" style="width:100%;height:12rem"></textarea>
+      <p><label for="pasted-trace">Paste a previously copied trace</label></p><textarea id="pasted-trace" style="width:100%;height:8rem"></textarea><div><button id="download-pasted">Download pasted trace</button></div>
+      <p role="status" aria-live="polite">Not recording</p><textarea id="copy-output" hidden aria-label="Trace to copy" style="width:100%;height:12rem"></textarea>
       <style>#diagnostic button { min-height:48px; padding:.7rem 1rem; font:inherit; cursor:pointer }</style>
     </section>
     <md-dev-harness></md-dev-harness>
