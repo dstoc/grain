@@ -28,17 +28,6 @@ export function insertMarkdown(markdown: string, node: ViewModelNode) {
   return { newFocus, newInlineNodes };
 }
 
-export async function copyMarkdownToClipboard(markdown: string) {
-  const textType = 'text/plain';
-  const mdType = 'web text/markdown';
-  await navigator.clipboard.write([
-    new ClipboardItem({
-      [textType]: new Blob([markdown], { type: textType }),
-      [mdType]: new Blob([markdown], { type: mdType }),
-    }),
-  ]);
-}
-
 export function serializeSelection(hostContext: HostContext) {
   // This is complex because:
   // 1. Sections can be disjoint.
