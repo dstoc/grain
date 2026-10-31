@@ -14,6 +14,7 @@ import {
 import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
 import { parseAtxHeading } from './sections.js';
 import { parseFenceStart, openCodeBlock } from './code-blocks.js';
+import { parseQuotePrefix } from '../prefix-resolution.js';
 
 export function parseListItem(
   line: string,
@@ -99,10 +100,10 @@ export function parseInitialContainerContent(
     return;
   }
 
-  const quoteMatch = /^(>\s?)(.*)$/.exec(content);
-  if (quoteMatch) {
+  const quoteContent = parseQuotePrefix(content);
+  if (quoteContent !== undefined) {
     const quote = syncQuoteStack(state, parent, 1);
-    parseInitialContainerContent(state, quote, quoteMatch[2]);
+    parseInitialContainerContent(state, quote, quoteContent);
     return;
   }
 
