@@ -15,6 +15,10 @@ import {
 } from './utils.js';
 import { resetQuoteStack, syncQuoteStack } from './container-management.js';
 
+export function parseQuotePrefix(line: string): string | undefined {
+  return /^(>\s?)(.*)$/.exec(line)?.[2];
+}
+
 export function parseBlankLinePrefix(
   state: BlockParseState,
   line: string,
@@ -45,14 +49,14 @@ export function parseBlankLinePrefix(
   }
 
   while (true) {
-    const quoteMatch = /^(>\s?)(.*)$/.exec(rest);
-    if (quoteMatch) {
+    const quoteContent = parseQuotePrefix(rest);
+    if (quoteContent !== undefined) {
       matchedPrefix = true;
       if (quoteDepth === 0) {
         quoteBase = currentContainer;
       }
       quoteDepth++;
-      rest = quoteMatch[2];
+      rest = quoteContent;
       currentContainer =
         getQuotedPrefixContainer(state, quoteBase ?? currentContainer, quoteDepth) ??
         currentContainer;
@@ -102,14 +106,14 @@ export function parseLinePrefix(state: BlockParseState, line: string): LinePrefi
   }
 
   while (true) {
-    const quoteMatch = /^(>\s?)(.*)$/.exec(rest);
-    if (quoteMatch) {
+    const quoteContent = parseQuotePrefix(rest);
+    if (quoteContent !== undefined) {
       prefixes.push('quote');
       if (quoteDepth === 0) {
         quoteBase = currentContainer;
       }
       quoteDepth++;
-      rest = quoteMatch[2];
+      rest = quoteContent;
       currentContainer =
         getQuotedPrefixContainer(state, quoteBase ?? currentContainer, quoteDepth) ??
         currentContainer;
@@ -200,11 +204,11 @@ export function parseQuotedListContinuation(
 
   let rest = line;
   for (let depth = 0; depth < quoteContext.quoteDepth; depth++) {
-    const quoteMatch = /^(>\s?)(.*)$/.exec(rest);
-    if (!quoteMatch) {
+    const quoteContent = parseQuotePrefix(rest);
+    if (quoteContent === undefined) {
       return;
     }
-    rest = quoteMatch[2];
+    rest = quoteContent;
   }
 
   let currentContainer =

@@ -140,31 +140,34 @@ describe('Editor', () => {
       );
     });
 
-    test('keeps the paste position after stacked block markers and preserves history', async () => {
-      await state.input.insert('hello');
-      await userEvent.keyboard('{Home}');
-      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
-      const inline = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
-      const read = vi.spyOn(navigator.clipboard, 'read').mockResolvedValue([]);
-      const readText = vi.spyOn(navigator.clipboard, 'readText').mockResolvedValue('> # X');
-      try {
-        await state.editor.triggerPaste(inline, inline.node!, { startIndex: 0, oldEndIndex: 0 });
-        await nextTask();
-        const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
-        expect(focused.getSelection()?.start.index).toBe(1);
-        await userEvent.keyboard('Y');
-        await nextTask();
-        const serialize = () => serializeToString(state.editor.root![viewModel].tree.serialize());
-        expect(serialize()).toBe('# XYhello\n');
-        await state.input.press('Control+z');
-        expect(serialize()).toBe('# Xhello\n');
-        await state.input.press('Control+y');
-        expect(serialize()).toBe('# XYhello\n');
-      } finally {
-        read.mockRestore();
-        readText.mockRestore();
-      }
-    });
+    test.each(['> # X', '> ># X'])(
+      'keeps the paste position after stacked block markers %s and preserves history',
+      async (prefix) => {
+        await state.input.insert('hello');
+        await userEvent.keyboard('{Home}');
+        const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+        const inline = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+        const read = vi.spyOn(navigator.clipboard, 'read').mockResolvedValue([]);
+        const readText = vi.spyOn(navigator.clipboard, 'readText').mockResolvedValue(prefix);
+        try {
+          await state.editor.triggerPaste(inline, inline.node!, { startIndex: 0, oldEndIndex: 0 });
+          await nextTask();
+          const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+          expect(focused.getSelection()?.start.index).toBe(1);
+          await userEvent.keyboard('Y');
+          await nextTask();
+          const serialize = () => serializeToString(state.editor.root![viewModel].tree.serialize());
+          expect(serialize()).toBe('# XYhello\n');
+          await state.input.press('Control+z');
+          expect(serialize()).toBe('# Xhello\n');
+          await state.input.press('Control+y');
+          expect(serialize()).toBe('# XYhello\n');
+        } finally {
+          read.mockRestore();
+          readText.mockRestore();
+        }
+      },
+    );
 
     test('keeps seven hashes as content after a container marker', async () => {
       await state.input.insert('hello');

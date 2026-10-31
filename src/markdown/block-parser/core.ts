@@ -6,6 +6,7 @@ import {
   parseBlankLinePrefix,
   shouldPreserveListPathOnQuotedBlankLine,
   parseLinePrefix,
+  parseQuotePrefix,
   resolvePrefixContainers,
 } from './prefix-resolution.js';
 import { syncQuoteStack } from './container-management.js';
@@ -248,11 +249,11 @@ function parseResolvedContainerContent(
     return;
   }
 
-  const quoteMatch = /^(>\s?)(.*)$/.exec(content);
-  if (quoteMatch) {
+  const quoteContent = parseQuotePrefix(content);
+  if (quoteContent !== undefined) {
     closeParagraph(state);
     const quote = syncQuoteStack(state, container, 1);
-    parseResolvedContainerContent(state, quote, quoteMatch[2]);
+    parseResolvedContainerContent(state, quote, quoteContent);
     return;
   }
 

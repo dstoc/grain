@@ -4,6 +4,7 @@ import { isInlineNode } from '../../markdown/node.js';
 import { findNextEditable } from '../../markdown/view-model-util.js';
 import { InlineEdit } from '../../markdown/view-model.js';
 import { viewModel } from '../../markdown/view-model-node.js';
+import { conversionContentStart } from '../../markdown/block-parser/conversion-boundary.js';
 
 export function editInlineNode(context: EditContext, edit: InlineEdit) {
   assert(isInlineNode(context.node));
@@ -14,12 +15,7 @@ export function editInlineNode(context: EditContext, edit: InlineEdit) {
     // Although normalization has not happened, it will never remove an editable.
     const next = findNextEditable(newNodes[0], context.root, true);
     if (next) {
-      // Conversion starts at the beginning of the paragraph. Count its leading
-      // block markers instead of searching for content that may occur again.
-      const contentStart =
-        /^(?:(?:(?:\d+[.)]|[-+*]) (?:\[[ x]\] )?|> )+(?:#{1,6} +)?|#{1,6} +)/.exec(
-          node.content,
-        )?.[0].length;
+      const contentStart = conversionContentStart(node.content);
       context.focus(
         next,
         contentStart === undefined
