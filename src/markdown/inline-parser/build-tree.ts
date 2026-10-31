@@ -65,11 +65,8 @@ function createNodeFromResolvedInline(resolved: ResolvedInline): InlineTreeNode 
         resolved.startIndex,
       ) as InlineLeafNode<'uri_autolink'>;
     case 'syntax':
-      return createSyntaxNode(
-        'syntax',
-        resolved.text,
-        resolved.startIndex,
-      ) as InlineLeafNode<'syntax'>;
+      // Candidates that survive resolution are literal text, not formatting.
+      return createSyntaxNode('text', resolved.text, resolved.startIndex) as InlineLeafNode<'text'>;
     case 'text':
       return createSyntaxNode('text', resolved.text, resolved.startIndex) as InlineLeafNode<'text'>;
     default:

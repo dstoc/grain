@@ -350,7 +350,7 @@ describe('inline parser api', () => {
           namedChildren: [],
         },
         {
-          type: 'syntax',
+          type: 'text',
           text: '*',
           startIndex: 13,
           endIndex: 14,
