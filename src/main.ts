@@ -92,7 +92,7 @@ class MarkdownDevHarness extends LitElement {
       --harness-accent: #456e3b;
       --harness-selected: #e9f0e2;
       --harness-shadow: rgb(34 52 29 / 5%);
-      display: block;
+      display: flow-root;
       box-sizing: border-box;
       min-width: 0;
       max-width: 100%;

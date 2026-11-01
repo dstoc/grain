@@ -128,6 +128,11 @@ async function settleHarness(harness: LitElement) {
   await harness.updateComplete;
 }
 
+function expectDocumentWithinViewport() {
+  expect(document.documentElement.scrollHeight).toBe(document.documentElement.clientHeight);
+  expect(document.documentElement.scrollWidth).toBe(document.documentElement.clientWidth);
+}
+
 async function createSettledHarness(value: string) {
   const result = await createHarness(value);
   await settleHarness(result.harness);
@@ -162,6 +167,7 @@ test('responsive shell disclosures preserve the editor and expose live outputs a
     .shadowRoot!.querySelector<HTMLElement>('.preview')!
     .getBoundingClientRect();
 
+  expectDocumentWithinViewport();
   expect(desktopPreviewRect.left).toBeGreaterThan(desktopSourceRect.left);
   expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
   expect(harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!.hidden).toBe(true);
@@ -171,6 +177,7 @@ test('responsive shell disclosures preserve the editor and expose live outputs a
   expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
   expect(sourcePane.hidden).toBe(true);
   expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  expectDocumentWithinViewport();
   const collapsedShellRect = harness
     .shadowRoot!.querySelector<HTMLElement>('.shell')!
     .getBoundingClientRect();
@@ -196,6 +203,7 @@ test('responsive shell disclosures preserve the editor and expose live outputs a
   expect(restoredPreviewRect.left).toBeGreaterThan(restoredSourceRect.left);
   expect(restoredPreviewRect.right).toBeCloseTo(restoredShellRect.right, 0);
   expect(restoredPreviewRect.width).toBeLessThan(restoredShellRect.width);
+  expectDocumentWithinViewport();
 
   toolsToggle.click();
   await harness.updateComplete;
@@ -204,6 +212,7 @@ test('responsive shell disclosures preserve the editor and expose live outputs a
   expect(tools.hidden).toBe(false);
   expect(tools.textContent).toContain('Playback delay: 10 ms per character');
   expect(tools.textContent).toContain('pending tail:');
+  expectDocumentWithinViewport();
   expect(harness.shadowRoot!.querySelector<HTMLInputElement>('input[type="range"]')!.max).toBe(
     String(source.value.length),
   );
@@ -212,12 +221,15 @@ test('responsive shell disclosures preserve the editor and expose live outputs a
   tabs[1]!.click();
   await harness.updateComplete;
   expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toContain('# Changed');
+  expectDocumentWithinViewport();
   tabs[2]!.click();
   await harness.updateComplete;
   expect(harness.shadowRoot!.querySelector('.tree')!.textContent).toContain('Changed');
+  expectDocumentWithinViewport();
   tabs[0]!.click();
   await harness.updateComplete;
   expect(harness.shadowRoot!.querySelector('md-editor')).not.toBeNull();
+  expectDocumentWithinViewport();
 
   await page.viewport(390, 844);
   await nextTask();
@@ -226,9 +238,21 @@ test('responsive shell disclosures preserve the editor and expose live outputs a
     .shadowRoot!.querySelector<HTMLElement>('.preview')!
     .getBoundingClientRect();
   expect(phonePreviewRect.top).toBeGreaterThanOrEqual(phoneSourceRect.bottom);
-  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
-    document.documentElement.clientWidth,
-  );
+  expectDocumentWithinViewport();
+});
+
+test('desktop frame margins stay inside the document viewport', async () => {
+  await page.viewport(1180, 757);
+  const { harness } = await createSettledHarness('# Desktop viewport\n\nparagraph');
+  const frame = harness.shadowRoot!.querySelector<HTMLElement>('.app-frame')!;
+  const frameRect = frame.getBoundingClientRect();
+
+  expectDocumentWithinViewport();
+  expect(frameRect.top).toBe(24);
+  expect(frameRect.bottom).toBe(733);
+  expect(frameRect.left).toBe(24);
+  expect(frameRect.right).toBe(1156);
+  harness.remove();
 });
 
 test('phone layout starts with the live editor and keeps Source available on demand', async () => {
@@ -243,6 +267,7 @@ test('phone layout starts with the live editor and keeps Source available on dem
   expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
   expect(preview.getBoundingClientRect().height).toBeGreaterThan(500);
   expect(editor.isConnected).toBe(true);
+  expectDocumentWithinViewport();
 
   sourceToggle.click();
   await harness.updateComplete;
@@ -251,6 +276,7 @@ test('phone layout starts with the live editor and keeps Source available on dem
   expect(preview.getBoundingClientRect().top).toBeGreaterThanOrEqual(
     sourcePane.getBoundingClientRect().bottom,
   );
+  expectDocumentWithinViewport();
   source.value = '# Phone source edit\n\nparagraph';
   source.dispatchEvent(new Event('input', { bubbles: true }));
   await settleHarness(harness);
@@ -259,13 +285,12 @@ test('phone layout starts with the live editor and keeps Source available on dem
       inline.textContent?.includes('Phone source edit'),
     ),
   ).toBe(true);
+  expectDocumentWithinViewport();
   sourceToggle.click();
   await harness.updateComplete;
   expect(sourcePane.hidden).toBe(true);
   expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
-  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
-    document.documentElement.clientWidth,
-  );
+  expectDocumentWithinViewport();
 });
 
 test('Source and simulated keyboard leave a usable phone output viewport', async () => {
@@ -330,10 +355,11 @@ test('Source and simulated keyboard leave a usable phone output viewport', async
     expect(previewRect.bottom).toBeLessThan(frameRect.bottom);
     expect(previewRect.bottom).toBeLessThanOrEqual(toolbarRect.top);
     expect(preview.scrollTop).toBe(0);
+    expect(canvasStyle.overflowY).toBe('auto');
     expect(usableCanvasHeight).toBeGreaterThanOrEqual(44);
-    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
-      document.documentElement.clientWidth,
-    );
+    expectDocumentWithinViewport();
+    expect(frameRect.top).toBeGreaterThanOrEqual(0);
+    expect(frameRect.bottom).toBeLessThanOrEqual(window.innerHeight);
     harness.remove();
   }
 
