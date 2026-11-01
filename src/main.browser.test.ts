@@ -2,6 +2,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import type { LitElement } from 'lit';
 import { userEvent } from 'vitest/browser';
 import { nextTask } from './editing/test/lifecycle.js';
+import type { MarkdownInline } from './markdown/inline-render.js';
 import './main.js';
 
 afterEach(() => {
@@ -92,6 +93,363 @@ async function createHarness(value: string) {
   await harness.updateComplete;
   return { harness, source };
 }
+
+function currentEditorInlines(harness: LitElement) {
+  return [
+    ...harness
+      .shadowRoot!.querySelector('md-editor')!
+      .shadowRoot!.querySelector('md-block-render')!
+      .shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
+  ];
+}
+
+async function settleHarness(harness: LitElement) {
+  await nextTask();
+  await harness.updateComplete;
+  await nextTask();
+  await harness.updateComplete;
+}
+
+async function createSettledHarness(value: string) {
+  const result = await createHarness(value);
+  await settleHarness(result.harness);
+  return result;
+}
+
+async function showSimulatedKeyboard(harness: LitElement, inline: HTMLElement) {
+  inline.focus();
+  const toggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.simulation-toggle')!;
+  toggle.dispatchEvent(
+    new PointerEvent('pointerdown', { bubbles: true, button: 0, cancelable: true }),
+  );
+  toggle.click();
+  await settleHarness(harness);
+  return harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
+}
+
+async function activateToolbarAction(harness: LitElement, label: string) {
+  const toolbar = harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
+  const button = toolbar.shadowRoot!.querySelector<HTMLButtonElement>(
+    `button[aria-label="${label}"]`,
+  )!;
+  button.click();
+  await settleHarness(harness);
+  return button;
+}
+
+async function waitForFocusedInline(harness: LitElement) {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const focused = currentEditorInlines(harness).find((inline) => inline.matches(':focus'));
+    if (focused?.mobileToolbarInputReady) return focused;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error('Render editor did not restore a focused inline');
+}
+
+test('mobile toolbar stays hidden without keyboard geometry and scrolls at phone width', async () => {
+  const { harness, source } = await createSettledHarness('alpha\n\nbeta');
+  const [inline] = currentEditorInlines(harness);
+  inline!.focus();
+  inline!.setSelectionOffsets(2, 2);
+  const toolbar = harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
+  expect(toolbar.visible).toBe(false);
+
+  await showSimulatedKeyboard(harness, inline!);
+  expect(toolbar.visible).toBe(true);
+  const buttons = toolbar.shadowRoot!.querySelectorAll<HTMLButtonElement>('button');
+  expect(buttons).toHaveLength(10);
+  expect([...buttons].every((button) => button.getBoundingClientRect().width >= 44)).toBe(true);
+  expect([...buttons].map((button) => button.getAttribute('aria-label'))).toEqual([
+    'Unindent',
+    'Indent',
+    'Insert paragraph or split block',
+    'Select all and promote block selection',
+    'Extend block selection upward',
+    'Extend block selection downward',
+    'Move caret left',
+    'Move caret right',
+    'Move caret up',
+    'Move caret down',
+  ]);
+
+  const strip = toolbar.shadowRoot!.querySelector<HTMLElement>('.strip')!;
+  strip.style.width = '320px';
+  expect(strip.scrollWidth).toBeGreaterThan(strip.clientWidth);
+  strip.scrollLeft = strip.scrollWidth;
+  expect(strip.scrollLeft).toBeGreaterThan(0);
+
+  const left = buttons[6]!;
+  const pointerDown = new PointerEvent('pointerdown', {
+    bubbles: true,
+    button: 0,
+    cancelable: true,
+  });
+  left.dispatchEvent(pointerDown);
+  expect(pointerDown.defaultPrevented).toBe(true);
+  expect(inline!.matches(':focus')).toBe(true);
+  left.click();
+  await settleHarness(harness);
+  expect(currentEditorInlines(harness)[0]!.getSelection()?.start.index).toBe(1);
+
+  harness.shadowRoot!.querySelector<HTMLButtonElement>('.simulation-toggle')!.click();
+  await settleHarness(harness);
+  expect(toolbar.visible).toBe(false);
+  expect(inline!.matches(':focus')).toBe(true);
+  source.focus();
+  await settleHarness(harness);
+  toolbar.dispatchEvent(
+    new CustomEvent('mobile-toolbar-action', {
+      detail: { action: 'select-all' },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+  expect(source.value).toBe('alpha\n\nbeta');
+  harness.remove();
+});
+
+test('toolbar indent and unindent use Grain editing and preserve the list structure', async () => {
+  const { harness, source } = await createSettledHarness('- alpha\n- beta');
+  const inline = currentEditorInlines(harness).find((node) => node.textContent === 'beta')!;
+  inline.focus();
+  inline.setSelectionOffsets(0, 0);
+  await showSimulatedKeyboard(harness, inline);
+
+  await activateToolbarAction(harness, 'Indent');
+  expect(source.value).toContain('- alpha\n  - beta');
+  await activateToolbarAction(harness, 'Unindent');
+  expect(source.value).toContain('- alpha\n- beta');
+});
+
+test.each([
+  ['paragraph', 'alpha\n\nbeta', 'alpha', 2, 2],
+  ['list item', '- alpha\n- beta', 'alpha', 2, 2],
+  ['code block start', '```js\nalpha\n```', 'alpha', 0, 0],
+  ['code block end', '```js\nalpha\n```', 'alpha', 5, 5],
+  ['selected paragraph text', 'alpha\n\nbeta', 'alpha', 1, 4],
+])(
+  'toolbar split sends insertLineBreak in a %s',
+  async (_name, sourceText, inlineText, start, end) => {
+    const { harness, source } = await createSettledHarness(sourceText);
+    const inline = currentEditorInlines(harness).find((node) => node.textContent === inlineText)!;
+    inline.focus();
+    inline.setSelectionOffsets(start, end);
+    await showSimulatedKeyboard(harness, inline);
+    await activateToolbarAction(harness, 'Insert paragraph or split block');
+    const after = source.value;
+    expect(after).not.toBe(sourceText);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settleHarness(harness);
+    expect(source.value).toContain(inlineText);
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settleHarness(harness);
+    expect(source.value).toBe(after);
+  },
+);
+
+test('select all promotes the focused inline, then extends and reverses block selection', async () => {
+  const { harness, source } = await createSettledHarness('alpha\n\nbeta');
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  inline.setSelectionOffsets(2, 2);
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+
+  await activateToolbarAction(harness, 'Select all and promote block selection');
+  expect(inline.hostContext!.selection.size).toBe(1);
+  expect(source.value).toBe('alpha\n\nbeta');
+  await activateToolbarAction(harness, 'Select all and promote block selection');
+  expect(inline.hostContext!.selection.size).toBe(2);
+
+  const selected = [...inline.hostContext!.selection];
+  expect(selected.map((node) => node.content)).toEqual(['alpha', 'beta']);
+  expect(toolbar.visible).toBe(true);
+});
+
+test('selection extension buttons extend and reverse an existing block selection', async () => {
+  const { harness } = await createSettledHarness('alpha\n\nbeta\n\ngamma');
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  inline.setSelectionOffsets(2, 2);
+  await showSimulatedKeyboard(harness, inline);
+
+  await activateToolbarAction(harness, 'Select all and promote block selection');
+  const initialSize = inline.hostContext!.selection.size;
+  expect(initialSize).toBe(1);
+  await activateToolbarAction(harness, 'Extend block selection downward');
+  const afterBoundary = currentEditorInlines(harness)[0]!;
+  const extendedSize = afterBoundary.hostContext!.selection.size;
+  expect(extendedSize).toBeGreaterThan(initialSize);
+  await activateToolbarAction(harness, 'Extend block selection upward');
+  expect(afterBoundary.hostContext!.selection.size).toBeLessThan(extendedSize);
+});
+
+test('all four caret controls move through the native selection in a mounted Render editor', async () => {
+  const { harness } = await createSettledHarness('ab\ncd');
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  inline.setSelectionOffsets(1, 1);
+  await showSimulatedKeyboard(harness, inline);
+
+  await activateToolbarAction(harness, 'Move caret left');
+  expect(currentEditorInlines(harness)[0]!.getSelection()?.start.index).toBe(0);
+  await activateToolbarAction(harness, 'Move caret right');
+  expect(currentEditorInlines(harness)[0]!.getSelection()?.start.index).toBe(1);
+  currentEditorInlines(harness)[0]!.setSelectionOffsets(4, 4);
+  await activateToolbarAction(harness, 'Move caret up');
+  const up = currentEditorInlines(harness)[0]!.getSelection()!.start.index;
+  expect(up).toBeLessThan(4);
+  await activateToolbarAction(harness, 'Move caret down');
+  expect(currentEditorInlines(harness)[0]!.getSelection()!.start.index).toBeGreaterThan(up);
+});
+
+test('keyboard activation of a toolbar button returns focus to the editing inline', async () => {
+  const { harness } = await createSettledHarness('alpha');
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  inline.setSelectionOffsets(2, 2);
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  const button = toolbar.shadowRoot!.querySelector<HTMLButtonElement>(
+    'button[aria-label="Move caret right"]',
+  )!;
+  expect(button.disabled).toBe(false);
+  button.focus();
+  await userEvent.keyboard('{Enter}');
+  await settleHarness(harness);
+  const current = currentEditorInlines(harness)[0]!;
+  expect(current.matches(':focus')).toBe(true);
+  expect(current.getSelection()?.start.index).toBe(3);
+});
+
+test('toolbar actions are inert during composition and resume on the recovered inline', async () => {
+  const { harness } = await createSettledHarness('alpha\n\nbeta');
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  inline.setSelectionOffsets(1, 3);
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  const original = inline.getTextSelection();
+
+  inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, composed: true }));
+  expect(inline.mobileToolbarInputReady).toBe(false);
+  toolbar.dispatchEvent(
+    new CustomEvent('mobile-toolbar-action', {
+      detail: { action: 'select-all' },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+  expect(inline.getTextSelection()).toEqual(original);
+  expect(inline.hostContext!.selection.size).toBe(0);
+
+  inline.dispatchEvent(
+    new CompositionEvent('compositionend', { data: '', bubbles: true, composed: true }),
+  );
+  const recoveredInline = await waitForFocusedInline(harness);
+  expect(recoveredInline.mobileToolbarInputReady).toBe(true);
+  await activateToolbarAction(harness, 'Move caret right');
+  expect(toolbar.visible).toBe(true);
+});
+
+test('toolbar actions are inert during projection recovery and held recovery events', async () => {
+  const { harness } = await createSettledHarness('alpha\n\nbeta');
+  const recoveredInline = currentEditorInlines(harness)[0]!;
+  recoveredInline.focus();
+  recoveredInline.setSelectionOffsets(1, 3);
+  const toolbar = await showSimulatedKeyboard(harness, recoveredInline);
+  const original = recoveredInline.getTextSelection();
+  let finishRecovery!: () => void;
+  recoveredInline.addEventListener(
+    'inline-projection-recovery',
+    (event) => {
+      event.preventDefault();
+      finishRecovery = (event as CustomEvent<{ complete: () => void }>).detail.complete;
+    },
+    { once: true },
+  );
+  const recovery = recoveredInline.recoverComposition({ anchor: 1, focus: 3 });
+  expect(recoveredInline.mobileToolbarInputReady).toBe(false);
+  toolbar.dispatchEvent(
+    new CustomEvent('mobile-toolbar-action', {
+      detail: { action: 'select-all' },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+  expect(recoveredInline.hostContext!.selection.size).toBe(0);
+  expect(recoveredInline.getTextSelection()).toEqual(original);
+  finishRecovery();
+  await recovery;
+  const current = currentEditorInlines(harness).find(
+    (candidate) => candidate.node === recoveredInline.node,
+  )!;
+  current.focus();
+  expect(current.mobileToolbarInputReady).toBe(true);
+
+  current.holdRecoveryEventsFrom([]);
+  expect(current.mobileToolbarInputReady).toBe(false);
+  toolbar.dispatchEvent(
+    new CustomEvent('mobile-toolbar-action', {
+      detail: { action: 'select-all' },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+  expect(current.hostContext!.selection.size).toBe(0);
+  current.replayRecoveryEvents([]);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  expect(current.mobileToolbarInputReady).toBe(true);
+  await activateToolbarAction(harness, 'Move caret right');
+  expect(toolbar.visible).toBe(true);
+});
+
+test('VirtualKeyboard geometry controls visibility and overlay ownership restores on tab exit', async () => {
+  const original = Object.getOwnPropertyDescriptor(navigator, 'virtualKeyboard');
+  let rect = new DOMRect(0, 420, 800, 300);
+  const keyboard = new EventTarget() as EventTarget & {
+    overlaysContent: boolean;
+    readonly boundingRect: DOMRect;
+  };
+  keyboard.overlaysContent = false;
+  Object.defineProperty(keyboard, 'boundingRect', { get: () => rect });
+  Object.defineProperty(navigator, 'virtualKeyboard', {
+    configurable: true,
+    value: keyboard,
+  });
+  try {
+    const { harness } = await createSettledHarness('alpha\n\nbeta');
+    const inline = currentEditorInlines(harness)[0]!;
+    inline.focus();
+    await settleHarness(harness);
+    const toolbar = harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
+    expect(keyboard.overlaysContent).toBe(true);
+    expect(toolbar.visible).toBe(true);
+    expect(toolbar.getBoundingClientRect().top).toBe(364);
+    window.dispatchEvent(new Event('orientationchange'));
+    await settleHarness(harness);
+    expect(toolbar.visible).toBe(true);
+
+    rect = new DOMRect(0, 720, 800, 0);
+    keyboard.dispatchEvent(new Event('geometrychange'));
+    await settleHarness(harness);
+    expect(toolbar.visible).toBe(false);
+    expect(keyboard.overlaysContent).toBe(true);
+
+    harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab')[1]!.click();
+    await settleHarness(harness);
+    expect(keyboard.overlaysContent).toBe(false);
+    expect(toolbar.visible).toBe(false);
+
+    harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab')[0]!.click();
+    await settleHarness(harness);
+    currentEditorInlines(harness)[0]!.focus();
+    expect(keyboard.overlaysContent).toBe(true);
+    harness.remove();
+    expect(keyboard.overlaysContent).toBe(false);
+  } finally {
+    if (original) Object.defineProperty(navigator, 'virtualKeyboard', original);
+    else Reflect.deleteProperty(navigator, 'virtualKeyboard');
+  }
+});
 
 test.each(['alpha  ', 'alpha  \n'])(
   'editing outside code preserves literal content: %j',
