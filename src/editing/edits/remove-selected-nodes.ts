@@ -1,7 +1,11 @@
 import { cast } from '../../asserts.js';
 import { EditContext } from '../editor.js';
 import { children, dfs, findNextEditable, isAncestorOf } from '../../markdown/view-model-util.js';
-import { isInlineViewModelNode, viewModel } from '../../markdown/view-model-node.js';
+import {
+  isInlineViewModelNode,
+  type ViewModelNode,
+  viewModel,
+} from '../../markdown/view-model-node.js';
 
 export function removeSelectedNodes(context: EditContext) {
   const nodes = [...context.selection];
@@ -18,12 +22,7 @@ export function removeSelectedNodes(context: EditContext) {
   }
   context.startEditing();
   for (const node of nodes) {
-    if (node.type === 'section' && node[viewModel].parent) {
-      for (const child of children(node)) {
-        child[viewModel].insertBefore(cast(node[viewModel].parent), node);
-      }
-    }
-    node[viewModel].remove();
+    removeNodePreservingChildren(node);
   }
   let didFocus = false;
   for (const node of candidates.reverse()) {
@@ -42,4 +41,13 @@ export function removeSelectedNodes(context: EditContext) {
   }
   context.clearSelection();
   return true;
+}
+
+export function removeNodePreservingChildren(node: ViewModelNode) {
+  if (node.type === 'section' && node[viewModel].parent) {
+    for (const child of children(node)) {
+      child[viewModel].insertBefore(cast(node[viewModel].parent), node);
+    }
+  }
+  node[viewModel].remove();
 }
