@@ -314,6 +314,7 @@ export class Editor extends LitElement {
   }
 
   private async endComposition(inline: MarkdownInline, event: CompositionEvent) {
+    const renderer = this.rendererForElement(inline);
     const session = this.composition;
     if (!session || session.inline !== inline) {
       inline.composing = false;
@@ -373,36 +374,45 @@ export class Editor extends LitElement {
     this.compositionFocus = blockSelection
       ? { node: blockSelection.hostContext.selectionFocus ?? selectedNow![0]!, offset: 0 }
       : { node, offset: start };
+    let recoveredInline: MarkdownInline | undefined;
+    let recoveryInputOwner: MarkdownInline | undefined;
+    let recoveryTransferred = false;
     try {
       await inline.recoverComposition(selection, false);
+      recoveredInline = this.inlineForNode(node, renderer);
+      recoveryInputOwner = recoveredInline;
       if (
         !node[viewModel].connected ||
         node[viewModel].version !== version ||
         node.content !== content
       ) {
-        if (inline.isConnected) noAwait(inline.recoverComposition({ anchor: 0, focus: 0 }));
         return;
       }
       if (blockSelection) {
-        const target = this.inlineForNode(node) ?? blockSelection.target;
-        if (!target.isConnected || !selectionUnchanged) {
-          noAwait(inline.recoverComposition(selection));
+        const target =
+          recoveredInline?.hostContext === blockSelection.hostContext
+            ? recoveredInline
+            : blockSelection.target;
+        if (!target?.isConnected || !selectionUnchanged) {
           return;
         }
+        const targetRenderer = this.rendererForElement(target);
         const first = this.runIsolatedEditAction(target, replaceSelectedBlocks, newText);
-        const focusedInline = first ? this.inlineForNode(first) : undefined;
+        const focusedInline = first ? this.inlineForNode(first, targetRenderer) : undefined;
         if (focusedInline?.isConnected) {
+          focusedInline.holdRecoveryEventsFrom(recoveredInline?.takeRecoveryEvents() ?? []);
+          recoveryInputOwner = focusedInline;
           noAwait(
             focusedInline.recoverComposition({
               anchor: newText.length,
               focus: newText.length,
             }),
           );
+          recoveryTransferred = true;
         }
       } else {
-        const target = this.inlineForNode(node);
+        const target = recoveredInline;
         if (!target?.isConnected) {
-          if (inline.isConnected) noAwait(inline.recoverComposition(selection));
           return;
         }
         this.runEditAction(target, editInlineNode, {
@@ -413,16 +423,28 @@ export class Editor extends LitElement {
         });
         const caret = start + newText.length;
         noAwait(target.recoverComposition({ anchor: caret, focus: caret }));
+        recoveryTransferred = true;
       }
     } finally {
+      if (!recoveryTransferred) recoveryInputOwner?.replayRecoveryEvents();
       this.compositionFocus = undefined;
     }
   }
 
-  private inlineForNode(node: InlineViewModelNode) {
-    const inlines = [
-      ...this.markdownRenderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
-    ].filter((inline) => inline.node === node);
+  private rendererForElement(element: Element) {
+    const root = element.getRootNode();
+    return root instanceof ShadowRoot && root.host instanceof MarkdownRenderer
+      ? root.host
+      : this.markdownRenderer;
+  }
+
+  private inlineForNode(
+    node: InlineViewModelNode,
+    renderer: MarkdownRenderer = this.markdownRenderer,
+  ) {
+    const inlines = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].filter(
+      (inline) => inline.node === node,
+    );
     return inlines.find((inline) => inline.matches(':focus-within')) ?? inlines[0];
   }
 

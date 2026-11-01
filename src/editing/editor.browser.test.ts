@@ -2509,6 +2509,79 @@ describe('composition recovery', () => {
     expect(serializeToString(tree.root)).toBe('beta!\n');
   });
 
+  test('commits selected-block composition in a nested host and restores history', async () => {
+    const editor = new Editor();
+    document.body.replaceChildren(editor);
+    const tree = parseMarkdownTree('alpha\n\nbeta\n');
+    const outerTree = parseMarkdownTree('```nested\nouter\n```\n\nafter\n');
+    const outerSource = serializeToString(outerTree.root);
+    editor.root = outerTree.root;
+    editor.renderDelegate = {
+      renderCodeBlock: ({ node }) =>
+        node.info === 'nested'
+          ? html`<md-transclusion .node=${node} .root=${tree.root}></md-transclusion>`
+          : undefined,
+    };
+    await nextTask();
+
+    const outerRenderer = editor.shadowRoot!.querySelector('md-block-render')!;
+    const transclusion = outerRenderer.shadowRoot!.querySelector('md-transclusion')!;
+    const renderer = transclusion.shadowRoot!.querySelector('md-block-render')!;
+    const [alpha, beta] = [
+      ...renderer.shadowRoot!.querySelectorAll('md-inline'),
+    ] as MarkdownInline[];
+    beta!.focus();
+    beta!.hostContext!.expandSelection([beta!.node!, alpha!.node!]);
+    await nextTask();
+    setSelection(beta!, 0, beta!.node!.content.length);
+    beta!.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    compositionInput(beta!, () => {}, 0, beta!.node!.content.length, 'beta');
+    beta!.queueRecoveryInput(
+      new InputEvent('beforeinput', { bubbles: true, inputType: 'insertText', data: 'Z' }),
+    );
+    beta!.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'beta' }));
+    await nextTask();
+    await nextTask();
+    await nextTask();
+
+    const focused = () =>
+      renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline | null;
+    expect(serializeToString(tree.root)).toBe('betaZ\n');
+    expect(serializeToString(outerTree.root)).toBe(outerSource);
+    expect(
+      [...renderer.shadowRoot!.querySelectorAll('md-inline')].map((inline) => inline.textContent),
+    ).toEqual(['betaZ']);
+    expect(focused()?.node).toBe(alpha!.node);
+    expect(focused()?.getSelection()?.start.index).toBe(5);
+    expect(focused()?.getSelection()?.end.index).toBe(5);
+    expect(renderer.hostContext.selection.size).toBe(0);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('beta\n');
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('alpha\n\nbeta\n');
+    expect(serializeToString(outerTree.root)).toBe(outerSource);
+    expect(focused()?.hostContext!.selection.has(alpha!.node!)).toBe(true);
+    expect(focused()?.hostContext!.selection.has(beta!.node!)).toBe(true);
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('beta\n');
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('betaZ\n');
+    expect(serializeToString(outerTree.root)).toBe(outerSource);
+    expect(focused()?.node).toBe(alpha!.node);
+    expect(focused()?.getSelection()?.start.index).toBe(5);
+    expect(focused()?.getSelection()?.end.index).toBe(5);
+    await userEvent.keyboard('!');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('betaZ!\n');
+    expect(serializeToString(outerTree.root)).toBe(outerSource);
+  });
+
   test('unchanged whole-block composition records a focused history boundary', async () => {
     const { editor, tree, inline } = await setup('a', 0, 1);
     inline.hostContext!.expandSelection([inline.node!]);
