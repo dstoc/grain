@@ -1,7 +1,14 @@
 import { LitElement, css, html } from 'lit';
 
 import './editing/editor.js';
+import './editing/mobile-keyboard-toolbar.js';
 import './markdown/transclusion.js';
+import { MarkdownInline } from './markdown/inline-render.js';
+import type {
+  MobileToolbarAction,
+  MobileToolbarActionEvent,
+  MobileToolbarFocusEvent,
+} from './editing/mobile-keyboard-toolbar.js';
 import { createBlockParser, parseMarkdownTree } from './markdown/block-parser/api.js';
 import type { BlockParser } from './markdown/block-parser/api.js';
 import { serializeToString } from './markdown/block-serializer.js';
@@ -12,6 +19,14 @@ import type { MarkdownTree } from './markdown/view-model.js';
 import { styles as appStyles } from './style.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, ...appStyles];
+
+interface GrainVirtualKeyboard extends EventTarget {
+  overlaysContent: boolean;
+  readonly boundingRect: DOMRect;
+}
+
+const getVirtualKeyboard = () =>
+  (navigator as Navigator & { virtualKeyboard?: GrainVirtualKeyboard }).virtualKeyboard;
 
 const sample = `# Block Harness
 This harness exercises the legacy renderer port with *emphasis*, **strong text**, ~~strikethrough~~, \`inline code\`, and a #tag.
@@ -66,6 +81,9 @@ class MarkdownDevHarness extends LitElement {
   static override styles = css`
     :host {
       display: block;
+      box-sizing: border-box;
+      min-width: 0;
+      max-width: 100%;
       min-height: 100vh;
       color: var(--root-color);
       background:
@@ -90,11 +108,14 @@ class MarkdownDevHarness extends LitElement {
 
     .shell {
       display: grid;
-      grid-template-columns: minmax(300px, 0.92fr) minmax(320px, 1.08fr);
+      grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+      min-width: 0;
       min-height: 100vh;
+      padding-bottom: var(--mobile-keyboard-reserve, 0px);
     }
 
     .panel {
+      min-width: 0;
       padding: 2rem;
     }
 
@@ -136,6 +157,8 @@ class MarkdownDevHarness extends LitElement {
 
     textarea {
       width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
       min-height: 68vh;
       resize: vertical;
       border: 1px solid color-mix(in srgb, var(--root-color) 14%, transparent);
@@ -214,6 +237,9 @@ class MarkdownDevHarness extends LitElement {
     }
 
     .preview-card {
+      min-width: 0;
+      max-width: 100%;
+      box-sizing: border-box;
       min-height: 68vh;
       border: 1px solid color-mix(in srgb, var(--root-color) 8%, transparent);
       border-radius: 24px;
@@ -226,11 +252,93 @@ class MarkdownDevHarness extends LitElement {
 
     .tabs {
       display: inline-flex;
+      box-sizing: border-box;
+      max-width: 100%;
+      overflow-x: auto;
       gap: 0.45rem;
       margin-bottom: 0.85rem;
       padding: 0.2rem;
       border-radius: 999px;
       background: color-mix(in srgb, var(--root-color) 6%, transparent);
+    }
+
+    .simulation-toggle {
+      border: 1px dashed color-mix(in srgb, var(--root-color) 25%, transparent);
+      border-radius: 999px;
+      background: transparent;
+      color: color-mix(in srgb, var(--root-color) 72%, transparent);
+      padding: 0.5rem 0.75rem;
+      font:
+        600 0.75rem/1 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
+      cursor: pointer;
+    }
+
+    .simulation-toggle[aria-pressed='true'] {
+      border-style: solid;
+      color: var(--md-accent-color);
+    }
+
+    .simulated-keyboard {
+      position: fixed;
+      z-index: 1000;
+      right: 0;
+      left: 0;
+      box-sizing: border-box;
+      display: grid;
+      grid-template-rows: auto 1fr 1fr 1fr;
+      gap: 0.45rem;
+      height: 280px;
+      padding: 0.65rem 0.5rem 0.8rem;
+      border-top: 1px solid #c9d0c5;
+      border-radius: 14px 14px 0 0;
+      background: #e5e8e2;
+      box-shadow: 0 -8px 28px rgb(0 0 0 / 12%);
+      color: #334432;
+      font:
+        12px/1.2 system-ui,
+        sans-serif;
+    }
+
+    .simulated-keyboard[hidden] {
+      display: none;
+    }
+
+    .keyboard-label {
+      text-align: center;
+      color: #596454;
+      font:
+        600 0.65rem/1.2 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .key-row {
+      display: flex;
+      justify-content: center;
+      gap: 0.35rem;
+    }
+
+    .key-row span {
+      display: grid;
+      flex: 1 1 0;
+      max-width: 3rem;
+      min-width: 0;
+      place-items: center;
+      border-radius: 5px;
+      background: #fafbf7;
+      box-shadow: 0 1px 2px rgb(0 0 0 / 14%);
+      font-size: 0.8rem;
+    }
+
+    .key-row .wide-key {
+      max-width: 6rem;
+      background: #d3d9d0;
     }
 
     .tab {
@@ -284,7 +392,11 @@ class MarkdownDevHarness extends LitElement {
 
     @media (max-width: 920px) {
       .shell {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .panel {
+        padding: clamp(1rem, 4vw, 2rem);
       }
 
       .editor {
@@ -309,6 +421,11 @@ class MarkdownDevHarness extends LitElement {
     activeTab: { state: true },
     serializedMarkdown: { state: true },
     treeJson: { state: true },
+    toolbarVisible: { state: true },
+    toolbarDisabled: { state: true },
+    toolbarTop: { state: true },
+    simulatedKeyboard: { state: true },
+    keyboardTop: { state: true },
   };
 
   declare root: ViewModelNode | undefined;
@@ -321,11 +438,26 @@ class MarkdownDevHarness extends LitElement {
   declare private activeTab: 'render' | 'serialize' | 'tree';
   declare private serializedMarkdown: string;
   declare private treeJson: string;
+  declare private toolbarVisible: boolean;
+  declare private toolbarDisabled: boolean;
+  declare private toolbarTop: number;
+  declare private simulatedKeyboard: boolean;
+  declare private keyboardTop: number;
   private parser: BlockParser;
   private observedTree: MarkdownTree | undefined;
   private parserReusable = false;
   private playbackTimer: number | undefined;
   private readonly playbackDelayMs = 10;
+  private activeInline: MarkdownInline | undefined;
+  private toolbarHasFocus = false;
+  private keyboardHeight = 0;
+  private observedKeyboardApi: GrainVirtualKeyboard | undefined;
+  private previousOverlayContent: boolean | undefined;
+  private selectionChangeDocument: Document | undefined;
+  private selectionChangeRoot: ShadowRoot | undefined;
+  private visualViewportBaseline = 0;
+  private readinessTimer: number | undefined;
+  private caretFrame: number | undefined;
 
   constructor() {
     super();
@@ -340,7 +472,19 @@ class MarkdownDevHarness extends LitElement {
     this.activeTab = 'render';
     this.serializedMarkdown = '';
     this.treeJson = '';
+    this.toolbarVisible = false;
+    this.toolbarDisabled = true;
+    this.toolbarTop = 0;
+    this.simulatedKeyboard = false;
+    this.keyboardTop = 0;
     this.reparse(sample, true);
+    this.addEventListener('focusin', this.onFocusIn);
+    this.addEventListener('focusout', this.onFocusOut);
+    this.addEventListener('inline-input', this.onEditorInput);
+    this.addEventListener('inline-keydown', this.onEditorKeydown);
+    this.addEventListener('inline-composition-start', this.onCompositionChange);
+    this.addEventListener('inline-composition-end', this.onCompositionChange);
+    this.addEventListener('inline-projection-recovery', this.onCompositionChange);
   }
 
   override render() {
@@ -409,6 +553,14 @@ class MarkdownDevHarness extends LitElement {
             >
               Tree
             </button>
+            <button
+              class="simulation-toggle"
+              aria-pressed=${this.simulatedKeyboard}
+              @pointerdown=${this.preserveControlFocus}
+              @click=${this.toggleSimulatedKeyboard}
+            >
+              ${this.simulatedKeyboard ? 'Hide simulated keyboard' : 'Show simulated keyboard'}
+            </button>
           </div>
           <div class="preview-card">
             ${
@@ -426,6 +578,34 @@ class MarkdownDevHarness extends LitElement {
           </div>
         </section>
       </main>
+      <md-mobile-keyboard-toolbar
+        .visible=${this.toolbarVisible}
+        .disabled=${this.toolbarDisabled}
+        style="--toolbar-top: ${this.toolbarTop}px"
+        @mobile-toolbar-action=${this.onMobileToolbarAction}
+        @mobile-toolbar-focus-change=${this.onToolbarFocusChange}
+      ></md-mobile-keyboard-toolbar>
+      <div
+        class="simulated-keyboard"
+        ?hidden=${!this.simulatedKeyboard || !this.toolbarVisible}
+        style="top: ${this.keyboardTop}px"
+        role="presentation"
+        aria-label="Simulated software keyboard for desktop preview"
+      >
+        <div class="keyboard-label">Simulated software keyboard · desktop preview</div>
+        <div class="key-row" aria-hidden="true">
+          ${['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'].map((key) => html`<span>${key}</span>`)}
+        </div>
+        <div class="key-row" aria-hidden="true">
+          ${['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l'].map((key) => html`<span>${key}</span>`)}
+        </div>
+        <div class="key-row" aria-hidden="true">
+          <span class="wide-key">?123</span>
+          <span class="wide-key">↵</span>
+          <span class="wide-key" style="max-width: 12rem">space</span>
+          <span class="wide-key">⌫</span>
+        </div>
+      </div>
     `;
   }
 
@@ -451,11 +631,28 @@ class MarkdownDevHarness extends LitElement {
 
   private setTab(tab: 'render' | 'serialize' | 'tree') {
     this.activeTab = tab;
+    if (tab !== 'render') this.clearEditingTarget();
+    else this.refreshKeyboardState();
+  }
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    window.addEventListener('resize', this.onViewportChange);
+    window.addEventListener('orientationchange', this.onOrientationChange);
+    window.visualViewport?.addEventListener('resize', this.onViewportChange);
+    window.visualViewport?.addEventListener('scroll', this.onViewportChange);
   }
 
   override disconnectedCallback(): void {
     this.observeRootTree(undefined);
     this.stopPlayback();
+    window.removeEventListener('resize', this.onViewportChange);
+    window.removeEventListener('orientationchange', this.onOrientationChange);
+    window.visualViewport?.removeEventListener('resize', this.onViewportChange);
+    window.visualViewport?.removeEventListener('scroll', this.onViewportChange);
+    this.clearReadinessTimer();
+    this.stopObservingNativeSelection();
+    this.stopObservingVirtualKeyboard();
     super.disconnectedCallback();
   }
 
@@ -546,6 +743,423 @@ class MarkdownDevHarness extends LitElement {
     this.pendingText = this.parser.getPendingText();
     this.treeJson = JSON.stringify(serializedTree, null, 2);
     this.renderVersion++;
+  }
+
+  private preserveControlFocus = (event: PointerEvent) => {
+    if (event.button === 0) event.preventDefault();
+  };
+
+  private toggleSimulatedKeyboard = () => {
+    this.simulatedKeyboard = !this.simulatedKeyboard;
+    this.refreshKeyboardState();
+  };
+
+  private onFocusIn = (event: FocusEvent) => {
+    const path = event.composedPath();
+    const inline = path.find(
+      (target): target is MarkdownInline => target instanceof MarkdownInline,
+    );
+    const toolbar = this.shadowRoot?.querySelector('md-mobile-keyboard-toolbar');
+    if (inline && this.activeTab === 'render' && this.isCurrentEditorInline(inline)) {
+      this.activeInline = inline;
+      this.observeNativeSelection(inline);
+      this.toolbarHasFocus = false;
+      this.visualViewportBaseline = window.innerHeight;
+      this.claimVirtualKeyboardOverlay();
+      this.refreshToolbarReadiness();
+      this.refreshKeyboardState();
+    } else if (toolbar && path.includes(toolbar)) {
+      this.toolbarHasFocus = true;
+      this.restoreVirtualKeyboardOverlay();
+      this.refreshToolbarReadiness();
+    } else {
+      this.clearEditingTarget();
+    }
+  };
+
+  private onFocusOut = () => {
+    window.setTimeout(() => this.reconcileFocus(), 0);
+  };
+
+  private onToolbarFocusChange = (event: MobileToolbarFocusEvent) => {
+    if (event.detail.focused) {
+      this.toolbarHasFocus = true;
+      this.restoreVirtualKeyboardOverlay();
+      this.refreshToolbarReadiness();
+    } else {
+      window.setTimeout(() => this.reconcileFocus(), 0);
+    }
+  };
+
+  private reconcileFocus() {
+    const editor = this.activeEditor();
+    const inline = editor ? this.findFocusedInline(editor) : undefined;
+    if (inline) {
+      this.activeInline = inline;
+      this.observeNativeSelection(inline);
+      this.toolbarHasFocus = false;
+      this.claimVirtualKeyboardOverlay();
+      this.refreshToolbarReadiness();
+      this.refreshKeyboardState();
+      return;
+    }
+
+    const toolbar = this.shadowRoot?.querySelector('md-mobile-keyboard-toolbar');
+    const activeElement = this.deepActiveElement(this.shadowRoot);
+    if (toolbar && activeElement && this.isComposedDescendant(activeElement, toolbar)) {
+      this.toolbarHasFocus = true;
+      this.restoreVirtualKeyboardOverlay();
+      this.refreshToolbarReadiness();
+      return;
+    }
+    this.clearEditingTarget();
+  }
+
+  private activeEditor() {
+    return this.activeTab === 'render' ? this.shadowRoot?.querySelector('md-editor') : undefined;
+  }
+
+  private findFocusedInline(editor: HTMLElement): MarkdownInline | undefined {
+    const inspect = (root: ParentNode): MarkdownInline | undefined => {
+      for (const element of root.querySelectorAll('*')) {
+        if (element instanceof MarkdownInline && element.matches(':focus')) return element;
+        if (element.shadowRoot) {
+          const nested = inspect(element.shadowRoot);
+          if (nested) return nested;
+        }
+      }
+      return;
+    };
+    return editor.shadowRoot ? inspect(editor.shadowRoot) : undefined;
+  }
+
+  private isCurrentEditorInline(inline: MarkdownInline) {
+    const editor = this.activeEditor();
+    return !!editor && inline.isConnected && this.isComposedDescendant(inline, editor);
+  }
+
+  private isComposedDescendant(node: Node, ancestor: Node) {
+    let current: Node | null = node;
+    while (current && current !== ancestor) {
+      if (current.parentNode) current = current.parentNode;
+      else {
+        const root = current.getRootNode();
+        current = root instanceof ShadowRoot ? root.host : null;
+      }
+    }
+    return current === ancestor;
+  }
+
+  private deepActiveElement(root: Document | ShadowRoot | null | undefined): Element | null {
+    let active = root?.activeElement ?? null;
+    while (active instanceof HTMLElement && active.shadowRoot?.activeElement) {
+      active = active.shadowRoot.activeElement;
+    }
+    return active;
+  }
+
+  private getActionTarget() {
+    const editor = this.activeEditor();
+    if (!editor) return;
+    const focused = this.findFocusedInline(editor);
+    if (focused) {
+      this.activeInline = focused;
+      this.toolbarHasFocus = false;
+      return focused;
+    }
+    const toolbar = this.shadowRoot?.querySelector('md-mobile-keyboard-toolbar');
+    if (
+      this.toolbarHasFocus &&
+      toolbar &&
+      this.activeInline &&
+      this.activeInline.isConnected &&
+      this.isComposedDescendant(this.activeInline, editor)
+    ) {
+      return this.activeInline;
+    }
+  }
+
+  private clearEditingTarget() {
+    this.activeInline = undefined;
+    this.toolbarHasFocus = false;
+    this.clearReadinessTimer();
+    this.toolbarVisible = false;
+    this.toolbarDisabled = true;
+    this.keyboardHeight = 0;
+    this.style.setProperty('--mobile-keyboard-reserve', '0px');
+    this.stopObservingNativeSelection();
+    this.stopObservingVirtualKeyboard();
+  }
+
+  private refreshToolbarReadiness() {
+    const inline = this.getActionTarget();
+    const ready = !!inline?.mobileToolbarInputReady;
+    this.toolbarDisabled = !ready;
+    if (inline && !ready && !inline.composing) this.waitForReadiness(inline);
+    else this.clearReadinessTimer();
+  }
+
+  private waitForReadiness(inline: MarkdownInline) {
+    if (this.readinessTimer !== undefined) return;
+    this.readinessTimer = window.setInterval(() => {
+      if (!inline.isConnected || this.getActionTarget() !== inline) {
+        this.clearReadinessTimer();
+        this.refreshToolbarReadiness();
+        return;
+      }
+      if (inline.mobileToolbarInputReady) {
+        this.clearReadinessTimer();
+        this.toolbarDisabled = false;
+      }
+    }, 16);
+  }
+
+  private clearReadinessTimer() {
+    if (this.readinessTimer === undefined) return;
+    window.clearInterval(this.readinessTimer);
+    this.readinessTimer = undefined;
+  }
+
+  private onCompositionChange = (event: Event) => {
+    const inline = event
+      .composedPath()
+      .find((target): target is MarkdownInline => target instanceof MarkdownInline);
+    if (!inline || inline !== this.activeInline) return;
+    this.refreshToolbarReadiness();
+  };
+
+  private onEditorInput = () => this.scheduleCaretVisibilityCheck();
+  private onEditorKeydown = () => this.scheduleCaretVisibilityCheck();
+
+  private observeNativeSelection(inline: MarkdownInline) {
+    const document = inline.ownerDocument;
+    const root = inline.getRootNode();
+    const shadowRoot = root instanceof ShadowRoot ? root : undefined;
+    if (this.selectionChangeDocument === document && this.selectionChangeRoot === shadowRoot)
+      return;
+    this.stopObservingNativeSelection();
+    this.selectionChangeDocument = document;
+    this.selectionChangeRoot = shadowRoot;
+    document.addEventListener('selectionchange', this.onNativeSelectionChange);
+    shadowRoot?.addEventListener('selectionchange', this.onNativeSelectionChange);
+  }
+
+  private stopObservingNativeSelection() {
+    this.selectionChangeDocument?.removeEventListener(
+      'selectionchange',
+      this.onNativeSelectionChange,
+    );
+    this.selectionChangeRoot?.removeEventListener('selectionchange', this.onNativeSelectionChange);
+    this.selectionChangeDocument = undefined;
+    this.selectionChangeRoot = undefined;
+  }
+
+  private onNativeSelectionChange = () => {
+    if (this.toolbarVisible && this.getActionTarget()) this.scheduleCaretVisibilityCheck();
+  };
+
+  private onMobileToolbarAction = (event: MobileToolbarActionEvent) => {
+    const inline = this.getActionTarget();
+    if (!inline?.mobileToolbarInputReady || !inline.node) {
+      this.refreshToolbarReadiness();
+      return;
+    }
+    const restoreFocusAfterActivation = this.toolbarHasFocus;
+    inline.focus({ preventScroll: true });
+    if (!inline.mobileToolbarInputReady) {
+      this.refreshToolbarReadiness();
+      return;
+    }
+    this.sendToolbarAction(inline, event.detail.action);
+    this.refreshToolbarReadiness();
+    this.scheduleCaretVisibilityCheck();
+    if (restoreFocusAfterActivation) {
+      requestAnimationFrame(() => {
+        const editor = this.activeEditor();
+        const current = editor ? this.findFocusedInline(editor) : undefined;
+        const target = current ?? this.getActionTarget();
+        if (target?.mobileToolbarInputReady && this.isCurrentEditorInline(target)) {
+          target.focus({ preventScroll: true });
+          this.activeInline = target;
+          this.toolbarHasFocus = false;
+          this.claimVirtualKeyboardOverlay();
+          this.refreshToolbarReadiness();
+          this.refreshKeyboardState();
+        }
+      });
+    }
+  };
+
+  private sendToolbarAction(inline: MarkdownInline, action: MobileToolbarAction) {
+    const sendKey = (key: string, modifiers: { shiftKey?: boolean; ctrlKey?: boolean } = {}) => {
+      inline.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key,
+          ...modifiers,
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        }),
+      );
+    };
+    if (action === 'split') {
+      inline.dispatchEvent(
+        new InputEvent('beforeinput', {
+          inputType: 'insertLineBreak',
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+        }),
+      );
+      return;
+    }
+    if (action === 'select-all') {
+      if (!inline.hostContext?.hasSelection) {
+        const selection = this.getNativeSelection(inline);
+        if (!selection) return;
+        const range = inline.ownerDocument.createRange();
+        range.selectNodeContents(inline);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
+      sendKey('a', { ctrlKey: true });
+      return;
+    }
+    const keyMap: Record<
+      Exclude<MobileToolbarAction, 'split' | 'select-all'>,
+      { key: string; shiftKey?: boolean; ctrlKey?: boolean }
+    > = {
+      unindent: { key: 'Tab', shiftKey: true },
+      indent: { key: 'Tab' },
+      'extend-up': { key: 'ArrowUp', ctrlKey: true, shiftKey: true },
+      'extend-down': { key: 'ArrowDown', ctrlKey: true, shiftKey: true },
+      left: { key: 'ArrowLeft' },
+      right: { key: 'ArrowRight' },
+      up: { key: 'ArrowUp' },
+      down: { key: 'ArrowDown' },
+    };
+    sendKey(keyMap[action].key, keyMap[action]);
+  }
+
+  private getNativeSelection(inline: MarkdownInline) {
+    const root = inline.getRootNode() as (Document | ShadowRoot) & {
+      getSelection?: () => Selection | null;
+    };
+    return typeof root.getSelection === 'function' ? root.getSelection() : document.getSelection();
+  }
+
+  private toggleVirtualKeyboardOverlay() {
+    const api = getVirtualKeyboard();
+    if (!api) return;
+    this.observeVirtualKeyboard();
+    if (this.previousOverlayContent === undefined)
+      this.previousOverlayContent = api.overlaysContent;
+    api.overlaysContent = true;
+  }
+
+  private observeVirtualKeyboard() {
+    const api = getVirtualKeyboard();
+    if (this.observedKeyboardApi === api) return;
+    this.stopObservingVirtualKeyboard();
+    if (!api) return;
+    this.observedKeyboardApi = api;
+    api.addEventListener('geometrychange', this.onVirtualKeyboardGeometryChange);
+  }
+
+  private claimVirtualKeyboardOverlay() {
+    if (this.activeTab !== 'render' || !this.activeInline?.matches(':focus')) return;
+    this.toggleVirtualKeyboardOverlay();
+  }
+
+  private restoreVirtualKeyboardOverlay() {
+    if (this.observedKeyboardApi && this.previousOverlayContent !== undefined) {
+      this.observedKeyboardApi.overlaysContent = this.previousOverlayContent;
+    }
+    this.previousOverlayContent = undefined;
+  }
+
+  private stopObservingVirtualKeyboard() {
+    this.restoreVirtualKeyboardOverlay();
+    this.observedKeyboardApi?.removeEventListener(
+      'geometrychange',
+      this.onVirtualKeyboardGeometryChange,
+    );
+    this.observedKeyboardApi = undefined;
+  }
+
+  private onVirtualKeyboardGeometryChange = () => this.refreshKeyboardState();
+
+  private onViewportChange = () => this.refreshKeyboardState();
+
+  private onOrientationChange = () => {
+    this.visualViewportBaseline = window.innerHeight;
+    this.refreshKeyboardState();
+  };
+
+  private refreshKeyboardState() {
+    const inline = this.getActionTarget();
+    this.refreshToolbarReadiness();
+    if (!inline || this.activeTab !== 'render') {
+      this.toolbarVisible = false;
+      this.keyboardHeight = 0;
+      this.style.setProperty('--mobile-keyboard-reserve', '0px');
+      return;
+    }
+    if (inline.matches(':focus')) this.claimVirtualKeyboardOverlay();
+
+    let keyboardTop = 0;
+    let keyboardHeight = 0;
+    if (this.simulatedKeyboard) {
+      keyboardHeight = Math.min(280, window.innerHeight);
+      keyboardTop = Math.max(0, window.innerHeight - keyboardHeight);
+    } else if (getVirtualKeyboard()) {
+      const rect = getVirtualKeyboard()!.boundingRect;
+      keyboardHeight = Math.max(0, rect.height);
+      keyboardTop = rect.top;
+    } else {
+      const viewport = window.visualViewport;
+      const currentHeight = viewport?.height ?? window.innerHeight;
+      const hiddenHeight = this.visualViewportBaseline - currentHeight;
+      if (hiddenHeight >= 120) {
+        keyboardHeight = hiddenHeight;
+        keyboardTop = (viewport?.offsetTop ?? 0) + currentHeight;
+      }
+    }
+
+    this.keyboardHeight = keyboardHeight;
+    this.toolbarVisible = keyboardHeight > 0;
+    this.keyboardTop = keyboardTop;
+    this.toolbarTop = Math.max(0, keyboardTop - 56);
+    this.style.setProperty(
+      '--mobile-keyboard-reserve',
+      keyboardHeight > 0 ? `${keyboardHeight + 68}px` : '0px',
+    );
+    if (this.toolbarVisible) this.scheduleCaretVisibilityCheck();
+  }
+
+  private scheduleCaretVisibilityCheck() {
+    if (this.caretFrame !== undefined) cancelAnimationFrame(this.caretFrame);
+    this.caretFrame = requestAnimationFrame(() => {
+      this.caretFrame = undefined;
+      this.keepCaretVisible();
+    });
+  }
+
+  private keepCaretVisible() {
+    const inline = this.getActionTarget();
+    if (!inline || !inline.isConnected) return;
+    try {
+      const caretBottom = inline.getCaretPosition().y;
+      const visibleBottom = this.toolbarVisible
+        ? this.toolbarTop
+        : (window.visualViewport?.offsetTop ?? 0) +
+          (window.visualViewport?.height ?? window.innerHeight);
+      if (caretBottom > visibleBottom - 12) {
+        window.scrollBy(0, caretBottom - visibleBottom + 28);
+      }
+    } catch {
+      // A collapsed native selection may not have a measurable caret yet.
+    }
   }
 
   private observeRootTree(tree: MarkdownTree | undefined) {
