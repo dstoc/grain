@@ -638,6 +638,50 @@ describe('Editor', () => {
 
   describe('inline Backspace', () => {
     test.each([
+      ['* alpha\n', 'alpha\n', 'alpha', 0, 'Xalpha\n'],
+      ['* alpha\n* beta\n', 'alpha\n* beta\n', 'alpha', 0, 'Xalpha\n* beta\n'],
+      ['beta\n\n* alpha\n', 'betaalpha\n', 'betaalpha', 4, 'betaXalpha\n'],
+    ])(
+      'preserves list-start text and caret for %j',
+      async (source, expected, expectedContent, expectedOffset, expectedAfterTyping) => {
+        const tree = parseMarkdownTree(source);
+        const original = serializeToString(tree.serialize());
+        state.editor.root = tree.root;
+        await nextTask();
+        const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+        const inline = [...renderer.shadowRoot!.querySelectorAll('md-inline')].find(
+          (element) => element.node?.content === 'alpha',
+        ) as MarkdownInline;
+        inline.focus();
+        await userEvent.keyboard('{Home}{Backspace}');
+        await nextTask();
+
+        const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+        const selection = focused.getSelection();
+        expect(serializeToString(tree.serialize())).toBe(expected);
+        expect(focused.node!.content).toBe(expectedContent);
+        expect(selection?.start.index).toBe(expectedOffset);
+        expect(selection?.end.index).toBe(expectedOffset);
+
+        await userEvent.keyboard('X');
+        await nextTask();
+        expect(serializeToString(tree.serialize())).toBe(expectedAfterTyping);
+        await userEvent.keyboard('{Control>}z{/Control}');
+        await nextTask();
+        await userEvent.keyboard('{Control>}z{/Control}');
+        await nextTask();
+        expect(serializeToString(tree.serialize())).toBe(original);
+        await userEvent.keyboard('{Control>}y{/Control}');
+        await nextTask();
+        expect(serializeToString(tree.serialize())).toBe(expected);
+        expect(
+          (renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline).getSelection()
+            ?.start.index,
+        ).toBe(expectedOffset);
+      },
+    );
+
+    test.each([
       ['separator', '---', 'after', false],
       ['asterisks', '***', 'after', false],
       ['created heading prefix', '#', ' heading', false],
