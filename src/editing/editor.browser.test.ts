@@ -2140,6 +2140,92 @@ describe('composition recovery', () => {
     expect(inline.getSelection()?.start.index).toBe(2);
   });
 
+  test.each([
+    ['after Enter', 'alpha', true],
+    ['at a preexisting trailing newline', 'alpha\n', false],
+  ])(
+    'preserves composition inserted into the code caret marker %s',
+    async (_label, initialContent, insertNewline) => {
+      const editor = new Editor();
+      document.body.replaceChildren(editor);
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: [{ type: 'code-block', info: 'ts', content: initialContent }],
+      });
+      editor.root = tree.root;
+      await nextTask();
+
+      let inline = getInline(editor);
+      inline.focus();
+      if (insertNewline) {
+        setSelection(inline, initialContent.length);
+        await userEvent.keyboard('{Enter}');
+        await nextTask();
+        inline = getInline(editor);
+      }
+
+      const sentinel = inline.querySelector('[data-code-block-caret-sentinel]')!;
+      const text = document.createTreeWalker(sentinel, NodeFilter.SHOW_TEXT).nextNode() as Text;
+      window.getSelection()!.setBaseAndExtent(text, 0, text, 0);
+      inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+
+      const beforeInput = new InputEvent('beforeinput', {
+        bubbles: true,
+        inputType: 'insertCompositionText',
+        data: 'é',
+        isComposing: true,
+      });
+      Object.defineProperty(beforeInput, 'getTargetRanges', {
+        value: () => [
+          new StaticRange({
+            startContainer: text,
+            startOffset: 0,
+            endContainer: text,
+            endOffset: 0,
+          }),
+        ],
+      });
+      inline.dispatchEvent(beforeInput);
+      text.data = `é${text.data}`;
+      window.getSelection()!.setBaseAndExtent(text, 1, text, 1);
+      inline.dispatchEvent(
+        new InputEvent('input', {
+          bubbles: true,
+          inputType: 'insertCompositionText',
+          data: 'é',
+          isComposing: true,
+        }),
+      );
+      inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'é' }));
+      await nextTask();
+
+      inline = getInline(editor);
+      expect(inline.node!.content).toBe('alpha\né');
+      expect(inline.getProjectedText()).toBe('alpha\né');
+      expect(inline.getSelection()?.start.index).toBe(7);
+      expect(parseMarkdownTree(serializeToString(tree.root)).serialize()).toEqual(tree.serialize());
+
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(inline.node!.content).toBe('alpha\n');
+      expect(inline.getSelection()?.start.index).toBe(6);
+      if (insertNewline) {
+        await userEvent.keyboard('{Control>}z{/Control}');
+        await nextTask();
+        expect(inline.node!.content).toBe('alpha');
+        expect(inline.getSelection()?.start.index).toBe(5);
+        await userEvent.keyboard('{Control>}y{/Control}');
+        await nextTask();
+        expect(inline.node!.content).toBe('alpha\n');
+        expect(inline.getSelection()?.start.index).toBe(6);
+      }
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(inline.node!.content).toBe('alpha\né');
+      expect(inline.getSelection()?.start.index).toBe(7);
+    },
+  );
+
   test('ignores a late completion after a model change', async () => {
     const { editor, tree, inline, text } = await setup('anchor', 6);
     inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));

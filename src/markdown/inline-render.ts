@@ -16,7 +16,21 @@ export const CODE_BLOCK_CARET_SENTINEL_SELECTOR = '[data-code-block-caret-sentin
 
 function removeCodeBlockCaretSentinels(fragment: DocumentFragment) {
   for (const sentinel of fragment.querySelectorAll(CODE_BLOCK_CARET_SENTINEL_SELECTOR)) {
-    sentinel.remove();
+    const walker = document.createTreeWalker(sentinel, NodeFilter.SHOW_TEXT);
+    const textNodes: Text[] = [];
+    let next: Node | null;
+    while ((next = walker.nextNode())) textNodes.push(next as Text);
+
+    // Chromium may place native composition text in the sentinel before its render-only
+    // character. Remove that character alone so projection and selection retain the input.
+    for (const text of textNodes.reverse()) {
+      const index = text.data.lastIndexOf(CODE_BLOCK_CARET_SENTINEL);
+      if (index < 0) continue;
+      text.deleteData(index, CODE_BLOCK_CARET_SENTINEL.length);
+      break;
+    }
+
+    sentinel.replaceWith(...sentinel.childNodes);
   }
 }
 
