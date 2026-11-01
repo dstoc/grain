@@ -44,14 +44,62 @@ const actions: Array<{
   },
   { id: 'undo', label: 'Undo', icon: 'grain-undo' },
   { id: 'redo', label: 'Redo', icon: 'grain-redo', separator: true },
-  { id: 'left', label: 'Move caret left', icon: 'grain-left' },
-  { id: 'right', label: 'Move caret right', icon: 'grain-right' },
-  { id: 'up', label: 'Move caret up', icon: 'grain-up' },
-  { id: 'down', label: 'Move caret down', icon: 'grain-down' },
 ];
+
+type Gesture = {
+  pointerId: number;
+  button: HTMLButtonElement;
+  startX: number;
+  startY: number;
+  x: number;
+  y: number;
+  time: number;
+  speed: number;
+  residualX: number;
+  residualY: number;
+  axis?: 'horizontal' | 'vertical';
+};
+
+const arrowActions = {
+  left: 'left',
+  right: 'right',
+  up: 'up',
+  down: 'down',
+} as const;
+
+const lowSpeed = 150;
+const highSpeed = 350;
+const slowStep = 20.4;
+const fastStep = 13.2;
+
+function speedGain(speed: number) {
+  const ramp = Math.max(0, Math.min(1, (speed - lowSpeed) / (highSpeed - lowSpeed)));
+  return 1 + ramp * (slowStep / fastStep - 1);
+}
+
+function pointerTime(event: PointerEvent) {
+  return Number.isFinite(event.timeStamp) ? event.timeStamp : performance.now();
+}
+
+function vibrate() {
+  try {
+    const requestVibration = navigator.vibrate as unknown as (durationMs: number) => boolean;
+    if (typeof requestVibration !== 'function') return;
+    const result = requestVibration.call(navigator, 1) as unknown;
+    if (result && typeof (result as { then?: unknown }).then === 'function') {
+      void Promise.resolve(result).catch(() => undefined);
+    }
+  } catch {
+    // Haptics are best effort and must not block the toolbar action.
+  }
+}
 
 @customElement('md-mobile-keyboard-toolbar')
 export class MobileKeyboardToolbar extends LitElement {
+  static override get observedAttributes() {
+    return [...super.observedAttributes, 'hidden'];
+  }
+
   static override styles = css`
     :host {
       position: fixed;
@@ -69,7 +117,8 @@ export class MobileKeyboardToolbar extends LitElement {
       -webkit-tap-highlight-color: transparent;
     }
 
-    :host(:not([visible])) {
+    :host(:not([visible])),
+    :host([hidden]) {
       display: none;
     }
 
@@ -134,6 +183,10 @@ export class MobileKeyboardToolbar extends LitElement {
       stroke-linejoin: round;
     }
 
+    .directional {
+      touch-action: none;
+    }
+
     .separator {
       flex: 0 0 1px;
       align-self: center;
@@ -154,6 +207,26 @@ export class MobileKeyboardToolbar extends LitElement {
   @property({ type: Boolean }) accessor disabled = true;
   @property({ type: Boolean }) accessor undoDisabled = true;
   @property({ type: Boolean }) accessor redoDisabled = true;
+  private gesture: Gesture | undefined;
+
+  override attributeChangedCallback(
+    name: string,
+    oldValue: string | null,
+    newValue: string | null,
+  ) {
+    super.attributeChangedCallback(name, oldValue, newValue);
+    if (name === 'hidden' && newValue !== null) this.cancelGesture();
+  }
+
+  protected override willUpdate() {
+    if (this.disabled || !this.visible || this.hidden) this.cancelGesture();
+  }
+
+  override disconnectedCallback() {
+    this.cancelGesture();
+    super.disconnectedCallback();
+  }
+
   override render() {
     return html`
       <svg class="symbols" aria-hidden="true">
@@ -181,38 +254,49 @@ export class MobileKeyboardToolbar extends LitElement {
         <symbol id="grain-redo" viewBox="0 0 24 24">
           <path d="m15 5 5 5-5 5M20 10h-9a6 6 0 0 0-6 6v3" />
         </symbol>
-        <symbol id="grain-left" viewBox="0 0 24 24">
-          <path d="M20 12H4m6-6-6 6 6 6" />
-        </symbol>
-        <symbol id="grain-right" viewBox="0 0 24 24">
-          <path d="M4 12h16m-6-6 6 6-6 6" />
-        </symbol>
-        <symbol id="grain-up" viewBox="0 0 24 24">
-          <path d="M12 20V4m-6 6 6-6 6 6" />
-        </symbol>
-        <symbol id="grain-down" viewBox="0 0 24 24">
-          <path d="M12 4v16m-6-6 6 6 6-6" />
-        </symbol>
       </svg>
       <div class="strip" role="toolbar" aria-label="Mobile editing actions">
-        ${actions.map(
-          (action) => html`
-            <button
-              type="button"
-              aria-label=${action.label}
-              title=${action.label}
-              ?disabled=${this.disabled || this.isActionDisabled(action.id)}
-              @pointerdown=${this.preserveEditorFocus}
-              @focus=${this.onButtonFocus}
-              @blur=${this.onButtonBlur}
-              @click=${() => this.activate(action.id)}
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#${action.icon}"></use></svg>
-            </button>
-            ${action.separator ? html`<span class="separator" role="separator"></span>` : ''}
-          `,
-        )}
+        ${actions.slice(0, 3).map((action) => this.renderAction(action))}
+        <button
+          class="directional"
+          type="button"
+          aria-label="Move caret with directional drag"
+          title="Move caret with directional drag"
+          ?disabled=${this.disabled}
+          @pointerdown=${this.startGesture}
+          @pointermove=${this.moveGesture}
+          @pointerup=${this.endGesture}
+          @pointercancel=${this.endGesture}
+          @lostpointercapture=${this.endGesture}
+          @keydown=${this.onDirectionalKeydown}
+          @focus=${this.onButtonFocus}
+          @blur=${this.onButtonBlur}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 2v20M2 12h20M9 5l3-3 3 3M9 19l3 3-3-3M5 9l-3 3 3 3M19 9l3 3-3 3" />
+          </svg>
+        </button>
+        <span class="separator" role="separator"></span>
+        ${actions.slice(3).map((action) => this.renderAction(action))}
       </div>
+    `;
+  }
+
+  private renderAction(action: (typeof actions)[number]) {
+    return html`
+      <button
+        type="button"
+        aria-label=${action.label}
+        title=${action.label}
+        ?disabled=${this.disabled || this.isActionDisabled(action.id)}
+        @pointerdown=${this.preserveEditorFocus}
+        @focus=${this.onButtonFocus}
+        @blur=${this.onButtonBlur}
+        @click=${() => this.activate(action.id)}
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#${action.icon}"></use></svg>
+      </button>
+      ${action.separator ? html`<span class="separator" role="separator"></span>` : ''}
     `;
   }
 
@@ -220,8 +304,150 @@ export class MobileKeyboardToolbar extends LitElement {
     if (event.button === 0) event.preventDefault();
   };
 
+  private startGesture = (event: PointerEvent) => {
+    if (event.button === 0) event.preventDefault();
+    if (
+      this.gesture ||
+      !event.isPrimary ||
+      event.button !== 0 ||
+      this.disabled ||
+      !this.visible ||
+      this.hidden ||
+      !this.isConnected
+    ) {
+      return;
+    }
+    const button = event.currentTarget as HTMLButtonElement;
+    const time = pointerTime(event);
+    this.gesture = {
+      pointerId: event.pointerId,
+      button,
+      startX: event.clientX,
+      startY: event.clientY,
+      x: event.clientX,
+      y: event.clientY,
+      time,
+      speed: 0,
+      residualX: 0,
+      residualY: 0,
+    };
+    try {
+      button.setPointerCapture(event.pointerId);
+    } catch {
+      // Synthetic events and detached test targets cannot capture a pointer.
+    }
+  };
+
+  private moveGesture = (event: PointerEvent) => {
+    const gesture = this.gesture;
+    if (!gesture || gesture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    if (!this.isGestureAvailable()) {
+      this.cancelGesture();
+      return;
+    }
+
+    const time = pointerTime(event);
+    const dx = event.clientX - gesture.x;
+    const dy = event.clientY - gesture.y;
+    const elapsed = Math.max(1, time - gesture.time);
+    gesture.x = event.clientX;
+    gesture.y = event.clientY;
+    gesture.time = time;
+    if (dx === 0 && dy === 0) {
+      if (elapsed > 120) gesture.speed = 0;
+      return;
+    }
+    if (elapsed > 120) gesture.speed = 0;
+
+    const wasLocked = gesture.axis;
+    const speedDistance =
+      wasLocked === 'horizontal'
+        ? Math.abs(dx)
+        : wasLocked === 'vertical'
+          ? Math.abs(dy)
+          : Math.hypot(dx, dy);
+    const instantaneousSpeed = (speedDistance * 1000) / elapsed;
+    const alpha = 1 - Math.exp(-elapsed / 60);
+    gesture.speed += alpha * (instantaneousSpeed - gesture.speed);
+    const scale = speedGain(gesture.speed) / slowStep;
+
+    if (!wasLocked || wasLocked === 'horizontal') gesture.residualX += dx * scale;
+    if (!wasLocked || wasLocked === 'vertical') gesture.residualY += dy * scale;
+
+    if (!gesture.axis) {
+      const totalX = event.clientX - gesture.startX;
+      const totalY = event.clientY - gesture.startY;
+      if (Math.max(Math.abs(totalX), Math.abs(totalY)) >= slowStep) {
+        gesture.axis = Math.abs(totalX) >= Math.abs(totalY) ? 'horizontal' : 'vertical';
+        if (gesture.axis === 'horizontal') gesture.residualY = 0;
+        else gesture.residualX = 0;
+      }
+    }
+    if (gesture.axis === 'horizontal') this.emitResidual(gesture, 'horizontal');
+    else if (gesture.axis === 'vertical') this.emitResidual(gesture, 'vertical');
+  };
+
+  private endGesture = (event: PointerEvent) => {
+    if (this.gesture?.pointerId === event.pointerId) this.cancelGesture();
+  };
+
+  private cancelGesture() {
+    const gesture = this.gesture;
+    if (!gesture) return;
+    this.gesture = undefined;
+    try {
+      if (gesture.button.hasPointerCapture(gesture.pointerId))
+        gesture.button.releasePointerCapture(gesture.pointerId);
+    } catch {
+      // The pointer may already have been released by the browser.
+    }
+  }
+
+  private isGestureAvailable() {
+    return (
+      this.isConnected &&
+      this.visible &&
+      !this.disabled &&
+      !this.hidden &&
+      this.getClientRects().length > 0
+    );
+  }
+
+  private emitResidual(gesture: Gesture, axis: 'horizontal' | 'vertical') {
+    const horizontal = axis === 'horizontal';
+    let residual = horizontal ? gesture.residualX : gesture.residualY;
+    while (residual >= 1) {
+      this.activate(horizontal ? arrowActions.right : arrowActions.down);
+      residual -= 1;
+    }
+    while (residual <= -1) {
+      this.activate(horizontal ? arrowActions.left : arrowActions.up);
+      residual += 1;
+    }
+    if (horizontal) gesture.residualX = residual;
+    else gesture.residualY = residual;
+  }
+
+  private onDirectionalKeydown = (event: KeyboardEvent) => {
+    const action =
+      event.key === 'ArrowLeft'
+        ? 'left'
+        : event.key === 'ArrowRight'
+          ? 'right'
+          : event.key === 'ArrowUp'
+            ? 'up'
+            : event.key === 'ArrowDown'
+              ? 'down'
+              : undefined;
+    if (!action || this.disabled) return;
+    event.preventDefault();
+    this.activate(action);
+  };
+
   private activate(action: MobileToolbarAction) {
     if (this.disabled || this.isActionDisabled(action)) return;
+    vibrate();
     this.dispatchEvent(
       new CustomEvent('mobile-toolbar-action', {
         detail: { action },
