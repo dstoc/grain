@@ -579,12 +579,21 @@ class MarkdownDevHarness extends LitElement {
       }
 
       .shell.source-expanded {
-        grid-template-rows: minmax(200px, 0.42fr) minmax(0, 1fr);
+        grid-template-rows: minmax(96px, 0.42fr) minmax(144px, 1fr);
       }
 
       .editor {
         border-right: 0;
         border-bottom: 1px solid var(--harness-line);
+      }
+
+      .source-heading {
+        height: 44px;
+      }
+
+      textarea {
+        padding-top: 0.5rem;
+        padding-bottom: 0.5rem;
       }
 
       .preview-card {

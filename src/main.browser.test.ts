@@ -268,6 +268,79 @@ test('phone layout starts with the live editor and keeps Source available on dem
   );
 });
 
+test('Source and simulated keyboard leave a usable phone output viewport', async () => {
+  async function expectUsableOutput(width: number, height: number, keepToolsOpen: boolean) {
+    await page.viewport(width, height);
+    const { harness, source } = await createSettledHarness('alpha');
+    const sourceToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.source-toggle')!;
+    sourceToggle.click();
+    await harness.updateComplete;
+
+    const [inline] = currentEditorInlines(harness);
+    const toolbar = await showSimulatedKeyboard(harness, inline!);
+    const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+    if (!keepToolsOpen) {
+      toolsToggle.click();
+      await harness.updateComplete;
+    }
+
+    const focusedInline = await waitForFocusedInline(harness);
+    focusedInline.setSelectionOffsets(
+      focusedInline.textContent!.length,
+      focusedInline.textContent!.length,
+    );
+    await userEvent.keyboard('X');
+    await settleHarness(harness);
+
+    const frame = harness.shadowRoot!.querySelector<HTMLElement>('.app-frame')!;
+    const tools = harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!;
+    const preview = harness.shadowRoot!.querySelector<HTMLElement>('.preview')!;
+    const tabs = harness.shadowRoot!.querySelector<HTMLElement>('.tabs')!;
+    const canvas = harness.shadowRoot!.querySelector<HTMLElement>('.preview-card')!;
+    const sourceTextarea = harness.shadowRoot!.querySelector<HTMLTextAreaElement>('#source')!;
+    const toolbarRect = toolbar.getBoundingClientRect();
+    const frameRect = frame.getBoundingClientRect();
+    const previewRect = preview.getBoundingClientRect();
+    const tabsRect = tabs.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    const canvasStyle = getComputedStyle(canvas);
+    const usableCanvasHeight =
+      canvas.clientHeight -
+      Number.parseFloat(canvasStyle.paddingTop) -
+      Number.parseFloat(canvasStyle.paddingBottom);
+    const sourceStyle = getComputedStyle(sourceTextarea);
+    const sourceTextHeight =
+      sourceTextarea.clientHeight -
+      Number.parseFloat(sourceStyle.paddingTop) -
+      Number.parseFloat(sourceStyle.paddingBottom);
+
+    expect(source.value).toContain('alphaX');
+    expect(focusedInline.matches(':focus')).toBe(true);
+    expect(currentEditorInlines(harness).some((item) => item.textContent?.includes('alphaX'))).toBe(
+      true,
+    );
+    expect(tools.hidden).toBe(!keepToolsOpen);
+    expect(sourceTextHeight).toBeGreaterThanOrEqual(22);
+    expect(toolbar.visible).toBe(true);
+    expect(tabsRect.top).toBeGreaterThanOrEqual(previewRect.top);
+    expect(tabsRect.bottom).toBeLessThanOrEqual(previewRect.bottom);
+    expect(canvasRect.top).toBeGreaterThanOrEqual(tabsRect.bottom);
+    expect(canvasRect.bottom).toBeLessThanOrEqual(previewRect.bottom);
+    expect(previewRect.top).toBeGreaterThanOrEqual(frameRect.top);
+    expect(previewRect.bottom).toBeLessThan(frameRect.bottom);
+    expect(previewRect.bottom).toBeLessThanOrEqual(toolbarRect.top);
+    expect(preview.scrollTop).toBe(0);
+    expect(usableCanvasHeight).toBeGreaterThanOrEqual(44);
+    expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
+      document.documentElement.clientWidth,
+    );
+    harness.remove();
+  }
+
+  await expectUsableOutput(390, 667, false);
+  await expectUsableOutput(390, 844, true);
+});
+
 test('output tabs switch between live views with keyboard navigation', async () => {
   const { harness } = await createSettledHarness('# Keyboard output\n\nparagraph');
   const tabs = harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('[role="tab"]');
