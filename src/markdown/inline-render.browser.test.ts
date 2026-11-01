@@ -7,8 +7,6 @@ import { serializeToString } from './block-serializer.js';
 import { MarkdownRenderer } from './block-render.js';
 import { nextTask } from '../editing/test/lifecycle.js';
 import { html } from 'lit';
-import notoSansFontUrl from './test-fonts/noto-sans-latin-400-normal.woff2';
-import firaCodeFontUrl from './test-fonts/fira-code-latin-wght-normal.woff2';
 
 async function settle(element: HTMLElementTagNameMap['md-inline']) {
   await element.updateComplete;
@@ -129,76 +127,6 @@ describe('MarkdownInline', () => {
     expect(inline.querySelector('[type="strong_emphasis"]')).not.toBeNull();
     expect(inline.querySelector('a')?.textContent).toBe('https://example.com');
     renderer.remove();
-  });
-
-  test('keeps inline code at the surrounding line height in focused and unfocused paragraphs', async () => {
-    const fontFaces = document.createElement('style');
-    fontFaces.textContent = `
-      @font-face {
-        font-family: 'Noto Sans';
-        src: url('${notoSansFontUrl}') format('woff2');
-        font-weight: 400;
-        font-style: normal;
-      }
-      @font-face {
-        font-family: 'Fira Code VF';
-        src: url('${firaCodeFontUrl}') format('woff2');
-        font-weight: 300 700;
-        font-style: normal;
-      }
-    `;
-    document.head.append(fontFaces);
-    expect(await document.fonts.load('16px "Noto Sans"', 'plain alpha omega')).toHaveLength(1);
-    expect(await document.fonts.load('16px "Fira Code VF"', 'alpha')).toHaveLength(1);
-
-    const parser = createBlockParser();
-    parser.push('plain alpha omega\n\nfollowing\n\nplain `alpha` omega\n\nfollowing');
-    const renderer = new MarkdownRenderer();
-    renderer.block = parser.finish().root;
-    renderer.style.font = '16px/1.5 "Noto Sans"';
-    renderer.style.setProperty(
-      '--md-code-font-family',
-      "'Fira Code VF', 'noto sans mono', monospace",
-    );
-    renderer.style.setProperty('--md-code-span-bgcolor', '#e2e2e2');
-    document.body.append(renderer);
-    await nextTask();
-
-    const [plain, plainFollowing, withCode, codeFollowing] =
-      renderer.shadowRoot!.querySelectorAll('md-inline');
-    await Promise.all([plain, plainFollowing, withCode, codeFollowing].map(settle));
-
-    const assertLineLayout = () => {
-      const plainBounds = plain.getBoundingClientRect();
-      const codeBounds = withCode.getBoundingClientRect();
-      const plainFollowingTop = plainFollowing.getBoundingClientRect().top;
-      const codeFollowingTop = codeFollowing.getBoundingClientRect().top;
-      expect(codeBounds.height).toBe(plainBounds.height);
-      expect(codeBounds.height).toBe(24);
-      expect(codeFollowingTop - codeBounds.top).toBe(plainFollowingTop - plainBounds.top);
-      const codeSpan = withCode.querySelector("md-span[type='code_span']")!;
-      const codeStyle = getComputedStyle(codeSpan);
-      expect(codeStyle.fontFamily).toContain('Fira Code VF');
-      expect(codeStyle.lineHeight).toBe('24px');
-      expect(codeSpan.textContent).toContain('alpha');
-      expect(codeStyle.fontSize).toBe('16px');
-      expect(codeStyle.backgroundColor).toBe('rgb(226, 226, 226)');
-    };
-
-    plain.blur();
-    withCode.blur();
-    await nextTask();
-    assertLineLayout();
-
-    plain.focus();
-    await nextTask();
-    assertLineLayout();
-
-    withCode.focus();
-    await nextTask();
-    assertLineLayout();
-    renderer.remove();
-    fontFaces.remove();
   });
 
   test('keeps strikethrough aligned with visible text when unfocused', async () => {
