@@ -60,7 +60,7 @@ function state(toolbar: MobileKeyboardToolbar) {
 
 function gainAt(speed: number) {
   const ramp = Math.max(0, Math.min(1, (speed - 150) / 200));
-  return 1 + ramp * (20.4 / 13.2 - 1);
+  return 1 + ramp * (20.4 / 10.2 - 1);
 }
 
 test('one primary pointer emits no action until movement and ignores competing pointers', async () => {
@@ -81,8 +81,8 @@ test('one primary pointer emits no action until movement and ignores competing p
 
 test.each([
   [150, 1],
-  [250, 14 / 11],
-  [350, 17 / 11],
+  [250, 1.5],
+  [350, 2],
 ])('uses the linear gain curve at %i CSS px/s', async (speed, expectedGain) => {
   const { toolbar, directional, actions } = await mountToolbar();
   const alpha = 1 - Math.exp(-1);
@@ -141,8 +141,10 @@ test('a slow start keeps its weighting when a fast segment crosses the lock thre
   const gesture = state(toolbar)!;
   expect(gesture.axis).toBe('horizontal');
   expect(actions).toEqual(['right']);
-  expect(gesture.residualX).toBeGreaterThan(0.1);
-  expect(gesture.residualX).toBeLessThan(0.2);
+  expect(gesture.residualX).toBeCloseTo(
+    10 / slowStep + (11 * gainAt(gesture.speed)) / slowStep - 1,
+    8,
+  );
   toolbar.remove();
 });
 
@@ -156,8 +158,8 @@ test.each([30, 60, 120])('integrates a fast 224 px swipe consistently at %i Hz',
     pointer(directional, 'pointermove', { x: (speed * time) / 1000, y: 0, time });
   }
   pointer(directional, 'pointermove', { x: distance, y: 0, time: duration });
-  await settleDirectionalActions(15);
-  expect(actions).toHaveLength(16);
+  await settleDirectionalActions(20);
+  expect(actions).toHaveLength(21);
   expect(actions.every((action) => action === 'right')).toBe(true);
   pointer(directional, 'pointerup', { x: distance, y: 0, time: duration + 1 });
   toolbar.remove();
@@ -166,7 +168,7 @@ test.each([30, 60, 120])('integrates a fast 224 px swipe consistently at %i Hz',
 test('slow and fast swipes of the same distance emit the expected step counts', async () => {
   for (const [speed, expected] of [
     [100, 10],
-    [1000, 16],
+    [1000, 21],
   ]) {
     const { toolbar, directional, actions } = await mountToolbar();
     const distance = 224;
@@ -227,8 +229,8 @@ test('resets speed after a pause, emits no phantom steps at rest, and handles a 
   const actionsBeforeLargeDelta = actions.length;
   pointer(directional, 'pointerdown', { x: 0, y: 0, time: 1000, id: 2 });
   pointer(directional, 'pointermove', { x: 1000, y: 0, time: 2000, id: 2 });
-  await settleDirectionalActions(74);
-  expect(actions.length - actionsBeforeLargeDelta).toBe(75);
+  await settleDirectionalActions(97);
+  expect(actions.length - actionsBeforeLargeDelta).toBe(98);
   expect(actions.every((action) => action === 'right')).toBe(true);
   toolbar.remove();
 });
@@ -270,23 +272,89 @@ test.each([
   toolbar.remove();
 });
 
-test('drops undispatched directional steps after the toolbar becomes unavailable', async () => {
+test('preserves queued steps when a completed swipe is released', async () => {
   const { toolbar, directional, actions } = await mountToolbar();
   pointer(directional, 'pointerdown', { x: 0, y: 0, time: 0 });
   pointer(directional, 'pointermove', { x: 61.5, y: 0, time: 615 });
   expect(actions).toEqual(['right']);
-
-  toolbar.disabled = true;
-  await toolbar.updateComplete;
+  pointer(directional, 'pointerup', { x: 61.5, y: 0, time: 616 });
+  expect(state(toolbar)).toBeUndefined();
   await settleDirectionalActions(2);
+  expect(actions).toEqual(['right', 'right', 'right']);
+  toolbar.remove();
+});
+
+test('canceling a newer gesture preserves steps from an earlier completed swipe', async () => {
+  const { toolbar, directional, actions } = await mountToolbar();
+  pointer(directional, 'pointerdown', { x: 0, y: 0, time: 0, id: 1 });
+  pointer(directional, 'pointermove', { x: 61.5, y: 0, time: 615, id: 1 });
+  pointer(directional, 'pointerup', { x: 61.5, y: 0, time: 616, id: 1 });
   expect(actions).toEqual(['right']);
 
-  toolbar.disabled = false;
-  await toolbar.updateComplete;
-  pointer(directional, 'pointerdown', { x: 0, y: 0, time: 1000, id: 2 });
-  pointer(directional, 'pointermove', { x: 21, y: 0, time: 1210, id: 2 });
-  expect(actions).toEqual(['right', 'right']);
+  pointer(directional, 'pointerdown', { x: 0, y: 0, time: 700, id: 2 });
+  pointer(directional, 'pointermove', { x: 61.5, y: 0, time: 1315, id: 2 });
+  pointer(directional, 'pointercancel', { x: 61.5, y: 0, time: 1316, id: 2 });
+  await settleDirectionalActions(2);
+  expect(actions).toEqual(['right', 'right', 'right']);
   toolbar.remove();
+});
+
+test.each([
+  'pointercancel',
+  'lostpointercapture',
+  'disabled',
+  'hidden',
+  'disconnected',
+  'disabled-after-release',
+  'hidden-after-release',
+  'disconnected-after-release',
+] as const)('discards queued directional steps after %s', async (ending) => {
+  const original = Object.getOwnPropertyDescriptor(navigator, 'vibrate');
+  const vibrationRequests: number[] = [];
+  Object.defineProperty(navigator, 'vibrate', {
+    configurable: true,
+    writable: true,
+    value: (duration: number) => {
+      vibrationRequests.push(duration);
+      return true;
+    },
+  });
+  try {
+    const { toolbar, directional, actions } = await mountToolbar();
+    pointer(directional, 'pointerdown', { x: 0, y: 0, time: 0 });
+    pointer(directional, 'pointermove', { x: 61.5, y: 0, time: 615 });
+    expect(actions).toEqual(['right']);
+
+    if (ending === 'pointercancel' || ending === 'lostpointercapture') {
+      pointer(directional, ending, { x: 61.5, y: 0, time: 616 });
+    } else {
+      if (ending.endsWith('-after-release')) {
+        pointer(directional, 'pointerup', { x: 61.5, y: 0, time: 616 });
+        expect(state(toolbar)).toBeUndefined();
+      }
+      if (ending === 'disabled' || ending === 'disabled-after-release') {
+        toolbar.disabled = true;
+        await toolbar.updateComplete;
+        toolbar.disabled = false;
+        await toolbar.updateComplete;
+      } else if (ending === 'hidden' || ending === 'hidden-after-release') {
+        toolbar.hidden = true;
+        toolbar.hidden = false;
+      } else {
+        toolbar.remove();
+        document.body.append(toolbar);
+        await toolbar.updateComplete;
+      }
+    }
+
+    await settleDirectionalActions(3);
+    expect(actions).toEqual(['right']);
+    expect(vibrationRequests).toEqual([1]);
+    toolbar.remove();
+  } finally {
+    if (original) Object.defineProperty(navigator, 'vibrate', original);
+    else Reflect.deleteProperty(navigator, 'vibrate');
+  }
 });
 
 test('keyboard arrows emit one action and prevent page navigation', async () => {

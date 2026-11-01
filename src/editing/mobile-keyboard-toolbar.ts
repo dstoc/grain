@@ -47,6 +47,7 @@ const actions: Array<{
 ];
 
 type Gesture = {
+  id: number;
   pointerId: number;
   button: HTMLButtonElement;
   startX: number;
@@ -60,6 +61,11 @@ type Gesture = {
   axis?: 'horizontal' | 'vertical';
 };
 
+type QueuedDirectionalAction = {
+  action: MobileToolbarAction;
+  gestureId: number;
+};
+
 const arrowActions = {
   left: 'left',
   right: 'right',
@@ -70,7 +76,7 @@ const arrowActions = {
 const lowSpeed = 150;
 const highSpeed = 350;
 const slowStep = 20.4;
-const fastStep = 13.2;
+const fastStep = 10.2;
 
 function speedGain(speed: number) {
   const ramp = Math.max(0, Math.min(1, (speed - lowSpeed) / (highSpeed - lowSpeed)));
@@ -208,8 +214,11 @@ export class MobileKeyboardToolbar extends LitElement {
   @property({ type: Boolean }) accessor undoDisabled = true;
   @property({ type: Boolean }) accessor redoDisabled = true;
   private gesture: Gesture | undefined;
-  private pendingDirectionalActions: MobileToolbarAction[] = [];
+  private nextGestureId = 0;
+  private pendingDirectionalActions: QueuedDirectionalAction[] = [];
   private directionalActionDispatchScheduled = false;
+  private directionalActionDispatchTimer: number | undefined;
+  private directionalActionDispatchGeneration = 0;
 
   override attributeChangedCallback(
     name: string,
@@ -217,15 +226,15 @@ export class MobileKeyboardToolbar extends LitElement {
     newValue: string | null,
   ) {
     super.attributeChangedCallback(name, oldValue, newValue);
-    if (name === 'hidden' && newValue !== null) this.cancelGesture();
+    if (name === 'hidden' && newValue !== null) this.cancelUnavailableInteraction();
   }
 
   protected override willUpdate() {
-    if (this.disabled || !this.visible || this.hidden) this.cancelGesture();
+    if (this.disabled || !this.visible || this.hidden) this.cancelUnavailableInteraction();
   }
 
   override disconnectedCallback() {
-    this.cancelGesture();
+    this.cancelUnavailableInteraction();
     super.disconnectedCallback();
   }
 
@@ -267,9 +276,9 @@ export class MobileKeyboardToolbar extends LitElement {
           ?disabled=${this.disabled}
           @pointerdown=${this.startGesture}
           @pointermove=${this.moveGesture}
-          @pointerup=${this.endGesture}
-          @pointercancel=${this.endGesture}
-          @lostpointercapture=${this.endGesture}
+          @pointerup=${this.finishGesture}
+          @pointercancel=${this.cancelGestureForPointer}
+          @lostpointercapture=${this.cancelGestureForPointer}
           @keydown=${this.onDirectionalKeydown}
           @focus=${this.onButtonFocus}
           @blur=${this.onButtonBlur}
@@ -322,6 +331,7 @@ export class MobileKeyboardToolbar extends LitElement {
     const button = event.currentTarget as HTMLButtonElement;
     const time = pointerTime(event);
     this.gesture = {
+      id: ++this.nextGestureId,
       pointerId: event.pointerId,
       button,
       startX: event.clientX,
@@ -345,7 +355,7 @@ export class MobileKeyboardToolbar extends LitElement {
     if (!gesture || gesture.pointerId !== event.pointerId) return;
     event.preventDefault();
     if (!this.isGestureAvailable()) {
-      this.cancelGesture();
+      this.cancelUnavailableInteraction();
       return;
     }
 
@@ -390,13 +400,27 @@ export class MobileKeyboardToolbar extends LitElement {
     else if (gesture.axis === 'vertical') this.emitResidual(gesture, 'vertical');
   };
 
-  private endGesture = (event: PointerEvent) => {
-    if (this.gesture?.pointerId === event.pointerId) this.cancelGesture();
+  private finishGesture = (event: PointerEvent) => {
+    const gesture = this.gesture;
+    if (gesture?.pointerId === event.pointerId) this.clearGesture(gesture);
+  };
+
+  private cancelGestureForPointer = (event: PointerEvent) => {
+    const gesture = this.gesture;
+    if (gesture?.pointerId === event.pointerId) this.cancelGesture();
   };
 
   private cancelGesture() {
     const gesture = this.gesture;
     if (!gesture) return;
+    this.pendingDirectionalActions = this.pendingDirectionalActions.filter(
+      (queued) => queued.gestureId !== gesture.id,
+    );
+    this.clearGesture(gesture);
+    if (this.pendingDirectionalActions.length === 0) this.cancelDirectionalActionDispatch();
+  }
+
+  private clearGesture(gesture: Gesture) {
     this.gesture = undefined;
     try {
       if (gesture.button.hasPointerCapture(gesture.pointerId))
@@ -404,6 +428,21 @@ export class MobileKeyboardToolbar extends LitElement {
     } catch {
       // The pointer may already have been released by the browser.
     }
+  }
+
+  private cancelUnavailableInteraction() {
+    this.cancelGesture();
+    this.pendingDirectionalActions = [];
+    this.cancelDirectionalActionDispatch();
+  }
+
+  private cancelDirectionalActionDispatch() {
+    this.directionalActionDispatchGeneration++;
+    if (this.directionalActionDispatchTimer !== undefined) {
+      window.clearTimeout(this.directionalActionDispatchTimer);
+    }
+    this.directionalActionDispatchTimer = undefined;
+    this.directionalActionDispatchScheduled = false;
   }
 
   private isGestureAvailable() {
@@ -430,28 +469,31 @@ export class MobileKeyboardToolbar extends LitElement {
     }
     if (horizontal) gesture.residualX = residual;
     else gesture.residualY = residual;
-    this.enqueueDirectionalActions(actions);
+    this.enqueueDirectionalActions(actions, gesture.id);
   }
 
-  private enqueueDirectionalActions(actions: MobileToolbarAction[]) {
-    this.pendingDirectionalActions.push(...actions);
+  private enqueueDirectionalActions(actions: MobileToolbarAction[], gestureId: number) {
+    this.pendingDirectionalActions.push(...actions.map((action) => ({ action, gestureId })));
     if (this.directionalActionDispatchScheduled) return;
     this.dispatchNextDirectionalAction();
   }
 
   private dispatchNextDirectionalAction() {
     if (!this.isGestureAvailable()) {
-      this.pendingDirectionalActions = [];
+      this.cancelUnavailableInteraction();
       return;
     }
-    const action = this.pendingDirectionalActions.shift();
-    if (action === undefined) return;
-    this.activate(action);
+    const queued = this.pendingDirectionalActions.shift();
+    if (queued === undefined) return;
+    this.activate(queued.action);
     if (this.pendingDirectionalActions.length === 0) return;
 
     // Let a cross-block focus update render before routing the next step.
     this.directionalActionDispatchScheduled = true;
-    window.setTimeout(() => {
+    const generation = this.directionalActionDispatchGeneration;
+    this.directionalActionDispatchTimer = window.setTimeout(() => {
+      if (generation !== this.directionalActionDispatchGeneration) return;
+      this.directionalActionDispatchTimer = undefined;
       this.directionalActionDispatchScheduled = false;
       this.dispatchNextDirectionalAction();
     }, 0);
