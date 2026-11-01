@@ -27,7 +27,37 @@ export function insertParagraph(context: EditContext, index: number, endIndex = 
   insertSiblingParagraph(context, index, endIndex);
 }
 
-export { insertSiblingParagraph as insertLineBreak };
+export function insertLineBreak(context: EditContext, startIndex: number, endIndex = startIndex) {
+  const node = context.node;
+  assert(isInlineViewModelNode(node));
+  if (node.type !== 'code-block') {
+    insertSiblingParagraph(context, startIndex);
+    return;
+  }
+
+  if (startIndex === 0 || startIndex === node.content.length) {
+    insertSiblingParagraph(context, startIndex, endIndex);
+    return;
+  }
+
+  context.startEditing();
+  const parent = cast(node[viewModel].parent);
+  const paragraph = node[viewModel].tree.add({ type: 'paragraph', content: '' });
+  const trailingCodeBlock = node[viewModel].tree.add({
+    type: 'code-block',
+    info: node.info,
+    content: node.content.substring(endIndex),
+  });
+  paragraph[viewModel].insertBefore(parent, node[viewModel].nextSibling);
+  trailingCodeBlock[viewModel].insertBefore(parent, paragraph[viewModel].nextSibling);
+  node[viewModel].edit({
+    startIndex,
+    oldEndIndex: node.content.length,
+    newEndIndex: startIndex,
+    newText: '',
+  });
+  context.focus(paragraph, 0);
+}
 
 /**
  * Unindents the immediately containing list-item if `node` is an

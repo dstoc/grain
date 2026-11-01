@@ -344,10 +344,9 @@ export class MarkdownInline extends LitElement {
       }
       previous = walker.previousNode();
     }
-    const index = (cast(previous) as MarkdownSpan).node!.startIndex + offset;
     return {
       span: parent,
-      index,
+      index: (cast(previous) as MarkdownSpan).node!.startIndex + offset,
     };
   }
 
@@ -619,7 +618,15 @@ export class MarkdownSpan extends LitElement {
   }
 
   private renderText(content: string): TemplateResult {
-    if (this.closest('md-inline')?.node?.type === 'code-block') return html`${content}`;
+    const codeBlock = this.closest('md-inline')?.node;
+    if (codeBlock?.type === 'code-block') {
+      // The trailing break gives Chromium a caret position after a final newline without
+      // adding text to the code block's projection.
+      if (codeBlock.content.endsWith('\n') && content.endsWith('\n')) {
+        return html`${content}<br />`;
+      }
+      return html`${content}`;
+    }
     const parts = content.split(/(\b(?:https?:\/|go|b|cl)\/[^\s]*[\w/=?])/u);
     if (parts.length === 1) {
       return html`${parts[0]}`;
