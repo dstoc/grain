@@ -43,7 +43,10 @@ export const styles = [
       font-size: 0;
     }
     md-inline:not(:focus-within) md-span[type='strikethrough'] {
-      font-size: 16px;
+      text-decoration: none;
+    }
+    md-inline:not(:focus-within) md-span[type='strikethrough'] > md-span {
+      text-decoration: line-through;
     }
     a,
     md-span[type='shortcut_link'],

@@ -131,7 +131,8 @@ describe('MarkdownInline', () => {
 
   test('keeps strikethrough aligned with visible text when unfocused', async () => {
     const parser = createBlockParser();
-    parser.push('plain ~~alpha~~ omega');
+    const source = 'plain ~~alpha~~ omega a~~b~~c';
+    parser.push(source);
     const tree = parser.finish();
     const renderer = new MarkdownRenderer();
     renderer.block = tree.root;
@@ -140,31 +141,46 @@ describe('MarkdownInline', () => {
 
     const inline = renderer.shadowRoot!.querySelector('md-inline')!;
     await settle(inline);
-    const strike = inline.querySelector('md-span[type="strikethrough"]')!;
-    const text = [...strike.querySelectorAll('md-span[type="text"]')].find(
+    const strikes = [...inline.querySelectorAll('md-span[type="strikethrough"]')];
+    const alphaStrike = strikes.find((strike) => strike.textContent === '~~alpha~~')!;
+    const alpha = [...alphaStrike.querySelectorAll('md-span[type="text"]')].find(
       (span) => span.textContent === 'alpha',
     )!;
+    const adjacentStrike = strikes.find((strike) => strike.textContent === '~~b~~')!;
+    const b = [...adjacentStrike.querySelectorAll('md-span[type="text"]')].find(
+      (span) => span.textContent === 'b',
+    )!;
 
-    const expectStrikeToCoverText = () => {
+    const expectDecorationToCoverText = (strike: Element, text: Element) => {
       const strikeRect = strike.getBoundingClientRect();
       const textRect = text.getBoundingClientRect();
-      expect(strikeRect.height).toBeGreaterThan(0);
-      expect(strikeRect.top).toBeLessThanOrEqual(textRect.top);
-      expect(strikeRect.bottom).toBeGreaterThanOrEqual(textRect.bottom);
-      expect(getComputedStyle(strike).textDecorationLine).toBe('line-through');
+      expect(textRect.height).toBeGreaterThan(0);
+      if (inline.matches(':focus-within')) {
+        expect(strikeRect.height).toBeGreaterThan(0);
+        expect(strikeRect.top).toBeLessThanOrEqual(textRect.top);
+        expect(strikeRect.bottom).toBeGreaterThanOrEqual(textRect.bottom);
+        expect(getComputedStyle(strike).textDecorationLine).toBe('line-through');
+      } else {
+        expect(strikeRect.left).toBeCloseTo(textRect.left);
+        expect(strikeRect.right).toBeCloseTo(textRect.right);
+        expect(getComputedStyle(text).textDecorationLine).toBe('line-through');
+      }
     };
 
-    expect(inline.innerText).toBe('plain alpha omega');
-    expectStrikeToCoverText();
+    expect(inline.innerText).toBe('plain alpha omega abc');
+    expectDecorationToCoverText(alphaStrike, alpha);
+    expectDecorationToCoverText(adjacentStrike, b);
     inline.focus();
     await settle(inline);
-    expect(inline.innerText).toBe('plain ~~alpha~~ omega');
-    expectStrikeToCoverText();
+    expect(inline.innerText).toBe('plain ~~alpha~~ omega a~~b~~c');
+    expectDecorationToCoverText(alphaStrike, alpha);
+    expectDecorationToCoverText(adjacentStrike, b);
     inline.blur();
     await settle(inline);
-    expect(inline.innerText).toBe('plain alpha omega');
-    expectStrikeToCoverText();
-    expect(serializeToString(tree.serialize())).toBe('plain ~~alpha~~ omega\n');
+    expect(inline.innerText).toBe('plain alpha omega abc');
+    expectDecorationToCoverText(alphaStrike, alpha);
+    expectDecorationToCoverText(adjacentStrike, b);
+    expect(serializeToString(tree.serialize())).toBe(`${source}\n`);
     renderer.remove();
   });
 
