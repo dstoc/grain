@@ -8,6 +8,8 @@ export type MobileToolbarAction =
   | 'select-all'
   | 'extend-up'
   | 'extend-down'
+  | 'undo'
+  | 'redo'
   | 'left'
   | 'right'
   | 'up'
@@ -40,6 +42,8 @@ const actions: Array<{
     icon: 'grain-extenddown',
     separator: true,
   },
+  { id: 'undo', label: 'Undo', icon: 'grain-undo' },
+  { id: 'redo', label: 'Redo', icon: 'grain-redo', separator: true },
   { id: 'left', label: 'Move caret left', icon: 'grain-left' },
   { id: 'right', label: 'Move caret right', icon: 'grain-right' },
   { id: 'up', label: 'Move caret up', icon: 'grain-up' },
@@ -148,6 +152,8 @@ export class MobileKeyboardToolbar extends LitElement {
 
   @property({ type: Boolean, reflect: true }) accessor visible = false;
   @property({ type: Boolean }) accessor disabled = true;
+  @property({ type: Boolean }) accessor undoDisabled = true;
+  @property({ type: Boolean }) accessor redoDisabled = true;
   override render() {
     return html`
       <svg class="symbols" aria-hidden="true">
@@ -169,6 +175,12 @@ export class MobileKeyboardToolbar extends LitElement {
         <symbol id="grain-extenddown" viewBox="0 0 24 24">
           <path d="M3 3h11v8H3zM8 14v8m-3-3 3 3 3-3M18 10h3M18 14h3M18 18h3" />
         </symbol>
+        <symbol id="grain-undo" viewBox="0 0 24 24">
+          <path d="M9 5 4 10l5 5M4 10h9a6 6 0 0 1 6 6v3" />
+        </symbol>
+        <symbol id="grain-redo" viewBox="0 0 24 24">
+          <path d="m15 5 5 5-5 5M20 10h-9a6 6 0 0 0-6 6v3" />
+        </symbol>
         <symbol id="grain-left" viewBox="0 0 24 24">
           <path d="M20 12H4m6-6-6 6 6 6" />
         </symbol>
@@ -189,7 +201,7 @@ export class MobileKeyboardToolbar extends LitElement {
               type="button"
               aria-label=${action.label}
               title=${action.label}
-              ?disabled=${this.disabled}
+              ?disabled=${this.disabled || this.isActionDisabled(action.id)}
               @pointerdown=${this.preserveEditorFocus}
               @focus=${this.onButtonFocus}
               @blur=${this.onButtonBlur}
@@ -209,7 +221,7 @@ export class MobileKeyboardToolbar extends LitElement {
   };
 
   private activate(action: MobileToolbarAction) {
-    if (this.disabled) return;
+    if (this.disabled || this.isActionDisabled(action)) return;
     this.dispatchEvent(
       new CustomEvent('mobile-toolbar-action', {
         detail: { action },
@@ -217,6 +229,10 @@ export class MobileKeyboardToolbar extends LitElement {
         composed: true,
       }),
     );
+  }
+
+  private isActionDisabled(action: MobileToolbarAction) {
+    return (action === 'undo' && this.undoDisabled) || (action === 'redo' && this.redoDisabled);
   }
 
   private onButtonFocus = () => this.reportFocusChange(true);

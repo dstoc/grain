@@ -359,6 +359,18 @@ export class MarkdownTree extends EventTarget {
   private undoStack: OpBatch[] = [];
   private redoStack: OpBatch[] = [];
 
+  canUndo(root: ViewModelNode) {
+    assert(this.state === 'idle');
+    assert(!this.#disconnected);
+    return this.historyBatchIndex(this.undoStack, root) !== undefined;
+  }
+
+  canRedo(root: ViewModelNode) {
+    assert(this.state === 'idle');
+    assert(!this.#disconnected);
+    return this.historyBatchIndex(this.redoStack, root) !== undefined;
+  }
+
   disconnect() {
     if (this.#disconnected) return;
     this.caches.clear();
@@ -402,17 +414,10 @@ export class MarkdownTree extends EventTarget {
   undo(root: ViewModelNode) {
     assert(this.state === 'idle');
     assert(!this.#disconnected);
-    let batch: OpBatch | undefined = undefined;
-    for (let i = this.undoStack.length - 1; i >= 0; i--) {
-      const classification = classify(root, this.undoStack[i]);
-      if (classification === 'outside') continue;
-      if (classification === 'inside') {
-        [batch] = this.undoStack.splice(i, 1);
-        break;
-      }
-      if (classification === 'both') return;
-    }
-    if (!batch) return;
+    const index = this.historyBatchIndex(this.undoStack, root);
+    if (index === undefined) return;
+    const [batch] = this.undoStack.splice(index, 1);
+    assert(batch);
     {
       const newOps = this.edit(
         () => {
@@ -428,23 +433,17 @@ export class MarkdownTree extends EventTarget {
       );
       assert(newOps.length === 0);
     }
+    if (batch.ops.length === 0) this.dispatchEvent(new Event('history-change'));
     return { focus: batch.startFocus };
   }
 
   redo(root: ViewModelNode) {
     assert(this.state === 'idle');
     assert(!this.#disconnected);
-    let batch: OpBatch | undefined = undefined;
-    for (let i = this.redoStack.length - 1; i >= 0; i--) {
-      const classification = classify(root, this.redoStack[i]);
-      if (classification === 'outside') continue;
-      if (classification === 'inside') {
-        [batch] = this.redoStack.splice(i, 1);
-        break;
-      }
-      if (classification === 'both') return;
-    }
-    if (!batch) return;
+    const index = this.historyBatchIndex(this.redoStack, root);
+    if (index === undefined) return;
+    const [batch] = this.redoStack.splice(index, 1);
+    assert(batch);
     {
       const newOps = this.edit(
         () => {
@@ -460,7 +459,17 @@ export class MarkdownTree extends EventTarget {
       );
       assert(newOps.length === 0);
     }
+    if (batch.ops.length === 0) this.dispatchEvent(new Event('history-change'));
     return { focus: batch.endFocus };
+  }
+
+  private historyBatchIndex(stack: OpBatch[], root: ViewModelNode) {
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const classification = classify(root, stack[i]);
+      if (classification === 'outside') continue;
+      if (classification === 'inside') return i;
+      return;
+    }
   }
 
   edit(
@@ -599,7 +608,9 @@ export class MarkdownTree extends EventTarget {
     }
 
     let result: Op[] = [];
+    let historyChanged = false;
     if (this.editOperations.length) {
+      historyChanged = true;
       result = [...this.editOperations];
       if (history === 'construction') {
         this.undoStack.length = 0;
@@ -629,6 +640,7 @@ export class MarkdownTree extends EventTarget {
       this.editOperations.length = 0;
       this.redoStack.length = 0;
     } else if (history === 'isolated' && recordEmptyIsolatedHistory) {
+      historyChanged = true;
       assert(startFocus);
       this.undoStack.push({
         ops: [],
@@ -642,12 +654,14 @@ export class MarkdownTree extends EventTarget {
 
     this.state = 'idle';
     if (fireTreeEditEvent) {
-      if (this.root[viewModel].version > this.editStartVersion) {
+      const treeChanged = this.root[viewModel].version > this.editStartVersion;
+      if (treeChanged) {
         this.dispatchEvent(new TypedCustomEvent('tree-change', { detail: 'edit' }));
       } else if (this.editChangedCaches) {
         this.editChangedCaches = false;
         this.dispatchEvent(new TypedCustomEvent('tree-change', { detail: 'cache' }));
       }
+      if (historyChanged && !treeChanged) this.dispatchEvent(new Event('history-change'));
     } else {
       this.editChangedCaches = false;
     }
