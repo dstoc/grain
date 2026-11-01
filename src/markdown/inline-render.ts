@@ -11,6 +11,8 @@ import { HostContext, hostContext } from './host-context.js';
 import type { InlineTreeNode } from './inline-parser.js';
 import { type InlineViewModelNode, viewModel } from './view-model-node.js';
 
+export const CODE_BLOCK_CARET_SENTINEL = '\u200b';
+
 export interface InlineInputPoint {
   span?: MarkdownSpan;
   index: number;
@@ -323,9 +325,12 @@ export class MarkdownInline extends LitElement {
       const range = document.createRange();
       range.selectNodeContents(node);
       range.setEnd(node, offset);
+      const index = node.node.startIndex + range.toString().length;
+      const inline = node.closest('md-inline') as MarkdownInline | null;
       return {
         span: node,
-        index: node.node.startIndex + range.toString().length,
+        index:
+          inline?.node?.type === 'code-block' ? Math.min(index, inline.node.content.length) : index,
       };
     }
     let parent: HTMLElement = cast(node.parentElement);
@@ -345,9 +350,11 @@ export class MarkdownInline extends LitElement {
       previous = walker.previousNode();
     }
     const index = (cast(previous) as MarkdownSpan).node!.startIndex + offset;
+    const inline = parent.closest('md-inline') as MarkdownInline | null;
     return {
       span: parent,
-      index,
+      index:
+        inline?.node?.type === 'code-block' ? Math.min(index, inline.node.content.length) : index,
     };
   }
 
@@ -619,7 +626,15 @@ export class MarkdownSpan extends LitElement {
   }
 
   private renderText(content: string): TemplateResult {
-    if (this.closest('md-inline')?.node?.type === 'code-block') return html`${content}`;
+    const codeBlock = this.closest('md-inline')?.node;
+    if (codeBlock?.type === 'code-block') {
+      // ShadowRoot selections cannot represent the caret after a trailing newline in Chromium.
+      // Keep an invisible character after it so the caret can sit before that character.
+      if (codeBlock.content.endsWith('\n') && content.endsWith('\n')) {
+        return html`${content}${CODE_BLOCK_CARET_SENTINEL}`;
+      }
+      return html`${content}`;
+    }
     const parts = content.split(/(\b(?:https?:\/|go|b|cl)\/[^\s]*[\w/=?])/u);
     if (parts.length === 1) {
       return html`${parts[0]}`;

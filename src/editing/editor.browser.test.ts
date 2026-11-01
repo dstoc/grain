@@ -360,6 +360,221 @@ describe('Editor', () => {
     });
   });
 
+  describe('code block line breaks', () => {
+    function setSelection(inline: MarkdownInline, anchor: number, focus = anchor) {
+      const textNodes: Text[] = [];
+      const walker = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT);
+      let next: Node | null;
+      while ((next = walker.nextNode())) textNodes.push(next as Text);
+      const pointAt = (index: number) => {
+        let remaining = index;
+        for (const node of textNodes) {
+          if (remaining <= node.length) return { node, offset: remaining };
+          remaining -= node.length;
+        }
+        return textNodes.length
+          ? { node: textNodes.at(-1)!, offset: textNodes.at(-1)!.length }
+          : { node: inline as Node, offset: 0 };
+      };
+      const anchorPoint = pointAt(anchor);
+      const focusPoint = pointAt(focus);
+      window
+        .getSelection()!
+        .setBaseAndExtent(anchorPoint.node, anchorPoint.offset, focusPoint.node, focusPoint.offset);
+    }
+
+    async function setup(content: string) {
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: [{ type: 'code-block', info: 'js', content }],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+      const inline = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
+      inline.focus();
+      return { tree, inline, renderer };
+    }
+
+    function expectRoundTrip(tree: MarkdownTree) {
+      const document = tree.serialize();
+      expect(parseMarkdownTree(serializeToString(document)).serialize()).toEqual(document);
+    }
+
+    test.each(['', 'alpha\n', 'alpha\n\n'])(
+      'Enter inserts a literal newline into code with content %j and preserves history',
+      async (content) => {
+        const { tree, inline } = await setup(content);
+        setSelection(inline, content.length);
+        await userEvent.keyboard('{Enter}');
+        await nextTask();
+
+        expect(inline.node!.content).toBe(content + '\n');
+        expect(inline.getSelection()?.start.index).toBe(content.length + 1);
+        expectRoundTrip(tree);
+
+        await userEvent.keyboard('{Control>}z{/Control}');
+        await nextTask();
+        expect(inline.node!.content).toBe(content);
+        await userEvent.keyboard('{Control>}y{/Control}');
+        await nextTask();
+        expect(inline.node!.content).toBe(content + '\n');
+        expect(inline.getSelection()?.start.index).toBe(content.length + 1);
+      },
+    );
+
+    test.each([
+      ['forward', 6, 10],
+      ['reverse', 10, 6],
+    ])(
+      'Enter replaces a %s selection and restores it through undo and redo',
+      async (_kind, anchor, focus) => {
+        const content = 'alpha BETA omega';
+        const { tree, inline } = await setup(content);
+        setSelection(inline, anchor, focus);
+        await userEvent.keyboard('{Enter}');
+        await nextTask();
+
+        expect(inline.node!.content).toBe('alpha \n omega');
+        expect(inline.getSelection()?.start.index).toBe(7);
+        expectRoundTrip(tree);
+        await userEvent.keyboard('X');
+        await nextTask();
+        expect(inline.node!.content).toBe('alpha \nX omega');
+        await userEvent.keyboard('{Control>}z{/Control}{Control>}z{/Control}');
+        await nextTask();
+        expect(inline.node!.content).toBe(content);
+        await userEvent.keyboard('{Control>}y{/Control}{Control>}y{/Control}');
+        await nextTask();
+        expect(inline.node!.content).toBe('alpha \nX omega');
+        expect(inline.getSelection()?.start.index).toBe(8);
+      },
+    );
+
+    test.each([
+      [
+        'start',
+        0,
+        [
+          { type: 'paragraph', content: '' },
+          { type: 'code-block', info: 'js', content: 'code' },
+        ],
+      ],
+      [
+        'end',
+        4,
+        [
+          { type: 'code-block', info: 'js', content: 'code' },
+          { type: 'paragraph', content: '' },
+        ],
+      ],
+    ])(
+      'Shift+Enter at the %s keeps the paragraph boundary behavior',
+      async (_boundary, offset, expected) => {
+        const { tree, inline } = await setup('code');
+        setSelection(inline, offset);
+        await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
+        await nextTask();
+
+        expect(tree.serialize().children).toEqual(expected);
+        const focused = state.editor
+          .shadowRoot!.querySelector('md-block-render')!
+          .shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+        expect(focused.node!.type).toBe('paragraph');
+        expect(focused.getSelection()?.start.index).toBe(0);
+        expectRoundTrip(tree);
+      },
+    );
+
+    test.each([
+      ['forward', 6, 10],
+      ['reverse', 10, 6],
+    ])(
+      'Shift+Enter in the middle replaces a %s selection with an empty paragraph between code blocks',
+      async (_kind, anchor, focus) => {
+        const content = 'alpha BETA omega';
+        const { tree, inline, renderer } = await setup(content);
+        setSelection(inline, anchor, focus);
+        await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
+        await nextTask();
+
+        expect(tree.serialize().children).toEqual([
+          { type: 'code-block', info: 'js', content: 'alpha ' },
+          { type: 'paragraph', content: '' },
+          { type: 'code-block', info: 'js', content: ' omega' },
+        ]);
+        const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+        expect(focused.node!.type).toBe('paragraph');
+        expect(focused.getSelection()?.start.index).toBe(0);
+        expectRoundTrip(tree);
+
+        await userEvent.keyboard('{Control>}z{/Control}');
+        await nextTask();
+        expect(tree.serialize().children).toEqual([{ type: 'code-block', info: 'js', content }]);
+        await userEvent.keyboard('{Control>}y{/Control}');
+        await nextTask();
+        expect(tree.serialize().children).toHaveLength(3);
+        expect(
+          (renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline).node!.type,
+        ).toBe('paragraph');
+      },
+    );
+
+    test('Shift+Enter in an empty code block inserts the boundary paragraph after it', async () => {
+      const { tree, inline, renderer } = await setup('');
+      setSelection(inline, 0);
+      await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
+      await nextTask();
+
+      expect(tree.serialize().children).toEqual([
+        { type: 'code-block', info: 'js', content: '' },
+        { type: 'paragraph', content: '' },
+      ]);
+      expect(
+        (renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline).node!.type,
+      ).toBe('paragraph');
+      expectRoundTrip(tree);
+    });
+
+    test.each(['list', 'quote'] as const)(
+      'supports literal Enter and structural splitting inside a %s',
+      async (container) => {
+        const code = { type: 'code-block' as const, info: 'ts', content: 'ab' };
+        const child =
+          container === 'list'
+            ? {
+                type: 'list' as const,
+                children: [{ type: 'list-item' as const, marker: '- ', children: [code] }],
+              }
+            : { type: 'block-quote' as const, marker: '> ', children: [code] };
+        const tree = new MarkdownTree({ type: 'document', children: [child] });
+        state.editor.root = tree.root;
+        await nextTask();
+        const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
+        const inline = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
+        inline.focus();
+
+        setSelection(inline, 1);
+        await userEvent.keyboard('{Enter}');
+        await nextTask();
+        expect(inline.node!.content).toBe('a\nb');
+        expectRoundTrip(tree);
+
+        setSelection(inline, 2);
+        await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
+        await nextTask();
+        const codeBlocks = [...renderer.shadowRoot!.querySelectorAll('md-inline')]
+          .map((element) => (element as MarkdownInline).node!)
+          .filter((node) => node.type === 'code-block');
+        expect(codeBlocks.map((node) => [node.info, node.content])).toEqual([
+          ['ts', 'a\n'],
+          ['ts', 'b'],
+        ]);
+        expectRoundTrip(tree);
+      },
+    );
+  });
+
   describe('block prefix conversion', () => {
     test.each([
       ['# ', '# '],

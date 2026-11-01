@@ -26,6 +26,7 @@ import {
   InlineKeyDown,
   InlineLinkClick,
   InlineProjectionSelection,
+  CODE_BLOCK_CARET_SENTINEL,
 } from '../markdown/inline-render.js';
 import {
   findNextEditable,
@@ -102,7 +103,10 @@ function hasCompleteCodeSelection(
       }
       return true;
     };
-    if (!inspect(inline) || texts.map((text) => text.data).join('') !== node.content) return false;
+    if (!inspect(inline)) return false;
+    const renderedText = texts.map((text) => text.data).join('');
+    if (renderedText !== node.content && renderedText !== node.content + CODE_BLOCK_CARET_SENTINEL)
+      return false;
     const nonempty = texts.filter((text) => text.length);
     const first = nonempty[0];
     const last = nonempty.at(-1);
@@ -891,10 +895,20 @@ export class Editor extends LitElement {
       if (inputStart.index !== 0 || inputEnd.index !== 0) return false;
       return this.runEditAction(inline, deleteContentBackwards);
     } else if (inputEvent.inputType === 'insertParagraph') {
-      this.runEditAction(inline, insertParagraph, inputStart.index, inputEnd.index);
+      if (inline.node.type === 'code-block') {
+        const startIndex = inputStart.index;
+        this.runEditAction(inline, editInlineNode, {
+          startIndex,
+          oldEndIndex: inputEnd.index,
+          newEndIndex: startIndex + 1,
+          newText: '\n',
+        });
+      } else {
+        this.runEditAction(inline, insertParagraph, inputStart.index, inputEnd.index);
+      }
       return true;
     } else if (inputEvent.inputType === 'insertLineBreak') {
-      this.runEditAction(inline, insertLineBreak, inputStart.index);
+      this.runEditAction(inline, insertLineBreak, inputStart.index, inputEnd.index);
       return true;
     }
     return false;
