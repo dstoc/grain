@@ -26,7 +26,7 @@ import {
   InlineKeyDown,
   InlineLinkClick,
   InlineProjectionSelection,
-  CODE_BLOCK_CARET_SENTINEL,
+  CODE_BLOCK_CARET_SENTINEL_SELECTOR,
 } from '../markdown/inline-render.js';
 import {
   findNextEditable,
@@ -95,6 +95,11 @@ function hasCompleteCodeSelection(
         else if (child.nodeType === Node.COMMENT_NODE) continue;
         else if (
           child instanceof HTMLElement &&
+          child.matches(CODE_BLOCK_CARET_SENTINEL_SELECTOR)
+        ) {
+          continue;
+        } else if (
+          child instanceof HTMLElement &&
           child.localName === 'md-span' &&
           !child.shadowRoot
         ) {
@@ -105,8 +110,7 @@ function hasCompleteCodeSelection(
     };
     if (!inspect(inline)) return false;
     const renderedText = texts.map((text) => text.data).join('');
-    if (renderedText !== node.content && renderedText !== node.content + CODE_BLOCK_CARET_SENTINEL)
-      return false;
+    if (renderedText !== node.content) return false;
     const nonempty = texts.filter((text) => text.length);
     const first = nonempty[0];
     const last = nonempty.at(-1);
@@ -249,7 +253,7 @@ export class Editor extends LitElement {
       !selection ||
       !inline.isConnected ||
       !node[viewModel].connected ||
-      inline.textContent !== node.content
+      inline.getProjectedText() !== node.content
     ) {
       return;
     }
@@ -317,7 +321,7 @@ export class Editor extends LitElement {
     if (
       !event.data ||
       session.invalid ||
-      inline.textContent !== session.currentText ||
+      inline.getProjectedText() !== session.currentText ||
       session.currentText !== expectedText ||
       session.replacementText.length === 0 ||
       content.slice(session.replacementStart, session.replacementEnd) === session.replacementText
@@ -388,11 +392,11 @@ export class Editor extends LitElement {
   private beforeCompositionInput(session: CompositionSession, event: InputEvent) {
     if (!this.isCompositionInput(event) || this.composition !== session) return;
     if (session.invalid) return;
-    if (session.pending && session.inline.textContent !== session.pending.before) {
+    if (session.pending && session.inline.getProjectedText() !== session.pending.before) {
       session.invalid = true;
       return;
     }
-    const before = session.inline.textContent ?? '';
+    const before = session.inline.getProjectedText();
     if (before !== session.currentText) {
       session.invalid = true;
       return;
@@ -423,7 +427,7 @@ export class Editor extends LitElement {
       session.invalid = true;
       return;
     }
-    const after = session.inline.textContent ?? '';
+    const after = session.inline.getProjectedText();
     const { start, end } = pending;
     const insertedLength = after.length - (pending.before.length - (end - start));
     if (
@@ -746,21 +750,47 @@ export class Editor extends LitElement {
     const inline = event.composedPath().find((target) => target instanceof MarkdownInline);
     if (!(inline instanceof MarkdownInline)) return;
     const target = getBlockSelectionTarget(inline);
-    if (!target?.hostContext) return;
+    if (target?.hostContext) {
+      event.preventDefault();
+      try {
+        if (!event.clipboardData) return;
+        const markdown = serializeSelection(target.hostContext);
+        event.clipboardData.setData('text/plain', markdown);
+        try {
+          event.clipboardData.setData('text/markdown', markdown);
+        } catch {
+          // Plain text is sufficient for copy and cut.
+        }
+      } catch {
+        return;
+      }
+      if (event.type === 'cut') this.runEditAction(target, removeSelectedNodes);
+      return;
+    }
+
+    if (inline.node?.type !== 'code-block') return;
+    const text = inline.getSelectedTextWithoutRenderOnlyContent();
+    if (text === undefined) return;
     event.preventDefault();
     try {
       if (!event.clipboardData) return;
-      const markdown = serializeSelection(target.hostContext);
-      event.clipboardData.setData('text/plain', markdown);
-      try {
-        event.clipboardData.setData('text/markdown', markdown);
-      } catch {
-        // Plain text is sufficient for copy and cut.
-      }
+      event.clipboardData.setData('text/plain', text);
     } catch {
       return;
     }
-    if (event.type === 'cut') this.runEditAction(target, removeSelectedNodes);
+    if (event.type === 'cut') {
+      const selection = inline.getTextSelection();
+      if (!selection) return;
+      const startIndex = Math.min(selection.anchor, selection.focus);
+      const oldEndIndex = Math.max(selection.anchor, selection.focus);
+      if (startIndex === oldEndIndex) return;
+      this.runEditAction(inline, editInlineNode, {
+        startIndex,
+        oldEndIndex,
+        newText: '',
+        newEndIndex: startIndex,
+      });
+    }
   }
   onPaste(event: ClipboardEvent) {
     if (event.defaultPrevented || !event.isTrusted) return;

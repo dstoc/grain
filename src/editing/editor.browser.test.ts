@@ -573,6 +573,94 @@ describe('Editor', () => {
         expectRoundTrip(tree);
       },
     );
+
+    test('keeps task-looking code literal inside a list item', async () => {
+      const content = '[x] code';
+      const tree = new MarkdownTree({
+        type: 'document',
+        children: [
+          {
+            type: 'list',
+            children: [
+              {
+                type: 'list-item',
+                marker: '- ',
+                children: [{ type: 'code-block', info: 'ts', content }],
+              },
+            ],
+          },
+        ],
+      });
+      state.editor.root = tree.root;
+      await nextTask();
+      const inline = state.editor
+        .shadowRoot!.querySelector('md-block-render')!
+        .shadowRoot!.querySelector('md-inline') as MarkdownInline;
+      const item = tree.root.children![0]!.children![0]!;
+      if (item.type !== 'list-item') throw new Error('Expected a list item');
+      inline.focus();
+      setSelection(inline, content.length);
+      await userEvent.keyboard('{Enter}');
+      await nextTask();
+
+      expect(inline.node!.content).toBe('[x] code\n');
+      expect(item.checked).toBeUndefined();
+      expectRoundTrip(tree);
+
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(inline.node!.content).toBe(content);
+      expect(item.checked).toBeUndefined();
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(inline.node!.content).toBe('[x] code\n');
+      expect(item.checked).toBeUndefined();
+    });
+
+    test('copies and cuts authored zero-width text without the caret marker', async () => {
+      const content = 'alpha\u200b\n';
+      const { tree, inline } = await setup(content);
+      const selectRenderedText = () => {
+        const range = document.createRange();
+        range.selectNodeContents(inline);
+        const selection = window.getSelection()!;
+        selection.removeAllRanges();
+        selection.addRange(range);
+      };
+      selectRenderedText();
+      const copied = new DataTransfer();
+      inline.dispatchEvent(
+        new ClipboardEvent('copy', {
+          bubbles: true,
+          composed: true,
+          cancelable: true,
+          clipboardData: copied,
+        }),
+      );
+      expect(copied.getData('text/plain')).toBe(content);
+
+      selectRenderedText();
+      const cut = new DataTransfer();
+      const event = new ClipboardEvent('cut', {
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+        clipboardData: cut,
+      });
+      inline.dispatchEvent(event);
+      await nextTask();
+      expect(event.defaultPrevented).toBe(true);
+      expect(cut.getData('text/plain')).toBe(content);
+      expect(inline.node!.content).toBe('');
+
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await nextTask();
+      expect(inline.node!.content).toBe(content);
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await nextTask();
+      expect(inline.node!.content).toBe('');
+      expect(tree.serialize().children).toEqual([{ type: 'code-block', info: 'js', content: '' }]);
+    });
   });
 
   describe('block prefix conversion', () => {
@@ -2015,6 +2103,41 @@ describe('composition recovery', () => {
     await userEvent.keyboard('{Control>}z{/Control}');
     await nextTask();
     expect(serializeToString(tree.root)).toBe('anchor\n');
+  });
+
+  test('commits composition in a code block with a trailing newline', async () => {
+    const editor = new Editor();
+    document.body.replaceChildren(editor);
+    const tree = new MarkdownTree({
+      type: 'document',
+      children: [{ type: 'code-block', info: 'ts', content: 'alpha\n' }],
+    });
+    editor.root = tree.root;
+    await nextTask();
+    let inline = getInline(editor);
+    inline.focus();
+    const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode() as Text;
+    setSelection(inline, 1);
+    inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    compositionInput(inline, () => (text.textContent = 'a\u00e9lpha\n'), 1, 1, '\u00e9');
+    inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '\u00e9' }));
+    await nextTask();
+
+    inline = getInline(editor);
+    expect(inline.node!.content).toBe('a\u00e9lpha\n');
+    expect(inline.getProjectedText()).toBe('a\u00e9lpha\n');
+    expect(inline.getSelection()?.start.index).toBe(2);
+    expect(parseMarkdownTree(serializeToString(tree.root)).serialize()).toEqual(tree.serialize());
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    inline = getInline(editor);
+    expect(inline.node!.content).toBe('alpha\n');
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    inline = getInline(editor);
+    expect(inline.node!.content).toBe('a\u00e9lpha\n');
+    expect(inline.getSelection()?.start.index).toBe(2);
   });
 
   test('ignores a late completion after a model change', async () => {

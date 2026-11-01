@@ -27,6 +27,7 @@ export function editInlineNode(context: EditContext, edit: InlineEdit) {
     // TODO: generalize this (inline block mutation)
     const parent = node[viewModel].parent;
     if (
+      node.type === 'paragraph' &&
       parent?.type === 'list-item' &&
       parent.checked === undefined &&
       /^\[( |x)] /.test(node.content)
