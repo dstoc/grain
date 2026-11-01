@@ -359,6 +359,18 @@ export class MarkdownTree extends EventTarget {
   private undoStack: OpBatch[] = [];
   private redoStack: OpBatch[] = [];
 
+  canUndo(root: ViewModelNode) {
+    assert(this.state === 'idle');
+    assert(!this.#disconnected);
+    return this.historyBatchIndex(this.undoStack, root) !== undefined;
+  }
+
+  canRedo(root: ViewModelNode) {
+    assert(this.state === 'idle');
+    assert(!this.#disconnected);
+    return this.historyBatchIndex(this.redoStack, root) !== undefined;
+  }
+
   disconnect() {
     if (this.#disconnected) return;
     this.caches.clear();
@@ -402,17 +414,10 @@ export class MarkdownTree extends EventTarget {
   undo(root: ViewModelNode) {
     assert(this.state === 'idle');
     assert(!this.#disconnected);
-    let batch: OpBatch | undefined = undefined;
-    for (let i = this.undoStack.length - 1; i >= 0; i--) {
-      const classification = classify(root, this.undoStack[i]);
-      if (classification === 'outside') continue;
-      if (classification === 'inside') {
-        [batch] = this.undoStack.splice(i, 1);
-        break;
-      }
-      if (classification === 'both') return;
-    }
-    if (!batch) return;
+    const index = this.historyBatchIndex(this.undoStack, root);
+    if (index === undefined) return;
+    const [batch] = this.undoStack.splice(index, 1);
+    assert(batch);
     {
       const newOps = this.edit(
         () => {
@@ -434,17 +439,10 @@ export class MarkdownTree extends EventTarget {
   redo(root: ViewModelNode) {
     assert(this.state === 'idle');
     assert(!this.#disconnected);
-    let batch: OpBatch | undefined = undefined;
-    for (let i = this.redoStack.length - 1; i >= 0; i--) {
-      const classification = classify(root, this.redoStack[i]);
-      if (classification === 'outside') continue;
-      if (classification === 'inside') {
-        [batch] = this.redoStack.splice(i, 1);
-        break;
-      }
-      if (classification === 'both') return;
-    }
-    if (!batch) return;
+    const index = this.historyBatchIndex(this.redoStack, root);
+    if (index === undefined) return;
+    const [batch] = this.redoStack.splice(index, 1);
+    assert(batch);
     {
       const newOps = this.edit(
         () => {
@@ -461,6 +459,15 @@ export class MarkdownTree extends EventTarget {
       assert(newOps.length === 0);
     }
     return { focus: batch.endFocus };
+  }
+
+  private historyBatchIndex(stack: OpBatch[], root: ViewModelNode) {
+    for (let i = stack.length - 1; i >= 0; i--) {
+      const classification = classify(root, stack[i]);
+      if (classification === 'outside') continue;
+      if (classification === 'inside') return i;
+      return;
+    }
   }
 
   edit(

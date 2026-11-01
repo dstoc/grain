@@ -159,7 +159,7 @@ test('mobile toolbar stays hidden without keyboard geometry and scrolls at phone
   await showSimulatedKeyboard(harness, inline!);
   expect(toolbar.visible).toBe(true);
   const buttons = toolbar.shadowRoot!.querySelectorAll<HTMLButtonElement>('button');
-  expect(buttons).toHaveLength(10);
+  expect(buttons).toHaveLength(12);
   expect([...buttons].every((button) => button.getBoundingClientRect().width >= 44)).toBe(true);
   expect([...buttons].map((button) => button.getAttribute('aria-label'))).toEqual([
     'Unindent',
@@ -168,6 +168,8 @@ test('mobile toolbar stays hidden without keyboard geometry and scrolls at phone
     'Select all and promote block selection',
     'Extend block selection upward',
     'Extend block selection downward',
+    'Undo',
+    'Redo',
     'Move caret left',
     'Move caret right',
     'Move caret up',
@@ -178,7 +180,12 @@ test('mobile toolbar stays hidden without keyboard geometry and scrolls at phone
   expect(strip.scrollWidth).toBeGreaterThan(strip.clientWidth);
   strip.scrollLeft = strip.scrollWidth;
   expect(strip.scrollLeft).toBeGreaterThan(0);
-  const lastButtonRect = buttons[9]!.getBoundingClientRect();
+  for (const button of [...buttons].slice(6)) {
+    const rect = button.getBoundingClientRect();
+    expect(rect.left).toBeGreaterThanOrEqual(0);
+    expect(rect.right).toBeLessThanOrEqual(window.visualViewport!.width);
+  }
+  const lastButtonRect = buttons[11]!.getBoundingClientRect();
   expect(lastButtonRect.left).toBeGreaterThanOrEqual(0);
   expect(lastButtonRect.right).toBeLessThanOrEqual(window.visualViewport!.width);
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
@@ -190,7 +197,7 @@ test('mobile toolbar stays hidden without keyboard geometry and scrolls at phone
   expect(toolbar.getBoundingClientRect().bottom).toBeCloseTo(simulatedKeyboard.top, 0);
 
   strip.scrollLeft = 0;
-  const left = buttons[6]!;
+  const left = buttons[8]!;
   const pointerDown = new PointerEvent('pointerdown', {
     bubbles: true,
     button: 0,
@@ -217,6 +224,83 @@ test('mobile toolbar stays hidden without keyboard geometry and scrolls at phone
     }),
   );
   expect(source.value).toBe('alpha\n\nbeta');
+  harness.remove();
+});
+
+test('mobile toolbar undo and redo preserve history focus and keyboard visibility', async () => {
+  await page.viewport(390, 844);
+  const initial = 'alpha\n\nbeta\n';
+  const { harness, source } = await createSettledHarness(initial);
+  const [first] = currentEditorInlines(harness);
+  first!.focus();
+  first!.setSelectionOffsets(5, 5);
+  const toolbar = await showSimulatedKeyboard(harness, first!);
+  const undo = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[aria-label="Undo"]')!;
+  const redo = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[aria-label="Redo"]')!;
+
+  expect(undo.disabled).toBe(true);
+  expect(redo.disabled).toBe(true);
+  await activateToolbarAction(harness, 'Undo');
+  expect(source.value).toBe(initial);
+  expect(currentEditorInlines(harness)[0]!.matches(':focus')).toBe(true);
+  expect(toolbar.visible).toBe(true);
+
+  await userEvent.keyboard('!');
+  await settleHarness(harness);
+  const afterFirstEdit = source.value;
+  expect(afterFirstEdit).not.toBe(initial);
+  expect(undo.disabled).toBe(false);
+  expect(redo.disabled).toBe(true);
+
+  const secondInline = currentEditorInlines(harness)[1]!;
+  secondInline.focus();
+  secondInline.setSelectionOffsets(4, 4);
+  await userEvent.keyboard('?');
+  await settleHarness(harness);
+  const afterSecondEdit = source.value;
+  expect(afterSecondEdit).not.toBe(afterFirstEdit);
+
+  const pointerDown = new PointerEvent('pointerdown', {
+    bubbles: true,
+    button: 0,
+    cancelable: true,
+  });
+  undo.dispatchEvent(pointerDown);
+  expect(pointerDown.defaultPrevented).toBe(true);
+  expect(currentEditorInlines(harness)[1]!.matches(':focus')).toBe(true);
+  await activateToolbarAction(harness, 'Undo');
+  expect(source.value).toBe(afterFirstEdit);
+  expect(currentEditorInlines(harness)[1]!.matches(':focus')).toBe(true);
+  expect(currentEditorInlines(harness)[1]!.getSelection()?.start.index).toBe(4);
+  expect(toolbar.visible).toBe(true);
+
+  await activateToolbarAction(harness, 'Undo');
+  expect(source.value).toBe(initial);
+  expect(currentEditorInlines(harness)[0]!.matches(':focus')).toBe(true);
+  expect(currentEditorInlines(harness)[0]!.getSelection()?.start.index).toBe(5);
+  expect(undo.disabled).toBe(true);
+  expect(redo.disabled).toBe(false);
+
+  await activateToolbarAction(harness, 'Undo');
+  expect(source.value).toBe(initial);
+  expect(currentEditorInlines(harness)[0]!.matches(':focus')).toBe(true);
+  expect(toolbar.visible).toBe(true);
+
+  await activateToolbarAction(harness, 'Redo');
+  expect(source.value).toBe(afterFirstEdit);
+  expect(currentEditorInlines(harness)[0]!.matches(':focus')).toBe(true);
+  expect(currentEditorInlines(harness)[0]!.getSelection()?.start.index).toBe(6);
+  await activateToolbarAction(harness, 'Redo');
+  expect(source.value).toBe(afterSecondEdit);
+  expect(currentEditorInlines(harness)[1]!.matches(':focus')).toBe(true);
+  expect(currentEditorInlines(harness)[1]!.getSelection()?.start.index).toBe(5);
+  expect(undo.disabled).toBe(false);
+  expect(redo.disabled).toBe(true);
+
+  await activateToolbarAction(harness, 'Redo');
+  expect(source.value).toBe(afterSecondEdit);
+  expect(currentEditorInlines(harness)[1]!.matches(':focus')).toBe(true);
+  expect(toolbar.visible).toBe(true);
   harness.remove();
 });
 
