@@ -274,18 +274,7 @@ export class InlineViewModel extends ViewModel {
   edit({ startIndex, newEndIndex, oldEndIndex, newText }: InlineEdit, replaceWithBlocks = true) {
     assert(this.tree.state === 'editing');
     const oldText = this.self.content.substring(startIndex, oldEndIndex);
-    const result = {
-      oldText,
-      newText,
-      startIndex,
-      startPosition: indexToPosition(this.self.content, startIndex),
-      oldEndIndex,
-      oldEndPosition: indexToPosition(this.self.content, oldEndIndex),
-      newEndIndex,
-      newEndPosition: indexToPosition(this.self.content, newEndIndex),
-    };
-
-    const newContent = apply(this.self.content, result);
+    const newContent = apply(this.self.content, startIndex, oldEndIndex, newText);
     if (this.self.content === newContent) return null;
     (this.self as { content: string }).content = newContent;
     const newNodes = replaceWithBlocks ? this.maybeReplaceWithBlocks() : false;
@@ -685,39 +674,8 @@ export class MarkdownTree extends EventTarget {
   }
 }
 
-interface Position {
-  row: number;
-  column: number;
-}
-
-function indexToPosition(text: string, index: number): Position {
-  let row = 1;
-  let column = 1;
-  for (let i = 0; i < index; i++) {
-    if (text[i] === '\n') {
-      row++;
-      column = 1;
-    } else {
-      column++;
-    }
-  }
-  return { row, column };
-}
-
-interface Edit {
-  startIndex: number;
-  startPosition: Position;
-  newEndIndex: number;
-  newEndPosition: Position;
-  oldEndIndex: number;
-  oldEndPosition: Position;
-  newText?: string;
-}
-
-function apply(text: string, edit: Edit) {
-  return (
-    text.substring(0, edit.startIndex) + (edit.newText ?? '') + text.substring(edit.oldEndIndex)
-  );
+function apply(text: string, startIndex: number, oldEndIndex: number, newText: string) {
+  return text.substring(0, startIndex) + newText + text.substring(oldEndIndex);
 }
 
 export interface InlineEdit {
