@@ -128,6 +128,46 @@ describe('MarkdownInline', () => {
     expect(inline.querySelector('a')?.textContent).toBe('https://example.com');
     renderer.remove();
   });
+
+  test('keeps strikethrough aligned with visible text when unfocused', async () => {
+    const parser = createBlockParser();
+    parser.push('plain ~~alpha~~ omega');
+    const tree = parser.finish();
+    const renderer = new MarkdownRenderer();
+    renderer.block = tree.root;
+    document.body.append(renderer);
+    await nextTask();
+
+    const inline = renderer.shadowRoot!.querySelector('md-inline')!;
+    await settle(inline);
+    const strike = inline.querySelector('md-span[type="strikethrough"]')!;
+    const text = [...strike.querySelectorAll('md-span[type="text"]')].find(
+      (span) => span.textContent === 'alpha',
+    )!;
+
+    const expectStrikeToCoverText = () => {
+      const strikeRect = strike.getBoundingClientRect();
+      const textRect = text.getBoundingClientRect();
+      expect(strikeRect.height).toBeGreaterThan(0);
+      expect(strikeRect.top).toBeLessThanOrEqual(textRect.top);
+      expect(strikeRect.bottom).toBeGreaterThanOrEqual(textRect.bottom);
+      expect(getComputedStyle(strike).textDecorationLine).toBe('line-through');
+    };
+
+    expect(inline.innerText).toBe('plain alpha omega');
+    expectStrikeToCoverText();
+    inline.focus();
+    await settle(inline);
+    expect(inline.innerText).toBe('plain ~~alpha~~ omega');
+    expectStrikeToCoverText();
+    inline.blur();
+    await settle(inline);
+    expect(inline.innerText).toBe('plain alpha omega');
+    expectStrikeToCoverText();
+    expect(serializeToString(tree.serialize())).toBe('plain ~~alpha~~ omega\n');
+    renderer.remove();
+  });
+
   test('renders changes made while detached and follows replacement nodes', async () => {
     const first = createBlockParser();
     first.push('```js\nfirst');

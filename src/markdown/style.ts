@@ -42,6 +42,9 @@ export const styles = [
       visibility: collapse;
       font-size: 0;
     }
+    md-inline:not(:focus-within) md-span[type='strikethrough'] {
+      font-size: 16px;
+    }
     a,
     md-span[type='shortcut_link'],
     md-span[type='uri_autolink'],
