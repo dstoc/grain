@@ -470,8 +470,10 @@ export class MarkdownTree extends EventTarget {
     // Runs synchronously after normalization, without mutating the tree, before history is saved.
     resolveEndFocus?: (focus: Focus | undefined, hasOperations: boolean) => Focus | undefined,
     history: 'record' | 'construction' | 'isolated' = 'record',
+    recordEmptyIsolatedHistory = false,
   ): Op[] {
     assert(this.state === 'idle');
+    assert(!recordEmptyIsolatedHistory || history === 'isolated');
     this.editStartVersion = this.root[viewModel].version;
     this.state = 'editing';
     this.removed.clear();
@@ -484,6 +486,7 @@ export class MarkdownTree extends EventTarget {
         normalizeOptions,
         resolveEndFocus,
         history,
+        recordEmptyIsolatedHistory,
       );
     });
   }
@@ -550,6 +553,7 @@ export class MarkdownTree extends EventTarget {
     normalizeOptions?: NormalizeTreeOptions,
     resolveEndFocus?: (focus: Focus | undefined, hasOperations: boolean) => Focus | undefined,
     history: 'record' | 'construction' | 'isolated' = 'record',
+    recordEmptyIsolatedHistory = false,
   ) {
     assert(this.state === 'editing');
     if (normalizeOptions?.force || this.root[viewModel].version > this.editStartVersion) {
@@ -623,6 +627,16 @@ export class MarkdownTree extends EventTarget {
         }
       }
       this.editOperations.length = 0;
+      this.redoStack.length = 0;
+    } else if (history === 'isolated' && recordEmptyIsolatedHistory) {
+      assert(startFocus);
+      this.undoStack.push({
+        ops: [],
+        timestamp: Date.now(),
+        isolated: true,
+        startFocus,
+        endFocus,
+      });
       this.redoStack.length = 0;
     }
 

@@ -119,6 +119,11 @@ export function canCoalesce(batch: OpBatch, ops: Iterable<Op>) {
 
 type Classification = 'inside' | 'outside' | 'both';
 export function classify(root: ViewModelNode, batch: OpBatch): Classification {
+  if (!batch.ops.length && batch.isolated) {
+    const owner = batch.startFocus?.node;
+    if (!owner?.[viewModel].connected) return 'outside';
+    return root === owner || isAncestorOf(root, owner) ? 'inside' : 'outside';
+  }
   let result: Classification | undefined;
   function merge(node?: ViewModelNode) {
     if (!node) return;
