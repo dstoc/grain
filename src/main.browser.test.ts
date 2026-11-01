@@ -231,6 +231,43 @@ test('responsive shell disclosures preserve the editor and expose live outputs a
   );
 });
 
+test('phone layout starts with the live editor and keeps Source available on demand', async () => {
+  await page.viewport(390, 844);
+  const { harness, source } = await createSettledHarness('# Phone editor\n\nparagraph');
+  const sourcePane = harness.shadowRoot!.querySelector<HTMLElement>('#source-pane')!;
+  const sourceToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.source-toggle')!;
+  const preview = harness.shadowRoot!.querySelector<HTMLElement>('.preview')!;
+  const editor = harness.shadowRoot!.querySelector('md-editor')!;
+
+  expect(sourcePane.hidden).toBe(true);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(preview.getBoundingClientRect().height).toBeGreaterThan(500);
+  expect(editor.isConnected).toBe(true);
+
+  sourceToggle.click();
+  await harness.updateComplete;
+  expect(sourcePane.hidden).toBe(false);
+  expect(harness.shadowRoot!.querySelector('textarea')).toBe(source);
+  expect(preview.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+    sourcePane.getBoundingClientRect().bottom,
+  );
+  source.value = '# Phone source edit\n\nparagraph';
+  source.dispatchEvent(new Event('input', { bubbles: true }));
+  await settleHarness(harness);
+  expect(
+    currentEditorInlines(harness).some((inline) =>
+      inline.textContent?.includes('Phone source edit'),
+    ),
+  ).toBe(true);
+  sourceToggle.click();
+  await harness.updateComplete;
+  expect(sourcePane.hidden).toBe(true);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
+    document.documentElement.clientWidth,
+  );
+});
+
 test('output tabs switch between live views with keyboard navigation', async () => {
   const { harness } = await createSettledHarness('# Keyboard output\n\nparagraph');
   const tabs = harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('[role="tab"]');
@@ -271,7 +308,7 @@ test('output tabs switch between live views with keyboard navigation', async () 
   expect(harness.shadowRoot!.activeElement).toBe(renderTab);
 });
 
-test('mobile toolbar inherits theme tokens without changing Markdown typography', async () => {
+test('mobile toolbar follows shell tokens without changing Markdown typography', async () => {
   await page.viewport(390, 844);
   const { harness } = await createSettledHarness('A paragraph with **strong text**.');
   const inline = currentEditorInlines(harness)[0]!;
@@ -283,28 +320,27 @@ test('mobile toolbar inherits theme tokens without changing Markdown typography'
   const originalLineHeight = originalInlineStyle.lineHeight;
   const lightSurface = getComputedStyle(strip).backgroundColor;
   const lightText = getComputedStyle(button).color;
-  const root = document.documentElement.style;
+  const originalTextColor = originalInlineStyle.color;
+  const shellTokens = ['--harness-panel', '--harness-ink', '--harness-selected'];
   const previous = new Map(
-    ['--root-color', '--root-background-color', '--md-active-block-color', '--md-accent-color'].map(
-      (name) => [name, root.getPropertyValue(name)] as const,
-    ),
+    shellTokens.map((name) => [name, harness.style.getPropertyValue(name)] as const),
   );
 
   try {
-    root.setProperty('--root-color', '#e0e8db');
-    root.setProperty('--root-background-color', '#1c231e');
-    root.setProperty('--md-active-block-color', '#35452f');
-    root.setProperty('--md-accent-color', '#b1d69b');
+    harness.style.setProperty('--harness-panel', '#202822');
+    harness.style.setProperty('--harness-ink', '#e0e8db');
+    harness.style.setProperty('--harness-selected', '#35452f');
     await nextTask();
 
     expect(getComputedStyle(strip).backgroundColor).not.toBe(lightSurface);
     expect(getComputedStyle(button).color).not.toBe(lightText);
     expect(getComputedStyle(inline).font).toBe(originalFont);
     expect(getComputedStyle(inline).lineHeight).toBe(originalLineHeight);
+    expect(getComputedStyle(inline).color).toBe(originalTextColor);
   } finally {
     for (const [name, value] of previous) {
-      if (value) root.setProperty(name, value);
-      else root.removeProperty(name);
+      if (value) harness.style.setProperty(name, value);
+      else harness.style.removeProperty(name);
     }
   }
 });
@@ -566,13 +602,14 @@ test('native selection changes keep the caret above the mobile toolbar', async (
   inline.addEventListener('input', () => inputEvents++);
   inline.addEventListener('keydown', () => keydownEvents++);
 
-  const scrollBeforeSelection = window.scrollY;
+  const canvas = harness.shadowRoot!.querySelector<HTMLElement>('.preview-card')!;
+  const scrollBeforeSelection = canvas.scrollTop;
   inline.setSelectionOffsets(text.length, text.length);
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
   expect(inputEvents).toBe(0);
   expect(keydownEvents).toBe(0);
-  expect(window.scrollY).toBeGreaterThan(scrollBeforeSelection);
+  expect(canvas.scrollTop).toBeGreaterThan(scrollBeforeSelection);
   expect(inline.getCaretPosition().y).toBeLessThanOrEqual(toolbar.getBoundingClientRect().top);
   harness.remove();
 });
