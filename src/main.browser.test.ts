@@ -139,6 +139,32 @@ async function activateToolbarAction(harness: LitElement, label: string) {
   return button;
 }
 
+async function dragCaret(harness: LitElement, dx: number, dy: number, duration = 210) {
+  const toolbar = harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
+  const button = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('.directional')!;
+  const dispatch = (type: string, x: number, y: number, time: number) => {
+    const event = new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      pointerId: 37,
+      isPrimary: true,
+      button: type === 'pointermove' ? -1 : 0,
+      clientX: x,
+      clientY: y,
+    });
+    Object.defineProperty(event, 'timeStamp', { configurable: true, value: time });
+    button.dispatchEvent(event);
+    return event;
+  };
+  const startX = 100;
+  const startY = 100;
+  const pointerDown = dispatch('pointerdown', startX, startY, 0);
+  dispatch('pointermove', startX + dx, startY + dy, duration);
+  dispatch('pointerup', startX + dx, startY + dy, duration + 1);
+  await settleHarness(harness);
+  return pointerDown;
+}
+
 async function waitForFocusedInline(harness: LitElement) {
   for (let attempt = 0; attempt < 30; attempt++) {
     const focused = currentEditorInlines(harness).find((inline) => inline.matches(':focus'));
@@ -160,24 +186,24 @@ test('mobile toolbar stays hidden without keyboard geometry and scrolls at phone
   await showSimulatedKeyboard(harness, inline!);
   expect(toolbar.visible).toBe(true);
   const buttons = toolbar.shadowRoot!.querySelectorAll<HTMLButtonElement>('button');
-  expect(buttons).toHaveLength(12);
+  expect(buttons).toHaveLength(9);
   expect([...buttons].every((button) => button.getBoundingClientRect().width >= 44)).toBe(true);
   expect([...buttons].map((button) => button.getAttribute('aria-label'))).toEqual([
     'Unindent',
     'Indent',
     'Insert paragraph or split block',
+    'Move caret with directional drag',
     'Select all and promote block selection',
     'Extend block selection upward',
     'Extend block selection downward',
     'Undo',
     'Redo',
-    'Move caret left',
-    'Move caret right',
-    'Move caret up',
-    'Move caret down',
   ]);
+  expect(buttons[3]!.getBoundingClientRect().width).toBe(48);
+  expect(getComputedStyle(buttons[3]!).touchAction).toBe('none');
 
   const strip = toolbar.shadowRoot!.querySelector<HTMLElement>('.strip')!;
+  expect(getComputedStyle(strip).touchAction).toBe('pan-x');
   expect(strip.scrollWidth).toBeGreaterThan(strip.clientWidth);
   strip.scrollLeft = strip.scrollWidth;
   expect(strip.scrollLeft).toBeGreaterThan(0);
@@ -186,7 +212,7 @@ test('mobile toolbar stays hidden without keyboard geometry and scrolls at phone
     expect(rect.left).toBeGreaterThanOrEqual(0);
     expect(rect.right).toBeLessThanOrEqual(window.visualViewport!.width);
   }
-  const lastButtonRect = buttons[11]!.getBoundingClientRect();
+  const lastButtonRect = buttons[8]!.getBoundingClientRect();
   expect(lastButtonRect.left).toBeGreaterThanOrEqual(0);
   expect(lastButtonRect.right).toBeLessThanOrEqual(window.visualViewport!.width);
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
@@ -198,17 +224,9 @@ test('mobile toolbar stays hidden without keyboard geometry and scrolls at phone
   expect(toolbar.getBoundingClientRect().bottom).toBeCloseTo(simulatedKeyboard.top, 0);
 
   strip.scrollLeft = 0;
-  const left = buttons[8]!;
-  const pointerDown = new PointerEvent('pointerdown', {
-    bubbles: true,
-    button: 0,
-    cancelable: true,
-  });
-  left.dispatchEvent(pointerDown);
+  const pointerDown = await dragCaret(harness, -21, 0);
   expect(pointerDown.defaultPrevented).toBe(true);
   expect(inline!.matches(':focus')).toBe(true);
-  left.click();
-  await settleHarness(harness);
   expect(currentEditorInlines(harness)[0]!.getSelection()?.start.index).toBe(1);
 
   harness.shadowRoot!.querySelector<HTMLButtonElement>('.simulation-toggle')!.click();
@@ -462,16 +480,79 @@ test('all four caret controls move through the native selection in a mounted Ren
   inline.setSelectionOffsets(1, 1);
   await showSimulatedKeyboard(harness, inline);
 
-  await activateToolbarAction(harness, 'Move caret left');
+  await dragCaret(harness, -21, 0);
   expect(currentEditorInlines(harness)[0]!.getSelection()?.start.index).toBe(0);
-  await activateToolbarAction(harness, 'Move caret right');
+  await dragCaret(harness, 21, 0);
   expect(currentEditorInlines(harness)[0]!.getSelection()?.start.index).toBe(1);
   currentEditorInlines(harness)[0]!.setSelectionOffsets(4, 4);
-  await activateToolbarAction(harness, 'Move caret up');
+  await dragCaret(harness, 0, -21);
   const up = currentEditorInlines(harness)[0]!.getSelection()!.start.index;
   expect(up).toBeLessThan(4);
-  await activateToolbarAction(harness, 'Move caret down');
+  await dragCaret(harness, 0, 21);
   expect(currentEditorInlines(harness)[0]!.getSelection()!.start.index).toBeGreaterThan(up);
+});
+
+test.each([
+  ['right', 0, 5, 61.5, 0, 'bravo', 2],
+  ['left', 2, 0, -61.5, 0, 'bravo', 3],
+  ['down', 0, 5, 0, 61.5, 'gamma', 5],
+  ['up', 2, 0, 0, -61.5, 'alpha', 0],
+] as const)(
+  'a three-step %s drag advances across editor boundaries one step at a time',
+  async (direction, startInlineIndex, startOffset, dx, dy, expectedContent, expectedOffset) => {
+    const { harness } = await createSettledHarness('alpha\n\nbravo\n\ngamma');
+    const inlines = currentEditorInlines(harness);
+    const inline = inlines[startInlineIndex]!;
+    inline.focus();
+    inline.setSelectionOffsets(startOffset, startOffset);
+    const toolbar = await showSimulatedKeyboard(harness, inline);
+    const emitted: string[] = [];
+    toolbar.addEventListener('mobile-toolbar-action', (event) => {
+      emitted.push(event.detail.action);
+    });
+
+    await dragCaret(harness, dx, dy, 615);
+
+    const current = currentEditorInlines(harness).find((candidate) => candidate.matches(':focus'));
+    expect(emitted).toEqual([direction, direction, direction]);
+    expect(current?.node?.content).toBe(expectedContent);
+    expect(current?.getSelection()?.start.index).toBe(expectedOffset);
+    expect(toolbar.visible).toBe(true);
+    harness.remove();
+  },
+);
+
+test('trusted mouse drag keeps editor focus while pointer capture carries movement off the control', async () => {
+  await page.viewport(390, 844);
+  const { harness } = await createSettledHarness('alpha');
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  inline.setSelectionOffsets(2, 2);
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  const directional = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('.directional')!;
+  const box = directional.getBoundingClientRect();
+  const drop = document.createElement('div');
+  drop.style.cssText = `position:fixed;left:${box.right + 8}px;top:${box.top}px;width:48px;height:48px;z-index:2000`;
+  document.body.append(drop);
+
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  expect(inline.getCaretPosition().y).toBeLessThan(toolbar.getBoundingClientRect().top);
+  const before = inline.getSelection()?.start.index;
+  const scrollBefore = window.scrollY;
+  await userEvent.dragAndDrop(directional, drop, {
+    sourcePosition: { x: 24, y: 24 },
+    targetPosition: { x: 12, y: 24 },
+    steps: 5,
+  });
+  await settleHarness(harness);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  expect(inline.getSelection()?.start.index).toBeGreaterThan(before!);
+  expect(inline.matches(':focus')).toBe(true);
+  expect(toolbar.visible).toBe(true);
+  expect(window.scrollY).toBe(scrollBefore);
+  drop.remove();
+  harness.remove();
 });
 
 test('keyboard activation of a toolbar button returns focus to the editing inline', async () => {
@@ -481,11 +562,11 @@ test('keyboard activation of a toolbar button returns focus to the editing inlin
   inline.setSelectionOffsets(2, 2);
   const toolbar = await showSimulatedKeyboard(harness, inline);
   const button = toolbar.shadowRoot!.querySelector<HTMLButtonElement>(
-    'button[aria-label="Move caret right"]',
+    'button[aria-label="Move caret with directional drag"]',
   )!;
   expect(button.disabled).toBe(false);
   button.focus();
-  await userEvent.keyboard('{Enter}');
+  await userEvent.keyboard('{ArrowRight}');
   await settleHarness(harness);
   const current = currentEditorInlines(harness)[0]!;
   expect(current.matches(':focus')).toBe(true);
@@ -517,8 +598,52 @@ test('toolbar actions are inert during composition and resume on the recovered i
   );
   const recoveredInline = await waitForFocusedInline(harness);
   expect(recoveredInline.mobileToolbarInputReady).toBe(true);
-  await activateToolbarAction(harness, 'Move caret right');
+  await dragCaret(harness, 21, 0);
   expect(toolbar.visible).toBe(true);
+});
+
+test('an interrupted directional gesture requires a fresh pointer down after composition recovery', async () => {
+  const { harness } = await createSettledHarness('alpha');
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  inline.setSelectionOffsets(1, 1);
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  const directional = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('.directional')!;
+  const sendPointer = (type: string, x: number, time: number, pointerId: number) => {
+    const event = new PointerEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      pointerId,
+      isPrimary: true,
+      button: type === 'pointermove' ? -1 : 0,
+      clientX: x,
+      clientY: 100,
+    });
+    Object.defineProperty(event, 'timeStamp', { configurable: true, value: time });
+    directional.dispatchEvent(event);
+  };
+
+  sendPointer('pointerdown', 0, 0, 41);
+  sendPointer('pointermove', 10, 100, 41);
+  inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, composed: true }));
+  await settleHarness(harness);
+  expect(toolbar.disabled).toBe(true);
+  sendPointer('pointermove', 21, 210, 41);
+  expect(currentEditorInlines(harness)[0]!.getSelection()?.start.index).toBe(1);
+
+  inline.dispatchEvent(
+    new CompositionEvent('compositionend', { data: '', bubbles: true, composed: true }),
+  );
+  const recovered = await waitForFocusedInline(harness);
+  sendPointer('pointermove', 42, 420, 41);
+  expect(recovered.getSelection()?.start.index).toBe(1);
+
+  sendPointer('pointerdown', 0, 500, 42);
+  sendPointer('pointermove', 21, 710, 42);
+  sendPointer('pointerup', 21, 711, 42);
+  await settleHarness(harness);
+  expect(currentEditorInlines(harness)[0]!.getSelection()?.start.index).toBe(2);
+  harness.remove();
 });
 
 test('toolbar actions are inert during projection recovery and held recovery events', async () => {
@@ -569,7 +694,7 @@ test('toolbar actions are inert during projection recovery and held recovery eve
   current.replayRecoveryEvents([]);
   await new Promise((resolve) => setTimeout(resolve, 25));
   expect(current.mobileToolbarInputReady).toBe(true);
-  await activateToolbarAction(harness, 'Move caret right');
+  await dragCaret(harness, 21, 0);
   expect(toolbar.visible).toBe(true);
 });
 
