@@ -63,7 +63,29 @@ export function deleteContentBackwards(context: EditContext): boolean {
     if (maybeMergeContentInto(context, node, prev)) return true;
   }
 
-  return false;
+  return removeFirstRootListItem(context, node);
+}
+
+function removeFirstRootListItem(context: EditContext, node: InlineNode & ViewModelNode): boolean {
+  const { ancestor: listItem } = findAncestor(node, context.root, 'list-item');
+  const list = listItem?.[viewModel].parent;
+  if (
+    !listItem ||
+    list?.type !== 'list' ||
+    listItem[viewModel].previousSibling ||
+    list[viewModel].parent !== context.root
+  ) {
+    return false;
+  }
+
+  context.startEditing();
+  for (const child of children(listItem)) {
+    child[viewModel].insertBefore(context.root, list);
+  }
+  listItem[viewModel].remove();
+  if (!list[viewModel].firstChild) list[viewModel].remove();
+  context.focus(node, 0);
+  return true;
 }
 
 function maybeMergeContentInto(
