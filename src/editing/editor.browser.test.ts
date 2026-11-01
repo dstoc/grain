@@ -617,8 +617,8 @@ describe('Editor', () => {
       expect(item.checked).toBeUndefined();
     });
 
-    test('copies and cuts authored zero-width text without the caret marker', async () => {
-      const content = 'alpha\u200b\n';
+    test('uses a trailing break without changing rendered text or native clipboard text', async () => {
+      const content = 'alpha\u200b\n\n';
       const { tree, inline } = await setup(content);
       const selectRenderedText = () => {
         const range = document.createRange();
@@ -627,32 +627,38 @@ describe('Editor', () => {
         selection.removeAllRanges();
         selection.addRange(range);
       };
-      selectRenderedText();
-      const copied = new DataTransfer();
-      inline.dispatchEvent(
-        new ClipboardEvent('copy', {
-          bubbles: true,
-          composed: true,
-          cancelable: true,
-          clipboardData: copied,
-        }),
-      );
-      expect(copied.getData('text/plain')).toBe(content);
+      const pasteIntoTextarea = async () => {
+        const destination = document.createElement('textarea');
+        document.body.append(destination);
+        destination.focus();
+        await userEvent.keyboard('{Control>}v{/Control}');
+        return destination;
+      };
+
+      expect(inline.textContent).toBe(content);
+      expect(inline.querySelectorAll('br')).toHaveLength(1);
+      const trailingBreak = inline.querySelector('br')!;
+      expect(trailingBreak.parentElement?.lastElementChild).toBe(trailingBreak);
+      inline.focus();
+      setSelection(inline, content.length);
+      expect(inline.getSelection()?.start.index).toBe(content.length);
 
       selectRenderedText();
-      const cut = new DataTransfer();
-      const event = new ClipboardEvent('cut', {
-        bubbles: true,
-        composed: true,
-        cancelable: true,
-        clipboardData: cut,
-      });
-      inline.dispatchEvent(event);
+      await userEvent.keyboard('{Control>}c{/Control}');
+      const copied = await pasteIntoTextarea();
+      expect(copied.value).toBe(content);
+      copied.remove();
+
+      inline.focus();
+      selectRenderedText();
+      await userEvent.keyboard('{Control>}x{/Control}');
       await nextTask();
-      expect(event.defaultPrevented).toBe(true);
-      expect(cut.getData('text/plain')).toBe(content);
       expect(inline.node!.content).toBe('');
+      const cut = await pasteIntoTextarea();
+      expect(cut.value).toBe(content);
+      cut.remove();
 
+      inline.focus();
       await userEvent.keyboard('{Control>}z{/Control}');
       await nextTask();
       expect(inline.node!.content).toBe(content);
@@ -2125,7 +2131,7 @@ describe('composition recovery', () => {
 
     inline = getInline(editor);
     expect(inline.node!.content).toBe('a\u00e9lpha\n');
-    expect(inline.getProjectedText()).toBe('a\u00e9lpha\n');
+    expect(inline.textContent).toBe('a\u00e9lpha\n');
     expect(inline.getSelection()?.start.index).toBe(2);
     expect(parseMarkdownTree(serializeToString(tree.root)).serialize()).toEqual(tree.serialize());
 
@@ -2144,7 +2150,7 @@ describe('composition recovery', () => {
     ['after Enter', 'alpha', true],
     ['at a preexisting trailing newline', 'alpha\n', false],
   ])(
-    'preserves composition inserted into the code caret marker %s',
+    'preserves composition at the final code line %s',
     async (_label, initialContent, insertNewline) => {
       const editor = new Editor();
       document.body.replaceChildren(editor);
@@ -2164,9 +2170,8 @@ describe('composition recovery', () => {
         inline = getInline(editor);
       }
 
-      const sentinel = inline.querySelector('[data-code-block-caret-sentinel]')!;
-      const text = document.createTreeWalker(sentinel, NodeFilter.SHOW_TEXT).nextNode() as Text;
-      window.getSelection()!.setBaseAndExtent(text, 0, text, 0);
+      const text = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT).nextNode() as Text;
+      window.getSelection()!.setBaseAndExtent(text, text.length, text, text.length);
       inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
 
       const beforeInput = new InputEvent('beforeinput', {
@@ -2179,15 +2184,15 @@ describe('composition recovery', () => {
         value: () => [
           new StaticRange({
             startContainer: text,
-            startOffset: 0,
+            startOffset: text.length,
             endContainer: text,
-            endOffset: 0,
+            endOffset: text.length,
           }),
         ],
       });
       inline.dispatchEvent(beforeInput);
-      text.data = `é${text.data}`;
-      window.getSelection()!.setBaseAndExtent(text, 1, text, 1);
+      text.data = `${text.data}é`;
+      window.getSelection()!.setBaseAndExtent(text, text.length, text, text.length);
       inline.dispatchEvent(
         new InputEvent('input', {
           bubbles: true,
@@ -2201,7 +2206,7 @@ describe('composition recovery', () => {
 
       inline = getInline(editor);
       expect(inline.node!.content).toBe('alpha\né');
-      expect(inline.getProjectedText()).toBe('alpha\né');
+      expect(inline.textContent).toBe('alpha\né');
       expect(inline.getSelection()?.start.index).toBe(7);
       expect(parseMarkdownTree(serializeToString(tree.root)).serialize()).toEqual(tree.serialize());
 

@@ -11,29 +11,6 @@ import { HostContext, hostContext } from './host-context.js';
 import type { InlineTreeNode } from './inline-parser.js';
 import { type InlineViewModelNode, viewModel } from './view-model-node.js';
 
-export const CODE_BLOCK_CARET_SENTINEL = '\u200b';
-export const CODE_BLOCK_CARET_SENTINEL_SELECTOR = '[data-code-block-caret-sentinel]';
-
-function removeCodeBlockCaretSentinels(fragment: DocumentFragment) {
-  for (const sentinel of fragment.querySelectorAll(CODE_BLOCK_CARET_SENTINEL_SELECTOR)) {
-    const walker = document.createTreeWalker(sentinel, NodeFilter.SHOW_TEXT);
-    const textNodes: Text[] = [];
-    let next: Node | null;
-    while ((next = walker.nextNode())) textNodes.push(next as Text);
-
-    // Chromium may place native composition text in the sentinel before its render-only
-    // character. Remove that character alone so projection and selection retain the input.
-    for (const text of textNodes.reverse()) {
-      const index = text.data.lastIndexOf(CODE_BLOCK_CARET_SENTINEL);
-      if (index < 0) continue;
-      text.deleteData(index, CODE_BLOCK_CARET_SENTINEL.length);
-      break;
-    }
-
-    sentinel.replaceWith(...sentinel.childNodes);
-  }
-}
-
 export interface InlineInputPoint {
   span?: MarkdownSpan;
   index: number;
@@ -166,43 +143,16 @@ export class MarkdownInline extends LitElement {
       const range = document.createRange();
       range.selectNodeContents(this);
       range.setEnd(container, offset);
-      const fragment = range.cloneContents();
-      removeCodeBlockCaretSentinels(fragment);
-      return fragment.textContent?.length ?? 0;
+      return range.toString().length;
     } catch {
       return;
     }
   }
 
-  getProjectedText() {
-    if (!this.querySelector(CODE_BLOCK_CARET_SENTINEL_SELECTOR)) return this.textContent ?? '';
-    const range = document.createRange();
-    range.selectNodeContents(this);
-    const fragment = range.cloneContents();
-    removeCodeBlockCaretSentinels(fragment);
-    return fragment.textContent ?? '';
-  }
-
-  getSelectedTextWithoutRenderOnlyContent(): string | undefined {
-    const selection = this.nativeSelection();
-    if (!selection?.rangeCount || selection.isCollapsed) return;
-    const range = selection.getRangeAt(0);
-    if (!this.contains(range.startContainer) || !this.contains(range.endContainer)) return;
-    const fragment = range.cloneContents();
-    if (!fragment.querySelector(CODE_BLOCK_CARET_SENTINEL_SELECTOR)) return;
-    removeCodeBlockCaretSentinels(fragment);
-    return fragment.textContent ?? '';
-  }
-
   setSelectionOffsets(anchorOffset: number, focusOffset: number) {
     const pointAt = (requestedOffset: number): [Node, number] => {
-      let remaining = Math.max(0, Math.min(this.getProjectedText().length, requestedOffset));
-      const walker = document.createTreeWalker(this, NodeFilter.SHOW_TEXT, {
-        acceptNode: (node) =>
-          node.parentElement?.closest(CODE_BLOCK_CARET_SENTINEL_SELECTOR)
-            ? NodeFilter.FILTER_REJECT
-            : NodeFilter.FILTER_ACCEPT,
-      });
+      let remaining = Math.max(0, Math.min(this.textContent?.length ?? 0, requestedOffset));
+      const walker = document.createTreeWalker(this, NodeFilter.SHOW_TEXT);
       let next: Node | null;
       let last: Text | undefined;
       while ((next = walker.nextNode())) {
@@ -373,12 +323,9 @@ export class MarkdownInline extends LitElement {
       const range = document.createRange();
       range.selectNodeContents(node);
       range.setEnd(node, offset);
-      const index = node.node.startIndex + range.toString().length;
-      const inline = node.closest('md-inline') as MarkdownInline | null;
       return {
         span: node,
-        index:
-          inline?.node?.type === 'code-block' ? Math.min(index, inline.node.content.length) : index,
+        index: node.node.startIndex + range.toString().length,
       };
     }
     let parent: HTMLElement = cast(node.parentElement);
@@ -397,12 +344,9 @@ export class MarkdownInline extends LitElement {
       }
       previous = walker.previousNode();
     }
-    const index = (cast(previous) as MarkdownSpan).node!.startIndex + offset;
-    const inline = parent.closest('md-inline') as MarkdownInline | null;
     return {
       span: parent,
-      index:
-        inline?.node?.type === 'code-block' ? Math.min(index, inline.node.content.length) : index,
+      index: (cast(previous) as MarkdownSpan).node!.startIndex + offset,
     };
   }
 
@@ -676,12 +620,10 @@ export class MarkdownSpan extends LitElement {
   private renderText(content: string): TemplateResult {
     const codeBlock = this.closest('md-inline')?.node;
     if (codeBlock?.type === 'code-block') {
-      // ShadowRoot selections cannot represent the caret after a trailing newline in Chromium.
-      // Keep an invisible character after it so the caret can sit before that character.
+      // The trailing break gives Chromium a caret position after a final newline without
+      // adding text to the code block's projection.
       if (codeBlock.content.endsWith('\n') && content.endsWith('\n')) {
-        return html`${content}<span data-code-block-caret-sentinel aria-hidden="true"
-            >${CODE_BLOCK_CARET_SENTINEL}</span
-          >`;
+        return html`${content}<br />`;
       }
       return html`${content}`;
     }
