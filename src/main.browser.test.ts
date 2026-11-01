@@ -66,6 +66,9 @@ test('Serialize follows partial, stopped, and finished playback', async () => {
   const harness = document.createElement('md-dev-harness') as LitElement;
   document.body.append(harness);
   await harness.updateComplete;
+  const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+  toolsToggle.click();
+  await harness.updateComplete;
   const source = harness.shadowRoot!.querySelector('textarea')!;
   source.value = 'alpha';
   source.dispatchEvent(new Event('input', { bubbles: true }));
@@ -76,9 +79,22 @@ test('Serialize follows partial, stopped, and finished playback', async () => {
   vi.advanceTimersByTime(20);
   await harness.updateComplete;
   expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe('al\n');
+  toolsToggle.click();
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!.hidden).toBe(true);
+  vi.advanceTimersByTime(10);
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe('alp\n');
+  toolsToggle.click();
+  await harness.updateComplete;
   play.click();
   await harness.updateComplete;
-  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe('al\n');
+  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe('alp\n');
+  const progress = harness.shadowRoot!.querySelector<HTMLInputElement>('input[type="range"]')!;
+  progress.value = '1';
+  progress.dispatchEvent(new Event('input', { bubbles: true }));
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe('a\n');
   play.click();
   vi.advanceTimersByTime(50);
   await harness.updateComplete;
@@ -120,6 +136,11 @@ async function createSettledHarness(value: string) {
 
 async function showSimulatedKeyboard(harness: LitElement, inline: HTMLElement) {
   inline.focus();
+  const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+  if (toolsToggle.getAttribute('aria-expanded') !== 'true') {
+    toolsToggle.click();
+    await harness.updateComplete;
+  }
   const toggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.simulation-toggle')!;
   toggle.dispatchEvent(
     new PointerEvent('pointerdown', { bubbles: true, button: 0, cancelable: true }),
@@ -128,6 +149,106 @@ async function showSimulatedKeyboard(harness: LitElement, inline: HTMLElement) {
   await settleHarness(harness);
   return harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
 }
+
+test('responsive shell disclosures preserve the editor and expose live outputs and tools', async () => {
+  await page.viewport(1280, 800);
+  const { harness, source } = await createSettledHarness('# Changed\n\nparagraph');
+  const sourcePane = harness.shadowRoot!.querySelector<HTMLElement>('#source-pane')!;
+  const editor = harness.shadowRoot!.querySelector('md-editor')!;
+  const sourceToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.source-toggle')!;
+  const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+  const desktopSourceRect = sourcePane.getBoundingClientRect();
+  const desktopPreviewRect = harness
+    .shadowRoot!.querySelector<HTMLElement>('.preview')!
+    .getBoundingClientRect();
+
+  expect(desktopPreviewRect.left).toBeGreaterThan(desktopSourceRect.left);
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!.hidden).toBe(true);
+
+  sourceToggle.click();
+  await harness.updateComplete;
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(sourcePane.hidden).toBe(true);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+
+  sourceToggle.click();
+  await harness.updateComplete;
+  expect(sourcePane.hidden).toBe(false);
+  expect(harness.shadowRoot!.querySelector('textarea')).toBe(source);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+
+  toolsToggle.click();
+  await harness.updateComplete;
+  const tools = harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!;
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.hidden).toBe(false);
+  expect(tools.textContent).toContain('Playback delay: 10 ms per character');
+  expect(tools.textContent).toContain('pending tail:');
+  expect(harness.shadowRoot!.querySelector<HTMLInputElement>('input[type="range"]')!.max).toBe(
+    String(source.value.length),
+  );
+
+  const tabs = harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab');
+  tabs[1]!.click();
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toContain('# Changed');
+  tabs[2]!.click();
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector('.tree')!.textContent).toContain('Changed');
+  tabs[0]!.click();
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector('md-editor')).not.toBeNull();
+
+  await page.viewport(390, 844);
+  await nextTask();
+  const phoneSourceRect = sourcePane.getBoundingClientRect();
+  const phonePreviewRect = harness
+    .shadowRoot!.querySelector<HTMLElement>('.preview')!
+    .getBoundingClientRect();
+  expect(phonePreviewRect.top).toBeGreaterThanOrEqual(phoneSourceRect.bottom);
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
+    document.documentElement.clientWidth,
+  );
+});
+
+test('mobile toolbar inherits theme tokens without changing Markdown typography', async () => {
+  await page.viewport(390, 844);
+  const { harness } = await createSettledHarness('A paragraph with **strong text**.');
+  const inline = currentEditorInlines(harness)[0]!;
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  const strip = toolbar.shadowRoot!.querySelector<HTMLElement>('.strip')!;
+  const button = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button')!;
+  const originalInlineStyle = getComputedStyle(inline);
+  const originalFont = originalInlineStyle.font;
+  const originalLineHeight = originalInlineStyle.lineHeight;
+  const lightSurface = getComputedStyle(strip).backgroundColor;
+  const lightText = getComputedStyle(button).color;
+  const root = document.documentElement.style;
+  const previous = new Map(
+    ['--root-color', '--root-background-color', '--md-active-block-color', '--md-accent-color'].map(
+      (name) => [name, root.getPropertyValue(name)] as const,
+    ),
+  );
+
+  try {
+    root.setProperty('--root-color', '#e0e8db');
+    root.setProperty('--root-background-color', '#1c231e');
+    root.setProperty('--md-active-block-color', '#35452f');
+    root.setProperty('--md-accent-color', '#b1d69b');
+    await nextTask();
+
+    expect(getComputedStyle(strip).backgroundColor).not.toBe(lightSurface);
+    expect(getComputedStyle(button).color).not.toBe(lightText);
+    expect(getComputedStyle(inline).font).toBe(originalFont);
+    expect(getComputedStyle(inline).lineHeight).toBe(originalLineHeight);
+  } finally {
+    for (const [name, value] of previous) {
+      if (value) root.setProperty(name, value);
+      else root.removeProperty(name);
+    }
+  }
+});
 
 async function activateToolbarAction(harness: LitElement, label: string) {
   const toolbar = harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;

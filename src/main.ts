@@ -86,17 +86,7 @@ class MarkdownDevHarness extends LitElement {
       max-width: 100%;
       min-height: 100vh;
       color: var(--root-color);
-      background:
-        radial-gradient(
-          circle at top left,
-          color-mix(in srgb, var(--md-accent-color) 14%, transparent),
-          transparent 28%
-        ),
-        linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--root-background-color) 92%, white) 0%,
-          color-mix(in srgb, var(--root-background-color) 96%, black) 100%
-        );
+      background: color-mix(in srgb, var(--root-background-color) 96%, var(--root-color));
       font:
         15px/1.5 'Iowan Old Style',
         'Palatino Linotype',
@@ -106,45 +96,188 @@ class MarkdownDevHarness extends LitElement {
         serif;
     }
 
+    .app-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.75rem 1rem;
+      box-sizing: border-box;
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 1rem clamp(1rem, 3vw, 2rem);
+      border-bottom: 1px solid color-mix(in srgb, var(--root-color) 12%, transparent);
+      background: color-mix(in srgb, var(--root-background-color) 88%, transparent);
+    }
+
+    .brand {
+      margin: 0;
+      color: var(--root-color);
+      font:
+        650 1.1rem/1.2 system-ui,
+        sans-serif;
+      letter-spacing: -0.025em;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .source-toggle,
+    .tools-toggle,
+    .simulation-toggle,
+    .play {
+      min-height: 40px;
+      border: 1px solid color-mix(in srgb, var(--root-color) 16%, transparent);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--root-background-color) 94%, var(--root-color));
+      color: var(--root-color);
+      padding: 0.6rem 0.85rem;
+      font:
+        500 0.84rem/1.1 system-ui,
+        sans-serif;
+      cursor: pointer;
+    }
+
+    .source-toggle:hover,
+    .tools-toggle:hover,
+    .simulation-toggle:hover {
+      background: color-mix(in srgb, var(--md-active-block-color) 70%, transparent);
+    }
+
+    .source-toggle:focus-visible,
+    .tools-toggle:focus-visible,
+    .simulation-toggle:focus-visible,
+    .play:focus-visible,
+    .tab:focus-visible,
+    input:focus-visible {
+      outline: 2px solid var(--md-accent-color);
+      outline-offset: 2px;
+    }
+
+    .tools-toggle::after {
+      display: inline-block;
+      margin-left: 0.5rem;
+      content: '⌄';
+      transition: transform 120ms ease;
+    }
+
+    .tools-toggle[aria-expanded='true']::after {
+      transform: rotate(180deg);
+    }
+
+    .tools-panel {
+      display: grid;
+      gap: 0.85rem;
+      box-sizing: border-box;
+      max-width: 1440px;
+      margin: 0 auto;
+      padding: 1rem clamp(1rem, 3vw, 2rem);
+      border-bottom: 1px solid color-mix(in srgb, var(--root-color) 12%, transparent);
+      background: color-mix(in srgb, var(--root-background-color) 90%, var(--root-color));
+      font:
+        0.82rem/1.4 system-ui,
+        sans-serif;
+    }
+
+    .tools-panel[hidden],
+    .source-pane[hidden] {
+      display: none;
+    }
+
+    .playback-controls {
+      display: grid;
+      grid-template-columns: auto minmax(10rem, 1fr) auto auto;
+      align-items: center;
+      gap: 0.85rem;
+    }
+
+    .play {
+      border-color: var(--md-accent-color);
+      background: var(--md-accent-color);
+      color: var(--root-background-color);
+      font-weight: 650;
+    }
+
+    .play[disabled] {
+      opacity: 0.55;
+      cursor: default;
+    }
+
+    .slider-wrap {
+      display: grid;
+      grid-template-columns: auto minmax(4rem, 1fr);
+      align-items: center;
+      gap: 0.8rem;
+      min-width: 0;
+    }
+
+    .slider-label,
+    .playback-delay,
+    .meta {
+      color: color-mix(in srgb, var(--root-color) 72%, transparent);
+    }
+
+    input[type='range'] {
+      width: 100%;
+      accent-color: var(--md-accent-color);
+    }
+
+    .meta {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem 1rem;
+      flex-wrap: wrap;
+      margin: 0;
+      font-size: 0.78rem;
+    }
+
+    .simulation-toggle {
+      justify-self: start;
+      border-style: dashed;
+    }
+
+    .simulation-toggle[aria-pressed='true'] {
+      border-style: solid;
+      color: var(--md-accent-color);
+    }
+
     .shell {
       display: grid;
-      grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+      grid-template-columns: minmax(250px, 0.36fr) minmax(0, 0.64fr);
       min-width: 0;
-      min-height: 100vh;
+      min-height: calc(100vh - 68px);
+      max-width: 1440px;
+      margin: 0 auto;
       padding-bottom: var(--mobile-keyboard-reserve, 0px);
     }
 
     .panel {
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
       min-width: 0;
-      padding: 2rem;
+      padding: clamp(1rem, 2.4vw, 2rem);
     }
 
     .editor {
+      min-height: 0;
       border-right: 1px solid color-mix(in srgb, var(--root-color) 10%, transparent);
       background: color-mix(in srgb, var(--root-background-color) 84%, transparent);
       backdrop-filter: blur(18px);
     }
 
     .preview {
+      min-height: 0;
       background: color-mix(in srgb, var(--root-background-color) 92%, transparent);
-    }
-
-    h1 {
-      margin: 0 0 0.35rem;
-      font-size: clamp(1.8rem, 2vw + 1rem, 3rem);
-      line-height: 1;
-      letter-spacing: -0.03em;
-    }
-
-    .lede {
-      max-width: 40rem;
-      margin: 0 0 1.4rem;
-      color: color-mix(in srgb, var(--root-color) 72%, transparent);
     }
 
     .label {
       display: block;
-      margin-bottom: 0.55rem;
+      margin: 0;
       color: var(--md-accent-color);
       font:
         600 0.78rem/1.2 ui-monospace,
@@ -156,15 +289,15 @@ class MarkdownDevHarness extends LitElement {
     }
 
     textarea {
+      flex: 1 1 auto;
+      min-height: 0;
       width: 100%;
       max-width: 100%;
       box-sizing: border-box;
-      min-height: 68vh;
       resize: vertical;
       border: 1px solid color-mix(in srgb, var(--root-color) 14%, transparent);
-      border-radius: 18px;
-      background: color-mix(in srgb, var(--root-background-color) 90%, transparent);
-      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--root-background-color) 70%, white);
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--root-background-color) 94%, transparent);
       padding: 1rem 1.05rem;
       color: var(--root-color);
       font:
@@ -174,111 +307,53 @@ class MarkdownDevHarness extends LitElement {
         monospace;
     }
 
-    textarea:focus {
-      outline: 2px solid color-mix(in srgb, var(--md-accent-color) 25%, transparent);
-      outline-offset: 2px;
-    }
-
-    .meta {
+    .source-pane {
+      flex: 1 1 auto;
       display: flex;
-      gap: 1rem;
-      flex-wrap: wrap;
-      margin-top: 0.85rem;
-      color: color-mix(in srgb, var(--root-color) 60%, transparent);
-      font-size: 0.9rem;
+      flex-direction: column;
+      gap: 0.85rem;
+      min-height: 0;
     }
 
-    .controls {
+    .preview .tabs {
       display: flex;
-      align-items: center;
-      gap: 0.9rem;
       flex-wrap: wrap;
-      margin-top: 1rem;
+      gap: 0.25rem;
+      margin: 0;
+      padding-bottom: 0.55rem;
+      border-bottom: 1px solid color-mix(in srgb, var(--root-color) 12%, transparent);
     }
 
-    .play {
+    .tab {
       border: 0;
-      border-radius: 999px;
-      background: var(--md-accent-color);
-      color: var(--root-background-color);
-      padding: 0.65rem 1rem;
+      border-radius: 7px 7px 0 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: color-mix(in srgb, var(--root-color) 70%, transparent);
+      padding: 0.55rem 0.8rem;
       font:
-        600 0.84rem/1 ui-monospace,
-        SFMono-Regular,
-        Menlo,
-        monospace;
+        550 0.84rem/1 system-ui,
+        sans-serif;
       cursor: pointer;
     }
 
-    .play[disabled] {
-      opacity: 0.55;
-      cursor: default;
+    .tab:hover {
+      background: color-mix(in srgb, var(--md-active-block-color) 55%, transparent);
     }
 
-    .slider-wrap {
-      display: grid;
-      gap: 0.3rem;
-      min-width: min(100%, 18rem);
-    }
-
-    .slider-label {
-      color: color-mix(in srgb, var(--root-color) 68%, transparent);
-      font:
-        600 0.78rem/1.2 ui-monospace,
-        SFMono-Regular,
-        Menlo,
-        monospace;
-      letter-spacing: 0.02em;
-    }
-
-    input[type='range'] {
-      width: 100%;
-      accent-color: var(--md-accent-color);
+    .tab[selected] {
+      border-bottom-color: var(--md-accent-color);
+      color: var(--root-color);
+      font-weight: 650;
     }
 
     .preview-card {
+      flex: 1 1 auto;
       min-width: 0;
       max-width: 100%;
       box-sizing: border-box;
-      min-height: 68vh;
-      border: 1px solid color-mix(in srgb, var(--root-color) 8%, transparent);
-      border-radius: 24px;
-      background: color-mix(in srgb, var(--root-background-color) 90%, transparent);
-      box-shadow:
-        0 24px 60px color-mix(in srgb, var(--root-color) 8%, transparent),
-        inset 0 1px 0 color-mix(in srgb, var(--root-background-color) 65%, white);
-      padding: 1.35rem 1.35rem 1.6rem;
-    }
-
-    .tabs {
-      display: inline-flex;
-      box-sizing: border-box;
-      max-width: 100%;
-      overflow-x: auto;
-      gap: 0.45rem;
-      margin-bottom: 0.85rem;
-      padding: 0.2rem;
-      border-radius: 999px;
-      background: color-mix(in srgb, var(--root-color) 6%, transparent);
-    }
-
-    .simulation-toggle {
-      border: 1px dashed color-mix(in srgb, var(--root-color) 25%, transparent);
-      border-radius: 999px;
-      background: transparent;
-      color: color-mix(in srgb, var(--root-color) 72%, transparent);
-      padding: 0.5rem 0.75rem;
-      font:
-        600 0.75rem/1 ui-monospace,
-        SFMono-Regular,
-        Menlo,
-        monospace;
-      cursor: pointer;
-    }
-
-    .simulation-toggle[aria-pressed='true'] {
-      border-style: solid;
-      color: var(--md-accent-color);
+      min-height: 0;
+      padding: 0.25rem 0 1rem;
     }
 
     .simulated-keyboard {
@@ -292,11 +367,11 @@ class MarkdownDevHarness extends LitElement {
       gap: 0.45rem;
       height: 280px;
       padding: 0.65rem 0.5rem 0.8rem;
-      border-top: 1px solid #c9d0c5;
+      border-top: 1px solid color-mix(in srgb, var(--root-color) 20%, transparent);
       border-radius: 14px 14px 0 0;
-      background: #e5e8e2;
+      background: color-mix(in srgb, var(--root-background-color) 88%, var(--root-color));
       box-shadow: 0 -8px 28px rgb(0 0 0 / 12%);
-      color: #334432;
+      color: var(--root-color);
       font:
         12px/1.2 system-ui,
         sans-serif;
@@ -308,7 +383,7 @@ class MarkdownDevHarness extends LitElement {
 
     .keyboard-label {
       text-align: center;
-      color: #596454;
+      color: color-mix(in srgb, var(--root-color) 70%, transparent);
       font:
         600 0.65rem/1.2 ui-monospace,
         SFMono-Regular,
@@ -331,40 +406,19 @@ class MarkdownDevHarness extends LitElement {
       min-width: 0;
       place-items: center;
       border-radius: 5px;
-      background: #fafbf7;
+      background: color-mix(in srgb, var(--root-background-color) 96%, var(--root-color));
       box-shadow: 0 1px 2px rgb(0 0 0 / 14%);
       font-size: 0.8rem;
     }
 
     .key-row .wide-key {
       max-width: 6rem;
-      background: #d3d9d0;
-    }
-
-    .tab {
-      border: 0;
-      border-radius: 999px;
-      background: transparent;
-      color: color-mix(in srgb, var(--root-color) 70%, transparent);
-      padding: 0.5rem 0.9rem;
-      font:
-        600 0.84rem/1 ui-monospace,
-        SFMono-Regular,
-        Menlo,
-        monospace;
-      letter-spacing: 0.04em;
-      cursor: pointer;
-    }
-
-    .tab[selected] {
-      background: var(--root-background-color);
-      color: var(--md-accent-color);
-      box-shadow: 0 6px 18px color-mix(in srgb, var(--root-color) 8%, transparent);
+      background: color-mix(in srgb, var(--md-active-block-color) 72%, transparent);
     }
 
     .serialized {
       width: 100%;
-      min-height: 68vh;
+      min-height: 45vh;
       margin: 0;
       white-space: pre-wrap;
       word-break: break-word;
@@ -378,7 +432,7 @@ class MarkdownDevHarness extends LitElement {
 
     .tree {
       width: 100%;
-      min-height: 68vh;
+      min-height: 45vh;
       margin: 0;
       white-space: pre-wrap;
       word-break: break-word;
@@ -390,23 +444,78 @@ class MarkdownDevHarness extends LitElement {
         monospace;
     }
 
-    @media (max-width: 920px) {
-      .shell {
-        grid-template-columns: minmax(0, 1fr);
+    @media (max-width: 700px) {
+      .app-header {
+        padding: 0.75rem 1rem;
       }
 
-      .panel {
-        padding: clamp(1rem, 4vw, 2rem);
+      .header-actions {
+        width: 100%;
+      }
+
+      .source-toggle,
+      .tools-toggle {
+        flex: 1 1 auto;
+      }
+
+      .tools-panel {
+        gap: 0.75rem;
+      }
+
+      .playback-controls {
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 0.7rem;
+      }
+
+      .playback-delay {
+        grid-column: 2;
+      }
+
+      .slider-wrap {
+        grid-template-columns: 1fr;
+        gap: 0.25rem;
+      }
+
+      .shell {
+        grid-template-columns: minmax(0, 1fr);
+        min-height: 0;
+      }
+
+      .shell.source-collapsed {
+        grid-template-columns: minmax(0, 1fr);
       }
 
       .editor {
         border-right: 0;
         border-bottom: 1px solid color-mix(in srgb, var(--root-color) 8%, transparent);
+        min-height: 18rem;
       }
 
-      textarea,
+      textarea {
+        min-height: 13rem;
+      }
+
+      .preview {
+        min-height: 62vh;
+      }
+
       .preview-card {
-        min-height: 42vh;
+        min-height: 55vh;
+      }
+    }
+
+    @media (max-width: 420px) {
+      .app-header {
+        gap: 0.6rem;
+      }
+
+      .playback-delay {
+        font-size: 0.72rem;
+      }
+
+      .tab {
+        padding-right: 0.65rem;
+        padding-left: 0.65rem;
       }
     }
   `;
@@ -419,6 +528,8 @@ class MarkdownDevHarness extends LitElement {
     playing: { state: true },
     renderVersion: { state: true },
     activeTab: { state: true },
+    sourceExpanded: { state: true },
+    testToolsExpanded: { state: true },
     serializedMarkdown: { state: true },
     treeJson: { state: true },
     toolbarVisible: { state: true },
@@ -438,6 +549,8 @@ class MarkdownDevHarness extends LitElement {
   declare private playing: boolean;
   declare private renderVersion: number;
   declare private activeTab: 'render' | 'serialize' | 'tree';
+  declare private sourceExpanded: boolean;
+  declare private testToolsExpanded: boolean;
   declare private serializedMarkdown: string;
   declare private treeJson: string;
   declare private toolbarVisible: boolean;
@@ -474,6 +587,8 @@ class MarkdownDevHarness extends LitElement {
     this.playing = false;
     this.renderVersion = 0;
     this.activeTab = 'render';
+    this.sourceExpanded = true;
+    this.testToolsExpanded = false;
     this.serializedMarkdown = '';
     this.treeJson = '';
     this.toolbarVisible = false;
@@ -495,13 +610,72 @@ class MarkdownDevHarness extends LitElement {
 
   override render() {
     return html`
-      <main class="shell">
-        <section class="panel editor">
-          <h1>Block Render Harness</h1>
-          <p class="lede">
-            This page reparses markdown on every input change using the new chunk-based block parser
-            and renders only block structure.
-          </p>
+      <header class="app-header">
+        <h1 class="brand">Grain</h1>
+        <nav class="header-actions" aria-label="Harness panels">
+          <button
+            class="source-toggle"
+            aria-controls="source-pane"
+            aria-expanded=${this.sourceExpanded}
+            @click=${this.toggleSource}
+          >
+            Source
+          </button>
+          <button
+            class="tools-toggle"
+            aria-controls="test-tools-panel"
+            aria-expanded=${this.testToolsExpanded}
+            @click=${this.toggleTestTools}
+          >
+            Test tools
+          </button>
+        </nav>
+      </header>
+      <section
+        id="test-tools-panel"
+        class="tools-panel"
+        ?hidden=${!this.testToolsExpanded}
+        aria-label="Parser and playback controls"
+      >
+        <div class="playback-controls">
+          <button class="play" @click=${this.onPlayToggle}>
+            ${this.playing ? 'Stop' : 'Play'}
+          </button>
+          <label class="slider-wrap">
+            <span class="slider-label"
+              >Playback progress: ${this.playbackIndex}/${this.source.length}</span
+            >
+            <input
+              type="range"
+              aria-label="Playback progress"
+              min="0"
+              max=${String(this.source.length)}
+              step="1"
+              .value=${String(this.playbackIndex)}
+              @input=${this.onProgressInput}
+            />
+          </label>
+          <span class="playback-delay"
+            >Playback delay: ${this.playbackDelayMs} ms per character</span
+          >
+        </div>
+        <div class="meta" aria-live="polite">
+          <span>${this.source.length} chars</span>
+          <span>${this.source.split('\n').length} lines</span>
+          <span>pending tail: ${this.pendingText.length}</span>
+          <span>mode: ${this.parseMode}</span>
+        </div>
+        <button
+          class="simulation-toggle"
+          aria-pressed=${this.simulatedKeyboard}
+          @pointerdown=${this.preserveControlFocus}
+          @click=${this.toggleSimulatedKeyboard}
+        >
+          ${this.simulatedKeyboard ? 'Hide simulated keyboard' : 'Show simulated keyboard'}
+        </button>
+      </section>
+      <main class="shell ${this.sourceExpanded ? 'source-expanded' : 'source-collapsed'}">
+        <section id="source-pane" class="panel editor source-pane" ?hidden=${!this.sourceExpanded}>
           <label class="label" for="source">Markdown Source</label>
           <textarea
             id="source"
@@ -509,37 +683,16 @@ class MarkdownDevHarness extends LitElement {
             @input=${this.onInput}
             spellcheck="false"
           ></textarea>
-          <div class="meta">
-            <span>${this.source.length} chars</span>
-            <span>${this.source.split('\n').length} lines</span>
-            <span>pending tail: ${this.pendingText.length}</span>
-            <span>mode: ${this.parseMode}</span>
-          </div>
-          <div class="controls">
-            <button class="play" @click=${this.onPlayToggle}>
-              ${this.playing ? 'Stop' : 'Play'}
-            </button>
-            <label class="slider-wrap">
-              <span class="slider-label"
-                >Playback progress: ${this.playbackIndex}/${this.source.length}</span
-              >
-              <input
-                type="range"
-                min="0"
-                max=${String(this.source.length)}
-                step="1"
-                .value=${String(this.playbackIndex)}
-                @input=${this.onProgressInput}
-              />
-            </label>
-            <span>50ms per char</span>
-          </div>
         </section>
         <section class="panel preview">
-          <label class="label">Tree Output</label>
-          <div class="tabs">
+          <div class="tabs" role="tablist" aria-label="Output view">
             <button
               class="tab"
+              id="render-tab"
+              role="tab"
+              aria-controls="output-panel"
+              aria-selected=${this.activeTab === 'render'}
+              tabindex=${this.activeTab === 'render' ? '0' : '-1'}
               ?selected=${this.activeTab === 'render'}
               @click=${() => this.setTab('render')}
             >
@@ -547,6 +700,11 @@ class MarkdownDevHarness extends LitElement {
             </button>
             <button
               class="tab"
+              id="serialize-tab"
+              role="tab"
+              aria-controls="output-panel"
+              aria-selected=${this.activeTab === 'serialize'}
+              tabindex=${this.activeTab === 'serialize' ? '0' : '-1'}
               ?selected=${this.activeTab === 'serialize'}
               @click=${() => this.setTab('serialize')}
             >
@@ -554,21 +712,24 @@ class MarkdownDevHarness extends LitElement {
             </button>
             <button
               class="tab"
+              id="tree-tab"
+              role="tab"
+              aria-controls="output-panel"
+              aria-selected=${this.activeTab === 'tree'}
+              tabindex=${this.activeTab === 'tree' ? '0' : '-1'}
               ?selected=${this.activeTab === 'tree'}
               @click=${() => this.setTab('tree')}
             >
               Tree
             </button>
-            <button
-              class="simulation-toggle"
-              aria-pressed=${this.simulatedKeyboard}
-              @pointerdown=${this.preserveControlFocus}
-              @click=${this.toggleSimulatedKeyboard}
-            >
-              ${this.simulatedKeyboard ? 'Hide simulated keyboard' : 'Show simulated keyboard'}
-            </button>
           </div>
-          <div class="preview-card">
+          <div
+            id="output-panel"
+            class="preview-card"
+            role="tabpanel"
+            tabindex="0"
+            aria-labelledby="${this.activeTab}-tab"
+          >
             ${
               this.activeTab === 'render'
                 ? this.root
@@ -616,6 +777,14 @@ class MarkdownDevHarness extends LitElement {
       </div>
     `;
   }
+
+  private toggleSource = () => {
+    this.sourceExpanded = !this.sourceExpanded;
+  };
+
+  private toggleTestTools = () => {
+    this.testToolsExpanded = !this.testToolsExpanded;
+  };
 
   private onInput = (event: Event) => {
     const value = (event.currentTarget as HTMLTextAreaElement).value;

@@ -116,7 +116,7 @@ export class MobileKeyboardToolbar extends LitElement {
       display: block;
       box-sizing: border-box;
       max-width: 100vw;
-      color: #334432;
+      color: var(--root-color, #334432);
       font:
         16px/1.2 system-ui,
         sans-serif;
@@ -139,9 +139,13 @@ export class MobileKeyboardToolbar extends LitElement {
       overscroll-behavior-x: contain;
       scrollbar-width: none;
       touch-action: pan-x;
-      background: #fbfcf9;
-      border-top: 1px solid #d5dbd1;
-      border-bottom: 1px solid #d5dbd1;
+      background: color-mix(
+        in srgb,
+        var(--root-background-color, #fbfcf9) 96%,
+        var(--root-color, #334432)
+      );
+      border-top: 1px solid color-mix(in srgb, var(--root-color, #334432) 18%, transparent);
+      border-bottom: 1px solid color-mix(in srgb, var(--root-color, #334432) 18%, transparent);
       box-shadow: 0 -4px 16px rgb(0 0 0 / 8%);
     }
 
@@ -166,16 +170,20 @@ export class MobileKeyboardToolbar extends LitElement {
     }
 
     button:hover:not(:disabled) {
-      background: #e9eee5;
+      background: color-mix(in srgb, var(--md-active-block-color, #e9eee5) 78%, transparent);
     }
 
     button:focus-visible {
-      outline: 2px solid #67f;
+      outline: 2px solid var(--md-accent-color, #67f);
       outline-offset: -2px;
     }
 
     button:disabled {
-      color: #889186;
+      color: color-mix(
+        in srgb,
+        var(--root-color, #334432) 42%,
+        var(--root-background-color, #fbfcf9)
+      );
       cursor: not-allowed;
     }
 
@@ -198,7 +206,7 @@ export class MobileKeyboardToolbar extends LitElement {
       align-self: center;
       height: 28px;
       margin: 0 6px;
-      background: #dce1d7;
+      background: color-mix(in srgb, var(--root-color, #334432) 18%, transparent);
     }
 
     .symbols {
