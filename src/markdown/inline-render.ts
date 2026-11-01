@@ -81,9 +81,21 @@ export class MarkdownInline extends LitElement {
   private nodeSignal = new NodeSignalController(this, () => this.node);
   private projectionVersion = 0;
   private recovery?: Promise<void>;
+  private recoveringProjection = false;
   private pendingRecoveryEvents: Array<KeyboardEvent | InputEvent> = [];
   private holdRecoveryInputs = false;
   composing = false;
+
+  get mobileToolbarInputReady() {
+    return (
+      this.isConnected &&
+      !!this.node?.[viewModel].connected &&
+      !this.composing &&
+      !this.recoveringProjection &&
+      !this.recovery &&
+      !this.holdRecoveryInputs
+    );
+  }
 
   private nativeSelection() {
     const root = this.getRootNode() as (Document | ShadowRoot) & {
@@ -103,6 +115,7 @@ export class MarkdownInline extends LitElement {
 
   recoverComposition(selection: InlineProjectionSelection, replayEvents = true): Promise<void> {
     if (this.recovery) return this.recovery;
+    this.recoveringProjection = true;
     this.recovery = new Promise<void>((resolve) => {
       const event = new CustomEvent<InlineProjectionRecovery>('inline-projection-recovery', {
         detail: { inline: this, selection, replayEvents, complete: resolve },
@@ -124,6 +137,7 @@ export class MarkdownInline extends LitElement {
       });
     }).finally(() => {
       this.recovery = undefined;
+      this.recoveringProjection = false;
     });
     return this.recovery!;
   }
