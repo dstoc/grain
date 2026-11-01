@@ -22,6 +22,7 @@ import { HostContext, focusNode } from '../markdown/host-context.js';
 import type { MarkdownRenderDelegate } from '../markdown/render-delegate.js';
 import {
   MarkdownInline,
+  MarkdownSpan,
   InlineInput,
   InlineKeyDown,
   InlineLinkClick,
@@ -88,11 +89,19 @@ function hasCompleteCodeSelection(
     if (!belongsToEditor) return false;
 
     const texts: Text[] = [];
+    let trailingBreakSeen = false;
     const inspect = (parent: Node): boolean => {
       for (const child of parent.childNodes) {
+        if (child.nodeType === Node.COMMENT_NODE) continue;
+        if (trailingBreakSeen) return false;
         if (child.nodeType === Node.TEXT_NODE) texts.push(child as Text);
-        else if (child.nodeType === Node.COMMENT_NODE) continue;
         else if (
+          child instanceof HTMLBRElement &&
+          parent instanceof MarkdownSpan &&
+          node.content.endsWith('\n')
+        ) {
+          trailingBreakSeen = true;
+        } else if (
           child instanceof HTMLElement &&
           child.localName === 'md-span' &&
           !child.shadowRoot
@@ -102,7 +111,9 @@ function hasCompleteCodeSelection(
       }
       return true;
     };
-    if (!inspect(inline) || texts.map((text) => text.data).join('') !== node.content) return false;
+    if (!inspect(inline)) return false;
+    const renderedText = texts.map((text) => text.data).join('');
+    if (renderedText !== node.content) return false;
     const nonempty = texts.filter((text) => text.length);
     const first = nonempty[0];
     const last = nonempty.at(-1);
@@ -742,21 +753,23 @@ export class Editor extends LitElement {
     const inline = event.composedPath().find((target) => target instanceof MarkdownInline);
     if (!(inline instanceof MarkdownInline)) return;
     const target = getBlockSelectionTarget(inline);
-    if (!target?.hostContext) return;
-    event.preventDefault();
-    try {
-      if (!event.clipboardData) return;
-      const markdown = serializeSelection(target.hostContext);
-      event.clipboardData.setData('text/plain', markdown);
+    if (target?.hostContext) {
+      event.preventDefault();
       try {
-        event.clipboardData.setData('text/markdown', markdown);
+        if (!event.clipboardData) return;
+        const markdown = serializeSelection(target.hostContext);
+        event.clipboardData.setData('text/plain', markdown);
+        try {
+          event.clipboardData.setData('text/markdown', markdown);
+        } catch {
+          // Plain text is sufficient for copy and cut.
+        }
       } catch {
-        // Plain text is sufficient for copy and cut.
+        return;
       }
-    } catch {
+      if (event.type === 'cut') this.runEditAction(target, removeSelectedNodes);
       return;
     }
-    if (event.type === 'cut') this.runEditAction(target, removeSelectedNodes);
   }
   onPaste(event: ClipboardEvent) {
     if (event.defaultPrevented || !event.isTrusted) return;
@@ -891,10 +904,20 @@ export class Editor extends LitElement {
       if (inputStart.index !== 0 || inputEnd.index !== 0) return false;
       return this.runEditAction(inline, deleteContentBackwards);
     } else if (inputEvent.inputType === 'insertParagraph') {
-      this.runEditAction(inline, insertParagraph, inputStart.index, inputEnd.index);
+      if (inline.node.type === 'code-block') {
+        const startIndex = inputStart.index;
+        this.runEditAction(inline, editInlineNode, {
+          startIndex,
+          oldEndIndex: inputEnd.index,
+          newEndIndex: startIndex + 1,
+          newText: '\n',
+        });
+      } else {
+        this.runEditAction(inline, insertParagraph, inputStart.index, inputEnd.index);
+      }
       return true;
     } else if (inputEvent.inputType === 'insertLineBreak') {
-      this.runEditAction(inline, insertLineBreak, inputStart.index);
+      this.runEditAction(inline, insertLineBreak, inputStart.index, inputEnd.index);
       return true;
     }
     return false;
