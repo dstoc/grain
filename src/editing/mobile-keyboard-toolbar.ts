@@ -208,6 +208,8 @@ export class MobileKeyboardToolbar extends LitElement {
   @property({ type: Boolean }) accessor undoDisabled = true;
   @property({ type: Boolean }) accessor redoDisabled = true;
   private gesture: Gesture | undefined;
+  private pendingDirectionalActions: MobileToolbarAction[] = [];
+  private directionalActionDispatchScheduled = false;
 
   override attributeChangedCallback(
     name: string,
@@ -273,7 +275,7 @@ export class MobileKeyboardToolbar extends LitElement {
           @blur=${this.onButtonBlur}
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M12 2v20M2 12h20M9 5l3-3 3 3M9 19l3 3-3-3M5 9l-3 3 3 3M19 9l3 3-3 3" />
+            <path d="M12 2v20M2 12h20M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3M19 9l3 3-3 3" />
           </svg>
         </button>
         <span class="separator" role="separator"></span>
@@ -417,16 +419,42 @@ export class MobileKeyboardToolbar extends LitElement {
   private emitResidual(gesture: Gesture, axis: 'horizontal' | 'vertical') {
     const horizontal = axis === 'horizontal';
     let residual = horizontal ? gesture.residualX : gesture.residualY;
+    const actions: MobileToolbarAction[] = [];
     while (residual >= 1) {
-      this.activate(horizontal ? arrowActions.right : arrowActions.down);
+      actions.push(horizontal ? arrowActions.right : arrowActions.down);
       residual -= 1;
     }
     while (residual <= -1) {
-      this.activate(horizontal ? arrowActions.left : arrowActions.up);
+      actions.push(horizontal ? arrowActions.left : arrowActions.up);
       residual += 1;
     }
     if (horizontal) gesture.residualX = residual;
     else gesture.residualY = residual;
+    this.enqueueDirectionalActions(actions);
+  }
+
+  private enqueueDirectionalActions(actions: MobileToolbarAction[]) {
+    this.pendingDirectionalActions.push(...actions);
+    if (this.directionalActionDispatchScheduled) return;
+    this.dispatchNextDirectionalAction();
+  }
+
+  private dispatchNextDirectionalAction() {
+    if (!this.isGestureAvailable()) {
+      this.pendingDirectionalActions = [];
+      return;
+    }
+    const action = this.pendingDirectionalActions.shift();
+    if (action === undefined) return;
+    this.activate(action);
+    if (this.pendingDirectionalActions.length === 0) return;
+
+    // Let a cross-block focus update render before routing the next step.
+    this.directionalActionDispatchScheduled = true;
+    window.setTimeout(() => {
+      this.directionalActionDispatchScheduled = false;
+      this.dispatchNextDirectionalAction();
+    }, 0);
   }
 
   private onDirectionalKeydown = (event: KeyboardEvent) => {

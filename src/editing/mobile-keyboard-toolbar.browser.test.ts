@@ -48,6 +48,12 @@ function pointer(target: Element, type: string, point: Point) {
   return event;
 }
 
+async function settleDirectionalActions(pendingSteps = 1) {
+  for (let step = 0; step < pendingSteps; step++) {
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+}
+
 function state(toolbar: MobileKeyboardToolbar) {
   return (toolbar as unknown as { gesture?: GestureSnapshot }).gesture;
 }
@@ -83,6 +89,7 @@ test.each([
   const dx = (speed * 60) / (1000 * alpha);
   pointer(directional, 'pointerdown', { x: 0, y: 0, time: 0 });
   pointer(directional, 'pointermove', { x: dx, y: 0, time: 60 });
+  await settleDirectionalActions(2);
 
   const gesture = state(toolbar)!;
   const emitted = actions.filter((action) => action === 'right').length;
@@ -149,6 +156,7 @@ test.each([30, 60, 120])('integrates a fast 224 px swipe consistently at %i Hz',
     pointer(directional, 'pointermove', { x: (speed * time) / 1000, y: 0, time });
   }
   pointer(directional, 'pointermove', { x: distance, y: 0, time: duration });
+  await settleDirectionalActions(15);
   expect(actions).toHaveLength(16);
   expect(actions.every((action) => action === 'right')).toBe(true);
   pointer(directional, 'pointerup', { x: distance, y: 0, time: duration + 1 });
@@ -168,6 +176,7 @@ test('slow and fast swipes of the same distance emit the expected step counts', 
       pointer(directional, 'pointermove', { x: (speed * time) / 1000, y: 0, time });
     }
     pointer(directional, 'pointermove', { x: distance, y: 0, time: duration });
+    await settleDirectionalActions(expected - 1);
     expect(actions).toHaveLength(expected);
     expect(actions.every((action) => action === 'right')).toBe(true);
     toolbar.remove();
@@ -186,6 +195,7 @@ test('locks the first stepped axis, discards cross-axis drift, and allows revers
   pointer(directional, 'pointermove', { x: 1, y: 100, time: 500 });
   expect(actions).toEqual(['right']);
   pointer(directional, 'pointermove', { x: -19, y: 100, time: 700 });
+  await settleDirectionalActions(1);
   expect(actions).toEqual(['right', 'left']);
   pointer(directional, 'pointerup', { x: -19, y: 100, time: 701 });
   toolbar.remove();
@@ -195,6 +205,7 @@ test('uses horizontal lock for an exact diagonal tie', async () => {
   const { toolbar, directional, actions } = await mountToolbar();
   pointer(directional, 'pointerdown', { x: 0, y: 0, time: 0 });
   pointer(directional, 'pointermove', { x: 21, y: 21, time: 100 });
+  await settleDirectionalActions();
   expect(state(toolbar)!.axis).toBe('horizontal');
   expect(actions.length).toBeGreaterThan(0);
   expect(actions.every((action) => action === 'right')).toBe(true);
@@ -216,6 +227,7 @@ test('resets speed after a pause, emits no phantom steps at rest, and handles a 
   const actionsBeforeLargeDelta = actions.length;
   pointer(directional, 'pointerdown', { x: 0, y: 0, time: 1000, id: 2 });
   pointer(directional, 'pointermove', { x: 1000, y: 0, time: 2000, id: 2 });
+  await settleDirectionalActions(74);
   expect(actions.length - actionsBeforeLargeDelta).toBe(75);
   expect(actions.every((action) => action === 'right')).toBe(true);
   toolbar.remove();
@@ -258,6 +270,25 @@ test.each([
   toolbar.remove();
 });
 
+test('drops undispatched directional steps after the toolbar becomes unavailable', async () => {
+  const { toolbar, directional, actions } = await mountToolbar();
+  pointer(directional, 'pointerdown', { x: 0, y: 0, time: 0 });
+  pointer(directional, 'pointermove', { x: 61.5, y: 0, time: 615 });
+  expect(actions).toEqual(['right']);
+
+  toolbar.disabled = true;
+  await toolbar.updateComplete;
+  await settleDirectionalActions(2);
+  expect(actions).toEqual(['right']);
+
+  toolbar.disabled = false;
+  await toolbar.updateComplete;
+  pointer(directional, 'pointerdown', { x: 0, y: 0, time: 1000, id: 2 });
+  pointer(directional, 'pointermove', { x: 21, y: 0, time: 1210, id: 2 });
+  expect(actions).toEqual(['right', 'right']);
+  toolbar.remove();
+});
+
 test('keyboard arrows emit one action and prevent page navigation', async () => {
   const { toolbar, directional, actions } = await mountToolbar();
   directional.focus();
@@ -294,6 +325,7 @@ test('requests 1 ms vibration per step and button action without blocking on fai
     toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[aria-label="Unindent"]')!.click();
     pointer(directional, 'pointerdown', { x: 0, y: 0, time: 0 });
     pointer(directional, 'pointermove', { x: 41, y: 0, time: 410 });
+    await settleDirectionalActions(1);
     expect(actions).toEqual(['unindent', 'right', 'right']);
     expect(requests).toEqual([1, 1, 1]);
 

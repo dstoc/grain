@@ -139,7 +139,7 @@ async function activateToolbarAction(harness: LitElement, label: string) {
   return button;
 }
 
-async function dragCaret(harness: LitElement, dx: number, dy: number) {
+async function dragCaret(harness: LitElement, dx: number, dy: number, duration = 210) {
   const toolbar = harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
   const button = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('.directional')!;
   const dispatch = (type: string, x: number, y: number, time: number) => {
@@ -159,8 +159,8 @@ async function dragCaret(harness: LitElement, dx: number, dy: number) {
   const startX = 100;
   const startY = 100;
   const pointerDown = dispatch('pointerdown', startX, startY, 0);
-  dispatch('pointermove', startX + dx, startY + dy, 210);
-  dispatch('pointerup', startX + dx, startY + dy, 211);
+  dispatch('pointermove', startX + dx, startY + dy, duration);
+  dispatch('pointerup', startX + dx, startY + dy, duration + 1);
   await settleHarness(harness);
   return pointerDown;
 }
@@ -491,6 +491,36 @@ test('all four caret controls move through the native selection in a mounted Ren
   await dragCaret(harness, 0, 21);
   expect(currentEditorInlines(harness)[0]!.getSelection()!.start.index).toBeGreaterThan(up);
 });
+
+test.each([
+  ['right', 0, 5, 61.5, 0, 'bravo', 2],
+  ['left', 2, 0, -61.5, 0, 'bravo', 3],
+  ['down', 0, 5, 0, 61.5, 'gamma', 5],
+  ['up', 2, 0, 0, -61.5, 'alpha', 0],
+] as const)(
+  'a three-step %s drag advances across editor boundaries one step at a time',
+  async (direction, startInlineIndex, startOffset, dx, dy, expectedContent, expectedOffset) => {
+    const { harness } = await createSettledHarness('alpha\n\nbravo\n\ngamma');
+    const inlines = currentEditorInlines(harness);
+    const inline = inlines[startInlineIndex]!;
+    inline.focus();
+    inline.setSelectionOffsets(startOffset, startOffset);
+    const toolbar = await showSimulatedKeyboard(harness, inline);
+    const emitted: string[] = [];
+    toolbar.addEventListener('mobile-toolbar-action', (event) => {
+      emitted.push(event.detail.action);
+    });
+
+    await dragCaret(harness, dx, dy, 615);
+
+    const current = currentEditorInlines(harness).find((candidate) => candidate.matches(':focus'));
+    expect(emitted).toEqual([direction, direction, direction]);
+    expect(current?.node?.content).toBe(expectedContent);
+    expect(current?.getSelection()?.start.index).toBe(expectedOffset);
+    expect(toolbar.visible).toBe(true);
+    harness.remove();
+  },
+);
 
 test('trusted mouse drag keeps editor focus while pointer capture carries movement off the control', async () => {
   await page.viewport(390, 844);
