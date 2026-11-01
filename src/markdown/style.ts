@@ -140,6 +140,8 @@ export const styles = [
   css`
     md-span[type='code_span'] {
       font-family: var(--md-code-font-family);
+      line-height: 1lh;
+      vertical-align: top;
       border-radius: 3px;
       padding: 3px;
       background: var(--md-code-span-bgcolor);
