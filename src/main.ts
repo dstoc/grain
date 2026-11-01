@@ -66,6 +66,9 @@ This block is rendered through the transclusion delegate.
 - **formatted** child content
 \`\`\``;
 
+const outputTabs = ['render', 'serialize', 'tree'] as const;
+type OutputTab = (typeof outputTabs)[number];
+
 const transclusionRenderDelegate: MarkdownRenderDelegate = {
   renderCodeBlock({ node, selected }) {
     if (node.info !== 'md') return undefined;
@@ -253,6 +256,10 @@ class MarkdownDevHarness extends LitElement {
       max-width: 1440px;
       margin: 0 auto;
       padding-bottom: var(--mobile-keyboard-reserve, 0px);
+    }
+
+    .shell.source-collapsed {
+      grid-template-columns: minmax(0, 1fr);
     }
 
     .panel {
@@ -481,10 +488,6 @@ class MarkdownDevHarness extends LitElement {
         min-height: 0;
       }
 
-      .shell.source-collapsed {
-        grid-template-columns: minmax(0, 1fr);
-      }
-
       .editor {
         border-right: 0;
         border-bottom: 1px solid color-mix(in srgb, var(--root-color) 8%, transparent);
@@ -548,7 +551,7 @@ class MarkdownDevHarness extends LitElement {
   declare private playbackIndex: number;
   declare private playing: boolean;
   declare private renderVersion: number;
-  declare private activeTab: 'render' | 'serialize' | 'tree';
+  declare private activeTab: OutputTab;
   declare private sourceExpanded: boolean;
   declare private testToolsExpanded: boolean;
   declare private serializedMarkdown: string;
@@ -695,6 +698,7 @@ class MarkdownDevHarness extends LitElement {
               tabindex=${this.activeTab === 'render' ? '0' : '-1'}
               ?selected=${this.activeTab === 'render'}
               @click=${() => this.setTab('render')}
+              @keydown=${this.onTabKeydown}
             >
               Render
             </button>
@@ -707,6 +711,7 @@ class MarkdownDevHarness extends LitElement {
               tabindex=${this.activeTab === 'serialize' ? '0' : '-1'}
               ?selected=${this.activeTab === 'serialize'}
               @click=${() => this.setTab('serialize')}
+              @keydown=${this.onTabKeydown}
             >
               Serialize
             </button>
@@ -719,6 +724,7 @@ class MarkdownDevHarness extends LitElement {
               tabindex=${this.activeTab === 'tree' ? '0' : '-1'}
               ?selected=${this.activeTab === 'tree'}
               @click=${() => this.setTab('tree')}
+              @keydown=${this.onTabKeydown}
             >
               Tree
             </button>
@@ -806,7 +812,36 @@ class MarkdownDevHarness extends LitElement {
     this.startPlayback();
   };
 
-  private setTab(tab: 'render' | 'serialize' | 'tree') {
+  private onTabKeydown = (event: KeyboardEvent) => {
+    const currentIndex = outputTabs.indexOf(this.activeTab);
+    let nextIndex: number;
+
+    switch (event.key) {
+      case 'ArrowRight':
+        nextIndex = (currentIndex + 1) % outputTabs.length;
+        break;
+      case 'ArrowLeft':
+        nextIndex = (currentIndex + outputTabs.length - 1) % outputTabs.length;
+        break;
+      case 'Home':
+        nextIndex = 0;
+        break;
+      case 'End':
+        nextIndex = outputTabs.length - 1;
+        break;
+      default:
+        return;
+    }
+
+    event.preventDefault();
+    const tab = outputTabs[nextIndex]!;
+    this.setTab(tab);
+    (event.currentTarget as HTMLButtonElement).parentElement
+      ?.querySelector<HTMLButtonElement>(`#${tab}-tab`)
+      ?.focus();
+  };
+
+  private setTab(tab: OutputTab) {
     this.activeTab = tab;
     if (tab !== 'render') this.clearEditingTarget();
     else this.refreshKeyboardState();

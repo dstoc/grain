@@ -151,7 +151,7 @@ async function showSimulatedKeyboard(harness: LitElement, inline: HTMLElement) {
 }
 
 test('responsive shell disclosures preserve the editor and expose live outputs and tools', async () => {
-  await page.viewport(1280, 800);
+  await page.viewport(1440, 1000);
   const { harness, source } = await createSettledHarness('# Changed\n\nparagraph');
   const sourcePane = harness.shadowRoot!.querySelector<HTMLElement>('#source-pane')!;
   const editor = harness.shadowRoot!.querySelector('md-editor')!;
@@ -171,12 +171,31 @@ test('responsive shell disclosures preserve the editor and expose live outputs a
   expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
   expect(sourcePane.hidden).toBe(true);
   expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  const collapsedShellRect = harness
+    .shadowRoot!.querySelector<HTMLElement>('.shell')!
+    .getBoundingClientRect();
+  const collapsedPreviewRect = harness
+    .shadowRoot!.querySelector<HTMLElement>('.preview')!
+    .getBoundingClientRect();
+  expect(collapsedPreviewRect.left).toBeCloseTo(collapsedShellRect.left, 0);
+  expect(collapsedPreviewRect.right).toBeCloseTo(collapsedShellRect.right, 0);
+  expect(collapsedPreviewRect.width).toBeCloseTo(collapsedShellRect.width, 0);
 
   sourceToggle.click();
   await harness.updateComplete;
   expect(sourcePane.hidden).toBe(false);
   expect(harness.shadowRoot!.querySelector('textarea')).toBe(source);
   expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  const restoredShellRect = harness
+    .shadowRoot!.querySelector<HTMLElement>('.shell')!
+    .getBoundingClientRect();
+  const restoredSourceRect = sourcePane.getBoundingClientRect();
+  const restoredPreviewRect = harness
+    .shadowRoot!.querySelector<HTMLElement>('.preview')!
+    .getBoundingClientRect();
+  expect(restoredPreviewRect.left).toBeGreaterThan(restoredSourceRect.left);
+  expect(restoredPreviewRect.right).toBeCloseTo(restoredShellRect.right, 0);
+  expect(restoredPreviewRect.width).toBeLessThan(restoredShellRect.width);
 
   toolsToggle.click();
   await harness.updateComplete;
@@ -210,6 +229,46 @@ test('responsive shell disclosures preserve the editor and expose live outputs a
   expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
     document.documentElement.clientWidth,
   );
+});
+
+test('output tabs switch between live views with keyboard navigation', async () => {
+  const { harness } = await createSettledHarness('# Keyboard output\n\nparagraph');
+  const tabs = harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+  const [renderTab, serializeTab, treeTab] = tabs;
+  renderTab!.focus();
+
+  await userEvent.keyboard('{ArrowRight}');
+  await harness.updateComplete;
+  expect(serializeTab!.getAttribute('aria-selected')).toBe('true');
+  expect(harness.shadowRoot!.activeElement).toBe(serializeTab);
+  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toContain(
+    '# Keyboard output',
+  );
+
+  await userEvent.keyboard('{ArrowRight}');
+  await harness.updateComplete;
+  expect(treeTab!.getAttribute('aria-selected')).toBe('true');
+  expect(harness.shadowRoot!.activeElement).toBe(treeTab);
+  expect(harness.shadowRoot!.querySelector('.tree')!.textContent).toContain('Keyboard output');
+
+  await userEvent.keyboard('{ArrowLeft}');
+  await harness.updateComplete;
+  expect(serializeTab!.getAttribute('aria-selected')).toBe('true');
+  expect(harness.shadowRoot!.activeElement).toBe(serializeTab);
+
+  await userEvent.keyboard('{ArrowLeft}');
+  await harness.updateComplete;
+  expect(renderTab!.getAttribute('aria-selected')).toBe('true');
+  expect(harness.shadowRoot!.activeElement).toBe(renderTab);
+
+  await userEvent.keyboard('{End}');
+  await harness.updateComplete;
+  expect(treeTab!.getAttribute('aria-selected')).toBe('true');
+  expect(harness.shadowRoot!.activeElement).toBe(treeTab);
+  await userEvent.keyboard('{Home}');
+  await harness.updateComplete;
+  expect(renderTab!.getAttribute('aria-selected')).toBe('true');
+  expect(harness.shadowRoot!.activeElement).toBe(renderTab);
 });
 
 test('mobile toolbar inherits theme tokens without changing Markdown typography', async () => {
