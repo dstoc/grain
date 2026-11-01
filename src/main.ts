@@ -81,6 +81,9 @@ class MarkdownDevHarness extends LitElement {
   static override styles = css`
     :host {
       display: block;
+      box-sizing: border-box;
+      min-width: 0;
+      max-width: 100%;
       min-height: 100vh;
       color: var(--root-color);
       background:
@@ -105,12 +108,14 @@ class MarkdownDevHarness extends LitElement {
 
     .shell {
       display: grid;
-      grid-template-columns: minmax(300px, 0.92fr) minmax(320px, 1.08fr);
+      grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+      min-width: 0;
       min-height: 100vh;
       padding-bottom: var(--mobile-keyboard-reserve, 0px);
     }
 
     .panel {
+      min-width: 0;
       padding: 2rem;
     }
 
@@ -152,6 +157,8 @@ class MarkdownDevHarness extends LitElement {
 
     textarea {
       width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
       min-height: 68vh;
       resize: vertical;
       border: 1px solid color-mix(in srgb, var(--root-color) 14%, transparent);
@@ -230,6 +237,9 @@ class MarkdownDevHarness extends LitElement {
     }
 
     .preview-card {
+      min-width: 0;
+      max-width: 100%;
+      box-sizing: border-box;
       min-height: 68vh;
       border: 1px solid color-mix(in srgb, var(--root-color) 8%, transparent);
       border-radius: 24px;
@@ -242,6 +252,9 @@ class MarkdownDevHarness extends LitElement {
 
     .tabs {
       display: inline-flex;
+      box-sizing: border-box;
+      max-width: 100%;
+      overflow-x: auto;
       gap: 0.45rem;
       margin-bottom: 0.85rem;
       padding: 0.2rem;
@@ -273,6 +286,7 @@ class MarkdownDevHarness extends LitElement {
       z-index: 1000;
       right: 0;
       left: 0;
+      box-sizing: border-box;
       display: grid;
       grid-template-rows: auto 1fr 1fr 1fr;
       gap: 0.45rem;
@@ -378,7 +392,11 @@ class MarkdownDevHarness extends LitElement {
 
     @media (max-width: 920px) {
       .shell {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .panel {
+        padding: clamp(1rem, 4vw, 2rem);
       }
 
       .editor {
@@ -433,8 +451,10 @@ class MarkdownDevHarness extends LitElement {
   private activeInline: MarkdownInline | undefined;
   private toolbarHasFocus = false;
   private keyboardHeight = 0;
-  private keyboardApi: GrainVirtualKeyboard | undefined;
+  private observedKeyboardApi: GrainVirtualKeyboard | undefined;
   private previousOverlayContent: boolean | undefined;
+  private selectionChangeDocument: Document | undefined;
+  private selectionChangeRoot: ShadowRoot | undefined;
   private visualViewportBaseline = 0;
   private readinessTimer: number | undefined;
   private caretFrame: number | undefined;
@@ -631,7 +651,8 @@ class MarkdownDevHarness extends LitElement {
     window.visualViewport?.removeEventListener('resize', this.onViewportChange);
     window.visualViewport?.removeEventListener('scroll', this.onViewportChange);
     this.clearReadinessTimer();
-    this.restoreVirtualKeyboardOverlay();
+    this.stopObservingNativeSelection();
+    this.stopObservingVirtualKeyboard();
     super.disconnectedCallback();
   }
 
@@ -741,6 +762,7 @@ class MarkdownDevHarness extends LitElement {
     const toolbar = this.shadowRoot?.querySelector('md-mobile-keyboard-toolbar');
     if (inline && this.activeTab === 'render' && this.isCurrentEditorInline(inline)) {
       this.activeInline = inline;
+      this.observeNativeSelection(inline);
       this.toolbarHasFocus = false;
       this.visualViewportBaseline = window.innerHeight;
       this.claimVirtualKeyboardOverlay();
@@ -774,6 +796,7 @@ class MarkdownDevHarness extends LitElement {
     const inline = editor ? this.findFocusedInline(editor) : undefined;
     if (inline) {
       this.activeInline = inline;
+      this.observeNativeSelection(inline);
       this.toolbarHasFocus = false;
       this.claimVirtualKeyboardOverlay();
       this.refreshToolbarReadiness();
@@ -864,7 +887,8 @@ class MarkdownDevHarness extends LitElement {
     this.toolbarDisabled = true;
     this.keyboardHeight = 0;
     this.style.setProperty('--mobile-keyboard-reserve', '0px');
-    this.restoreVirtualKeyboardOverlay();
+    this.stopObservingNativeSelection();
+    this.stopObservingVirtualKeyboard();
   }
 
   private refreshToolbarReadiness() {
@@ -906,6 +930,33 @@ class MarkdownDevHarness extends LitElement {
 
   private onEditorInput = () => this.scheduleCaretVisibilityCheck();
   private onEditorKeydown = () => this.scheduleCaretVisibilityCheck();
+
+  private observeNativeSelection(inline: MarkdownInline) {
+    const document = inline.ownerDocument;
+    const root = inline.getRootNode();
+    const shadowRoot = root instanceof ShadowRoot ? root : undefined;
+    if (this.selectionChangeDocument === document && this.selectionChangeRoot === shadowRoot)
+      return;
+    this.stopObservingNativeSelection();
+    this.selectionChangeDocument = document;
+    this.selectionChangeRoot = shadowRoot;
+    document.addEventListener('selectionchange', this.onNativeSelectionChange);
+    shadowRoot?.addEventListener('selectionchange', this.onNativeSelectionChange);
+  }
+
+  private stopObservingNativeSelection() {
+    this.selectionChangeDocument?.removeEventListener(
+      'selectionchange',
+      this.onNativeSelectionChange,
+    );
+    this.selectionChangeRoot?.removeEventListener('selectionchange', this.onNativeSelectionChange);
+    this.selectionChangeDocument = undefined;
+    this.selectionChangeRoot = undefined;
+  }
+
+  private onNativeSelectionChange = () => {
+    if (this.toolbarVisible && this.getActionTarget()) this.scheduleCaretVisibilityCheck();
+  };
 
   private onMobileToolbarAction = (event: MobileToolbarActionEvent) => {
     const inline = this.getActionTarget();
@@ -1000,13 +1051,19 @@ class MarkdownDevHarness extends LitElement {
   private toggleVirtualKeyboardOverlay() {
     const api = getVirtualKeyboard();
     if (!api) return;
-    if (this.keyboardApi !== api) {
-      this.restoreVirtualKeyboardOverlay();
-      this.keyboardApi = api;
+    this.observeVirtualKeyboard();
+    if (this.previousOverlayContent === undefined)
       this.previousOverlayContent = api.overlaysContent;
-      api.addEventListener('geometrychange', this.onVirtualKeyboardGeometryChange);
-    }
     api.overlaysContent = true;
+  }
+
+  private observeVirtualKeyboard() {
+    const api = getVirtualKeyboard();
+    if (this.observedKeyboardApi === api) return;
+    this.stopObservingVirtualKeyboard();
+    if (!api) return;
+    this.observedKeyboardApi = api;
+    api.addEventListener('geometrychange', this.onVirtualKeyboardGeometryChange);
   }
 
   private claimVirtualKeyboardOverlay() {
@@ -1015,12 +1072,19 @@ class MarkdownDevHarness extends LitElement {
   }
 
   private restoreVirtualKeyboardOverlay() {
-    if (this.keyboardApi && this.previousOverlayContent !== undefined) {
-      this.keyboardApi.removeEventListener('geometrychange', this.onVirtualKeyboardGeometryChange);
-      this.keyboardApi.overlaysContent = this.previousOverlayContent;
+    if (this.observedKeyboardApi && this.previousOverlayContent !== undefined) {
+      this.observedKeyboardApi.overlaysContent = this.previousOverlayContent;
     }
-    this.keyboardApi = undefined;
     this.previousOverlayContent = undefined;
+  }
+
+  private stopObservingVirtualKeyboard() {
+    this.restoreVirtualKeyboardOverlay();
+    this.observedKeyboardApi?.removeEventListener(
+      'geometrychange',
+      this.onVirtualKeyboardGeometryChange,
+    );
+    this.observedKeyboardApi = undefined;
   }
 
   private onVirtualKeyboardGeometryChange = () => this.refreshKeyboardState();

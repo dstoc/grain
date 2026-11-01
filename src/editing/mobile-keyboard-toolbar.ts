@@ -56,6 +56,8 @@ export class MobileKeyboardToolbar extends LitElement {
       right: 0;
       left: 0;
       display: block;
+      box-sizing: border-box;
+      max-width: 100vw;
       color: #334432;
       font:
         16px/1.2 system-ui,
@@ -71,8 +73,9 @@ export class MobileKeyboardToolbar extends LitElement {
       display: flex;
       width: min(100%, 560px);
       min-height: 56px;
+      box-sizing: border-box;
       margin: 0 auto;
-      padding: 4px 6px;
+      padding: 3px 6px;
       overflow-x: auto;
       overscroll-behavior-x: contain;
       scrollbar-width: none;

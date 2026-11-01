@@ -1,11 +1,12 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import type { LitElement } from 'lit';
-import { userEvent } from 'vitest/browser';
+import { page, userEvent } from 'vitest/browser';
 import { nextTask } from './editing/test/lifecycle.js';
 import type { MarkdownInline } from './markdown/inline-render.js';
 import './main.js';
 
-afterEach(() => {
+afterEach(async () => {
+  await page.viewport(1280, 720);
   document.body.replaceChildren();
   vi.useRealTimers();
 });
@@ -147,6 +148,7 @@ async function waitForFocusedInline(harness: LitElement) {
 }
 
 test('mobile toolbar stays hidden without keyboard geometry and scrolls at phone width', async () => {
+  await page.viewport(390, 844);
   const { harness, source } = await createSettledHarness('alpha\n\nbeta');
   const [inline] = currentEditorInlines(harness);
   inline!.focus();
@@ -173,11 +175,21 @@ test('mobile toolbar stays hidden without keyboard geometry and scrolls at phone
   ]);
 
   const strip = toolbar.shadowRoot!.querySelector<HTMLElement>('.strip')!;
-  strip.style.width = '320px';
   expect(strip.scrollWidth).toBeGreaterThan(strip.clientWidth);
   strip.scrollLeft = strip.scrollWidth;
   expect(strip.scrollLeft).toBeGreaterThan(0);
+  const lastButtonRect = buttons[9]!.getBoundingClientRect();
+  expect(lastButtonRect.left).toBeGreaterThanOrEqual(0);
+  expect(lastButtonRect.right).toBeLessThanOrEqual(window.visualViewport!.width);
+  expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(
+    document.documentElement.clientWidth,
+  );
+  const simulatedKeyboard = harness
+    .shadowRoot!.querySelector<HTMLElement>('.simulated-keyboard')!
+    .getBoundingClientRect();
+  expect(toolbar.getBoundingClientRect().bottom).toBeCloseTo(simulatedKeyboard.top, 0);
 
+  strip.scrollLeft = 0;
   const left = buttons[6]!;
   const pointerDown = new PointerEvent('pointerdown', {
     bubbles: true,
@@ -205,6 +217,29 @@ test('mobile toolbar stays hidden without keyboard geometry and scrolls at phone
     }),
   );
   expect(source.value).toBe('alpha\n\nbeta');
+  harness.remove();
+});
+
+test('native selection changes keep the caret above the mobile toolbar', async () => {
+  await page.viewport(390, 844);
+  window.scrollTo(0, 0);
+  const text = 'caret visibility '.repeat(300);
+  const { harness } = await createSettledHarness(text);
+  const inline = currentEditorInlines(harness)[0]!;
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  let inputEvents = 0;
+  let keydownEvents = 0;
+  inline.addEventListener('input', () => inputEvents++);
+  inline.addEventListener('keydown', () => keydownEvents++);
+
+  const scrollBeforeSelection = window.scrollY;
+  inline.setSelectionOffsets(text.length, text.length);
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+  expect(inputEvents).toBe(0);
+  expect(keydownEvents).toBe(0);
+  expect(window.scrollY).toBeGreaterThan(scrollBeforeSelection);
+  expect(inline.getCaretPosition().y).toBeLessThanOrEqual(toolbar.getBoundingClientRect().top);
   harness.remove();
 });
 
@@ -424,6 +459,24 @@ test('VirtualKeyboard geometry controls visibility and overlay ownership restore
     expect(keyboard.overlaysContent).toBe(true);
     expect(toolbar.visible).toBe(true);
     expect(toolbar.getBoundingClientRect().top).toBe(364);
+    expect(toolbar.getBoundingClientRect().bottom).toBe(rect.top);
+
+    const button = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button')!;
+    button.focus();
+    await settleHarness(harness);
+    expect(keyboard.overlaysContent).toBe(false);
+    rect = new DOMRect(0, 720, 800, 0);
+    keyboard.dispatchEvent(new Event('geometrychange'));
+    await settleHarness(harness);
+    expect(toolbar.visible).toBe(false);
+
+    rect = new DOMRect(0, 420, 800, 300);
+    inline.focus();
+    await settleHarness(harness);
+    keyboard.dispatchEvent(new Event('geometrychange'));
+    await settleHarness(harness);
+    expect(keyboard.overlaysContent).toBe(true);
+    expect(toolbar.visible).toBe(true);
     window.dispatchEvent(new Event('orientationchange'));
     await settleHarness(harness);
     expect(toolbar.visible).toBe(true);
