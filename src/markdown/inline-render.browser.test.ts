@@ -128,6 +128,48 @@ describe('MarkdownInline', () => {
     expect(inline.querySelector('a')?.textContent).toBe('https://example.com');
     renderer.remove();
   });
+
+  test('keeps inline code at the surrounding line height in focused and unfocused paragraphs', async () => {
+    const parser = createBlockParser();
+    parser.push('plain alpha omega\n\nfollowing\n\nplain `alpha` omega\n\nfollowing');
+    const renderer = new MarkdownRenderer();
+    renderer.block = parser.finish().root;
+    renderer.style.font = '16px serif';
+    renderer.style.setProperty('--md-code-font-family', 'monospace');
+    document.body.append(renderer);
+    await nextTask();
+
+    const [plain, plainFollowing, withCode, codeFollowing] =
+      renderer.shadowRoot!.querySelectorAll('md-inline');
+    await Promise.all([plain, plainFollowing, withCode, codeFollowing].map(settle));
+
+    const assertLineLayout = () => {
+      const plainBounds = plain.getBoundingClientRect();
+      const codeBounds = withCode.getBoundingClientRect();
+      const plainFollowingTop = plainFollowing.getBoundingClientRect().top;
+      const codeFollowingTop = codeFollowing.getBoundingClientRect().top;
+      expect(codeBounds.height).toBe(plainBounds.height);
+      expect(codeFollowingTop - codeBounds.top).toBe(plainFollowingTop - plainBounds.top);
+      expect(
+        getComputedStyle(withCode.querySelector("md-span[type='code_span']")!).lineHeight,
+      ).not.toBe('normal');
+    };
+
+    plain.blur();
+    withCode.blur();
+    await nextTask();
+    assertLineLayout();
+
+    plain.focus();
+    await nextTask();
+    assertLineLayout();
+
+    withCode.focus();
+    await nextTask();
+    assertLineLayout();
+    renderer.remove();
+  });
+
   test('renders changes made while detached and follows replacement nodes', async () => {
     const first = createBlockParser();
     first.push('```js\nfirst');
