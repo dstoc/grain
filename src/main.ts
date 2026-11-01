@@ -423,6 +423,8 @@ class MarkdownDevHarness extends LitElement {
     treeJson: { state: true },
     toolbarVisible: { state: true },
     toolbarDisabled: { state: true },
+    toolbarUndoDisabled: { state: true },
+    toolbarRedoDisabled: { state: true },
     toolbarTop: { state: true },
     simulatedKeyboard: { state: true },
     keyboardTop: { state: true },
@@ -440,6 +442,8 @@ class MarkdownDevHarness extends LitElement {
   declare private treeJson: string;
   declare private toolbarVisible: boolean;
   declare private toolbarDisabled: boolean;
+  declare private toolbarUndoDisabled: boolean;
+  declare private toolbarRedoDisabled: boolean;
   declare private toolbarTop: number;
   declare private simulatedKeyboard: boolean;
   declare private keyboardTop: number;
@@ -474,6 +478,8 @@ class MarkdownDevHarness extends LitElement {
     this.treeJson = '';
     this.toolbarVisible = false;
     this.toolbarDisabled = true;
+    this.toolbarUndoDisabled = true;
+    this.toolbarRedoDisabled = true;
     this.toolbarTop = 0;
     this.simulatedKeyboard = false;
     this.keyboardTop = 0;
@@ -581,6 +587,8 @@ class MarkdownDevHarness extends LitElement {
       <md-mobile-keyboard-toolbar
         .visible=${this.toolbarVisible}
         .disabled=${this.toolbarDisabled}
+        .undoDisabled=${this.toolbarUndoDisabled}
+        .redoDisabled=${this.toolbarRedoDisabled}
         style="--toolbar-top: ${this.toolbarTop}px"
         @mobile-toolbar-action=${this.onMobileToolbarAction}
         @mobile-toolbar-focus-change=${this.onToolbarFocusChange}
@@ -885,6 +893,8 @@ class MarkdownDevHarness extends LitElement {
     this.clearReadinessTimer();
     this.toolbarVisible = false;
     this.toolbarDisabled = true;
+    this.toolbarUndoDisabled = true;
+    this.toolbarRedoDisabled = true;
     this.keyboardHeight = 0;
     this.style.setProperty('--mobile-keyboard-reserve', '0px');
     this.stopObservingNativeSelection();
@@ -895,8 +905,21 @@ class MarkdownDevHarness extends LitElement {
     const inline = this.getActionTarget();
     const ready = !!inline?.mobileToolbarInputReady;
     this.toolbarDisabled = !ready;
+    this.refreshToolbarHistoryAvailability(inline);
     if (inline && !ready && !inline.composing) this.waitForReadiness(inline);
     else this.clearReadinessTimer();
+  }
+
+  private refreshToolbarHistoryAvailability(inline = this.getActionTarget()) {
+    const root = inline?.hostContext?.root;
+    if (!root) {
+      this.toolbarUndoDisabled = true;
+      this.toolbarRedoDisabled = true;
+      return;
+    }
+    const tree = root[viewModel].tree;
+    this.toolbarUndoDisabled = !tree.canUndo(root);
+    this.toolbarRedoDisabled = !tree.canRedo(root);
   }
 
   private waitForReadiness(inline: MarkdownInline) {
@@ -1033,6 +1056,8 @@ class MarkdownDevHarness extends LitElement {
       indent: { key: 'Tab' },
       'extend-up': { key: 'ArrowUp', ctrlKey: true, shiftKey: true },
       'extend-down': { key: 'ArrowDown', ctrlKey: true, shiftKey: true },
+      undo: { key: 'z', ctrlKey: true },
+      redo: { key: 'y', ctrlKey: true },
       left: { key: 'ArrowLeft' },
       right: { key: 'ArrowRight' },
       up: { key: 'ArrowUp' },
@@ -1165,13 +1190,19 @@ class MarkdownDevHarness extends LitElement {
   private observeRootTree(tree: MarkdownTree | undefined) {
     if (this.observedTree === tree) return;
     this.observedTree?.removeEventListener('tree-change', this.onTreeChange);
+    this.observedTree?.removeEventListener('history-change', this.onHistoryChange);
     this.observedTree = tree;
     this.observedTree?.addEventListener('tree-change', this.onTreeChange);
+    this.observedTree?.addEventListener('history-change', this.onHistoryChange);
+    this.refreshToolbarHistoryAvailability();
   }
+
+  private onHistoryChange = () => this.refreshToolbarHistoryAvailability();
 
   private onTreeChange = (event: Event) => {
     if ((event as CustomEvent<string>).detail !== 'edit') return;
     if (!this.root) return;
+    this.refreshToolbarHistoryAvailability();
     this.stopPlayback();
     const serializedTree = this.root[viewModel].tree.serialize();
     this.source = serializeToString(serializedTree);
