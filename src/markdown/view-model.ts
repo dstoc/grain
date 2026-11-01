@@ -433,6 +433,7 @@ export class MarkdownTree extends EventTarget {
       );
       assert(newOps.length === 0);
     }
+    if (batch.ops.length === 0) this.dispatchEvent(new Event('history-change'));
     return { focus: batch.startFocus };
   }
 
@@ -458,6 +459,7 @@ export class MarkdownTree extends EventTarget {
       );
       assert(newOps.length === 0);
     }
+    if (batch.ops.length === 0) this.dispatchEvent(new Event('history-change'));
     return { focus: batch.endFocus };
   }
 
@@ -606,7 +608,9 @@ export class MarkdownTree extends EventTarget {
     }
 
     let result: Op[] = [];
+    let historyChanged = false;
     if (this.editOperations.length) {
+      historyChanged = true;
       result = [...this.editOperations];
       if (history === 'construction') {
         this.undoStack.length = 0;
@@ -636,6 +640,7 @@ export class MarkdownTree extends EventTarget {
       this.editOperations.length = 0;
       this.redoStack.length = 0;
     } else if (history === 'isolated' && recordEmptyIsolatedHistory) {
+      historyChanged = true;
       assert(startFocus);
       this.undoStack.push({
         ops: [],
@@ -649,12 +654,14 @@ export class MarkdownTree extends EventTarget {
 
     this.state = 'idle';
     if (fireTreeEditEvent) {
-      if (this.root[viewModel].version > this.editStartVersion) {
+      const treeChanged = this.root[viewModel].version > this.editStartVersion;
+      if (treeChanged) {
         this.dispatchEvent(new TypedCustomEvent('tree-change', { detail: 'edit' }));
       } else if (this.editChangedCaches) {
         this.editChangedCaches = false;
         this.dispatchEvent(new TypedCustomEvent('tree-change', { detail: 'cache' }));
       }
+      if (historyChanged && !treeChanged) this.dispatchEvent(new Event('history-change'));
     } else {
       this.editChangedCaches = false;
     }

@@ -1190,10 +1190,14 @@ class MarkdownDevHarness extends LitElement {
   private observeRootTree(tree: MarkdownTree | undefined) {
     if (this.observedTree === tree) return;
     this.observedTree?.removeEventListener('tree-change', this.onTreeChange);
+    this.observedTree?.removeEventListener('history-change', this.onHistoryChange);
     this.observedTree = tree;
     this.observedTree?.addEventListener('tree-change', this.onTreeChange);
+    this.observedTree?.addEventListener('history-change', this.onHistoryChange);
     this.refreshToolbarHistoryAvailability();
   }
+
+  private onHistoryChange = () => this.refreshToolbarHistoryAvailability();
 
   private onTreeChange = (event: Event) => {
     if ((event as CustomEvent<string>).detail !== 'edit') return;

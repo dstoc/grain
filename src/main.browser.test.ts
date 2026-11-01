@@ -3,6 +3,7 @@ import type { LitElement } from 'lit';
 import { page, userEvent } from 'vitest/browser';
 import { nextTask } from './editing/test/lifecycle.js';
 import type { MarkdownInline } from './markdown/inline-render.js';
+import { viewModel } from './markdown/view-model-node.js';
 import './main.js';
 
 afterEach(async () => {
@@ -300,6 +301,57 @@ test('mobile toolbar undo and redo preserve history focus and keyboard visibilit
   await activateToolbarAction(harness, 'Redo');
   expect(source.value).toBe(afterSecondEdit);
   expect(currentEditorInlines(harness)[1]!.matches(':focus')).toBe(true);
+  expect(toolbar.visible).toBe(true);
+  harness.remove();
+});
+
+test('mobile toolbar history availability follows history-only block replacements', async () => {
+  await page.viewport(390, 844);
+  const initial = 'a\n';
+  const { harness, source } = await createSettledHarness(initial);
+  const [inline] = currentEditorInlines(harness);
+  inline!.focus();
+  inline!.setSelectionOffsets(1, 1);
+  const toolbar = await showSimulatedKeyboard(harness, inline!);
+  const undo = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[aria-label="Undo"]')!;
+  const redo = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[aria-label="Redo"]')!;
+  const history = () => {
+    const root = inline!.hostContext!.root!;
+    const tree = root[viewModel].tree;
+    return { canUndo: tree.canUndo(root), canRedo: tree.canRedo(root) };
+  };
+
+  await userEvent.keyboard('{Control>}a{/Control}');
+  await userEvent.keyboard('{Control>}a{/Control}');
+  expect(inline!.hostContext!.selection.size).toBe(1);
+  await userEvent.keyboard('a');
+  await settleHarness(harness);
+
+  expect(source.value).toBe(initial);
+  expect(history()).toEqual({ canUndo: true, canRedo: false });
+  expect(undo.disabled).toBe(false);
+  expect(redo.disabled).toBe(true);
+  await activateToolbarAction(harness, 'Undo');
+  expect(inline!.hostContext!.selection.size).toBe(1);
+  expect(inline!.matches(':focus')).toBe(true);
+  expect(toolbar.visible).toBe(true);
+  expect(history()).toEqual({ canUndo: false, canRedo: true });
+  expect(undo.disabled).toBe(true);
+  expect(redo.disabled).toBe(false);
+
+  await userEvent.keyboard('x');
+  await userEvent.keyboard('{Control>}z{/Control}');
+  await userEvent.keyboard('{Control>}a{/Control}');
+  await userEvent.keyboard('{Control>}a{/Control}');
+  expect(inline!.hostContext!.selection.size).toBe(1);
+  await userEvent.keyboard('a');
+  await settleHarness(harness);
+
+  expect(source.value).toBe(initial);
+  expect(history()).toEqual({ canUndo: true, canRedo: false });
+  expect(undo.disabled).toBe(false);
+  expect(redo.disabled).toBe(true);
+  expect(currentEditorInlines(harness)[0]!.matches(':focus')).toBe(true);
   expect(toolbar.visible).toBe(true);
   harness.remove();
 });
