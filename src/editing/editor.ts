@@ -36,6 +36,7 @@ import {
 import { ViewModelNode, InlineViewModelNode, viewModel } from '../markdown/view-model-node.js';
 import { getContainingTransclusion } from '../markdown/transclusion.js';
 import { expandSelection, getBlockSelectionTarget } from './block-selection-util.js';
+import type { BlockSelectionTarget } from './block-selection-util.js';
 import { noAwait } from '../async.js';
 import { editBlockSelectionIndent } from './edits/indent-block-selection.js';
 import { editInlineIndent } from './edits/indent-inline.js';
@@ -47,6 +48,10 @@ import { insertMarkdown, serializeSelection } from './copy-paste-util.js';
 import { Focus } from '../markdown/view-model-ops.js';
 import { NodeSignalController } from '../markdown/node-signal-controller.js';
 import { normalizeKeys } from './keyboard.js';
+import {
+  replaceSelectedBlocks,
+  selectedBlocksInDocumentOrder,
+} from './edits/replace-selected-blocks.js';
 
 type ExcludeFirst<T extends Parameters<any>> = T extends [any, ...infer Rest] ? Rest : never;
 
@@ -169,6 +174,11 @@ interface CompositionSession {
   replacementStart: number;
   replacementEnd: number;
   replacementText: string;
+  blockSelection?: {
+    target: BlockSelectionTarget;
+    hostContext: HostContext;
+    nodes: InlineViewModelNode[];
+  };
   pending?: CompositionPendingInput;
   invalid: boolean;
   invalidate: (event?: Event) => void;
@@ -261,6 +271,15 @@ export class Editor extends LitElement {
       return;
     }
     const tree = node[viewModel].tree;
+    const selectionTarget = getBlockSelectionTarget(inline);
+    const selectionHostContext = selectionTarget?.hostContext;
+    const blockSelection = selectionHostContext?.hasSelection
+      ? {
+          target: selectionTarget!,
+          hostContext: selectionHostContext,
+          nodes: [...selectionHostContext.selection],
+        }
+      : undefined;
     const start = Math.min(selection.anchor, selection.focus);
     const end = Math.max(selection.anchor, selection.focus);
     const session = {
@@ -277,6 +296,7 @@ export class Editor extends LitElement {
       replacementStart: start,
       replacementEnd: end,
       replacementText: node.content.slice(start, end),
+      blockSelection,
       invalid: false,
       invalidate: () => {},
       beforeInput: (event: Event) => this.beforeCompositionInput(session, event as InputEvent),
@@ -304,6 +324,17 @@ export class Editor extends LitElement {
     }
     this.clearComposition(false);
     const { node, content, version } = session;
+    const blockSelection = session.blockSelection;
+    const selectedNow =
+      blockSelection && blockSelection.hostContext.root
+        ? selectedBlocksInDocumentOrder(blockSelection.hostContext.root, blockSelection.nodes)
+        : undefined;
+    const selectionUnchanged =
+      !blockSelection ||
+      (blockSelection.hostContext.selection.size === blockSelection.nodes.length &&
+        blockSelection.nodes.every((selected) =>
+          blockSelection.hostContext.selection.has(selected),
+        ));
     if (
       !inline.isConnected ||
       inline.node !== node ||
@@ -326,8 +357,12 @@ export class Editor extends LitElement {
       session.invalid ||
       inline.textContent !== session.currentText ||
       session.currentText !== expectedText ||
-      session.replacementText.length === 0 ||
-      content.slice(session.replacementStart, session.replacementEnd) === session.replacementText
+      !selectionUnchanged ||
+      (blockSelection && !selectedNow?.length) ||
+      (!blockSelection &&
+        (session.replacementText.length === 0 ||
+          content.slice(session.replacementStart, session.replacementEnd) ===
+            session.replacementText))
     ) {
       noAwait(inline.recoverComposition(selection));
       return;
@@ -335,30 +370,50 @@ export class Editor extends LitElement {
     const start = session.replacementStart;
     const end = session.replacementEnd;
     const newText = session.replacementText;
-    this.compositionFocus = { node, offset: start };
+    this.compositionFocus = blockSelection
+      ? { node: blockSelection.hostContext.selectionFocus ?? selectedNow![0]!, offset: 0 }
+      : { node, offset: start };
     try {
       await inline.recoverComposition(selection, false);
-      const target = this.inlineForNode(node);
       if (
-        !target ||
-        !target.isConnected ||
         !node[viewModel].connected ||
         node[viewModel].version !== version ||
         node.content !== content
       ) {
-        if (target?.isConnected) {
-          noAwait(target.recoverComposition({ anchor: 0, focus: 0 }));
-        }
+        if (inline.isConnected) noAwait(inline.recoverComposition({ anchor: 0, focus: 0 }));
         return;
       }
-      this.runEditAction(target, editInlineNode, {
-        startIndex: start,
-        oldEndIndex: end,
-        newText,
-        newEndIndex: start + newText.length,
-      });
-      const caret = start + newText.length;
-      noAwait(target.recoverComposition({ anchor: caret, focus: caret }));
+      if (blockSelection) {
+        const target = this.inlineForNode(node) ?? blockSelection.target;
+        if (!target.isConnected || !selectionUnchanged) {
+          noAwait(inline.recoverComposition(selection));
+          return;
+        }
+        const first = this.runIsolatedEditAction(target, replaceSelectedBlocks, newText);
+        const focusedInline = first ? this.inlineForNode(first) : undefined;
+        if (focusedInline?.isConnected) {
+          noAwait(
+            focusedInline.recoverComposition({
+              anchor: newText.length,
+              focus: newText.length,
+            }),
+          );
+        }
+      } else {
+        const target = this.inlineForNode(node);
+        if (!target?.isConnected) {
+          if (inline.isConnected) noAwait(inline.recoverComposition(selection));
+          return;
+        }
+        this.runEditAction(target, editInlineNode, {
+          startIndex: start,
+          oldEndIndex: end,
+          newText,
+          newEndIndex: start + newText.length,
+        });
+        const caret = start + newText.length;
+        noAwait(target.recoverComposition({ anchor: caret, focus: caret }));
+      }
     } finally {
       this.compositionFocus = undefined;
     }
@@ -514,6 +569,28 @@ export class Editor extends LitElement {
     action: T,
     ...args: ExcludeFirst<Parameters<T>>
   ): ReturnType<T> {
+    return this.runEditActionWithHistory(element, action, 'record', false, ...args);
+  }
+
+  private runIsolatedEditAction<
+    T extends (state: EditContext, ...args: ExcludeFirst<Parameters<T>>) => ReturnType<T>,
+  >(
+    element: Element & { hostContext?: HostContext; node?: ViewModelNode },
+    action: T,
+    ...args: ExcludeFirst<Parameters<T>>
+  ): ReturnType<T> {
+    return this.runEditActionWithHistory(element, action, 'isolated', true, ...args);
+  }
+
+  private runEditActionWithHistory<
+    T extends (state: EditContext, ...args: ExcludeFirst<Parameters<T>>) => ReturnType<T>,
+  >(
+    element: Element & { hostContext?: HostContext; node?: ViewModelNode },
+    action: T,
+    history: 'record' | 'isolated',
+    recordEmptyIsolatedHistory: boolean,
+    ...args: ExcludeFirst<Parameters<T>>
+  ): ReturnType<T> {
     const hostContext = cast(element.hostContext);
     const renderer = this.markdownRenderer;
     let endFocus: Focus | undefined;
@@ -599,7 +676,8 @@ export class Editor extends LitElement {
         }
         return endFocus;
       },
-      compositionFocus ? 'isolated' : 'record',
+      compositionFocus ? 'isolated' : history,
+      recordEmptyIsolatedHistory,
     );
     if (ops.length > 0 && !endFocus) {
       console.warn(`Edit action: "${action.name}" did not set final focus`);
@@ -826,9 +904,22 @@ export class Editor extends LitElement {
     } = event;
     if (!inline.node) return;
 
-    // TODO: Most edit types could be handled here. E.g. insertText
-    // could replace the selection.
-    const { hostContext: selectionHostContext } = getBlockSelectionTarget(inline) ?? {};
+    // Keep block selection intact until selected text input captures its undo focus.
+    const selectionTarget = getBlockSelectionTarget(inline);
+    if (
+      selectionTarget?.hostContext?.hasSelection &&
+      (inputEvent.inputType === 'insertText' || inputEvent.inputType === 'insertReplacementText')
+    ) {
+      const text =
+        inputEvent.inputType === 'insertText'
+          ? (inputEvent.data ?? undefined)
+          : (inputEvent.dataTransfer?.getData('text/plain') ?? inputEvent.data ?? undefined);
+      if (text !== undefined) {
+        this.runIsolatedEditAction(selectionTarget, replaceSelectedBlocks, text);
+        return;
+      }
+    }
+    const { hostContext: selectionHostContext } = selectionTarget ?? {};
     selectionHostContext?.clearSelection();
     if (this.handleInlineInputAsBlockEdit(event)) {
       return;

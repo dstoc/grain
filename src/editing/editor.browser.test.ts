@@ -1786,6 +1786,156 @@ describe('Editor', () => {
   });
 });
 
+describe('selected block typing', () => {
+  async function setup(source: string) {
+    const editor = new Editor();
+    document.body.replaceChildren(editor);
+    const tree = parseMarkdownTree(source);
+    editor.root = tree.root;
+    await nextTask();
+    const renderer = editor.shadowRoot!.querySelector('md-block-render')!;
+    return { editor, tree, renderer };
+  }
+
+  async function selectWholeBlocks(inline: MarkdownInline) {
+    inline.focus();
+    const range = document.createRange();
+    range.selectNodeContents(inline);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    await userEvent.keyboard('{Control>}a{/Control}{Control>}a{/Control}');
+    await nextTask();
+  }
+
+  function serialize(tree: MarkdownTree) {
+    return serializeToString(tree.serialize());
+  }
+
+  test('trusted typing replaces a block and isolates undo from preceding typing', async () => {
+    const { tree, renderer } = await setup('alpha');
+    const original = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
+    original.focus();
+    await userEvent.keyboard('{End}X');
+    await nextTask();
+    expect(original.node!.content).toBe('alphaX');
+
+    await selectWholeBlocks(original);
+    expect(original.hostContext!.selection.has(original.node!)).toBe(true);
+    await userEvent.keyboard('Y');
+    await nextTask();
+
+    const focused = () => renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+    expect(serialize(tree)).toBe('Y\n');
+    expect(focused().textContent).toBe('Y');
+    expect(focused().getSelection()?.start.index).toBe(1);
+    expect(focused().getSelection()?.end.index).toBe(1);
+    expect(focused().hostContext!.selection.size).toBe(0);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serialize(tree)).toBe('alphaX\n');
+    expect(focused().hostContext!.selection.has(original.node!)).toBe(true);
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    expect(serialize(tree)).toBe('Y\n');
+    expect(focused().getSelection()?.start.index).toBe(1);
+    expect(focused().getSelection()?.end.index).toBe(1);
+    await userEvent.keyboard('Z');
+    await nextTask();
+    expect(serialize(tree)).toBe('YZ\n');
+  });
+
+  test('identical replacement clears redo and forms a boundary around later typing', async () => {
+    const { tree, renderer } = await setup('a');
+    const inline = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
+    inline.focus();
+    await userEvent.keyboard('{End}x');
+    await nextTask();
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serialize(tree)).toBe('a\n');
+
+    await selectWholeBlocks(inline);
+    await userEvent.keyboard('a');
+    await nextTask();
+    expect(serialize(tree)).toBe('a\n');
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    expect(serialize(tree)).toBe('a\n');
+
+    await userEvent.keyboard('b');
+    await nextTask();
+    expect(serialize(tree)).toBe('ab\n');
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serialize(tree)).toBe('a\n');
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serialize(tree)).toBe('a\n');
+    expect(inline.hostContext!.selection.has(inline.node!)).toBe(true);
+  });
+
+  test('uses document order and preserves unselected section children', async () => {
+    const { tree, renderer } = await setup('# main\n## B\nkeep B\n\n## C\nkeep C\n');
+    const inlines = [...renderer.shadowRoot!.querySelectorAll('md-inline')] as MarkdownInline[];
+    const b = inlines.find((inline) => inline.node?.content === 'B')!;
+    const c = inlines.find((inline) => inline.node?.content === 'C')!;
+    c.focus();
+    c.hostContext!.expandSelection([c.node!, b.node!]);
+    await nextTask();
+    expect([...c.hostContext!.selection]).toEqual([c.node, b.node]);
+
+    await userEvent.keyboard('X');
+    await nextTask();
+
+    expect(serialize(tree)).toBe('# main\n## X\nkeep B\n\nkeep C\n');
+    expect(
+      [...renderer.shadowRoot!.querySelectorAll('md-inline')].map((inline) => inline.textContent),
+    ).toEqual(['main', 'X', 'keep B', 'keep C']);
+    const focused = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+    expect(focused.node!.type).toBe('section');
+    expect(focused.getSelection()?.start.index).toBe(1);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serialize(tree)).toBe('# main\n## B\nkeep B\n\n## C\nkeep C\n');
+    expect(focused.hostContext!.selection.size).toBe(2);
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    expect(serialize(tree)).toBe('# main\n## X\nkeep B\n\nkeep C\n');
+  });
+
+  test('keeps marker-like replacement text in the selected block type', async () => {
+    const { tree, renderer } = await setup('alpha');
+    const inline = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
+    await selectWholeBlocks(inline);
+    inline.onBeforeInput(new InputEvent('input', { inputType: 'insertText', data: '# title' }));
+    await nextTask();
+
+    expect(tree.root.children![0]!.type).toBe('paragraph');
+    expect((tree.root.children![0] as { content: string }).content).toBe('# title');
+    await userEvent.keyboard('X');
+    await nextTask();
+    expect(tree.root.children![0]!.type).toBe('section');
+    expect(serialize(tree)).toBe('# titleX\n');
+  });
+
+  test('uses text replacement input for selected blocks', async () => {
+    const { tree, renderer } = await setup('alpha');
+    const inline = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
+    await selectWholeBlocks(inline);
+    inline.onBeforeInput(
+      new InputEvent('input', { inputType: 'insertReplacementText', data: 'replacement' }),
+    );
+    await nextTask();
+
+    expect(serialize(tree)).toBe('replacement\n');
+    expect((tree.root.children![0] as { content: string }).content).toBe('replacement');
+  });
+});
+
 describe('composition recovery', () => {
   function setSelection(inline: MarkdownInline, anchor: number, focus = anchor) {
     const walker = document.createTreeWalker(inline, NodeFilter.SHOW_TEXT);
@@ -2292,5 +2442,104 @@ describe('composition recovery', () => {
     await userEvent.keyboard('{Control>}z{/Control}');
     await nextTask();
     expect(serializeToString(tree.root)).toBe('anchor\n');
+  });
+
+  test('cancels composition without clearing a whole-block selection', async () => {
+    const editor = new Editor();
+    document.body.replaceChildren(editor);
+    const tree = parseMarkdownTree('alpha\n\nbeta\n');
+    editor.root = tree.root;
+    await nextTask();
+    const renderer = editor.shadowRoot!.querySelector('md-block-render')!;
+    const inlines = [...renderer.shadowRoot!.querySelectorAll('md-inline')] as MarkdownInline[];
+    const [alpha, beta] = inlines;
+    beta!.focus();
+    beta!.hostContext!.expandSelection([beta!.node!, alpha!.node!]);
+    await nextTask();
+    setSelection(beta!, 0, beta!.node!.content.length);
+    beta!.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    beta!.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '' }));
+    await nextTask();
+
+    expect(serializeToString(tree.root)).toBe('alpha\n\nbeta\n');
+    expect(beta!.textContent).toBe('beta');
+    expect(beta!.hostContext!.selection.size).toBe(2);
+    expect(beta!.hostContext!.selection.has(alpha!.node!)).toBe(true);
+    expect(beta!.hostContext!.selection.has(beta!.node!)).toBe(true);
+  });
+
+  test('commits composition from the last selected block into the first and restores history', async () => {
+    const editor = new Editor();
+    document.body.replaceChildren(editor);
+    const tree = parseMarkdownTree('alpha\n\nbeta\n');
+    editor.root = tree.root;
+    await nextTask();
+    const renderer = editor.shadowRoot!.querySelector('md-block-render')!;
+    const inlines = [...renderer.shadowRoot!.querySelectorAll('md-inline')] as MarkdownInline[];
+    const [alpha, beta] = inlines;
+    beta!.focus();
+    beta!.hostContext!.expandSelection([beta!.node!, alpha!.node!]);
+    await nextTask();
+    setSelection(beta!, 0, beta!.node!.content.length);
+    beta!.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    compositionInput(beta!, () => {}, 0, 4, 'beta');
+    beta!.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'beta' }));
+    await nextTask();
+
+    const focused = () => renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline;
+    expect(serializeToString(tree.root)).toBe('beta\n');
+    expect(focused().node).toBe(alpha!.node);
+    expect(focused().textContent).toBe('beta');
+    expect(focused().getSelection()?.start.index).toBe(4);
+    expect(focused().getSelection()?.end.index).toBe(4);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('alpha\n\nbeta\n');
+    expect(focused().hostContext!.selection.size).toBe(2);
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('beta\n');
+    expect(focused().node).toBe(alpha!.node);
+    expect(focused().getSelection()?.start.index).toBe(4);
+    expect(focused().getSelection()?.end.index).toBe(4);
+    await userEvent.keyboard('!');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('beta!\n');
+  });
+
+  test('unchanged whole-block composition records a focused history boundary', async () => {
+    const { editor, tree, inline } = await setup('a', 0, 1);
+    inline.hostContext!.expandSelection([inline.node!]);
+    await nextTask();
+    setSelection(inline, 0, 1);
+    inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    compositionInput(inline, () => {}, 0, 1, 'a');
+    inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'a' }));
+    await nextTask();
+
+    expect(serializeToString(tree.root)).toBe('a\n');
+    expect(getInline(editor).getSelection()?.start.index).toBe(1);
+    await userEvent.keyboard('b');
+    await nextTask();
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('a\n');
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(serializeToString(tree.root)).toBe('a\n');
+    expect(getInline(editor).hostContext!.selection.has(inline.node!)).toBe(true);
+  });
+
+  test('unchanged ordinary inline composition remains a no-op', async () => {
+    const { tree, inline } = await setup('same', 0, 4);
+    inline.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    compositionInput(inline, () => {}, 0, 4, 'same');
+    inline.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: 'same' }));
+    await nextTask();
+
+    expect(serializeToString(tree.root)).toBe('same\n');
+    expect(tree.root[viewModel].tree.undo(tree.root)).toBeUndefined();
   });
 });
