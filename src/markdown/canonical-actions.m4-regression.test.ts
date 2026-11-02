@@ -5,7 +5,14 @@ import { CanonicalWriter } from './canonical-actions.js';
 import { canonicalWriterAccess, CanonicalDocument } from './canonical-model.js';
 
 type Op =
-  | { type: 'edit'; node: number; from: number; to: number; insert: string }
+  | {
+      type: 'edit';
+      node: number;
+      from: number;
+      to: number;
+      insert: string;
+      affinity?: 'left' | 'right';
+    }
   | { type: 'move'; source: number; from: number; to: number; destination: number; at: number };
 
 interface NativeItem {
@@ -69,7 +76,12 @@ function run(ops: Op[]) {
     const result = writer.edit({ actionId: 'review' }, (draft) => {
       for (const op of ops) {
         if (op.type === 'edit') {
-          draft.spliceText(ids[op.node]!, { from: op.from, to: op.to, insert: op.insert });
+          draft.spliceText(ids[op.node]!, {
+            from: op.from,
+            to: op.to,
+            insert: op.insert,
+            ...(op.affinity ? { affinity: op.affinity } : {}),
+          });
           expected[op.node] =
             expected[op.node]!.slice(0, op.from) + op.insert + expected[op.node]!.slice(op.to);
         } else {
@@ -141,6 +153,18 @@ describe('M4 fragment composition', () => {
     ]);
   });
 
+  it.each([
+    ['grow', 'LONGER'],
+    ['shrink', 'Q'],
+    ['delete', ''],
+  ] as const)('repositions full new-text boundaries after %s', (_name, insert) => {
+    run([
+      { type: 'edit', node: 0, from: 1, to: 1, insert: 'NEW' },
+      { type: 'move', source: 0, from: 1, to: 4, destination: 1, at: 1 },
+      { type: 'edit', node: 1, from: 1, to: 4, insert },
+    ]);
+  });
+
   it('edits the source before moved action-local text in the same action', () => {
     run([
       { type: 'edit', node: 0, from: 1, to: 1, insert: 'NEW' },
@@ -156,6 +180,29 @@ describe('M4 fragment composition', () => {
       { type: 'edit', node: 1, from: 4, to: 4, insert: 'more' },
     ]);
   });
+
+  it('preserves repeated transfers of one action-local buffer slice', () => {
+    run([
+      { type: 'edit', node: 0, from: 1, to: 1, insert: 'NEW', affinity: 'left' },
+      { type: 'edit', node: 0, from: 1, to: 1, insert: 'Z', affinity: 'left' },
+      { type: 'move', source: 0, from: 1, to: 3, destination: 1, at: 1 },
+      { type: 'move', source: 0, from: 1, to: 2, destination: 1, at: 1 },
+    ]);
+  });
+
+  it.each([false, true])(
+    'preserves independently transferred slices with a later E transfer: %s',
+    (transferE) =>
+      run([
+        { type: 'edit', node: 0, from: 1, to: 1, insert: 'NEW', affinity: 'left' },
+        { type: 'edit', node: 0, from: 1, to: 1, insert: 'Z', affinity: 'left' },
+        { type: 'move', source: 0, from: 2, to: 3, destination: 1, at: 1 },
+        { type: 'move', source: 0, from: 1, to: 2, destination: 1, at: 2 },
+        ...(transferE
+          ? [{ type: 'move' as const, source: 0, from: 1, to: 2, destination: 1, at: 3 }]
+          : []),
+      ]),
+  );
 
   it.each([
     ['grow', 'LONGER'],

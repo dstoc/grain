@@ -436,11 +436,6 @@ interface PlanTextInsert {
   readonly text: string;
 }
 
-interface BufferLanePositions {
-  /** Positions between left-affinity and right-affinity insertions at each buffer offset. */
-  readonly seam: readonly number[];
-}
-
 interface PlanNodeAllocation {
   readonly id: NodeId;
   readonly type: NodeKind;
@@ -1280,7 +1275,9 @@ class MutableTreeDraft implements ParserTreeDraft {
       allocations: Object.freeze(allocations),
       newTapes: Object.freeze(newTapes),
       boundaries: Object.freeze(
-        this.finalTransferBoundaries(textProjection.positions).map((item) => Object.freeze(item)),
+        this.finalTransferBoundaries(textProjection.boundaryOffsets).map((item) =>
+          Object.freeze(item),
+        ),
       ),
       deletions: Object.freeze(deletions.map((item) => Object.freeze({ ...item }))),
       insertions: Object.freeze(insertions.map((item) => Object.freeze({ ...item }))),
@@ -2328,50 +2325,40 @@ class MutableTreeDraft implements ParserTreeDraft {
 
   private compileTextProjection(): {
     readonly insertions: readonly PlanTextInsert[];
-    readonly positions: ReadonlyMap<string, BufferLanePositions>;
+    readonly boundaryOffsets: ReadonlyMap<string, number>;
   } {
-    const liveRanges = new Map<string, [number, number][]>();
-    const semanticOrder = new Map<
-      string,
-      { readonly path: readonly number[]; readonly spanIndex: number; readonly pieceIndex: number }
-    >();
-    // Span order within one owner is a hard lane constraint. Across owners, document
-    // order remains a priority only, since a moved fragment can precede its retained text.
-    const orderConstraints = new Map<string, Map<string, Set<string>>>();
-    const rootBufferFor = (id: string): string => {
-      let rootId = id;
-      let buffer = this.textBuffers.get(rootId);
-      while (buffer?.parentBufferId !== undefined) {
-        rootId = buffer.parentBufferId;
-        buffer = this.textBuffers.get(rootId);
-      }
-      return rootId;
-    };
-    const groupKeyForRoot = (id: string): string => {
-      const buffer = this.textBuffers.get(id);
-      assert(buffer, `missing root action-local text buffer ${id}`);
-      return JSON.stringify([buffer.anchor.tapeId, buffer.anchor.index]);
-    };
-    const comparePositions = (
-      left: {
-        readonly path: readonly number[];
-        readonly spanIndex: number;
-        readonly pieceIndex: number;
-      },
-      right: {
-        readonly path: readonly number[];
-        readonly spanIndex: number;
-        readonly pieceIndex: number;
-      },
-    ): number => {
+    interface SemanticPosition {
+      readonly path: readonly number[];
+      readonly spanIndex: number;
+      readonly pieceIndex: number;
+      readonly subIndex: number;
+    }
+    interface ProjectionEvent {
+      readonly id: string;
+      readonly groupKey: string;
+      readonly sequence: number;
+      readonly kind: 'text' | 'boundary';
+      readonly text?: string;
+      readonly bufferId?: string;
+      readonly from?: number;
+      readonly slotKey?: readonly number[];
+      readonly boundary?: PlanBoundary;
+      position?: SemanticPosition;
+    }
+
+    const groupKey = (tapeId: TapeId, index: number): string => JSON.stringify([tapeId, index]);
+    const comparePositions = (left: SemanticPosition, right: SemanticPosition): number => {
       const commonLength = Math.min(left.path.length, right.path.length);
       for (let index = 0; index < commonLength; index++) {
         const difference = left.path[index]! - right.path[index]!;
         if (difference) return difference;
       }
-      const pathOrder = left.path.length - right.path.length;
-      if (pathOrder) return pathOrder;
-      return left.spanIndex - right.spanIndex || left.pieceIndex - right.pieceIndex;
+      return (
+        left.path.length - right.path.length ||
+        left.spanIndex - right.spanIndex ||
+        left.pieceIndex - right.pieceIndex ||
+        left.subIndex - right.subIndex
+      );
     };
     const pathByNode = new Map<NodeId, readonly number[] | undefined>();
     const pathForNode = (id: NodeId): readonly number[] | undefined => {
@@ -2398,44 +2385,26 @@ class MutableTreeDraft implements ParserTreeDraft {
       pathByNode.set(id, path);
       return path;
     };
+
+    const referencedBoundaries = new Set<string>();
     for (const node of this.nodes.values()) {
-      const path = pathForNode(node.id);
-      const lastRootByGroup = new Map<string, string>();
-      for (const [spanIndex, span] of node.spans.entries()) {
-        for (const [pieceIndex, piece] of span.pieces.entries()) {
-          if (piece.kind !== 'inserted' || !piece.text) continue;
-          const ranges = liveRanges.get(piece.bufferId) ?? [];
-          ranges.push([piece.from, piece.to]);
-          liveRanges.set(piece.bufferId, ranges);
-          const rootBufferId = rootBufferFor(piece.bufferId);
-          const buffer = this.textBuffers.get(rootBufferId);
-          if (path && buffer) {
-            const position = { path, spanIndex, pieceIndex };
-            const prior = semanticOrder.get(rootBufferId);
-            if (!prior || comparePositions(position, prior) < 0) {
-              semanticOrder.set(rootBufferId, position);
-            }
-            const groupKey = groupKeyForRoot(rootBufferId);
-            const previousRoot = lastRootByGroup.get(groupKey);
-            if (previousRoot && previousRoot !== rootBufferId) {
-              const edges = orderConstraints.get(groupKey) ?? new Map<string, Set<string>>();
-              const successors = edges.get(previousRoot) ?? new Set<string>();
-              successors.add(rootBufferId);
-              edges.set(previousRoot, successors);
-              orderConstraints.set(groupKey, edges);
-            }
-            lastRootByGroup.set(groupKey, rootBufferId);
-          }
-        }
+      for (const span of node.spans) {
+        referencedBoundaries.add(span.span.startBoundaryId);
+        referencedBoundaries.add(span.span.endBoundaryId);
       }
     }
-
-    const roots = new Map<
-      string,
-      { readonly tapeId: TapeId; readonly index: number; ids: string[] }
-    >();
-    const children = new Map<string, Map<number, string[]>>();
-    for (const [id, buffer] of this.textBuffers) {
+    const boundaryPlans = new Map(
+      this.transferBoundaries
+        .filter((boundary) => referencedBoundaries.has(boundary.boundaryId))
+        .map((boundary) => [boundary.boundaryId, boundary]),
+    );
+    const splitOffsets = new Map<string, Set<number>>();
+    const addSplitOffset = (bufferId: string, offset: number): void => {
+      const offsets = splitOffsets.get(bufferId) ?? new Set<number>();
+      offsets.add(offset);
+      splitOffsets.set(bufferId, offsets);
+    };
+    for (const [bufferId, buffer] of this.textBuffers) {
       if (buffer.parentBufferId !== undefined) {
         const parent = this.textBuffers.get(buffer.parentBufferId);
         assert(parent, `missing parent action-local text buffer ${buffer.parentBufferId}`);
@@ -2444,148 +2413,287 @@ class MutableTreeDraft implements ParserTreeDraft {
             Number.isInteger(buffer.parentBufferOffset) &&
             buffer.parentBufferOffset >= 0 &&
             buffer.parentBufferOffset <= parent.text.length,
-          `invalid parent offset for action-local text buffer ${id}`,
+          `invalid parent offset for action-local text buffer ${bufferId}`,
         );
-        const byOffset = children.get(buffer.parentBufferId) ?? new Map<number, string[]>();
-        const siblings = byOffset.get(buffer.parentBufferOffset) ?? [];
-        siblings.push(id);
-        byOffset.set(buffer.parentBufferOffset, siblings);
-        children.set(buffer.parentBufferId, byOffset);
-        continue;
+        addSplitOffset(buffer.parentBufferId, buffer.parentBufferOffset);
       }
+    }
+    for (const boundary of boundaryPlans.values()) {
+      if (boundary.sourceBufferId && boundary.sourceBufferOffset !== undefined) {
+        addSplitOffset(boundary.sourceBufferId, boundary.sourceBufferOffset);
+      }
+    }
 
-      const key = JSON.stringify([buffer.anchor.tapeId, buffer.anchor.index]);
-      const group = roots.get(key) ?? {
-        tapeId: buffer.anchor.tapeId,
-        index: buffer.anchor.index,
-        ids: [],
+    const liveRanges = new Map<string, [number, number][]>();
+    const eventsByGroup = new Map<string, Map<string, ProjectionEvent>>();
+    const eventsById = new Map<string, ProjectionEvent>();
+    const boundaryEventIds = new Map<string, string>();
+    const constraints = new Map<string, Map<string, Set<string>>>();
+    let eventSequence = 0;
+    let eventId = 0;
+
+    const addEvent = (event: ProjectionEvent): void => {
+      const events = eventsByGroup.get(event.groupKey) ?? new Map<string, ProjectionEvent>();
+      assert(!events.has(event.id), `duplicate projection event ${event.id}`);
+      events.set(event.id, event);
+      eventsById.set(event.id, event);
+      eventsByGroup.set(event.groupKey, events);
+    };
+    const slotKeyForBufferOffset = (id: string, offset: number): readonly number[] => {
+      const chain: DraftTextBuffer[] = [];
+      let currentId = id;
+      let current = this.textBuffers.get(currentId);
+      assert(current, `missing action-local text buffer ${currentId}`);
+      while (current) {
+        chain.push(current);
+        if (current.parentBufferId === undefined) break;
+        currentId = current.parentBufferId;
+        current = this.textBuffers.get(currentId);
+        assert(current, `missing parent action-local text buffer ${currentId}`);
+      }
+      chain.reverse();
+      const root = chain[0]!;
+      const key = [Number(root.anchor.affinity === 'right'), root.anchor.order];
+      for (const buffer of chain.slice(1)) {
+        key.push(
+          buffer.parentBufferOffset!,
+          0,
+          Number(buffer.anchor.affinity === 'right'),
+          buffer.anchor.order,
+        );
+      }
+      key.push(offset, 1);
+      return Object.freeze(key);
+    };
+    const boundaryEvent = (
+      boundaryId: string,
+      position: SemanticPosition | undefined,
+    ): ProjectionEvent | undefined => {
+      const boundary = boundaryPlans.get(boundaryId);
+      if (!boundary) return undefined;
+      const existingId = boundaryEventIds.get(boundaryId);
+      if (existingId) {
+        const existing = eventsById.get(existingId);
+        assert(existing, `missing projection boundary event ${existingId}`);
+        if (position && (!existing.position || comparePositions(position, existing.position) < 0)) {
+          existing.position = position;
+        }
+        return existing;
+      }
+      const event: ProjectionEvent = {
+        id: `boundary:${boundaryId}`,
+        groupKey: groupKey(boundary.tapeId, boundary.index),
+        sequence: eventSequence++,
+        kind: 'boundary',
+        boundary,
+        ...(position ? { position } : {}),
       };
-      group.ids.push(id);
-      roots.set(key, group);
-    }
-
-    const compareSemanticOrder = (leftId: string, rightId: string): number => {
-      const left = semanticOrder.get(leftId);
-      const right = semanticOrder.get(rightId);
-      if (!left || !right) return 0;
-      return comparePositions(left, right);
+      boundaryEventIds.set(boundaryId, event.id);
+      addEvent(event);
+      return event;
     };
-    const orderByAffinity = (leftId: string, rightId: string): number => {
-      const left = this.textBuffers.get(leftId)!;
-      const right = this.textBuffers.get(rightId)!;
-      const leftOrder = semanticOrder.has(leftId);
-      const rightOrder = semanticOrder.has(rightId);
-      if (leftOrder && rightOrder) {
-        const draftOrder = compareSemanticOrder(leftId, rightId);
-        if (draftOrder) return draftOrder;
-      } else if (leftOrder) {
-        return -1;
-      } else if (rightOrder) {
-        return 1;
+    const addTextPiece = (
+      piece: InsertedPiece,
+      spanIndex: number,
+      pieceIndex: number,
+      path: readonly number[] | undefined,
+      spanSequence: Map<string, string[]>,
+    ): void => {
+      const ranges = liveRanges.get(piece.bufferId) ?? [];
+      ranges.push([piece.from, piece.to]);
+      liveRanges.set(piece.bufferId, ranges);
+      const buffer = this.textBuffers.get(piece.bufferId);
+      assert(buffer, `missing action-local text buffer ${piece.bufferId}`);
+      const key = groupKey(buffer.anchor.tapeId, buffer.anchor.index);
+      const offsets = [...(splitOffsets.get(piece.bufferId) ?? [])]
+        .filter((offset) => piece.from < offset && offset < piece.to)
+        .sort((a, b) => a - b);
+      const starts = [piece.from, ...offsets];
+      const ends = [...offsets, piece.to];
+      for (let chunkIndex = 0; chunkIndex < starts.length; chunkIndex++) {
+        const from = starts[chunkIndex]!;
+        const to = ends[chunkIndex]!;
+        if (from >= to) continue;
+        const event: ProjectionEvent = {
+          id: `text:${eventId++}`,
+          groupKey: key,
+          sequence: eventSequence++,
+          kind: 'text',
+          text: buffer.text.slice(from, to),
+          bufferId: piece.bufferId,
+          from,
+          slotKey: slotKeyForBufferOffset(piece.bufferId, from),
+          ...(path ? { position: { path, spanIndex, pieceIndex, subIndex: chunkIndex } } : {}),
+        };
+        addEvent(event);
+        const sequence = spanSequence.get(key) ?? [];
+        sequence.push(event.id);
+        spanSequence.set(key, sequence);
       }
-      const affinityOrder =
-        Number(left.anchor.affinity === 'right') - Number(right.anchor.affinity === 'right');
-      return affinityOrder || left.anchor.order - right.anchor.order;
+      assert(piece.text === buffer.text.slice(piece.from, piece.to), 'text piece changed in draft');
     };
-    for (const byOffset of children.values()) {
-      for (const siblings of byOffset.values()) siblings.sort(orderByAffinity);
+
+    for (const node of this.nodes.values()) {
+      const path = pathForNode(node.id);
+      for (const [spanIndex, span] of node.spans.entries()) {
+        const spanSequence = new Map<string, string[]>();
+        const startPlan = boundaryPlans.get(span.span.startBoundaryId);
+        if (startPlan) {
+          const event = boundaryEvent(
+            span.span.startBoundaryId,
+            path
+              ? {
+                  path,
+                  spanIndex,
+                  pieceIndex: -1,
+                  subIndex: 0,
+                }
+              : undefined,
+          );
+          if (event) {
+            const sequence = spanSequence.get(event.groupKey) ?? [];
+            sequence.push(event.id);
+            spanSequence.set(event.groupKey, sequence);
+          }
+        }
+        for (const [pieceIndex, piece] of span.pieces.entries()) {
+          if (piece.kind === 'inserted' && piece.text) {
+            addTextPiece(piece, spanIndex, pieceIndex, path, spanSequence);
+          }
+        }
+        const endPlan = boundaryPlans.get(span.span.endBoundaryId);
+        if (endPlan) {
+          const event = boundaryEvent(
+            span.span.endBoundaryId,
+            path
+              ? {
+                  path,
+                  spanIndex,
+                  pieceIndex: span.pieces.length,
+                  subIndex: 0,
+                }
+              : undefined,
+          );
+          if (event) {
+            const sequence = spanSequence.get(event.groupKey) ?? [];
+            sequence.push(event.id);
+            spanSequence.set(event.groupKey, sequence);
+          }
+        }
+        for (const [key, sequence] of spanSequence) {
+          const edges = constraints.get(key) ?? new Map<string, Set<string>>();
+          let previous: string | undefined;
+          for (const current of sequence) {
+            if (current === previous) continue;
+            if (previous) {
+              const successors = edges.get(previous) ?? new Set<string>();
+              successors.add(current);
+              edges.set(previous, successors);
+            }
+            previous = current;
+          }
+          constraints.set(key, edges);
+        }
+      }
     }
 
-    const orderRoots = (groupKey: string, ids: readonly string[]): string[] => {
-      const constraints = orderConstraints.get(groupKey);
-      if (!constraints) return [...ids].sort(orderByAffinity);
+    for (const ranges of liveRanges.values()) {
+      ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      let end = -1;
+      for (const [from, to] of ranges) {
+        assert(from >= end, 'action-local text buffer has overlapping final ownership');
+        end = Math.max(end, to);
+      }
+    }
 
-      const remaining = new Set(ids);
-      const indegree = new Map(ids.map((id) => [id, 0]));
-      for (const [from, successors] of constraints) {
+    const compareEvents = (left: ProjectionEvent, right: ProjectionEvent): number => {
+      if (left.position && right.position) {
+        const positionOrder = comparePositions(left.position, right.position);
+        if (positionOrder) return positionOrder;
+      } else if (left.position) return -1;
+      else if (right.position) return 1;
+
+      const tiePriority = (event: ProjectionEvent): number => {
+        if (event.kind === 'text') return 1;
+        return event.boundary?.side === 'end' ? 0 : 2;
+      };
+      const priorityOrder = tiePriority(left) - tiePriority(right);
+      if (priorityOrder) return priorityOrder;
+
+      if (left.kind === 'text' && right.kind === 'text') {
+        const leftKey = left.slotKey!;
+        const rightKey = right.slotKey!;
+        const pathLength = Math.min(leftKey.length, rightKey.length);
+        for (let index = 0; index < pathLength; index++) {
+          const difference = leftKey[index]! - rightKey[index]!;
+          if (difference) return difference;
+        }
+        if (leftKey.length !== rightKey.length) return leftKey.length - rightKey.length;
+      } else if (left.kind === 'boundary' && right.kind === 'boundary') {
+        const boundaryOrder = (left.boundary?.order ?? 0) - (right.boundary?.order ?? 0);
+        if (boundaryOrder) return boundaryOrder;
+      }
+      return left.sequence - right.sequence || left.id.localeCompare(right.id);
+    };
+
+    const boundaryOffsets = new Map<string, number>();
+    const insertions: PlanTextInsert[] = [];
+    for (const [key, events] of eventsByGroup) {
+      const graph = constraints.get(key);
+      const indegree = new Map([...events.keys()].map((id) => [id, 0]));
+      for (const [from, successors] of graph ?? []) {
         if (!indegree.has(from)) continue;
         for (const to of successors) {
           if (indegree.has(to)) indegree.set(to, indegree.get(to)! + 1);
         }
       }
 
-      const result: string[] = [];
+      const remaining = new Set(events.keys());
+      const ordered: ProjectionEvent[] = [];
       while (remaining.size) {
-        const ready = [...remaining].filter((id) => indegree.get(id) === 0).sort(orderByAffinity);
+        const ready = [...remaining]
+          .filter((id) => indegree.get(id) === 0)
+          .map((id) => events.get(id)!)
+          .sort(compareEvents);
         assert(ready.length > 0, 'shared-gap fragment ordering contains a cycle');
         const next = ready[0]!;
-        remaining.delete(next);
-        result.push(next);
-        for (const successor of constraints.get(next) ?? []) {
+        remaining.delete(next.id);
+        ordered.push(next);
+        for (const successor of graph?.get(next.id) ?? []) {
           if (indegree.has(successor)) indegree.set(successor, indegree.get(successor)! - 1);
         }
       }
-      return result;
-    };
 
-    const positions = new Map<string, BufferLanePositions>();
-    const insertions: PlanTextInsert[] = [];
-    for (const [groupKey, group] of roots) {
-      group.ids = orderRoots(groupKey, group.ids);
       const chunks: string[] = [];
       let laneLength = 0;
-      const emit = (id: string): void => {
-        const buffer = this.textBuffers.get(id);
-        assert(buffer, `missing action-local text buffer ${id}`);
-        const ranges = (liveRanges.get(id) ?? []).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-        const mergedRanges: [number, number][] = [];
-        for (const [from, to] of ranges) {
-          const previous = mergedRanges.at(-1);
-          assert(
-            !previous || from >= previous[1],
-            `action-local text buffer ${id} has overlapping final ownership`,
-          );
-          if (previous && from === previous[1]) previous[1] = to;
-          else mergedRanges.push([from, to]);
+      let slotOrder = Number.MAX_SAFE_INTEGER;
+      let tapeId: TapeId | undefined;
+      let index: number | undefined;
+      for (const event of ordered) {
+        if (event.kind === 'boundary') {
+          boundaryOffsets.set(event.boundary!.boundaryId, laneLength);
+          tapeId = event.boundary!.tapeId;
+          index = event.boundary!.index;
+          continue;
         }
-
-        // Insertions at the same buffer offset stay on their requested side of a transfer seam.
-        const seam: number[] = [];
-        let rangeIndex = 0;
-        const childOffsets = children.get(id);
-        for (let offset = 0; offset <= buffer.text.length; offset++) {
-          const siblings = childOffsets?.get(offset) ?? [];
-          for (const childId of siblings) {
-            if (this.textBuffers.get(childId)!.anchor.affinity === 'left') emit(childId);
-          }
-          seam[offset] = laneLength;
-          for (const childId of siblings) {
-            if (this.textBuffers.get(childId)!.anchor.affinity === 'right') emit(childId);
-          }
-
-          if (offset < buffer.text.length) {
-            while (mergedRanges[rangeIndex] && mergedRanges[rangeIndex]![1] <= offset) {
-              rangeIndex++;
-            }
-            const range = mergedRanges[rangeIndex];
-            if (range && range[0] <= offset && offset < range[1]) {
-              chunks.push(buffer.text[offset]!);
-              laneLength++;
-            }
-          }
-        }
-        positions.set(id, Object.freeze({ seam: Object.freeze(seam) }));
-      };
-
-      for (const id of group.ids) emit(id);
+        chunks.push(event.text!);
+        laneLength += event.text!.length;
+        const buffer = this.textBuffers.get(event.bufferId!)!;
+        tapeId = buffer.anchor.tapeId;
+        index = buffer.anchor.index;
+        slotOrder = Math.min(slotOrder, buffer.anchor.order);
+      }
       const text = chunks.join('');
       if (text) {
-        const first = this.textBuffers.get(group.ids[0]!)!;
-        insertions.push({
-          tapeId: group.tapeId,
-          index: group.index,
-          slotOrder: first.anchor.order,
-          text,
-        });
+        assert(tapeId !== undefined && index !== undefined, 'text lane has no insertion target');
+        insertions.push({ tapeId, index, slotOrder, text });
       }
     }
 
-    return { insertions, positions };
+    return { insertions, boundaryOffsets };
   }
 
-  private finalTransferBoundaries(
-    positions: ReadonlyMap<string, BufferLanePositions>,
-  ): PlanBoundary[] {
+  private finalTransferBoundaries(boundaryOffsets: ReadonlyMap<string, number>): PlanBoundary[] {
     const referenced = new Set<string>();
     for (const node of this.nodes.values()) {
       for (const span of node.spans) {
@@ -2595,19 +2703,13 @@ class MutableTreeDraft implements ParserTreeDraft {
     }
 
     return this.transferBoundaries.flatMap((boundary) => {
-      if (!boundary.sourceBufferId) return [{ ...boundary }];
-      if (!referenced.has(boundary.boundaryId)) return [];
-      const offset = boundary.sourceBufferOffset;
-      assert(offset !== undefined, `transfer boundary ${boundary.boundaryId} has no buffer offset`);
-      const bufferPositions = positions.get(boundary.sourceBufferId);
-      assert(
-        bufferPositions,
-        `missing final position for action-local buffer ${boundary.sourceBufferId}`,
-      );
-      const insertionOffset = bufferPositions.seam[offset];
+      if (!referenced.has(boundary.boundaryId)) {
+        return boundary.sourceBufferId ? [] : [{ ...boundary }];
+      }
+      const insertionOffset = boundaryOffsets.get(boundary.boundaryId);
       assert(
         insertionOffset !== undefined,
-        `transfer boundary ${boundary.boundaryId} is outside its source buffer`,
+        `missing final position for transfer boundary ${boundary.boundaryId}`,
       );
       return [{ ...boundary, insertionOffset }];
     });
