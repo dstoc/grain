@@ -21,6 +21,10 @@ export function createInitialState(tree: MarkdownTree): BlockParseState {
     sourceMarkerWidths: new Map(),
     currentQuoteStack: [],
     sectionStack: [],
+    sourceTracking: false,
+    sourceOffset: 0,
+    receivedSourceLength: 0,
+    inlinePieces: new Map(),
   };
 }
 

@@ -1234,8 +1234,10 @@ describe('block parser generated permutations', () => {
         continue;
       }
       const reparsed = parseBlocks(markdown).node;
+      const withProvenance = parseBlocks(markdown, { provenance: true });
       try {
         expect(reparsed).toEqual(expected);
+        expect(withProvenance.node).toEqual(reparsed);
       } catch (error) {
         throw formatGeneratedCaseFailure(name, markdown, expected, reparsed, error);
       }
@@ -1267,7 +1269,7 @@ describe('block parser generated permutations', () => {
         );
       }
     }
-  });
+  }, 15_000);
 
   it('matches full parse for generated code-block nested and sibling-bearing permutations under char-by-char append', () => {
     for (const testCase of generatedCanonicalCasesForMode('default')) {
@@ -1294,7 +1296,7 @@ describe('block parser generated permutations', () => {
         );
       }
     }
-  });
+  }, 15_000);
 });
 
 function isUnsupportedDefaultRoundtripNestedQuoteCase(

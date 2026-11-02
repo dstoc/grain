@@ -16,7 +16,14 @@ import {
 import { resetQuoteStack, syncQuoteStack } from './container-management.js';
 
 export function parseQuotePrefix(line: string): string | undefined {
-  return /^(>\s?)(.*)$/.exec(line)?.[2];
+  return parseQuotePrefixMatch(line)?.content;
+}
+
+export function parseQuotePrefixMatch(
+  line: string,
+): { readonly content: string; readonly contentFrom: number } | undefined {
+  const match = /^(>\s?)(.*)$/.exec(line);
+  return match ? { content: match[2]!, contentFrom: match[1]!.length } : undefined;
 }
 
 export function parseBlankLinePrefix(
@@ -95,25 +102,29 @@ export function parseLinePrefix(state: BlockParseState, line: string): LinePrefi
   let quoteDepth = 0;
   const prefixes: ('list' | 'quote')[] = [];
   let continuedListIndent = false;
+  let contentFrom = 0;
 
   if (
     rest.startsWith(listContinuationPrefix(state, state.currentListPath.at(-1))) &&
     state.currentListPath.length &&
     isInsideListPath(currentContainer, state.currentListPath.at(-1))
   ) {
-    rest = rest.slice(listContinuationPrefix(state, state.currentListPath.at(-1)).length);
+    const width = listContinuationPrefix(state, state.currentListPath.at(-1)).length;
+    rest = rest.slice(width);
+    contentFrom += width;
     continuedListIndent = true;
   }
 
   while (true) {
-    const quoteContent = parseQuotePrefix(rest);
-    if (quoteContent !== undefined) {
+    const quotePrefix = parseQuotePrefixMatch(rest);
+    if (quotePrefix !== undefined) {
       prefixes.push('quote');
       if (quoteDepth === 0) {
         quoteBase = currentContainer;
       }
       quoteDepth++;
-      rest = quoteContent;
+      rest = quotePrefix.content;
+      contentFrom += quotePrefix.contentFrom;
       currentContainer =
         getQuotedPrefixContainer(state, quoteBase ?? currentContainer, quoteDepth) ??
         currentContainer;
@@ -123,7 +134,9 @@ export function parseLinePrefix(state: BlockParseState, line: string): LinePrefi
     const nextListItem = nextListPathItem(state.currentListPath, currentContainer, listDepth);
     if (nextListItem && rest.startsWith(listContinuationPrefix(state, nextListItem))) {
       prefixes.push('list');
-      rest = rest.slice(listContinuationPrefix(state, nextListItem).length);
+      const width = listContinuationPrefix(state, nextListItem).length;
+      rest = rest.slice(width);
+      contentFrom += width;
       currentContainer = nextListItem;
       listDepth++;
       continue;
@@ -132,6 +145,7 @@ export function parseLinePrefix(state: BlockParseState, line: string): LinePrefi
   }
   return {
     content: rest,
+    contentFrom,
     prefixes,
     listDepth,
     continuedListIndent,
@@ -192,6 +206,7 @@ export function parseQuotedListContinuation(
       container: ListItemViewModelNode;
       listPath: ListItemViewModelNode[];
       content: string;
+      contentFrom: number;
       quoteBase: ViewModelNode;
       quoteDepth: number;
     }
@@ -203,12 +218,14 @@ export function parseQuotedListContinuation(
   if (!quoteContext || quoteContext.quoteDepth === 0) return;
 
   let rest = line;
+  let contentFrom = 0;
   for (let depth = 0; depth < quoteContext.quoteDepth; depth++) {
-    const quoteContent = parseQuotePrefix(rest);
-    if (quoteContent === undefined) {
+    const quotePrefix = parseQuotePrefixMatch(rest);
+    if (quotePrefix === undefined) {
       return;
     }
-    rest = quoteContent;
+    rest = quotePrefix.content;
+    contentFrom += quotePrefix.contentFrom;
   }
 
   let currentContainer =
@@ -222,7 +239,9 @@ export function parseQuotedListContinuation(
     if (!nextListItem || !rest.startsWith(listContinuationPrefix(state, nextListItem))) {
       break;
     }
-    rest = rest.slice(listContinuationPrefix(state, nextListItem).length);
+    const width = listContinuationPrefix(state, nextListItem).length;
+    rest = rest.slice(width);
+    contentFrom += width;
     currentContainer = nextListItem;
     container = nextListItem;
     listPath.push(nextListItem);
@@ -250,6 +269,7 @@ export function parseQuotedListContinuation(
     container,
     listPath,
     content,
+    contentFrom,
     quoteBase: quoteContext.quoteBase,
     quoteDepth: quoteContext.quoteDepth,
   };

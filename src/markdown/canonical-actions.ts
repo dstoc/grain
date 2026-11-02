@@ -16,9 +16,15 @@ import type {
   Span,
   TapeId,
 } from './canonical-model.js';
+import { isInlineNode } from './node.js';
+import type { DocumentNode } from './node.js';
+import type { ViewModelNode } from './view-model-node.js';
+import type { MarkdownTreeConstructionDraft } from './view-model.js';
 import { mapTextEdit } from './canonical-text.js';
 import type { NativeTextRun, TextAffinity, TextEdit } from './canonical-text.js';
 import { normalizeCanonicalDraft } from './canonical-normalize.js';
+import { parseBlocks } from './block-parser/api.js';
+import { applyParserConversion } from './canonical-promotion.js';
 
 const META = 'meta';
 const NODES = 'nodes';
@@ -644,6 +650,15 @@ class MutableTreeDraft implements TreeDraft {
 
   close(): void {
     this.active = false;
+  }
+
+  checkpointConstruction(): void {
+    this.assertActive();
+    assert(!this.compiledPlan, 'cannot checkpoint a compiled construction draft');
+    this.operations_.length = 0;
+    this.preconditions.clear();
+    this.transferBoundaries.length = 0;
+    this.transferredNodes.clear();
   }
 
   get operationList(): readonly SemanticOperation[] {
@@ -1897,6 +1912,118 @@ class MutableTreeDraft implements TreeDraft {
   }
 }
 
+/** A parser-only TreeDraft bridge. It never compiles or publishes construction operations. */
+export function createMarkdownTreeConstructionDraft(
+  root: DocumentNode,
+): MarkdownTreeConstructionDraft {
+  const document = CanonicalDocument.fromParsed(root);
+  const draft = new MutableTreeDraft(canonicalWriterAccess(document).state, 'parser-construction');
+  const nodeIds = new WeakMap<object, NodeId>();
+  let closed = false;
+
+  const requireId = (node: ViewModelNode): NodeId => {
+    const id = nodeIds.get(node);
+    assert(id, 'parser construction node has no TreeDraft identity');
+    return id;
+  };
+
+  return {
+    bindRoot(rootNode) {
+      const bind = (node: ViewModelNode, id: NodeId): void => {
+        nodeIds.set(node, id);
+        const draftNode = draft.node(id);
+        assert(node.type === draftNode.type, 'parser projection kind differs from its TreeDraft');
+        const children = (node.children ?? []) as ViewModelNode[];
+        assert(
+          children.length === draftNode.children.length,
+          'parser projection children differ from its TreeDraft',
+        );
+        children.forEach((child, index) => bind(child, draftNode.children[index]!));
+      };
+      bind(rootNode, document.root.sharedId);
+    },
+    addNode(node) {
+      assert(!node.children?.length, 'parser construction adds nodes before their children');
+      const spec: NodeSpec = {
+        type: node.type,
+        ...(isInlineNode(node) ? { content: node.content } : {}),
+        ...('marker' in node ? { marker: node.marker } : {}),
+        ...(node.type === 'list-item' ? { checked: node.checked ?? null } : {}),
+        ...(node.type === 'code-block' ? { info: node.info ?? null } : {}),
+      };
+      nodeIds.set(node, draft.create(spec));
+    },
+    apply(operation) {
+      switch (operation.type) {
+        case 'insert':
+          draft.place(
+            requireId(operation.node),
+            requireId(operation.parent),
+            operation.nextSibling ? requireId(operation.nextSibling) : null,
+          );
+          break;
+        case 'remove':
+          draft.detach(requireId(operation.node));
+          break;
+        case 'edit':
+          draft.spliceText(requireId(operation.node), {
+            from: operation.edit.startIndex,
+            to: operation.edit.oldEndIndex,
+            insert: operation.edit.newText,
+          });
+          break;
+        case 'marker':
+          draft.setMarker(requireId(operation.node), operation.marker);
+          break;
+        case 'check':
+          draft.setChecked(requireId(operation.node), operation.checked ?? null);
+          break;
+      }
+    },
+    checkpoint() {
+      draft.checkpointConstruction();
+    },
+    finish(rootNode) {
+      const verify = (node: ViewModelNode): void => {
+        const draftNode = draft.node(requireId(node));
+        assert(node.type === draftNode.type, 'parser projection kind differs from its TreeDraft');
+        const children = (node.children ?? []) as ViewModelNode[];
+        assert(children.length === draftNode.children.length, 'parser draft child count diverged');
+        children.forEach((child, index) => {
+          assert(
+            requireId(child) === draftNode.children[index],
+            'parser draft child order diverged',
+          );
+          verify(child);
+        });
+        if (isInlineNode(node)) {
+          assert(draftNode.content === node.content, 'parser draft inline content diverged');
+        }
+        assert(
+          draftNode.marker === ('marker' in node ? (node.marker ?? null) : null),
+          'parser draft marker diverged',
+        );
+        assert(
+          draftNode.checked === (node.type === 'list-item' ? (node.checked ?? null) : null),
+          'parser draft task state diverged',
+        );
+        assert(
+          draftNode.info === (node.type === 'code-block' ? (node.info ?? null) : null),
+          'parser draft code info diverged',
+        );
+      };
+      verify(rootNode);
+      draft.checkpointConstruction();
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      draft.close();
+      document.close();
+    },
+  };
+}
+
 interface TapeStateSummary {
   readonly signatures: ReadonlyMap<TapeId, string>;
   readonly revisions: ReadonlyMap<TapeId, number>;
@@ -2785,6 +2912,31 @@ export class CanonicalWriter {
     let plan: LowLevelPlan;
     try {
       draft = new MutableTreeDraft(candidate, request.actionId, request.operations);
+      const promotion = request.promotionTarget;
+      if (
+        request.mode === 'text-input' &&
+        request.textUpdate?.length &&
+        promotion &&
+        currentActive(this.state, promotion.nodeId) &&
+        nodeCell(this.state, promotion.nodeId, 'kind').token === promotion.kindToken &&
+        nodeCell(this.state, promotion.nodeId, 'spans').token === promotion.spansToken
+      ) {
+        const sourceNode = draft.node(promotion.nodeId);
+        if (sourceNode.type === 'paragraph' && sourceNode.content !== undefined) {
+          const parsed = parseBlocks(sourceNode.content, { provenance: true });
+          if (
+            applyParserConversion(
+              draft,
+              metaMap(candidate).get('rootId') as NodeId,
+              promotion.nodeId,
+              sourceNode.content,
+              parsed.provenance,
+            )
+          ) {
+            normalizeCanonicalDraft(draft, metaMap(candidate).get('rootId') as NodeId);
+          }
+        }
+      }
       plan = draft.compilePlan();
       applyPlan(
         candidate,

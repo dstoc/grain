@@ -2,6 +2,7 @@ import { viewModel } from '../../view-model-node.js';
 import type { ViewModelNode } from '../../view-model-node.js';
 import {
   type BlockParseState,
+  type MappedText,
   type SectionViewModelNode,
   type ParagraphViewModelNode,
 } from '../types.js';
@@ -55,21 +56,32 @@ export function promoteParagraphToSection(
     children: [],
   }) as SectionViewModelNode;
   section[viewModel].insertBefore(container, nextSibling);
+  const pieces = state.inlinePieces.get(paragraph);
+  if (pieces) state.inlinePieces.set(section, pieces);
   paragraph[viewModel].remove();
+  state.inlinePieces.delete(paragraph);
   state.sectionStack.push(section);
   state.sawContent = true;
 }
 
-export function parseAtxHeading(line: string): { level: number; content: string } | undefined {
+export function parseAtxHeading(
+  line: string,
+): { level: number; content: string; contentFrom: number } | undefined {
   const match = /^(#{1,6})\s+(.*)$/.exec(line);
   if (!match) return;
   return {
     level: match[1].length,
     content: match[2],
+    contentFrom: match[0].length - match[2].length,
   };
 }
 
-export function openSection(state: BlockParseState, level: number, content: string) {
+export function openSection(
+  state: BlockParseState,
+  level: number,
+  content: string,
+  mapped?: MappedText,
+) {
   popSectionsToLevel(state, level);
   const parent = currentSectionContainer(state);
   ensurePlaceholderRemoved(state);
@@ -80,6 +92,7 @@ export function openSection(state: BlockParseState, level: number, content: stri
     children: [],
   }) as SectionViewModelNode;
   section[viewModel].insertBefore(parent);
+  if (mapped) state.inlinePieces.set(section, mapped.pieces);
   state.sectionStack.push(section);
   state.sawContent = true;
 }

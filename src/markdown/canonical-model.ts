@@ -662,8 +662,8 @@ export class CanonicalDocument {
   }
 
   static fromMarkdown(markdown: string, options: CanonicalDocumentOptions = {}): CanonicalDocument {
-    const parsed = parseBlocks(markdown).node;
-    return CanonicalDocument.fromParsed(parsed, options);
+    const parsed = parseBlocks(markdown, { provenance: true });
+    return CanonicalDocument.fromParsed(parsed.provenance.output, options);
   }
 
   /** Imports a parser result as-is. This path does not run normalization. */
