@@ -717,7 +717,10 @@ class CanonicalIndexes {
           this.visibleInlinePosition.set(id, this.visibleInlineNodeIds.length);
           this.visibleInlineNodeIds.push(id);
         }
-        pending.push(...readCell<readonly NodeId[]>(record, 'children').value);
+        const children = readCell<readonly NodeId[]>(record, 'children').value;
+        for (let index = children.length - 1; index >= 0; index--) {
+          pending.push(children[index]!);
+        }
       }
     }
 

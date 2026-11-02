@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { CanonicalWriter } from './canonical-actions.js';
 import { canonicalWriterAccess, CanonicalDocument } from './canonical-model.js';
+import { resolveCanonicalTextAnchor } from './canonical-selection.js';
 import type { ActionRequest, AdmittedContext, Bookmark } from './canonical-actions.js';
 import type { Span } from './canonical-model.js';
 
@@ -269,6 +270,126 @@ describe('Yjs M2 incremental input', () => {
         expect(writer.canUndo('A', document.root.sharedId)).toBe(retrySession === 'A');
         expect(writer.canUndo('B', document.root.sharedId)).toBe(retrySession === 'B');
         expect(document.validate()).toEqual({ valid: true, errors: [] });
+      } finally {
+        writer.close();
+        document.close();
+      }
+    },
+  );
+
+  it.each([
+    ['space', ' '],
+    ['tab', '\t'],
+    ['nonbreaking space', '\u00a0'],
+    ['vertical tab', '\u000b'],
+    ['form feed', '\u000c'],
+  ])('promotes ATX input with %s whitespace and preserves its history', (_name, whitespace) => {
+    const document = makeDocument('Heading');
+    const writer = new CanonicalWriter(document);
+    const target = document.root.children[0]!;
+    try {
+      const request = writer.prepareTextInput(
+        target.sharedId,
+        { from: 0, to: 0, insert: `#${whitespace}` },
+        { actionId: `heading-${_name}`, sessionId: 'A' },
+      );
+      accept(writer, request);
+
+      expect(document.root.children[0]!.type).toBe('section');
+      expect(document.root.children[0]!.content).toBe('Heading');
+      expect(writer.undo('A').status).toBe('applied');
+      expect(document.root.children[0]!.type).toBe('paragraph');
+      expect(writer.redo('A').status).toBe('applied');
+      expect(document.root.children[0]!.type).toBe('section');
+      expect(document.root.children[0]!.content).toBe('Heading');
+    } finally {
+      writer.close();
+      document.close();
+    }
+  });
+
+  it.each(
+    [
+      {
+        structure: 'root siblings',
+        markdown: 'alpha\n\nbeta\n\ngamma',
+        before: ['alpha', 'beta', 'gamma'],
+        after: ['alpha', 'gamma'],
+      },
+      {
+        structure: 'nested section siblings',
+        markdown: '# parent\n\n## alpha\n\n## beta\n\n## gamma',
+        before: ['parent', 'alpha', 'beta', 'gamma'],
+        after: ['parent', 'alpha', 'gamma'],
+      },
+    ].flatMap((fixture) => (['literal', 'command'] as const).map((mode) => ({ ...fixture, mode }))),
+  )(
+    'resolves $mode history focus in $structure after another session detaches the focused inline',
+    ({ mode, markdown, before, after }) => {
+      const document = makeDocument(markdown);
+      const writer = new CanonicalWriter(document);
+      const findByContent = (
+        node: typeof document.root,
+        content: string,
+      ): typeof document.root | undefined => {
+        if (node.content === content) return node;
+        for (const child of node.children) {
+          const match = findByContent(child, content);
+          if (match) return match;
+        }
+        return undefined;
+      };
+      const visibleContents = (node: typeof document.root): string[] => [
+        ...(node.content === undefined ? [] : [node.content]),
+        ...node.children.flatMap(visibleContents),
+      ];
+      const middle = findByContent(document.root, 'beta')!;
+      const last = findByContent(document.root, 'gamma')!;
+      writer.admitSession('A');
+      try {
+        expect(visibleContents(document.root)).toEqual(before);
+        const focus = {
+          start: { nodeId: middle.sharedId, offset: 2, affinity: 'right' as const },
+          end: { nodeId: middle.sharedId, offset: 3, affinity: 'right' as const },
+        };
+        if (mode === 'literal') {
+          accept(
+            writer,
+            writer.prepareTextInput(
+              middle.sharedId,
+              { from: 2, to: 2, insert: '!' },
+              { actionId: 'type', sessionId: 'A', focus },
+            ),
+          );
+        } else {
+          const typed = writer.edit({ actionId: 'type', sessionId: 'A' }, (draft) => {
+            draft.spliceText(middle.sharedId, { from: 2, to: 2, insert: '!' });
+            return focus;
+          });
+          expect('receipt' in typed).toBe(true);
+        }
+
+        const detached = writer.edit({ actionId: 'detach', sessionId: 'B' }, (draft) =>
+          draft.detach(middle.sharedId),
+        );
+        expect('receipt' in detached).toBe(true);
+        expect(visibleContents(document.root)).toEqual(after);
+
+        const undone = writer.undo('A');
+        expect(undone.status).toBe('applied');
+        expect(undone.focusAnchor).toBeDefined();
+        expect(resolveCanonicalTextAnchor(document, undone.focusAnchor!)).toMatchObject({
+          nodeId: last.sharedId,
+          offset: 2,
+        });
+
+        const redone = writer.redo('A');
+        expect(redone.status).toBe('applied');
+        expect(redone.focusAnchor).toBeDefined();
+        expect(resolveCanonicalTextAnchor(document, redone.focusAnchor!)).toMatchObject({
+          nodeId: last.sharedId,
+          offset: 3,
+        });
       } finally {
         writer.close();
         document.close();

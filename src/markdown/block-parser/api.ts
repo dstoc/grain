@@ -274,7 +274,7 @@ function isDefinitelyLiteralSingleLine(markdown: string): boolean {
   // A block opener must be considered after up to three spaces, but keeping
   // leading whitespace on the conservative path also avoids changing source.
   if (
-    /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|[-+*](?:[ \t]|$)|\d+[.)](?:[ \t]|$)|`{3,}|~{3,}|<|\[)/.test(
+    /^ {0,3}(?:#{1,6}(?:\s|$)|>|[-+*](?:[ \t]|$)|\d+[.)](?:[ \t]|$)|`{3,}|~{3,}|<|\[)/.test(
       markdown,
     )
   ) {

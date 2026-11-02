@@ -60,6 +60,19 @@ describe('block parser provenance', () => {
     expect(isLiteralParagraphInput(source)).toBe(false);
   });
 
+  it.each([
+    ['space', ' '],
+    ['tab', '\t'],
+    ['nonbreaking space', '\u00a0'],
+    ['vertical tab', '\u000b'],
+    ['form feed', '\u000c'],
+  ])('uses parser heading recognition for %s after ATX markers', (_name, whitespace) => {
+    const source = `#${whitespace}Heading`;
+
+    expect(parseBlocks(source).node.children?.[0]?.type).toBe('section');
+    expect(isLiteralParagraphInput(source)).toBe(false);
+  });
+
   it('classifies a parser-created empty root paragraph without inventing source text', () => {
     const result = parseBlocks('', { provenance: true });
     expect(inlineTexts(result.node).map(({ text }) => text)).toEqual(['']);
