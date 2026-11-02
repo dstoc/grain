@@ -272,6 +272,20 @@ export interface StructuralCellPatch {
   readonly after: StructuralCellValue;
 }
 
+export interface StructuralChildSplice {
+  /** Index in the child list immediately before this splice. */
+  readonly index: number;
+  readonly removedIds: readonly NodeId[];
+  readonly insertedIds: readonly NodeId[];
+}
+
+export interface StructuralChildListPatch {
+  readonly nodeId: NodeId;
+  readonly beforeToken: ResourceToken;
+  readonly afterToken: ResourceToken;
+  readonly splices: readonly StructuralChildSplice[];
+}
+
 export interface StructuralBirth {
   readonly nodeId: NodeId;
   readonly cells: Readonly<Record<CellField, StructuralCellValue>>;
@@ -285,6 +299,7 @@ export interface StructuralVisibility {
 
 export interface StructuralPatch {
   readonly cells: readonly StructuralCellPatch[];
+  readonly childLists: readonly StructuralChildListPatch[];
   readonly births: readonly StructuralBirth[];
   readonly visibility: readonly StructuralVisibility[];
   readonly bornTapes: readonly { readonly tapeId: TapeId; readonly sharedTypeId: string }[];
@@ -477,6 +492,7 @@ const EMPTY_PLAN: LowLevelPlan = Object.freeze({
 
 const EMPTY_STRUCTURAL_PATCH: StructuralPatch = Object.freeze({
   cells: Object.freeze([]),
+  childLists: Object.freeze([]),
   births: Object.freeze([]),
   visibility: Object.freeze([]),
   bornTapes: Object.freeze([]),
@@ -645,6 +661,14 @@ function immutableCell<T>(token: string, value: T): CellValue<T> {
 }
 
 function readCell<T>(record: RecordMap, field: CellField): CellValue<T> {
+  if (field === 'children') {
+    const children = record.get('children');
+    if (children instanceof Y.Array) {
+      const token = record.get('childrenToken');
+      assert(typeof token === 'string' && token.length > 0, 'node children token is invalid');
+      return immutableCell(token, children.toArray()) as CellValue<T>;
+    }
+  }
   const value = record.get(field);
   assert(value !== null && typeof value === 'object', `node cell ${field} is missing`);
   const cell = value as InternalCell;
@@ -999,6 +1023,78 @@ function sameValue(left: unknown, right: unknown): boolean {
   return stableJson(left) === stableJson(right);
 }
 
+/** LCS for unique child IDs via an LIS over the destination positions. */
+function diffChildSplices(
+  before: readonly NodeId[],
+  after: readonly NodeId[],
+): readonly StructuralChildSplice[] {
+  const destination = new Map(after.map((id, index) => [id, index]));
+  const candidates: { readonly beforeIndex: number; readonly afterIndex: number }[] = [];
+  before.forEach((id, beforeIndex) => {
+    const afterIndex = destination.get(id);
+    if (afterIndex !== undefined) candidates.push({ beforeIndex, afterIndex });
+  });
+
+  const tails: number[] = [];
+  const tailsAt: number[] = [];
+  const previous = Array.from({ length: candidates.length }, () => -1);
+  for (let index = 0; index < candidates.length; index++) {
+    const value = candidates[index]!.afterIndex;
+    let low = 0;
+    let high = tails.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (tails[middle]! < value) low = middle + 1;
+      else high = middle;
+    }
+    if (low > 0) previous[index] = tailsAt[low - 1]!;
+    tails[low] = value;
+    tailsAt[low] = index;
+  }
+
+  const matches: { readonly beforeIndex: number; readonly afterIndex: number }[] = [];
+  let cursor = tailsAt.at(-1) ?? -1;
+  while (cursor >= 0) {
+    matches.push(candidates[cursor]!);
+    cursor = previous[cursor]!;
+  }
+  matches.reverse();
+
+  const splices: StructuralChildSplice[] = [];
+  let beforeCursor = 0;
+  let afterCursor = 0;
+  let liveIndex = 0;
+  for (const match of matches) {
+    const removedIds = before.slice(beforeCursor, match.beforeIndex);
+    const insertedIds = after.slice(afterCursor, match.afterIndex);
+    if (removedIds.length || insertedIds.length) {
+      splices.push(
+        Object.freeze({
+          index: liveIndex,
+          removedIds: Object.freeze([...removedIds]),
+          insertedIds: Object.freeze([...insertedIds]),
+        }),
+      );
+      liveIndex += insertedIds.length;
+    }
+    liveIndex++;
+    beforeCursor = match.beforeIndex + 1;
+    afterCursor = match.afterIndex + 1;
+  }
+  const removedIds = before.slice(beforeCursor);
+  const insertedIds = after.slice(afterCursor);
+  if (removedIds.length || insertedIds.length) {
+    splices.push(
+      Object.freeze({
+        index: liveIndex,
+        removedIds: Object.freeze([...removedIds]),
+        insertedIds: Object.freeze([...insertedIds]),
+      }),
+    );
+  }
+  return Object.freeze(splices);
+}
+
 function slicePiece(piece: DraftPiece, from: number, to: number): DraftPiece | undefined {
   if (from >= to) return undefined;
   if (piece.kind === 'existing') {
@@ -1105,6 +1201,7 @@ class MutableTreeDraft implements ParserTreeDraft {
   compilePlan(): LowLevelPlan {
     this.assertActive();
     if (this.compiledPlan) return this.compiledPlan;
+    this.dropUnusedCreatedInsertionSpans();
     assert(
       [...this.fragments.keys()].every((id) => this.consumedFragments.has(id)),
       'every cut fragment must be inserted before the action is compiled',
@@ -1141,7 +1238,7 @@ class MutableTreeDraft implements ParserTreeDraft {
         });
         touchedNodes.add(node.id);
         const createdSpan = this.newTapeSpans.get(node.id);
-        if (createdSpan) {
+        if (createdSpan && node.spans.some((span) => span.span.tapeId === createdSpan.tapeId)) {
           newTapes.push({ id: createdSpan.tapeId, span: createdSpan });
           touchedTapes.add(createdSpan.tapeId);
         }
@@ -2925,6 +3022,35 @@ class MutableTreeDraft implements ParserTreeDraft {
     return result;
   }
 
+  private dropUnusedCreatedInsertionSpans(): void {
+    for (const node of this.nodes.values()) {
+      if (!node.created || !INLINE_KINDS.has(node.type)) continue;
+      const created = this.newTapeSpans.get(node.id);
+      if (!created) continue;
+      const hasOtherFinalSpan = node.spans.some((span) => span.span.tapeId !== created.tapeId);
+      if (!hasOtherFinalSpan) continue;
+
+      let hasFinalOwnerOutsideNode = false;
+      let hasActionTextOnTape = false;
+      for (const owner of this.nodes.values()) {
+        for (const span of owner.spans) {
+          if (span.span.tapeId === created.tapeId && owner.id !== node.id) {
+            hasFinalOwnerOutsideNode = true;
+          }
+          for (const piece of span.pieces) {
+            if (piece.kind !== 'inserted' || !piece.text) continue;
+            const buffer = this.textBuffers.get(piece.bufferId);
+            if (buffer?.anchor.tapeId === created.tapeId) hasActionTextOnTape = true;
+          }
+        }
+      }
+      if (hasFinalOwnerOutsideNode || hasActionTextOnTape) continue;
+      node.spans = node.spans.filter(
+        (span) => span.span.tapeId !== created.tapeId || !span.created,
+      );
+    }
+  }
+
   private allocateId(role: string): string {
     this.assertActive();
     const id = `${role}:${this.actionId}:${this.idOrdinal++}`;
@@ -2977,6 +3103,7 @@ function trackNativeMutations(
   const meta = metaMap(state);
   const watermarks = sessionWatermarkMap(state);
   const nodeIds = new WeakMap<Y.Map<unknown>, NodeId>();
+  const childArrayIds = new WeakMap<Y.Array<NodeId>, NodeId>();
   const tapeIds = new WeakMap<Y.Text, TapeId>();
   const changedTapeIds = new Set<TapeId>();
   const changedOtherTypes = new Set<unknown>();
@@ -2987,12 +3114,20 @@ function trackNativeMutations(
   const changedMetaKeys = new Set<string>();
   const changedWatermarkKeys = new Set<string>();
   if (!knownResources) {
-    for (const [id, record] of nodes.entries()) nodeIds.set(record, id);
+    for (const [id, record] of nodes.entries()) {
+      nodeIds.set(record, id);
+      const children = record.get('children');
+      if (children instanceof Y.Array) childArrayIds.set(children, id);
+    }
     for (const [id, tape] of tapes.entries()) tapeIds.set(tape, id);
   } else {
     for (const id of knownResources.nodeIds ?? []) {
       const record = nodes.get(id);
-      if (record) nodeIds.set(record, id);
+      if (record) {
+        nodeIds.set(record, id);
+        const children = record.get('children');
+        if (children instanceof Y.Array) childArrayIds.set(children, id);
+      }
     }
     for (const id of knownResources.tapeIds ?? []) {
       const tape = tapes.get(id);
@@ -3038,16 +3173,25 @@ function trackNativeMutations(
         for (const key of keys) {
           if (
             key === 'kind' ||
-            key === 'children' ||
             key === 'spans' ||
             key === 'marker' ||
             key === 'checked' ||
-            key === 'info'
+            key === 'info' ||
+            key === 'childrenToken'
           ) {
-            fields.add(key);
+            fields.add(key === 'childrenToken' ? 'children' : key);
           }
         }
         changedNodeCells.set(nodeId, fields);
+      }
+      if (type instanceof Y.Array) {
+        const childNodeId = childArrayIds.get(type as Y.Array<NodeId>);
+        if (childNodeId) {
+          const fields = changedNodeCells.get(childNodeId) ?? new Set<CellField>();
+          fields.add('children');
+          changedNodeCells.set(childNodeId, fields);
+          known = true;
+        }
       }
       if (!known) changedOtherTypes.add(type);
     }
@@ -3064,6 +3208,8 @@ function trackNativeMutations(
     changedWatermarkKeys,
     registerNode(id, record) {
       nodeIds.set(record, id);
+      const children = record.get('children');
+      if (children instanceof Y.Array) childArrayIds.set(children, id);
     },
     registerTape(id, tape) {
       tapeIds.set(tape, id);
@@ -3102,6 +3248,7 @@ function captureHistoryTouchedResources(
 ): TouchedResourceSnapshot {
   const nodeIds = new Set([
     ...entry.structuralPatch.cells.map(({ nodeId }) => nodeId),
+    ...entry.structuralPatch.childLists.map(({ nodeId }) => nodeId),
     ...entry.structuralPatch.births.map(({ nodeId }) => nodeId),
   ]);
   const tapeIds = new Set([
@@ -3131,6 +3278,11 @@ function assertHistoryMutationEvidence(
   for (const patch of entry.structuralPatch.cells) {
     const fields = expectedCells.get(patch.nodeId) ?? new Set<CellField>();
     fields.add(patch.field);
+    expectedCells.set(patch.nodeId, fields);
+  }
+  for (const patch of entry.structuralPatch.childLists) {
+    const fields = expectedCells.get(patch.nodeId) ?? new Set<CellField>();
+    fields.add('children');
     expectedCells.set(patch.nodeId, fields);
   }
   assert(
@@ -3481,7 +3633,9 @@ function applyPlan(
       }
       for (const allocation of plan.allocations) {
         const record = new Y.Map<unknown>();
-        for (const field of ['kind', 'children', 'spans', 'marker', 'checked', 'info'] as const) {
+        record.set('children', new Y.Array<NodeId>());
+        record.set('childrenToken', allocation.cells.children.token);
+        for (const field of ['kind', 'spans', 'marker', 'checked', 'info'] as const) {
           record.set(field, allocation.cells[field]);
         }
         mutations.registerNode(allocation.id, record);
@@ -3570,7 +3724,23 @@ function applyPlan(
       for (const write of plan.writes) {
         const record = nodeMap(state).get(write.nodeId);
         assert(record, `missing node ${write.nodeId} for cell write`);
-        record.set(write.field, immutableCell(write.token, write.value));
+        if (write.field === 'children') {
+          const children = record.get('children');
+          assert(
+            children instanceof Y.Array,
+            `node ${write.nodeId} has no permanent children array`,
+          );
+          for (const splice of diffChildSplices(
+            children.toArray(),
+            write.value as readonly NodeId[],
+          )) {
+            if (splice.removedIds.length) children.delete(splice.index, splice.removedIds.length);
+            if (splice.insertedIds.length) children.insert(splice.index, [...splice.insertedIds]);
+          }
+          record.set('childrenToken', write.token);
+        } else {
+          record.set(write.field, immutableCell(write.token, write.value));
+        }
       }
     }, 'grain:structure');
   }
@@ -3642,10 +3812,37 @@ function structuralPatchBetween(before: Y.Doc, after: Y.Doc, plan: LowLevelPlan)
   const beforeNodes = nodeMap(before);
   const afterNodes = nodeMap(after);
   const changedCells: StructuralCellPatch[] = [];
+  const childLists: StructuralChildListPatch[] = [];
   const births: StructuralBirth[] = [];
   const visibility: StructuralVisibility[] = [];
   const touched = new Set(plan.touchedNodes);
   const allocations = new Map(plan.allocations.map((item) => [item.id, item]));
+
+  const recordChange = (
+    nodeId: NodeId,
+    field: CellField,
+    oldCell: StructuralCellValue,
+    newCell: StructuralCellValue,
+  ) => {
+    if (field === 'children') {
+      if (oldCell.token === newCell.token && sameValue(oldCell.value, newCell.value)) return;
+      childLists.push(
+        Object.freeze({
+          nodeId,
+          beforeToken: oldCell.token,
+          afterToken: newCell.token,
+          splices: diffChildSplices(
+            oldCell.value as readonly NodeId[],
+            newCell.value as readonly NodeId[],
+          ),
+        }),
+      );
+      return;
+    }
+    if (oldCell.token !== newCell.token || !sameValue(oldCell.value, newCell.value)) {
+      changedCells.push(Object.freeze({ nodeId, field, before: oldCell, after: newCell }));
+    }
+  };
 
   for (const nodeId of touched) {
     const oldRecord = beforeNodes.get(nodeId);
@@ -3665,17 +3862,13 @@ function structuralPatchBetween(before: Y.Doc, after: Y.Doc, plan: LowLevelPlan)
       for (const field of CELL_FIELDS) {
         const oldCell = allocation.cells[field];
         const newCell = snapshotCell(newRecord, field);
-        if (oldCell.token !== newCell.token || !sameValue(oldCell.value, newCell.value)) {
-          changedCells.push(Object.freeze({ nodeId, field, before: oldCell, after: newCell }));
-        }
+        recordChange(nodeId, field, oldCell, newCell);
       }
     } else {
       for (const field of CELL_FIELDS) {
         const oldCell = snapshotCell(oldRecord, field);
         const newCell = snapshotCell(newRecord, field);
-        if (oldCell.token !== newCell.token || !sameValue(oldCell.value, newCell.value)) {
-          changedCells.push(Object.freeze({ nodeId, field, before: oldCell, after: newCell }));
-        }
+        recordChange(nodeId, field, oldCell, newCell);
       }
     }
     visibility.push(
@@ -3702,9 +3895,10 @@ function structuralPatchBetween(before: Y.Doc, after: Y.Doc, plan: LowLevelPlan)
     assert(marker, `structural plan omitted born marker ${boundaryId}`);
     return Object.freeze({ ...marker, boundaryId });
   });
-  const hasStructure = changedCells.length > 0 || births.length > 0;
+  const hasStructure = changedCells.length > 0 || childLists.length > 0 || births.length > 0;
   return Object.freeze({
     cells: Object.freeze(changedCells),
+    childLists: Object.freeze(childLists),
     births: Object.freeze(births),
     visibility: Object.freeze(hasStructure ? visibility : []),
     bornTapes: Object.freeze(bornTapes),
@@ -3754,6 +3948,29 @@ function structuralPatchError(
     fields.add(cellPatch.field);
     patchedBirthFields.set(cellPatch.nodeId, fields);
   }
+  for (const childList of patch.childLists) {
+    const fields = patchedBirthFields.get(childList.nodeId) ?? new Set<CellField>();
+    fields.add('children');
+    patchedBirthFields.set(childList.nodeId, fields);
+    const record = nodes.get(childList.nodeId);
+    if (!record) return 'resource-conflict';
+    const expectedToken = direction === 'undo' ? childList.afterToken : childList.beforeToken;
+    if (readCell<readonly NodeId[]>(record, 'children').token !== expectedToken) {
+      return 'resource-conflict';
+    }
+    const candidate = [...readCell<readonly NodeId[]>(record, 'children').value];
+    const ordered = direction === 'undo' ? [...childList.splices].reverse() : childList.splices;
+    for (const splice of ordered) {
+      const expectedIds = direction === 'undo' ? splice.insertedIds : splice.removedIds;
+      const replacementIds = direction === 'undo' ? splice.removedIds : splice.insertedIds;
+      if (
+        !sameValue(candidate.slice(splice.index, splice.index + expectedIds.length), expectedIds)
+      ) {
+        return 'resource-conflict';
+      }
+      candidate.splice(splice.index, expectedIds.length, ...replacementIds);
+    }
+  }
   for (const birth of patch.births) {
     const record = nodes.get(birth.nodeId);
     if (!record) return 'resource-conflict';
@@ -3792,6 +4009,24 @@ function applyStructuralPatch(
   const cells = [...patch.cells].reverse();
   state.transact(
     () => {
+      const childLists = direction === 'undo' ? [...patch.childLists].reverse() : patch.childLists;
+      for (const childList of childLists) {
+        const record = nodeMap(state).get(childList.nodeId);
+        assert(record, `missing structural node ${childList.nodeId}`);
+        const children = record.get('children');
+        assert(children instanceof Y.Array, `missing permanent children array ${childList.nodeId}`);
+        const splices = direction === 'undo' ? [...childList.splices].reverse() : childList.splices;
+        for (const splice of splices) {
+          const removedIds = direction === 'undo' ? splice.insertedIds : splice.removedIds;
+          const insertedIds = direction === 'undo' ? splice.removedIds : splice.insertedIds;
+          if (removedIds.length) children.delete(splice.index, removedIds.length);
+          if (insertedIds.length) children.insert(splice.index, [...insertedIds]);
+        }
+        record.set(
+          'childrenToken',
+          direction === 'undo' ? childList.beforeToken : childList.afterToken,
+        );
+      }
       for (const item of cells) {
         const record = nodeMap(state).get(item.nodeId);
         assert(record, `missing structural node ${item.nodeId}`);
@@ -4078,10 +4313,18 @@ function projectionNodeIds(
     }
   };
   for (const cell of patch.cells) {
-    if (cell.field !== 'children') continue;
     affected.add(cell.nodeId);
-    addChildren(cell.before.value);
-    addChildren(cell.after.value);
+    if (cell.field === 'children') {
+      addChildren(cell.before.value);
+      addChildren(cell.after.value);
+    }
+  }
+  for (const childList of patch.childLists) {
+    affected.add(childList.nodeId);
+    for (const splice of childList.splices) {
+      addChildren(splice.removedIds);
+      addChildren(splice.insertedIds);
+    }
   }
   for (const birth of patch.births) {
     affected.add(birth.nodeId);
@@ -5065,7 +5308,9 @@ export class CanonicalWriter {
       ]);
       const textTapes = new Set([...inputChanged, ...plan.textTapes]);
       const structuralEffect =
-        structuralPatch.cells.length > 0 || structuralPatch.births.length > 0;
+        structuralPatch.cells.length > 0 ||
+        structuralPatch.childLists.length > 0 ||
+        structuralPatch.births.length > 0;
       const noEffect =
         !finalChangedTapes.size &&
         !structuralEffect &&
@@ -5591,7 +5836,9 @@ export class CanonicalWriter {
       !!manager &&
       (direction === 'undo' ? manager.undoStack.length > 0 : manager.redoStack.length > 0);
     const structuralEffect =
-      entry.structuralPatch.cells.length > 0 || entry.structuralPatch.births.length > 0;
+      entry.structuralPatch.cells.length > 0 ||
+      entry.structuralPatch.childLists.length > 0 ||
+      entry.structuralPatch.births.length > 0;
     if (!canReplayText && !structuralEffect) {
       source.splice(sourceIndex, 1);
       destination.push(entry);

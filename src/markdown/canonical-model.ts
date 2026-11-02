@@ -31,7 +31,8 @@ export interface BoundaryEmbed {
 
 export interface CanonicalNodeFields {
   readonly kind: Cell<NodeKind>;
-  readonly children: Cell<readonly NodeId[]>;
+  readonly children: Y.Array<NodeId>;
+  readonly childrenToken: ResourceToken;
   readonly spans: Cell<readonly Span[]>;
   readonly marker: Cell<string | null>;
   readonly checked: Cell<boolean | null>;
@@ -64,18 +65,41 @@ export interface AcceptedUpdate {
   readonly update: Uint8Array;
 }
 
+export interface CanonicalMaintenanceReset {
+  readonly oldSchemaVersion: number;
+  readonly schemaVersion: number;
+  readonly oldAuthorityEpoch: string;
+  readonly authorityEpoch: string;
+  readonly documentId: string;
+  readonly rootId: NodeId;
+  readonly preservedNodeIds: readonly NodeId[];
+  readonly invalidated: readonly [
+    'nativeIdentities',
+    'history',
+    'pendingActions',
+    'sessionWatermarks',
+    'receipts',
+    'selectionAnchors',
+  ];
+}
+
+export interface CanonicalMaintenanceResult {
+  readonly checkpoint: CanonicalCheckpoint;
+  readonly reset: CanonicalMaintenanceReset;
+}
+
 export interface ValidationResult {
   readonly valid: boolean;
   readonly errors: readonly string[];
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const NORMALIZATION_VERSION = 1;
 const META = 'meta';
 const NODES = 'nodes';
 const TAPES = 'tapes';
 const TAPE_REVISIONS = 'tapeRevisions';
-const NODE_FIELDS = ['kind', 'children', 'spans', 'marker', 'checked', 'info'] as const;
+const NODE_FIELDS = ['kind', 'spans', 'marker', 'checked', 'info'] as const;
 const NODE_KINDS = new Set<NodeKind>([
   'document',
   'paragraph',
@@ -216,6 +240,21 @@ function cellValue<T>(record: RecordMap, field: (typeof NODE_FIELDS)[number]): C
   return item;
 }
 
+function childrenToken(record: RecordMap): ResourceToken {
+  const children = record.get('children');
+  if (children instanceof Y.Array) {
+    const token = record.get('childrenToken');
+    assert(typeof token === 'string' && token.length > 0, 'children token is invalid');
+    return token;
+  }
+  const legacy = children as Cell<unknown> | undefined;
+  assert(
+    legacy !== null && typeof legacy === 'object' && typeof legacy.token === 'string',
+    'children cell is missing',
+  );
+  return legacy.token;
+}
+
 function ymap<T>(document: Y.Doc, name: string): Y.Map<T> {
   return document.getMap(name) as Y.Map<T>;
 }
@@ -224,7 +263,7 @@ function yjsItemId(item: YjsItemLike): string {
   return `${item.id.client}:${item.id.clock}`;
 }
 
-function sharedTypeId(type: Y.Map<unknown> | Y.Text): string {
+function sharedTypeId(type: { readonly _item: YjsItemLike | null }): string {
   const item = (type as unknown as YjsSharedTypeInternals)._item;
   assert(item, 'canonical shared type is not integrated');
   return yjsItemId(item);
@@ -284,6 +323,15 @@ export function assertRetainedResources(previous: Y.Doc, candidate: Y.Doc): void
       sharedTypeId(next) === sharedTypeId(record),
       `accepted update replaced the native record for node ${id}`,
     );
+    const previousChildren = record.get('children');
+    const candidateChildren = next.get('children');
+    if (previousChildren instanceof Y.Array) {
+      assert(candidateChildren instanceof Y.Array, `accepted update replaced children array ${id}`);
+      assert(
+        sharedTypeId(candidateChildren) === sharedTypeId(previousChildren),
+        `accepted update replaced the native children array for node ${id}`,
+      );
+    }
   }
 
   const previousTapes = ymap<Y.Text>(previous, TAPES);
@@ -480,12 +528,25 @@ function isWellFormed(value: string): boolean {
   return true;
 }
 
-function nodeCell<T = unknown>(record: RecordMap, field: (typeof NODE_FIELDS)[number]): T {
+function nodeCell<T = unknown>(
+  record: RecordMap,
+  field: (typeof NODE_FIELDS)[number] | 'children',
+): T {
+  if (field === 'children') return readChildren(record) as T;
   return cellValue<T>(record, field).value;
 }
 
 function readChildren(record: RecordMap): readonly NodeId[] {
-  const value = nodeCell(record, 'children');
+  const shared = record.get('children');
+  if (shared instanceof Y.Array) {
+    const value = shared.toArray();
+    assert(
+      value.every((id) => typeof id === 'string'),
+      'children array must contain node IDs',
+    );
+    return value;
+  }
+  const value = (shared as Cell<unknown> | undefined)?.value;
   assert(
     Array.isArray(value) && value.every((id) => typeof id === 'string'),
     'children cell must contain node IDs',
@@ -511,8 +572,8 @@ function changedProjectionResources(before: Y.Doc, after: Y.Doc) {
     if (!oldRecord || !newRecord) {
       structuralEffect = true;
       affectedNodeIds.add(id);
-      addChildIds(affectedNodeIds, oldRecord && nodeCell(oldRecord, 'children'));
-      addChildIds(affectedNodeIds, newRecord && nodeCell(newRecord, 'children'));
+      addChildIds(affectedNodeIds, oldRecord && readChildren(oldRecord));
+      addChildIds(affectedNodeIds, newRecord && readChildren(newRecord));
       continue;
     }
     for (const field of NODE_FIELDS) {
@@ -521,10 +582,17 @@ function changedProjectionResources(before: Y.Doc, after: Y.Doc) {
       if (oldCell.token === newCell.token) continue;
       structuralEffect = true;
       affectedNodeIds.add(id);
-      if (field === 'children') {
-        addChildIds(affectedNodeIds, oldCell.value);
-        addChildIds(affectedNodeIds, newCell.value);
-      }
+    }
+    const oldChildren = readChildren(oldRecord);
+    const newChildren = readChildren(newRecord);
+    if (
+      childrenToken(oldRecord) !== childrenToken(newRecord) ||
+      JSON.stringify(oldChildren) !== JSON.stringify(newChildren)
+    ) {
+      structuralEffect = true;
+      affectedNodeIds.add(id);
+      addChildIds(affectedNodeIds, oldChildren);
+      addChildIds(affectedNodeIds, newChildren);
     }
   }
 
@@ -872,6 +940,175 @@ export class CanonicalDocument {
     }
   }
 
+  /** Rebuilds a validated schema-2 checkpoint under a new epoch. */
+  static rebuild(
+    checkpoint: CanonicalCheckpoint,
+    authorityEpoch: string,
+  ): CanonicalMaintenanceResult {
+    return CanonicalDocument.rebuildAcceptedCheckpoint(checkpoint, SCHEMA_VERSION, authorityEpoch);
+  }
+
+  /** Explicitly migrates a complete schema-1 checkpoint to schema 2. */
+  static migrateSchema1(
+    checkpoint: CanonicalCheckpoint,
+    authorityEpoch: string,
+  ): CanonicalMaintenanceResult {
+    return CanonicalDocument.rebuildAcceptedCheckpoint(checkpoint, 1, authorityEpoch);
+  }
+
+  private static rebuildAcceptedCheckpoint(
+    checkpoint: CanonicalCheckpoint,
+    expectedSchemaVersion: number,
+    authorityEpoch: string,
+  ): CanonicalMaintenanceResult {
+    assert(
+      typeof authorityEpoch === 'string' && authorityEpoch.length > 0,
+      'authority epoch cannot be empty',
+    );
+    assert(
+      authorityEpoch !== checkpoint.authorityEpoch,
+      'maintenance authority epoch must differ from the checkpoint epoch',
+    );
+    const source = CanonicalDocument.openForMaintenance(checkpoint, expectedSchemaVersion);
+    try {
+      const rootId = metaValue<string>(ymap<unknown>(source.document, META), 'rootId');
+      const preservedNodeIds: NodeId[] = [];
+      const copyNode = (id: NodeId): MutableSemanticNode => {
+        const node = source.node(id);
+        const semantic: MutableSemanticNode = { type: node.type };
+        preservedNodeIds.push(id);
+        if (INLINE_KINDS.has(node.type)) semantic.content = node.content ?? '';
+        if (node.type === 'section' || node.type === 'list-item' || node.type === 'block-quote') {
+          semantic.marker = node.marker ?? '';
+        }
+        if (node.type === 'list-item' && node.checked !== undefined)
+          semantic.checked = node.checked;
+        if (node.type === 'code-block') semantic.info = node.info ?? null;
+        if (CONTAINER_KINDS.has(node.type) || node.type === 'list') {
+          semantic.children = node.children.map((child) => copyNode(child.sharedId));
+        }
+        return semantic;
+      };
+      const tree = copyNode(rootId);
+      const reserved = new Set<string>([checkpoint.documentId, ...preservedNodeIds]);
+      let nodeOrdinal = 0;
+      let freshOrdinal = 0;
+      const rebuilt = CanonicalDocument.importTree(tree, {
+        documentId: checkpoint.documentId,
+        authorityEpoch,
+        normalizationVersion: checkpoint.normalizationVersion,
+        actionId: `maintenance:${authorityEpoch}`,
+        makeId(role) {
+          if (role === 'node') {
+            const id = preservedNodeIds[nodeOrdinal++];
+            assert(id, 'maintenance rebuild allocated more nodes than it preserved');
+            return id;
+          }
+          let id: string;
+          do {
+            id = `maintenance:${authorityEpoch}:${role}:${freshOrdinal++}`;
+          } while (reserved.has(id));
+          reserved.add(id);
+          return id;
+        },
+      });
+      try {
+        assert(
+          nodeOrdinal === preservedNodeIds.length,
+          'maintenance rebuild omitted a preserved node',
+        );
+        const rebuiltCheckpoint = rebuilt.checkpoint();
+        assert(
+          rebuiltCheckpoint.schemaVersion === SCHEMA_VERSION,
+          'maintenance rebuild emitted the wrong schema',
+        );
+        return Object.freeze({
+          checkpoint: rebuiltCheckpoint,
+          reset: Object.freeze({
+            oldSchemaVersion: checkpoint.schemaVersion,
+            schemaVersion: rebuiltCheckpoint.schemaVersion,
+            oldAuthorityEpoch: checkpoint.authorityEpoch,
+            authorityEpoch,
+            documentId: checkpoint.documentId,
+            rootId,
+            preservedNodeIds: Object.freeze([...preservedNodeIds]),
+            invalidated: Object.freeze([
+              'nativeIdentities',
+              'history',
+              'pendingActions',
+              'sessionWatermarks',
+              'receipts',
+              'selectionAnchors',
+            ] as const),
+          }),
+        });
+      } finally {
+        rebuilt.close();
+      }
+    } finally {
+      source.close();
+    }
+  }
+
+  private static openForMaintenance(
+    checkpoint: CanonicalCheckpoint,
+    schemaVersion: number,
+  ): CanonicalDocument {
+    assert(
+      checkpoint.schemaVersion === schemaVersion,
+      `unsupported maintenance schema ${checkpoint.schemaVersion}`,
+    );
+    assert(
+      checkpoint.normalizationVersion === NORMALIZATION_VERSION,
+      'unsupported normalization version',
+    );
+    const document = new Y.Doc({ gc: false });
+    try {
+      Y.applyUpdate(document, Uint8Array.from(checkpoint.update));
+      assert(
+        !document.store.pendingStructs && !document.store.pendingDs,
+        'checkpoint has unresolved native dependencies',
+      );
+      const meta = ymap<unknown>(document, META);
+      assert(
+        metaValue<number>(meta, 'schemaVersion') === schemaVersion,
+        'checkpoint schema does not match its state',
+      );
+      assert(
+        metaValue<number>(meta, 'normalizationVersion') === checkpoint.normalizationVersion,
+        'checkpoint normalization does not match its state',
+      );
+      assert(
+        metaValue<string>(meta, 'documentId') === checkpoint.documentId,
+        'checkpoint document ID does not match its state',
+      );
+      assert(
+        metaValue<string>(meta, 'authorityEpoch') === checkpoint.authorityEpoch,
+        'checkpoint authority epoch does not match its state',
+      );
+      assert(
+        metaValue<number>(meta, 'acceptedRevision') === checkpoint.acceptedRevision,
+        'checkpoint revision does not match its state',
+      );
+      for (const record of ymap<RecordMap>(document, NODES).values()) {
+        const children = record.get('children');
+        assert(
+          schemaVersion === SCHEMA_VERSION
+            ? children instanceof Y.Array
+            : !(children instanceof Y.Array),
+          `checkpoint has children storage incompatible with schema ${schemaVersion}`,
+        );
+      }
+      const result = new CanonicalDocument(document, true);
+      const validation = result.validate();
+      assert(validation.valid, `checkpoint failed validation: ${validation.errors.join('; ')}`);
+      return result;
+    } catch (error) {
+      document.destroy();
+      throw error;
+    }
+  }
+
   /**
    * Restores a durable checkpoint for a new authority epoch. Native history
    * and tape revision guards are epoch-local, so both start at revision zero.
@@ -882,27 +1119,8 @@ export class CanonicalDocument {
       authorityEpoch !== checkpoint.authorityEpoch,
       'restored authority epoch must differ from the checkpoint epoch',
     );
-    const restored = CanonicalDocument.open(checkpoint);
-    try {
-      const meta = ymap<unknown>(restored.document, META);
-      const revisions = ymap<number>(restored.document, TAPE_REVISIONS);
-      const sessionWatermarks = ymap<number>(restored.document, 'sessionWatermarks');
-      restored.document.transact(() => {
-        meta.set('authorityEpoch', authorityEpoch);
-        meta.set('acceptedRevision', 0);
-        for (const tapeId of revisions.keys()) revisions.set(tapeId, 0);
-        for (const sessionId of sessionWatermarks.keys()) sessionWatermarks.delete(sessionId);
-      }, 'grain:epoch-restore');
-      const validation = restored.validate();
-      assert(
-        validation.valid,
-        `restored checkpoint failed validation: ${validation.errors.join('; ')}`,
-      );
-      return restored;
-    } catch (error) {
-      restored.close();
-      throw error;
-    }
+    const replacement = CanonicalDocument.rebuild(checkpoint, authorityEpoch);
+    return CanonicalDocument.open(replacement.checkpoint);
   }
 
   private static importTree(
@@ -952,7 +1170,8 @@ export class CanonicalDocument {
       record.set('kind', cell(getToken(), semantic.type));
       // All new records start detached. The later activation transaction
       // installs the complete imported hierarchy after every record exists.
-      record.set('children', cell(getToken(), []));
+      record.set('children', new Y.Array<NodeId>());
+      record.set('childrenToken', getToken());
       record.set('spans', cell(getToken(), result.spans as unknown as JsonValue));
       record.set('marker', cell(getToken(), semantic.marker ?? null));
       record.set('checked', cell(getToken(), semantic.checked ?? null));
@@ -990,7 +1209,10 @@ export class CanonicalDocument {
 
     ydoc.transact(() => {
       for (const { record, children } of allocated.values()) {
-        record.set('children', cell(allocateId('cell'), children));
+        const array = record.get('children');
+        assert(array instanceof Y.Array, 'allocated children array is missing');
+        if (children.length) array.insert(0, children);
+        record.set('childrenToken', allocateId('cell'));
       }
     }, 'grain:activate-import');
 
@@ -1373,17 +1595,23 @@ export function validateRetainedForest(document: CanonicalDocument): ValidationR
   const errors: string[] = [];
   let nodes: NodeMap;
   let rootId: string;
+  let schemaVersion: number;
   try {
     document.assertReadable();
     const backing = closedDocuments.has(document) ? undefined : backingDocuments.get(document);
     assert(backing, 'canonical document is closed');
     nodes = ymap<RecordMap>(backing, NODES);
-    rootId = metaValue(ymap<unknown>(backing, META), 'rootId');
+    const meta = ymap<unknown>(backing, META);
+    rootId = metaValue<string>(meta, 'rootId');
+    schemaVersion = metaValue<number>(meta, 'schemaVersion');
   } catch (error) {
     return Object.freeze({ valid: false, errors: Object.freeze([String(error)]) });
   }
 
   if (typeof rootId !== 'string' || !nodes.has(rootId)) errors.push('fixed root node is missing');
+  if (schemaVersion !== 1 && schemaVersion !== SCHEMA_VERSION) {
+    errors.push(`unsupported canonical schema version ${schemaVersion}`);
+  }
   const parents = new Map<string, string[]>();
   const kinds = new Map<string, NodeKind>();
   const edges = new Map<string, readonly string[]>();
@@ -1404,6 +1632,34 @@ export function validateRetainedForest(document: CanonicalDocument): ValidationR
       } catch (error) {
         errors.push(`node ${id} has invalid ${field} cell: ${String(error)}`);
       }
+    }
+    try {
+      const childValue = record.get('children');
+      if (childValue instanceof Y.Array) {
+        assert(schemaVersion === SCHEMA_VERSION, 'children array is not valid in schema 1');
+        const token = childrenToken(record);
+        const previous = tokens.get(token);
+        if (previous)
+          errors.push(`cell token ${token} is shared by ${previous} and ${id}.children`);
+        else tokens.set(token, `${id}.children`);
+        if (childValue.toArray().some((item) => typeof item !== 'string')) {
+          errors.push(`node ${id} children array must contain node IDs`);
+        }
+      } else {
+        // Schema 1 is readable only by the explicit migration path.
+        assert(schemaVersion === 1, 'schema 2 requires permanent children arrays');
+        const legacy = childValue as Cell<unknown> | undefined;
+        assert(
+          legacy !== null && typeof legacy === 'object' && typeof legacy.token === 'string',
+          'legacy children cell is invalid',
+        );
+        const previous = tokens.get(legacy.token);
+        if (previous)
+          errors.push(`cell token ${legacy.token} is shared by ${previous} and ${id}.children`);
+        else tokens.set(legacy.token, `${id}.children`);
+      }
+    } catch (error) {
+      errors.push(`node ${id} has invalid children storage: ${String(error)}`);
     }
     try {
       const kind = nodeKind(record);

@@ -31,6 +31,16 @@ function cellValue<T>(record: Y.Map<unknown>, field: string): T {
 }
 
 function setCell(record: Y.Map<unknown>, field: string, token: string, value: unknown) {
+  if (field === 'children') {
+    const children = record.get('children');
+    if (!(children instanceof Y.Array) || !Array.isArray(value)) {
+      throw new Error('schema-2 children must be a Y.Array and an ID array');
+    }
+    if (children.length) children.delete(0, children.length);
+    if (value.length) children.insert(0, value as string[]);
+    record.set('childrenToken', token);
+    return;
+  }
   record.set(field, { token, value });
 }
 
@@ -279,8 +289,14 @@ describe('CanonicalDocument', () => {
       const nodes = authority.getMap<Y.Map<unknown>>('nodes');
       const previous = nodes.get(paragraph.sharedId)!;
       const replacement = new Y.Map<unknown>();
-      for (const [key, value] of previous.entries()) replacement.set(key, value);
+      const priorChildren = previous.get('children') as Y.Array<string>;
+      for (const [key, value] of previous.entries()) {
+        if (key !== 'children') replacement.set(key, value);
+      }
+      replacement.set('children', new Y.Array<string>());
       nodes.set(paragraph.sharedId, replacement);
+      const children = replacement.get('children') as Y.Array<string>;
+      if (priorChildren.length) children.insert(0, priorChildren.toArray());
     });
 
     expect(() => document.applyAccepted({ revision: 1, update: update.update })).toThrow(
