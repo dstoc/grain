@@ -15,6 +15,7 @@
     "test:watch": "vp test --project node",
     "test:browser": "vp test run --project browser",
     "test:all": "vp test run",
+    "bench:canonical-history": "CANONICAL_HISTORY_BENCHMARK=1 vp test run --project node src/markdown/canonical-actions.benchmark.test.ts --disableConsoleIntercept",
     "test:extensive-smoke": "MARKDOWN_EXTENSIVE_SMOKE_TESTS=1 vp test run --project node src/markdown/block-parser.permutations.test.ts",
     "test:extensive": "MARKDOWN_EXTENSIVE_TESTS=1 vp test run --project node src/markdown/block-parser.permutations.test.ts"
   },

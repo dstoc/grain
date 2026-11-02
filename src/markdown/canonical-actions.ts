@@ -2171,16 +2171,30 @@ function structuralPatchBetween(before: Y.Doc, after: Y.Doc, plan: LowLevelPlan)
   const births: StructuralBirth[] = [];
   const visibility: StructuralVisibility[] = [];
   const touched = new Set(plan.touchedNodes);
+  const allocations = new Map(plan.allocations.map((item) => [item.id, item]));
 
   for (const nodeId of touched) {
     const oldRecord = beforeNodes.get(nodeId);
     const newRecord = afterNodes.get(nodeId);
     assert(newRecord, `structural plan omitted touched node ${nodeId}`);
     if (!oldRecord) {
+      const allocation = allocations.get(nodeId);
+      assert(allocation, `structural plan omitted allocation for ${nodeId}`);
       const cells = Object.fromEntries(
-        CELL_FIELDS.map((field) => [field, snapshotCell(newRecord, field)]),
+        CELL_FIELDS.map((field) => [field, allocation.cells[field]]),
       ) as Record<CellField, StructuralCellValue>;
       births.push(Object.freeze({ nodeId, cells: Object.freeze(cells) }));
+      // Allocations begin with an empty child list. Edges added to a born
+      // wrapper still need an inverse when they point at existing nodes;
+      // otherwise undo leaves the same child listed by both detached and
+      // active parents in the retained forest.
+      for (const field of CELL_FIELDS) {
+        const oldCell = allocation.cells[field];
+        const newCell = snapshotCell(newRecord, field);
+        if (oldCell.token !== newCell.token || !sameValue(oldCell.value, newCell.value)) {
+          changedCells.push(Object.freeze({ nodeId, field, before: oldCell, after: newCell }));
+        }
+      }
     } else {
       for (const field of CELL_FIELDS) {
         const oldCell = snapshotCell(oldRecord, field);
@@ -2239,10 +2253,18 @@ function structuralPatchError(
       return 'resource-conflict';
     }
   }
+  const patchedBirthFields = new Map<NodeId, Set<CellField>>();
+  for (const cellPatch of patch.cells) {
+    const fields = patchedBirthFields.get(cellPatch.nodeId) ?? new Set<CellField>();
+    fields.add(cellPatch.field);
+    patchedBirthFields.set(cellPatch.nodeId, fields);
+  }
   for (const birth of patch.births) {
     const record = nodes.get(birth.nodeId);
     if (!record) return 'resource-conflict';
+    const patchedFields = patchedBirthFields.get(birth.nodeId);
     for (const field of CELL_FIELDS) {
+      if (patchedFields?.has(field)) continue;
       const actual = snapshotCell(record, field);
       const expected = birth.cells[field];
       if (actual.token !== expected.token || !sameValue(actual.value, expected.value)) {
@@ -2424,7 +2446,12 @@ function historyScope(state: Y.Doc, entry: HistoryEntry, scopeRoot: NodeId): His
     if (scopeNodes.has(id)) inside = true;
     else outside = true;
   };
-  for (const id of entry.touchedNodeIds) add(id);
+  // Node IDs describe structural participants, but a text-only edit's original
+  // node may since have been detached by a join. Scope its text through the
+  // current active owners of the tape instead.
+  if (entry.structuralEffect) {
+    for (const id of entry.touchedNodeIds) add(id);
+  }
 
   const touchedTapes = new Set(entry.touchedTapeIds);
   if (touchedTapes.size) {

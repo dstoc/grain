@@ -132,11 +132,12 @@ export function indentDraftNode(draft: TreeDraft, root: NodeId, nodeId: NodeId):
     const previous = siblings(draft, root, listItem).previous;
     if (previous && draft.node(previous).type === 'list-item') {
       const last = draft.node(previous).children.at(-1);
-      if (last && draft.node(last).type === 'list') draft.place(listItem, last, null);
-      else {
-        const previousParent = parentOf(draft, root, previous);
-        if (previousParent) placeBefore(draft, root, listItem, previousParent, previous);
+      let nestedList = last && draft.node(last).type === 'list' ? last : undefined;
+      if (!nestedList) {
+        nestedList = draft.create({ type: 'list' });
+        draft.place(nestedList, previous, null);
       }
+      draft.place(listItem, nestedList, null);
     } else if (previous && draft.node(previous).type === 'list') {
       draft.place(listItem, previous, null);
     }
@@ -408,7 +409,28 @@ export function insertParagraph(
     parent !== root &&
     draft.node(parent).children.length === 1
   ) {
+    const list = parentOf(draft, root, parent);
+    const listParent = list ? parentOf(draft, root, list) : undefined;
+    const firstMarker =
+      list && draft.node(list).children[0] === parent ? markerOf(draft, parent) : undefined;
+    const next = siblings(draft, root, parent).next;
+    const promoteToParent = !!listParent && draft.node(listParent).type !== 'list-item';
     unindentDraftNode(draft, root, nodeId);
+    const orderedMarker = firstMarker && /^(\d+)([.)])\s*$/.exec(firstMarker);
+    if (promoteToParent && next && orderedMarker) {
+      let number = BigInt(orderedMarker[1]!);
+      const delimiter = orderedMarker[2]!;
+      const markerPattern = new RegExp(`^\\d+\\${delimiter}\\s*$`);
+      let item: NodeId | undefined = next;
+      while (
+        item &&
+        draft.node(item).type === 'list-item' &&
+        markerPattern.test(markerOf(draft, item))
+      ) {
+        draft.setMarker(item, `${number++}${delimiter} `);
+        item = nextAfter(draft, root, item);
+      }
+    }
     return focusResult(startBookmark, focus(draft, nodeId, 0));
   }
 
@@ -458,11 +480,7 @@ export function insertLineBreak(
 function previousInline(draft: TreeDraft, root: NodeId, nodeId: NodeId): NodeId | undefined {
   const editable = walk(draft, root).filter((id) => INLINE_KINDS.has(draft.node(id).type));
   const index = editable.indexOf(nodeId);
-  for (let previous = index - 1; previous >= 0; previous--) {
-    const id = editable[previous]!;
-    if (draft.node(id).type !== 'code-block') return id;
-  }
-  return undefined;
+  return index > 0 ? editable[index - 1] : undefined;
 }
 
 function previousInlineWithin(
@@ -472,11 +490,7 @@ function previousInlineWithin(
 ): NodeId | undefined {
   const editable = walk(draft, containerId).filter((id) => INLINE_KINDS.has(draft.node(id).type));
   const index = editable.indexOf(nodeId);
-  for (let previous = index - 1; previous >= 0; previous--) {
-    const id = editable[previous]!;
-    if (draft.node(id).type !== 'code-block') return id;
-  }
-  return undefined;
+  return index > 0 ? editable[index - 1] : undefined;
 }
 
 function mergeInline(draft: TreeDraft, root: NodeId, sourceId: NodeId, targetId: NodeId): void {
