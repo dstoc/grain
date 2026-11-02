@@ -54,17 +54,23 @@ Ownership snapshots group tapes by `spanCount` and `ownerCount`, with `tapeCount
 
 ## Profile status
 
-| Profile                                                | Report                         | Status                        |
-| ------------------------------------------------------ | ------------------------------ | ----------------------------- |
-| Core acceptance, projection, serialization, checkpoint | [core.json](./core.json)       | Complete, two fresh processes |
-| Chromium editor                                        | [editor.json](./editor.json)   | Complete, two fresh processes |
-| Full demo harness                                      | [harness.json](./harness.json) | Complete, two fresh processes |
-| Retained history and 10,000-action trace               | —                              | Incomplete; see below         |
+| Profile                                                | Report                         | Status                                                           |
+| ------------------------------------------------------ | ------------------------------ | ---------------------------------------------------------------- |
+| Core acceptance, projection, serialization, checkpoint | [core.json](./core.json)       | Complete, two fresh processes                                    |
+| Chromium editor                                        | [editor.json](./editor.json)   | Complete, two fresh processes                                    |
+| Full demo harness                                      | [harness.json](./harness.json) | Complete, two fresh processes                                    |
+| Retained history and 10,000-action trace               | —                              | Incomplete: three depths complete; trace stopped at 1,000/10,000 |
 
-The earlier all-or-nothing retention process completed the 0-, 64-, and 500-group measurements, then ran for over an hour in the 10,000-action trace without persisting them. The runner now writes each completed depth and every 100 actions, including exact per-action timing chunks and cumulative byte totals, to a JSONL progress file beside the final report. Partial trace data is not a completed measurement. The exact full-profile command is:
+The instrumented retention process completed the 0-, 64-, and 500-group measurements with 25 warm-up and 200 measured operations each. It then recorded ten 100-action chunks in [retention-run-1.json.progress.jsonl](./retention-run-1.json.progress.jsonl). Each chunk includes exact per-action timings, accepted-update and receipt bytes, and a heap/RSS sample.
+
+The trace reached 1,000 of 10,000 actions in 223.390 seconds. Its last 100 actions took 43.995 seconds. A quadratic extrapolation from the first 1,000 actions projects 6.21 hours for one trace and 18.62 hours for the manifest's three fresh processes. This is a planning estimate, not a completed measurement. The process was interrupted at action 1,000 because this runner has a 120-minute limit. The progress file records the stop and marks the trace incomplete. No final retention report exists. Do not count the partial trace or resume from its checkpoint.
+
+The available Tines CLI has no dedicated-job submission command or runtime continuation. The current runner allows 120 minutes. The other online runner allows 30 minutes, and the third runner is paused. The remaining work needs a pinned worker that can run the three-process profile for at least 24 hours and keep its workspace and progress file. The first trace reached 1.09 GB RSS at action 1,000, so the worker also needs memory headroom above that observation.
+
+Run the complete profile from the pushed branch on that worker:
 
 ```sh
-npm run bench:yjs-m0 -- --profile retention --runs 1 --output benchmarks/yjs-m0/results/retention-run-1.json
+npm run bench:yjs-m0 -- --profile retention --runs 3 --output benchmarks/yjs-m0/results/retention.json
 ```
 
-Inspect and preserve `benchmarks/yjs-m0/results/retention-run-1.json.progress.jsonl` as it grows. The records contain the baseline commit, seed, environment, command, fixture selections, completed depth reports, and trace checkpoints. Do not treat an incomplete trace as a result or restart it from a checkpoint; the measured 10,000-action trace must remain one uninterrupted writer/history sequence.
+The runner writes each process's depth results and 100-action trace chunks to `benchmarks/yjs-m0/results/retention.json.progress.jsonl`. Keep the partial `retention-run-1.json.progress.jsonl` as an incomplete run record. Do not change the three-process count, 25 warm-up and 200 measured operations for each depth, or the uninterrupted 10,000-action trace.
