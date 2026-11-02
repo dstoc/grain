@@ -65,7 +65,7 @@ describe('CanonicalDocument', () => {
     ];
     expect(new Set(stableIds).size).toBe(stableIds.length);
     for (const tape of expected.tapes) {
-      expect(original.tapeRevision(tape.id)).toBe(1);
+      expect(original.tapeRevision(tape.id)).toBe(0);
       expect(typeof tape.delta[0]).toBe('object');
       expect(typeof tape.delta.at(-1)).toBe('object');
     }
@@ -235,6 +235,189 @@ describe('CanonicalDocument', () => {
     expect(document.node(paragraphId)).toBe(paragraph);
     expect(paragraph.connected).toBe(true);
     expect(paragraph.parent).toBe(root);
+  });
+
+  it('rejects deletion of permanent records, tapes, and revision entries without changing state', () => {
+    const document = CanonicalDocument.fromMarkdown('word', {
+      documentId: 'continuity-delete-doc',
+      actionId: 'continuity-delete',
+      authorityEpoch: 'continuity-epoch',
+    });
+    const paragraph = document.root.children[0]!;
+    const span = document.canonicalSnapshot().nodes.find((node) => node.id === paragraph.sharedId)!
+      .spans[0]!;
+    const before = document.checkpoint();
+    const update = applyToAuthority(before, 1, (authority) => {
+      const rootRecord = nodeRecord(authority, document.root.sharedId);
+      setCell(rootRecord, 'children', 'continuity-detach', []);
+      authority.getMap('nodes').delete(paragraph.sharedId);
+      authority.getMap('tapes').delete(span.tapeId);
+      authority.getMap('tapeRevisions').delete(span.tapeId);
+    });
+
+    expect(() => document.applyAccepted({ revision: 1, update: update.update })).toThrow(
+      /removed permanent node/,
+    );
+    expect(document.checkpoint().update).toEqual(before.update);
+    expect(paragraph.content).toBe('word');
+    update.authority.destroy();
+  });
+
+  it('rejects replacing an integrated node record at its existing registry key', () => {
+    const document = CanonicalDocument.fromMarkdown('word', {
+      documentId: 'continuity-replace-doc',
+      actionId: 'continuity-replace',
+      authorityEpoch: 'continuity-epoch',
+    });
+    const paragraph = document.root.children[0]!;
+    const before = document.checkpoint();
+    const update = applyToAuthority(before, 1, (authority) => {
+      const nodes = authority.getMap<Y.Map<unknown>>('nodes');
+      const previous = nodes.get(paragraph.sharedId)!;
+      const replacement = new Y.Map<unknown>();
+      for (const [key, value] of previous.entries()) replacement.set(key, value);
+      nodes.set(paragraph.sharedId, replacement);
+    });
+
+    expect(() => document.applyAccepted({ revision: 1, update: update.update })).toThrow(
+      /replaced the native record/,
+    );
+    expect(document.checkpoint().update).toEqual(before.update);
+    expect(paragraph.content).toBe('word');
+    update.authority.destroy();
+  });
+
+  it('rejects replacing an integrated tape at its existing registry key', () => {
+    const document = CanonicalDocument.fromMarkdown('word', {
+      documentId: 'continuity-tape-replace-doc',
+      actionId: 'continuity-tape-replace',
+      authorityEpoch: 'continuity-epoch',
+    });
+    const paragraph = document.root.children[0]!;
+    const span = document.canonicalSnapshot().nodes.find((node) => node.id === paragraph.sharedId)!
+      .spans[0]!;
+    const before = document.checkpoint();
+    const update = applyToAuthority(before, 1, (authority) => {
+      const tapes = authority.getMap<Y.Text>('tapes');
+      const replacement = new Y.Text();
+      replacement.insertEmbed(0, { grainBoundary: span.startBoundaryId });
+      replacement.insert(1, 'word');
+      replacement.insertEmbed(5, { grainBoundary: span.endBoundaryId });
+      tapes.set(span.tapeId, replacement);
+      authority.getMap('tapeRevisions').set(span.tapeId, 1);
+    });
+
+    expect(() => document.applyAccepted({ revision: 1, update: update.update })).toThrow(
+      /replaced the native tape/,
+    );
+    expect(document.checkpoint().update).toEqual(before.update);
+    expect(paragraph.content).toBe('word');
+    update.authority.destroy();
+  });
+
+  it('rejects changing the fixed root ID without changing accepted state', () => {
+    const document = CanonicalDocument.fromMarkdown('word', {
+      documentId: 'continuity-root-doc',
+      actionId: 'continuity-root',
+      authorityEpoch: 'continuity-epoch',
+    });
+    const before = document.checkpoint();
+    const update = applyToAuthority(before, 1, (authority) => {
+      authority.getMap('meta').set('rootId', 'replacement-root');
+    });
+
+    expect(() => document.applyAccepted({ revision: 1, update: update.update })).toThrow(
+      /changed the fixed root ID/,
+    );
+    expect(document.checkpoint().update).toEqual(before.update);
+    update.authority.destroy();
+  });
+
+  it('rejects deletion of a retained interior boundary without changing state', () => {
+    const document = CanonicalDocument.fromMarkdown('word', {
+      documentId: 'continuity-marker-doc',
+      actionId: 'continuity-marker',
+      authorityEpoch: 'continuity-epoch',
+    });
+    const paragraph = document.root.children[0]!;
+    const span = document.canonicalSnapshot().nodes.find((node) => node.id === paragraph.sharedId)!
+      .spans[0]!;
+    const insertion = applyToAuthority(document.checkpoint(), 1, (authority) => {
+      const tape = authority.getMap<Y.Text>('tapes').get(span.tapeId)!;
+      tape.insertEmbed(3, { grainBoundary: 'boundary:continuity-interior' });
+      authority.getMap('tapeRevisions').set(span.tapeId, 1);
+    });
+    document.applyAccepted({ revision: 1, update: insertion.update });
+    insertion.authority.destroy();
+
+    const beforeDelete = document.checkpoint();
+    const deletion = applyToAuthority(beforeDelete, 2, (authority) => {
+      const tape = authority.getMap<Y.Text>('tapes').get(span.tapeId)!;
+      tape.delete(3, 1);
+      authority.getMap('tapeRevisions').set(span.tapeId, 2);
+    });
+
+    expect(() => document.applyAccepted({ revision: 2, update: deletion.update })).toThrow(
+      /deleted, replaced, or reordered retained boundary/,
+    );
+    expect(document.checkpoint().update).toEqual(beforeDelete.update);
+    expect(paragraph.content).toBe('word');
+    deletion.authority.destroy();
+  });
+
+  it.each([
+    ['text', 'import'],
+    ['marker', 'import'],
+    ['text', 'reconstruction'],
+    ['marker', 'reconstruction'],
+  ] as const)('advances the first %s tape revision after %s', (changeKind, startingState) => {
+    const documentId = `tape-revision-${startingState}-${changeKind}`;
+    const imported = CanonicalDocument.fromMarkdown('word', {
+      documentId,
+      actionId: documentId,
+      authorityEpoch: 'tape-revision-epoch',
+    });
+    const document =
+      startingState === 'import' ? imported : CanonicalDocument.open(imported.checkpoint());
+    const paragraph = document.root.children[0]!;
+    const span = document.canonicalSnapshot().nodes.find((node) => node.id === paragraph.sharedId)!
+      .spans[0]!;
+    expect(document.acceptedRevision).toBe(0);
+    expect(document.tapeRevision(span.tapeId)).toBe(0);
+
+    const update = applyToAuthority(document.checkpoint(), 1, (authority) => {
+      const tape = authority.getMap<Y.Text>('tapes').get(span.tapeId)!;
+      if (changeKind === 'text') tape.insert(2, 'X');
+      else tape.insertEmbed(2, { grainBoundary: `boundary:${documentId}:new` });
+      authority.getMap('tapeRevisions').set(span.tapeId, 1);
+    });
+    document.applyAccepted({ revision: 1, update: update.update });
+
+    expect(document.acceptedRevision).toBe(1);
+    expect(document.tapeRevision(span.tapeId)).toBe(1);
+    if (changeKind === 'text') expect(paragraph.content).toBe('wXord');
+    update.authority.destroy();
+  });
+
+  it('rejects a tape edit whose accepted revision was not recorded', () => {
+    const document = CanonicalDocument.fromMarkdown('word', {
+      documentId: 'tape-revision-missing-doc',
+      actionId: 'tape-revision-missing',
+      authorityEpoch: 'tape-revision-epoch',
+    });
+    const paragraph = document.root.children[0]!;
+    const span = document.canonicalSnapshot().nodes.find((node) => node.id === paragraph.sharedId)!
+      .spans[0]!;
+    const before = document.checkpoint();
+    const update = applyToAuthority(before, 1, (authority) => {
+      authority.getMap<Y.Text>('tapes').get(span.tapeId)!.insert(2, 'X');
+    });
+
+    expect(() => document.applyAccepted({ revision: 1, update: update.update })).toThrow(
+      /changed without recording accepted revision/,
+    );
+    expect(document.checkpoint().update).toEqual(before.update);
+    update.authority.destroy();
   });
 
   it('rejects a detached cycle across retained nodes without changing accepted state', () => {

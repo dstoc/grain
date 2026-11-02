@@ -98,6 +98,20 @@ const BLOCK_KINDS = new Set<NodeKind>([
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 type RecordMap = Y.Map<unknown>;
 type NodeMap = Y.Map<RecordMap>;
+
+interface YjsItemLike {
+  readonly id: { readonly client: number; readonly clock: number };
+  readonly right: YjsItemLike | null;
+  readonly length: number;
+  readonly deleted: boolean;
+  readonly content: unknown;
+}
+
+interface YjsSharedTypeInternals {
+  readonly _item: YjsItemLike | null;
+  readonly _start: YjsItemLike | null;
+}
+
 const backingDocuments = new WeakMap<CanonicalDocument, Y.Doc>();
 const closedDocuments = new WeakSet<CanonicalDocument>();
 
@@ -186,6 +200,138 @@ function cellValue<T>(record: RecordMap, field: (typeof NODE_FIELDS)[number]): C
 
 function ymap<T>(document: Y.Doc, name: string): Y.Map<T> {
   return document.getMap(name) as Y.Map<T>;
+}
+
+function yjsItemId(item: YjsItemLike): string {
+  return `${item.id.client}:${item.id.clock}`;
+}
+
+function sharedTypeId(type: Y.Map<unknown> | Y.Text): string {
+  const item = (type as unknown as YjsSharedTypeInternals)._item;
+  assert(item, 'canonical shared type is not integrated');
+  return yjsItemId(item);
+}
+
+function retainedMarkers(
+  tape: Y.Text,
+): readonly { readonly itemId: string; readonly boundaryId: string }[] {
+  const markers: { itemId: string; boundaryId: string }[] = [];
+  let item = (tape as unknown as YjsSharedTypeInternals)._start;
+  while (item) {
+    const content = item.content;
+    const embed =
+      content !== null && typeof content === 'object' && 'embed' in content
+        ? (content as { readonly embed: unknown }).embed
+        : undefined;
+    if (
+      !item.deleted &&
+      embed !== null &&
+      typeof embed === 'object' &&
+      'grainBoundary' in embed &&
+      typeof (embed as BoundaryEmbed).grainBoundary === 'string'
+    ) {
+      markers.push({ itemId: yjsItemId(item), boundaryId: (embed as BoundaryEmbed).grainBoundary });
+    }
+    item = item.right;
+  }
+  return markers;
+}
+
+function tapeItemSignature(tape: Y.Text): string {
+  const items: [string, number, boolean][] = [];
+  let item = (tape as unknown as YjsSharedTypeInternals)._start;
+  while (item) {
+    items.push([yjsItemId(item), item.length, item.deleted]);
+    item = item.right;
+  }
+  return JSON.stringify(items);
+}
+
+function assertRetainedResources(previous: Y.Doc, candidate: Y.Doc): void {
+  const previousMeta = ymap<unknown>(previous, META);
+  const candidateMeta = ymap<unknown>(candidate, META);
+  const rootId = metaValue<string>(previousMeta, 'rootId');
+  assert(
+    metaValue<string>(candidateMeta, 'rootId') === rootId,
+    'accepted update changed the fixed root ID',
+  );
+
+  const previousNodes = ymap<RecordMap>(previous, NODES);
+  const candidateNodes = ymap<RecordMap>(candidate, NODES);
+  for (const [id, record] of previousNodes.entries()) {
+    const next = candidateNodes.get(id);
+    assert(next instanceof Y.Map, `accepted update removed permanent node ${id}`);
+    assert(
+      sharedTypeId(next) === sharedTypeId(record),
+      `accepted update replaced the native record for node ${id}`,
+    );
+  }
+
+  const previousTapes = ymap<Y.Text>(previous, TAPES);
+  const candidateTapes = ymap<Y.Text>(candidate, TAPES);
+  for (const [id, tape] of previousTapes.entries()) {
+    const next = candidateTapes.get(id);
+    assert(next instanceof Y.Text, `accepted update removed permanent tape ${id}`);
+    assert(
+      sharedTypeId(next) === sharedTypeId(tape),
+      `accepted update replaced the native tape for ${id}`,
+    );
+
+    const nextMarkers = retainedMarkers(next);
+    let markerIndex = 0;
+    for (const marker of retainedMarkers(tape)) {
+      const nextIndex = nextMarkers.findIndex(
+        (candidateMarker, index) =>
+          index >= markerIndex &&
+          candidateMarker.itemId === marker.itemId &&
+          candidateMarker.boundaryId === marker.boundaryId,
+      );
+      assert(
+        nextIndex >= markerIndex,
+        `accepted update deleted, replaced, or reordered retained boundary ${marker.boundaryId}`,
+      );
+      markerIndex = nextIndex + 1;
+    }
+  }
+
+  const previousRevisions = ymap<number>(previous, TAPE_REVISIONS);
+  const candidateRevisions = ymap<number>(candidate, TAPE_REVISIONS);
+  for (const tapeId of previousRevisions.keys()) {
+    assert(
+      candidateRevisions.has(tapeId),
+      `accepted update removed permanent tape revision ${tapeId}`,
+    );
+  }
+}
+
+function assertTapeRevisions(previous: Y.Doc, candidate: Y.Doc, revision: number): void {
+  const previousTapes = ymap<Y.Text>(previous, TAPES);
+  const candidateTapes = ymap<Y.Text>(candidate, TAPES);
+  const previousRevisions = ymap<number>(previous, TAPE_REVISIONS);
+  const candidateRevisions = ymap<number>(candidate, TAPE_REVISIONS);
+
+  for (const [tapeId, tape] of candidateTapes.entries()) {
+    const currentRevision = candidateRevisions.get(tapeId);
+    assert(
+      Number.isSafeInteger(currentRevision) && currentRevision! >= 0,
+      `tape ${tapeId} has an invalid revision`,
+    );
+    const previousTape = previousTapes.get(tapeId);
+    const changed =
+      previousTape === undefined || tapeItemSignature(previousTape) !== tapeItemSignature(tape);
+    if (changed) {
+      assert(
+        currentRevision === revision,
+        `tape ${tapeId} changed without recording accepted revision ${revision}`,
+      );
+    } else {
+      assert(
+        currentRevision === previousRevisions.get(tapeId),
+        `tape ${tapeId} revision changed without modifying the tape`,
+      );
+    }
+    assert(currentRevision! <= revision, `tape ${tapeId} revision is ahead of accepted state`);
+  }
 }
 
 function semanticChildren(node: MutableSemanticNode): MutableSemanticNode[] {
@@ -625,6 +771,7 @@ export class CanonicalDocument {
       allocateNode(tree, true);
     }, 'grain:allocate');
 
+    // Imported content is part of baseline revision 0, not a later accepted edit.
     // New strings are inserted only after empty tapes and permanent sentinels exist.
     ydoc.transact(() => {
       for (const { semantic, spans } of allocated.values()) {
@@ -636,7 +783,6 @@ export class CanonicalDocument {
         const tape = tapes.get(span.tapeId);
         assert(tape, 'allocated tape is missing');
         tape.insert(1, content);
-        tapeRevisions.set(span.tapeId, (tapeRevisions.get(span.tapeId) ?? 0) + 1);
       }
     }, 'grain:import-text');
 
@@ -794,12 +940,14 @@ export class CanonicalDocument {
         metaValue<number>(candidateMeta, 'acceptedRevision') === envelope.revision,
         'accepted update has the wrong revision',
       );
+      assertRetainedResources(this.document, candidate);
       const staged = new CanonicalDocument(candidate);
       const validation = staged.validate();
       assert(
         validation.valid,
         `accepted update failed validation: ${validation.errors.join('; ')}`,
       );
+      assertTapeRevisions(this.document, candidate, envelope.revision);
       Y.applyUpdate(this.document, Uint8Array.from(envelope.update));
       this.revisionVersion++;
       this.localCaches.clear();
@@ -1097,6 +1245,10 @@ export function validateActiveSpans(document: CanonicalDocument): ValidationResu
   const activeIntervals = new Map<TapeId, { start: number; end: number; nodeId: string }[]>();
   const allBoundaryIds = new Map<BoundaryId, string>();
   const permanentIds = new Set<string>([documentId]);
+  const acceptedRevision = metaValue<number>(ymap<unknown>(backing, META), 'acceptedRevision');
+  if (!Number.isSafeInteger(acceptedRevision) || acceptedRevision < 0) {
+    errors.push('accepted revision is invalid');
+  }
   if (!documentId) errors.push('document ID cannot be empty');
   for (const id of nodes.keys()) {
     if (!id) errors.push('node ID cannot be empty');
@@ -1116,6 +1268,8 @@ export function validateActiveSpans(document: CanonicalDocument): ValidationResu
     const revision = revisions.get(tapeId);
     if (!Number.isSafeInteger(revision) || (revision ?? -1) < 0) {
       errors.push(`tape ${tapeId} has an invalid revision`);
+    } else if (revision! > acceptedRevision) {
+      errors.push(`tape ${tapeId} revision is ahead of accepted state`);
     }
     for (const boundaryId of index.duplicateBoundaries) {
       errors.push(`boundary ${boundaryId} occurs more than once on tape ${tapeId}`);
@@ -1161,6 +1315,9 @@ export function validateActiveSpans(document: CanonicalDocument): ValidationResu
         errors.push(`tape ${tapeId} contains formatting attributes`);
       }
     }
+  }
+  for (const tapeId of tapes.keys()) {
+    if (!revisions.has(tapeId)) errors.push(`tape ${tapeId} has no revision entry`);
   }
   for (const tapeId of revisions.keys()) {
     if (!tapes.has(tapeId)) errors.push(`revision entry refers to missing tape ${tapeId}`);
