@@ -68,6 +68,7 @@ describe('M4 review probes', () => {
           { from, to, insert },
           { actionId, sessionId },
         );
+        writer.admitSession(sessionId);
         const result = writer.apply(request, {
           sessionId,
           authorityEpoch: request.authorityEpoch,
@@ -160,6 +161,7 @@ describe('M4 review probes', () => {
           sessionId: 'A',
         },
       );
+      writer.admitSession('A');
       const result = writer.apply(request, {
         sessionId: 'A',
         authorityEpoch: request.authorityEpoch,

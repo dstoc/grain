@@ -346,6 +346,30 @@ export function assertTapeRevisions(previous: Y.Doc, candidate: Y.Doc, revision:
   }
 }
 
+function assertSessionWatermarkProgress(previous: Y.Doc, candidate: Y.Doc): void {
+  const before = ymap<number>(previous, 'sessionWatermarks');
+  const after = ymap<number>(candidate, 'sessionWatermarks');
+  const changed: string[] = [];
+  const keys = new Set([...before.keys(), ...after.keys()]);
+  for (const key of keys) {
+    const oldValue = before.get(key) ?? 0;
+    const newValue = after.get(key) ?? 0;
+    assert(
+      Number.isSafeInteger(oldValue) &&
+        oldValue >= 0 &&
+        Number.isSafeInteger(newValue) &&
+        newValue >= 0,
+      `session watermark ${key} is invalid`,
+    );
+    assert(newValue >= oldValue, `session watermark ${key} moved backwards`);
+    if (newValue !== oldValue) {
+      assert(newValue === oldValue + 1, `session watermark ${key} skipped a sequence`);
+      changed.push(key);
+    }
+  }
+  assert(changed.length <= 1, 'accepted update advanced multiple session watermarks');
+}
+
 function semanticChildren(node: MutableSemanticNode): MutableSemanticNode[] {
   return node.children ?? [];
 }
@@ -854,10 +878,12 @@ export class CanonicalDocument {
     try {
       const meta = ymap<unknown>(restored.document, META);
       const revisions = ymap<number>(restored.document, TAPE_REVISIONS);
+      const sessionWatermarks = ymap<number>(restored.document, 'sessionWatermarks');
       restored.document.transact(() => {
         meta.set('authorityEpoch', authorityEpoch);
         meta.set('acceptedRevision', 0);
         for (const tapeId of revisions.keys()) revisions.set(tapeId, 0);
+        for (const sessionId of sessionWatermarks.keys()) sessionWatermarks.delete(sessionId);
       }, 'grain:epoch-restore');
       const validation = restored.validate();
       assert(
@@ -1131,6 +1157,7 @@ export class CanonicalDocument {
         `accepted update failed validation: ${validation.errors.join('; ')}`,
       );
       assertTapeRevisions(this.document, candidate, envelope.revision);
+      assertSessionWatermarkProgress(this.document, candidate);
       const changed = changedProjectionResources(this.document, candidate);
       Y.applyUpdate(this.document, Uint8Array.from(envelope.update));
       return this.advanceProjection(changed);
@@ -1478,6 +1505,11 @@ export function validateActiveSpans(document: CanonicalDocument): ValidationResu
   const allBoundaryIds = new Map<BoundaryId, string>();
   const permanentIds = new Set<string>([documentId]);
   const acceptedRevision = metaValue<number>(ymap<unknown>(backing, META), 'acceptedRevision');
+  for (const [sessionId, watermark] of ymap<number>(backing, 'sessionWatermarks')) {
+    if (!sessionId || !Number.isSafeInteger(watermark) || watermark < 1) {
+      errors.push(`session ${sessionId} has an invalid committed watermark`);
+    }
+  }
   if (!Number.isSafeInteger(acceptedRevision) || acceptedRevision < 0) {
     errors.push('accepted revision is invalid');
   }

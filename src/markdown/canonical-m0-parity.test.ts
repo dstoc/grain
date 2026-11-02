@@ -1,3 +1,4 @@
+import * as Y from 'yjs';
 import { describe, expect, it } from 'vitest';
 
 import corpusText from '../../benchmarks/yjs-m0/parity-corpus.json?raw';
@@ -53,7 +54,7 @@ function makeDocument(markdown: string, fixtureId: string): CanonicalDocument {
 
 function admitted(request: ActionRequest) {
   return {
-    sessionId: 'm0-parity-session',
+    sessionId: request.sessionId,
     authorityEpoch: request.authorityEpoch,
     sessionSequence: request.sessionSequence,
   };
@@ -72,6 +73,7 @@ describe('M0 canonical parity corpus', () => {
         actionId: `m0-parity-edit-${fixture.id}`,
         sessionId: 'm0-parity-session',
       });
+      writer.admitSession('m0-parity-session');
       const applied = writer.apply(request, admitted(request));
       expect(applied.status).toBe('pending');
       if (applied.status !== 'pending')
@@ -136,8 +138,8 @@ describe('M0 canonical parity corpus', () => {
   });
 });
 
-describe('M0 native operation counters', () => {
-  it('counts same-value tape revision writes in the baseline action path', () => {
+describe('Yjs native operation counters', () => {
+  it('writes only the changed tape revision in the M1 action path', () => {
     const document = makeDocument('alpha\n\nbeta\n\ngamma', 'revision-write-counter');
     const writer = new CanonicalWriter(document);
     const initial = snapshotNativeState(document);
@@ -151,12 +153,22 @@ describe('M0 native operation counters', () => {
       initial.tapeCount,
     );
     const target = document.root.children[0]!;
+    const targetTapeId = document
+      .canonicalSnapshot()
+      .nodes.find((node) => node.id === target.sharedId)!.spans[0]!.tapeId;
+    const revisions = canonicalWriterAccess(document).state.getMap<number>('tapeRevisions');
+    const liveRevisionKeys: string[] = [];
+    const onRevision = (event: Y.YMapEvent<number>) => {
+      liveRevisionKeys.push(...event.keysChanged);
+    };
+    revisions.observe(onRevision);
     const measured = measureNativeOperations(document, () => {
       const request = writer.prepareTextInput(
         target.sharedId,
         { from: 2, to: 3, insert: 'X' },
         { actionId: 'm0-counter-edit', sessionId: 'm0-counter-session' },
       );
+      writer.admitSession('m0-counter-session');
       const result = writer.apply(request, admitted(request));
       if (result.status !== 'pending') throw new Error(`counter action rejected: ${result.status}`);
       return writer.publish(result.pending);
@@ -167,17 +179,17 @@ describe('M0 native operation counters', () => {
     const unchangedRevisionAssignments = Object.entries(measured.counts.unchangedMapSetsByPath)
       .filter(([path]) => path.startsWith('tapeRevisions:set.'))
       .reduce((count, [, writes]) => count + writes, 0);
-    const unchangedTapeCount = initial.tapeCount - 1;
-
     expect(measured.value.update.byteLength).toBeGreaterThan(0);
     expect(measured.counts.textInserts).toBeGreaterThan(0);
     expect(measured.counts.updateEvents).toBeGreaterThan(0);
     expect(measured.counts.updateEventBytes).toBeGreaterThan(0);
     expect(measured.counts.publicDocTransactCalls).toBeGreaterThan(0);
-    expect(revisionAssignments).toBeGreaterThanOrEqual(initial.tapeCount * 2);
-    expect(unchangedRevisionAssignments).toBe(unchangedTapeCount * 2);
-    expect(measured.counts.unchangedMapSets).toBe(unchangedRevisionAssignments);
-    expect(measured.value.receipt.touchedTapeIds).toHaveLength(1);
+    expect(revisionAssignments).toBeGreaterThanOrEqual(2);
+    expect(unchangedRevisionAssignments).toBe(0);
+    expect(measured.counts.unchangedMapSets).toBe(0);
+    expect([...new Set(liveRevisionKeys)]).toEqual([targetTapeId]);
+    expect(measured.value.receipt.touchedTapeIds).toEqual([targetTapeId]);
+    revisions.unobserve(onRevision);
     writer.close();
     document.close();
   });

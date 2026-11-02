@@ -13,6 +13,7 @@ function context(request: ActionRequest, sessionId = 'local'): AdmittedContext {
 }
 
 function accept(writer: CanonicalWriter, request: ActionRequest, sessionId = 'local') {
+  writer.admitSession(sessionId);
   const result = writer.apply(request, context(request, sessionId));
   expect(result.status).toBe('pending');
   if (result.status !== 'pending') throw new Error(`expected pending action, got ${result.status}`);
@@ -121,7 +122,7 @@ describe('CanonicalWriter', () => {
     document.close();
   });
 
-  it('reserves action IDs across sessions and one active writer per document', () => {
+  it('scopes action identity to document, epoch, session, and sequence', () => {
     const document = textDocument('a');
     const writer = new CanonicalWriter(document);
     const paragraph = document.root.children[0]!;
@@ -141,14 +142,11 @@ describe('CanonicalWriter', () => {
       { from: 1, to: 1, insert: 'y' },
       { actionId: 'authority-unique-id', sessionId: 'session-two' },
     );
-
-    expect(writer.apply(duplicate, context(duplicate, 'session-two'))).toEqual({
-      status: 'rejected',
-      reason: 'duplicate-action-id',
-    });
     expect(document.checkpoint().update).toEqual(before);
-    expect(paragraph.content).toBe('ax');
-    expect(writer.canUndo('session-two')).toBe(false);
+    const second = accept(writer, duplicate, 'session-two');
+    expect(second.actionId).toBe('authority-unique-id');
+    expect(paragraph.content).toBe('ayx');
+    expect(writer.canUndo('session-two')).toBe(true);
     writer.close();
     document.close();
   });

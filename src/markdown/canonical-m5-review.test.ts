@@ -17,6 +17,7 @@ function setup() {
 }
 
 function apply(writer: CanonicalWriter, request: ActionRequest, sessionId = 'A') {
+  writer.admitSession(sessionId);
   return writer.apply(request, {
     sessionId,
     sessionSequence: request.sessionSequence,

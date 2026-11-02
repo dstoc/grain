@@ -15,6 +15,7 @@ function context(request: ActionRequest, sessionId = 'A'): AdmittedContext {
 }
 
 function accept(writer: CanonicalWriter, request: ActionRequest, sessionId = 'A') {
+  writer.admitSession(sessionId);
   const result = writer.apply(request, context(request, sessionId));
   expect(result.status, JSON.stringify(result)).toBe('pending');
   if (result.status !== 'pending')
@@ -482,6 +483,7 @@ describe('canonical parser promotion', () => {
       });
     });
 
+    writer.admitSession('A');
     const result = writer.apply(request, context(request));
     expect(result.status).toBe('pending');
     if (result.status !== 'pending')
@@ -517,6 +519,7 @@ describe('canonical parser promotion', () => {
       });
     });
 
+    writer.admitSession('A');
     const result = writer.apply(request, context(request));
     expect(result.status).toBe('pending');
     if (result.status !== 'pending')
@@ -549,6 +552,7 @@ describe('canonical parser promotion', () => {
     });
     const before = document.checkpoint().update;
 
+    writer.admitSession('A');
     expect(writer.apply(explicit, context(explicit))).toEqual({
       status: 'rejected',
       reason: 'stale-precondition',

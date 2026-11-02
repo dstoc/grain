@@ -36,6 +36,7 @@ function accept(
   request: ActionRequest,
   sessionId: string,
 ): AcceptedAction {
+  writer.admitSession(sessionId);
   const result = writer.apply(request, admitted(request, sessionId));
   expect(result.status).toBe('pending');
   if (result.status !== 'pending') throw new Error(`expected pending action, got ${result.status}`);
@@ -249,6 +250,7 @@ describe('headless collaboration protocol', () => {
         sequence: 2,
       },
     );
+    writer.admitSession('same-session');
     expect(writer.apply(prematureSecond, admitted(prematureSecond, 'same-session'))).toEqual({
       status: 'rejected',
       reason: 'wrong-sequence',
@@ -258,7 +260,7 @@ describe('headless collaboration protocol', () => {
     const retry = writer.apply(first, admitted(first, 'same-session'));
     expect(retry).toMatchObject({ status: 'duplicate', accepted });
     if (retry.status !== 'duplicate') throw new Error('retry did not return accepted action');
-    expect(retry.accepted).toBe(accepted);
+    expect(retry.accepted).toEqual(accepted);
     expect(
       writer.apply(first, {
         ...admitted(first, 'same-session'),
@@ -277,7 +279,7 @@ describe('headless collaboration protocol', () => {
     };
     expect(writer.apply(changedContent, admitted(changedContent, 'same-session'))).toEqual({
       status: 'rejected',
-      reason: 'duplicate-action-id',
+      reason: 'retry-payload-conflict',
     });
 
     const next = authorText(
@@ -310,6 +312,7 @@ describe('headless collaboration protocol', () => {
     const events: unknown[] = [];
     writer.subscribe((event) => events.push(event));
 
+    writer.admitSession('author');
     expect(writer.apply(malformed, admitted(malformed, 'author'))).toEqual({
       status: 'rejected',
       reason: 'invalid-text-update',
@@ -382,6 +385,7 @@ describe('headless collaboration protocol', () => {
         sessionId: 'other-session',
       },
     );
+    writer.admitSession('compound');
     accept(writer, concurrent, 'other-session');
     const before = document.checkpoint().update;
 
@@ -549,6 +553,7 @@ describe('headless collaboration protocol', () => {
     );
     const events: unknown[] = [];
     writer.subscribe((event) => events.push(event));
+    writer.admitSession('writer-session');
     const result = writer.apply(request, admitted(request, 'writer-session'));
     expect(result.status).toBe('pending');
     if (result.status !== 'pending') throw new Error('missing pending action');

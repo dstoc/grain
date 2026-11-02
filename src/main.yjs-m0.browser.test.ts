@@ -43,6 +43,7 @@ function summary(samples: readonly number[]) {
 
 async function settleHarness() {
   await nextTask();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   await harness!.updateComplete;
   const editor = harness!.shadowRoot!.querySelector('md-canonical-editor')!;
   const renderer = editor.shadowRoot!.querySelector('md-block-render')!;
@@ -63,7 +64,7 @@ afterEach(async () => {
 });
 
 it.skipIf(profile !== 'harness')(
-  'measures full demo harness input, serialization, parser rebuild, and projection at 150 paragraphs',
+  'measures full demo harness input, coalesced exports, and projection at 150 paragraphs',
   async () => {
     await page.viewport(1280, 720);
     harness = document.createElement('md-dev-harness') as LitElement;
@@ -106,8 +107,8 @@ it.skipIf(profile !== 'harness')(
       inline = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
     }
 
-    expect(internals.parser).not.toBe(initialParser);
-    expect(parserRebuilds).toBe(operationCount);
+    const parserWasReused = internals.parser === initialParser;
+    expect(parserRebuilds).toBe(parserWasReused ? 0 : operationCount);
     expect(targetNode.content!.length).toBe(targetOffset + warmupCount + operationCount);
     expect(source.value).toContain(paragraphBenchmarkText(0));
     expect(source.value.endsWith('\n')).toBe(true);

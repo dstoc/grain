@@ -5,7 +5,6 @@ import {
   assertRetainedResources,
   assertTapeRevisions,
   canonicalWriterAccess,
-  tapeItemSignature,
   validateCanonicalState,
 } from './canonical-model.js';
 import type {
@@ -34,6 +33,9 @@ const META = 'meta';
 const NODES = 'nodes';
 const TAPES = 'tapes';
 const TAPE_REVISIONS = 'tapeRevisions';
+const SESSION_WATERMARKS = 'sessionWatermarks';
+const MAX_CACHED_RESPONSES = 256;
+const MAX_CACHED_RESPONSE_BYTES = 4 * 1024 * 1024;
 const INLINE_KINDS = new Set<NodeKind>(['paragraph', 'section', 'code-block']);
 const CONTAINER_KINDS = new Set<NodeKind>(['document', 'section', 'list-item', 'block-quote']);
 const BLOCK_KINDS = new Set<NodeKind>([
@@ -161,6 +163,7 @@ export interface ActionRequest {
   readonly mode: 'text-input' | 'command';
   readonly documentId: string;
   readonly authorityEpoch: string;
+  readonly sessionId: string;
   readonly sessionSequence: number;
   readonly actionId: string;
   readonly baseRevision: number;
@@ -272,6 +275,8 @@ export type RejectionReason =
   | 'future-base-revision'
   | 'stale-precondition'
   | 'duplicate-action-id'
+  | 'retry-payload-conflict'
+  | 'receipt-expired/resync-required'
   | 'invalid-request'
   | 'invalid-operation'
   | 'invalid-text-update'
@@ -279,6 +284,8 @@ export type RejectionReason =
 
 export interface WriterOptions {
   readonly maxHistoryGroups?: number;
+  /** Full-document before/after validation retained as an opt-in test reference. */
+  readonly verifyWithFullClone?: boolean;
 }
 
 interface InternalCell {
@@ -538,6 +545,23 @@ function metaMap(state: Y.Doc): Y.Map<unknown> {
   return state.getMap<unknown>(META);
 }
 
+function sessionWatermarkMap(state: Y.Doc): Y.Map<number> {
+  return state.getMap<number>(SESSION_WATERMARKS);
+}
+
+function sessionWatermarkKey(epoch: string, sessionId: string): string {
+  return stableJson([epoch, sessionId]);
+}
+
+function actionIdentity(
+  documentId: string,
+  epoch: string,
+  sessionId: string,
+  sequence: number,
+): string {
+  return stableJson([documentId, epoch, sessionId, sequence]);
+}
+
 function nodeCell(state: Y.Doc, id: NodeId, field: CellField): CellValue<unknown> {
   const record = nodeMap(state).get(id);
   assert(record, `unknown node ${id}`);
@@ -671,10 +695,6 @@ function stableJson(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(value) ?? 'undefined';
-}
-
-function actionKey(actionId: string): string {
-  return actionId;
 }
 
 class MutableTreeDraft implements ParserTreeDraft {
@@ -2117,30 +2137,328 @@ export function createMarkdownTreeConstructionDraft(
   };
 }
 
-interface TapeStateSummary {
-  readonly signatures: ReadonlyMap<TapeId, string>;
-  readonly revisions: ReadonlyMap<TapeId, number>;
+interface NativeMutationEvidence {
+  readonly changedTapeIds: Set<TapeId>;
+  readonly changedNodeCells: Map<NodeId, Set<CellField>>;
+  readonly changedNodeIds: Set<NodeId>;
+  readonly changedTapeRegistryIds: Set<TapeId>;
+  readonly changedRevisionIds: Set<TapeId>;
+  readonly changedMetaKeys: Set<string>;
+  readonly changedWatermarkKeys: Set<string>;
+  registerNode(id: NodeId, record: RecordMap): void;
+  registerTape(id: TapeId, tape: Y.Text): void;
+  close(): void;
 }
 
-function tapeStateSummary(state: Y.Doc): TapeStateSummary {
-  const signatures = new Map<TapeId, string>();
-  const revisions = new Map<TapeId, number>();
-  const currentRevisions = revisionMap(state);
-  for (const [id, tape] of tapeMap(state).entries()) {
-    signatures.set(id, tapeItemSignature(tape));
-    const revision = currentRevisions.get(id);
-    assert(typeof revision === 'number', `tape ${id} has no revision`);
-    revisions.set(id, revision);
-  }
-  return { signatures, revisions };
+/** Collect native Yjs mutation evidence without scanning tapes after each action. */
+function trackNativeMutations(state: Y.Doc): NativeMutationEvidence {
+  const nodes = nodeMap(state);
+  const tapes = tapeMap(state);
+  const revisions = revisionMap(state);
+  const meta = metaMap(state);
+  const watermarks = sessionWatermarkMap(state);
+  const nodeIds = new WeakMap<Y.Map<unknown>, NodeId>();
+  const tapeIds = new WeakMap<Y.Text, TapeId>();
+  const changedTapeIds = new Set<TapeId>();
+  const changedNodeCells = new Map<NodeId, Set<CellField>>();
+  const changedNodeIds = new Set<NodeId>();
+  const changedTapeRegistryIds = new Set<TapeId>();
+  const changedRevisionIds = new Set<TapeId>();
+  const changedMetaKeys = new Set<string>();
+  const changedWatermarkKeys = new Set<string>();
+  for (const [id, record] of nodes.entries()) nodeIds.set(record, id);
+  for (const [id, tape] of tapes.entries()) tapeIds.set(tape, id);
+
+  const onAfterTransaction = (transaction: Y.Transaction) => {
+    for (const [type, keys] of transaction.changed) {
+      const sharedType: unknown = type;
+      if (type instanceof Y.Text) {
+        const id = tapeIds.get(type);
+        if (id) changedTapeIds.add(id);
+      }
+      if (sharedType === nodes) for (const key of keys) if (key !== null) changedNodeIds.add(key);
+      if (sharedType === tapes)
+        for (const key of keys) if (key !== null) changedTapeRegistryIds.add(key);
+      if (sharedType === revisions)
+        for (const key of keys) if (key !== null) changedRevisionIds.add(key);
+      if (sharedType === meta) for (const key of keys) if (key !== null) changedMetaKeys.add(key);
+      if (sharedType === watermarks)
+        for (const key of keys) if (key !== null) changedWatermarkKeys.add(key);
+      const nodeId = nodeIds.get(sharedType as Y.Map<unknown>);
+      if (nodeId) {
+        const fields = changedNodeCells.get(nodeId) ?? new Set<CellField>();
+        for (const key of keys) {
+          if (
+            key === 'kind' ||
+            key === 'children' ||
+            key === 'spans' ||
+            key === 'marker' ||
+            key === 'checked' ||
+            key === 'info'
+          ) {
+            fields.add(key);
+          }
+        }
+        changedNodeCells.set(nodeId, fields);
+      }
+    }
+  };
+  state.on('afterTransaction', onAfterTransaction);
+  return {
+    changedTapeIds,
+    changedNodeCells,
+    changedNodeIds,
+    changedTapeRegistryIds,
+    changedRevisionIds,
+    changedMetaKeys,
+    changedWatermarkKeys,
+    registerNode(id, record) {
+      nodeIds.set(record, id);
+    },
+    registerTape(id, tape) {
+      tapeIds.set(tape, id);
+    },
+    close() {
+      state.off('afterTransaction', onAfterTransaction);
+    },
+  };
 }
 
-function changedTapeIds(before: TapeStateSummary, state: Y.Doc): TapeId[] {
-  const changed: TapeId[] = [];
-  for (const [id, tape] of tapeMap(state).entries()) {
-    if (before.signatures.get(id) !== tapeItemSignature(tape)) changed.push(id);
+interface TouchedResourceSnapshot {
+  readonly nodeRecords: ReadonlyMap<NodeId, RecordMap | undefined>;
+  readonly tapeRecords: ReadonlyMap<TapeId, Y.Text | undefined>;
+}
+
+function captureTouchedResources(
+  state: Y.Doc,
+  plan: LowLevelPlan,
+  tapeIds: ReadonlySet<TapeId>,
+): TouchedResourceSnapshot {
+  const nodeIds = new Set([
+    ...plan.writes.map(({ nodeId }) => nodeId),
+    ...plan.allocations.map(({ id }) => id),
+  ]);
+  const nodes = nodeMap(state);
+  const tapes = tapeMap(state);
+  return {
+    nodeRecords: new Map([...nodeIds].map((id) => [id, nodes.get(id)])),
+    tapeRecords: new Map([...tapeIds].map((id) => [id, tapes.get(id)])),
+  };
+}
+
+function captureHistoryTouchedResources(
+  state: Y.Doc,
+  entry: HistoryEntry,
+): TouchedResourceSnapshot {
+  const nodeIds = new Set([
+    ...entry.structuralPatch.cells.map(({ nodeId }) => nodeId),
+    ...entry.structuralPatch.births.map(({ nodeId }) => nodeId),
+  ]);
+  const tapeIds = new Set([
+    ...entry.touchedTapeIds,
+    ...entry.structuralPatch.bornTapes.map(({ tapeId }) => tapeId),
+  ]);
+  const nodes = nodeMap(state);
+  const tapes = tapeMap(state);
+  return {
+    nodeRecords: new Map([...nodeIds].map((id) => [id, nodes.get(id)])),
+    tapeRecords: new Map([...tapeIds].map((id) => [id, tapes.get(id)])),
+  };
+}
+
+function assertHistoryMutationEvidence(
+  state: Y.Doc,
+  entry: HistoryEntry,
+  snapshot: TouchedResourceSnapshot,
+  mutations: NativeMutationEvidence,
+  previousRevision: number,
+  revision: number,
+  changedTapeIds: readonly TapeId[],
+): void {
+  const equalSet = <T>(left: ReadonlySet<T>, right: ReadonlySet<T>): boolean =>
+    left.size === right.size && [...left].every((value) => right.has(value));
+  const expectedCells = new Map<NodeId, Set<CellField>>();
+  for (const patch of entry.structuralPatch.cells) {
+    const fields = expectedCells.get(patch.nodeId) ?? new Set<CellField>();
+    fields.add(patch.field);
+    expectedCells.set(patch.nodeId, fields);
   }
-  return changed;
+  assert(
+    equalSet(new Set(mutations.changedNodeCells.keys()), new Set(expectedCells.keys())),
+    'history changed unexpected node cells',
+  );
+  for (const [id, fields] of expectedCells) {
+    assert(
+      equalSet(mutations.changedNodeCells.get(id) ?? new Set<CellField>(), fields),
+      `history changed unexpected fields on node ${id}`,
+    );
+  }
+  assert(mutations.changedNodeIds.size === 0, 'history changed the node registry');
+  assert(mutations.changedTapeRegistryIds.size === 0, 'history changed the tape registry');
+  assert(
+    [...mutations.changedTapeIds].every((id) => entry.touchedTapeIds.includes(id)),
+    'history changed a tape outside its touched-resource receipt',
+  );
+  assert(
+    equalSet(mutations.changedRevisionIds, new Set(changedTapeIds)),
+    'history wrote revisions outside its native text mutations',
+  );
+  const expectedMetaKeys = new Set(revision > previousRevision ? ['acceptedRevision'] : []);
+  assert(
+    equalSet(mutations.changedMetaKeys, expectedMetaKeys),
+    'history changed unexpected canonical metadata',
+  );
+  assert(mutations.changedWatermarkKeys.size === 0, 'history changed session watermarks');
+  for (const [id, prior] of snapshot.nodeRecords) {
+    assert(prior && nodeMap(state).get(id) === prior, `history replaced node resource ${id}`);
+  }
+  for (const [id, prior] of snapshot.tapeRecords) {
+    assert(prior && tapeMap(state).get(id) === prior, `history replaced tape resource ${id}`);
+  }
+}
+
+function assertTouchedResourcesMatch(
+  expected: Y.Doc,
+  actual: Y.Doc,
+  plan: LowLevelPlan,
+  changedTapeIds: ReadonlySet<TapeId>,
+  expectedMutations: NativeMutationEvidence,
+  actualMutations: NativeMutationEvidence,
+  snapshot: TouchedResourceSnapshot,
+  epoch: string,
+  sessionId: string,
+  sequence: number,
+): void {
+  const equalSet = <T>(left: ReadonlySet<T>, right: ReadonlySet<T>): boolean =>
+    left.size === right.size && [...left].every((value) => right.has(value));
+  const newNodeIds = new Set(plan.allocations.map(({ id }) => id));
+  const newTapeIds = new Set(plan.newTapes.map(({ id }) => id));
+  const writeFields = new Map<NodeId, Set<CellField>>();
+  for (const write of plan.writes) {
+    const fields = writeFields.get(write.nodeId) ?? new Set<CellField>();
+    fields.add(write.field);
+    writeFields.set(write.nodeId, fields);
+  }
+  const allChangedCellIds = new Set([
+    ...expectedMutations.changedNodeCells.keys(),
+    ...writeFields.keys(),
+  ]);
+  for (const id of allChangedCellIds) {
+    if (newNodeIds.has(id)) continue;
+    assert(
+      equalSet(
+        expectedMutations.changedNodeCells.get(id) ?? new Set<CellField>(),
+        writeFields.get(id) ?? new Set<CellField>(),
+      ),
+      `staged action changed unexpected cells on node ${id}`,
+    );
+  }
+  assert(
+    equalSet(expectedMutations.changedTapeIds, actualMutations.changedTapeIds),
+    'live native text mutations differ from the staged action',
+  );
+  assert(
+    equalSet(expectedMutations.changedNodeIds, actualMutations.changedNodeIds) &&
+      equalSet(expectedMutations.changedTapeRegistryIds, actualMutations.changedTapeRegistryIds),
+    'live resource registry mutations differ from the staged action',
+  );
+  assert(
+    equalSet(expectedMutations.changedRevisionIds, actualMutations.changedRevisionIds),
+    'live tape revision writes differ from the staged action',
+  );
+  assert(
+    equalSet(expectedMutations.changedMetaKeys, actualMutations.changedMetaKeys) &&
+      equalSet(expectedMutations.changedWatermarkKeys, actualMutations.changedWatermarkKeys),
+    'live protocol metadata writes differ from the staged action',
+  );
+  assert(
+    equalSet(actualMutations.changedNodeIds, newNodeIds),
+    'action changed an unexpected node key',
+  );
+  assert(
+    equalSet(actualMutations.changedTapeRegistryIds, newTapeIds),
+    'action changed an unexpected tape key',
+  );
+  assert(
+    equalSet(actualMutations.changedRevisionIds, new Set(changedTapeIds)),
+    'action assigned an unchanged tape revision or omitted a changed tape revision',
+  );
+  assert(
+    actualMutations.changedMetaKeys.size === 1 &&
+      actualMutations.changedMetaKeys.has('acceptedRevision'),
+    'action changed unexpected canonical metadata',
+  );
+  const expectedWatermarkKey = sessionWatermarkKey(epoch, sessionId);
+  assert(
+    actualMutations.changedWatermarkKeys.size === 1 &&
+      actualMutations.changedWatermarkKeys.has(expectedWatermarkKey),
+    'action did not commit exactly its session watermark',
+  );
+
+  const expectedNodes = nodeMap(expected);
+  const actualNodes = nodeMap(actual);
+  for (const [id, prior] of snapshot.nodeRecords) {
+    const live = actualNodes.get(id);
+    assert(
+      newNodeIds.has(id) ? prior === undefined && !!live : live === prior,
+      `live action replaced or unexpectedly created node resource ${id}`,
+    );
+    const staged = expectedNodes.get(id);
+    assert(staged && live, `action is missing touched node ${id}`);
+    if (newNodeIds.has(id)) {
+      assert(
+        stableJson(staged.toJSON()) === stableJson(live.toJSON()),
+        `new node ${id} differs from staged result`,
+      );
+      continue;
+    }
+    const stagedFields = expectedMutations.changedNodeCells.get(id) ?? new Set<CellField>();
+    const liveFields = actualMutations.changedNodeCells.get(id) ?? new Set<CellField>();
+    assert(
+      equalSet(stagedFields, liveFields),
+      `node ${id} cell mutations differ from staged result`,
+    );
+    for (const field of writeFields.get(id) ?? []) {
+      const stagedCell = readCell(staged, field);
+      const liveCell = readCell(live, field);
+      assert(
+        stableJson(stagedCell) === stableJson(liveCell),
+        `node ${id} field ${field} differs from staged result`,
+      );
+    }
+  }
+
+  const expectedTapes = tapeMap(expected);
+  const actualTapes = tapeMap(actual);
+  for (const [id, prior] of snapshot.tapeRecords) {
+    const staged = expectedTapes.get(id);
+    const live = actualTapes.get(id);
+    assert(
+      newTapeIds.has(id) ? prior === undefined && !!live : live === prior,
+      `live action replaced or unexpectedly created tape resource ${id}`,
+    );
+    assert(staged && live, `action is missing touched tape ${id}`);
+    assert(
+      stableJson(staged.toDelta()) === stableJson(live.toDelta()),
+      `tape ${id} differs from staged text and boundary output`,
+    );
+    assert(
+      revisionMap(actual).get(id) === revisionMap(expected).get(id),
+      `tape ${id} revision differs from staged result`,
+    );
+  }
+  for (const id of changedTapeIds) {
+    assert(
+      revisionMap(actual).get(id) === (metaMap(actual).get('acceptedRevision') as number),
+      `changed tape ${id} does not carry the accepted revision`,
+    );
+  }
+  const watermarkKey = sessionWatermarkKey(epoch, sessionId);
+  assert(
+    sessionWatermarkMap(actual).get(watermarkKey) === sequence &&
+      sessionWatermarkMap(expected).get(watermarkKey) === sequence,
+    'session watermark differs from the accepted sequence',
+  );
 }
 
 function boundarySignature(tape: Y.Text): string {
@@ -2162,6 +2480,11 @@ function assertTextOnlyUpdate(previous: Y.Doc, candidate: Y.Doc): void {
   assert(
     stableJson(revisionMap(previous).toJSON()) === stableJson(revisionMap(candidate).toJSON()),
     'text update changed tape revisions',
+  );
+  assert(
+    stableJson(sessionWatermarkMap(previous).toJSON()) ===
+      stableJson(sessionWatermarkMap(candidate).toJSON()),
+    'text update changed committed session watermarks',
   );
   const previousNodes = nodeMap(previous);
   const candidateNodes = nodeMap(candidate);
@@ -2233,8 +2556,8 @@ function applyPlan(
   state: Y.Doc,
   plan: LowLevelPlan,
   textOrigin: object,
-  before: TapeStateSummary,
   nextRevision: number,
+  mutations: NativeMutationEvidence,
 ): void {
   if (plan.allocations.length || plan.newTapes.length) {
     state.transact(() => {
@@ -2248,6 +2571,7 @@ function applyPlan(
           1,
           Object.freeze({ grainBoundary: span.endBoundaryId }) satisfies BoundaryEmbed,
         );
+        mutations.registerTape(id, tape);
         tapeMap(state).set(id, tape);
         revisionMap(state).set(id, 0);
       }
@@ -2256,6 +2580,7 @@ function applyPlan(
         for (const field of ['kind', 'children', 'spans', 'marker', 'checked', 'info'] as const) {
           record.set(field, allocation.cells[field]);
         }
+        mutations.registerNode(allocation.id, record);
         nodeMap(state).set(allocation.id, record);
       }
     }, 'grain:allocate');
@@ -2333,12 +2658,8 @@ function applyPlan(
 
   state.transact(() => {
     const revisions = revisionMap(state);
-    for (const [id, tape] of tapeMap(state).entries()) {
-      const changed = before.signatures.get(id) !== tapeItemSignature(tape);
-      if (changed) revisions.set(id, nextRevision);
-      else if (before.revisions.has(id)) revisions.set(id, before.revisions.get(id)!);
-      else revisions.set(id, nextRevision);
-    }
+    for (const id of mutations.changedTapeIds) revisions.set(id, nextRevision);
+    for (const { id } of plan.newTapes) revisions.set(id, nextRevision);
     metaMap(state).set('acceptedRevision', nextRevision);
   }, 'grain:revision');
 }
@@ -2469,6 +2790,27 @@ function structuralPatchBetween(before: Y.Doc, after: Y.Doc, plan: LowLevelPlan)
   });
 }
 
+function structuralPatchWithLiveIdentities(patch: StructuralPatch, state: Y.Doc): StructuralPatch {
+  const markers = markerItems(state);
+  return Object.freeze({
+    ...patch,
+    bornTapes: Object.freeze(
+      patch.bornTapes.map(({ tapeId }) => {
+        const tape = tapeMap(state).get(tapeId);
+        assert(tape, `missing born tape ${tapeId} after live apply`);
+        return Object.freeze({ tapeId, sharedTypeId: sharedTypeId(tape) });
+      }),
+    ),
+    bornMarkers: Object.freeze(
+      patch.bornMarkers.map(({ boundaryId }) => {
+        const marker = markers.get(boundaryId);
+        assert(marker, `missing born marker ${boundaryId} after live apply`);
+        return Object.freeze({ ...marker, boundaryId });
+      }),
+    ),
+  });
+}
+
 function structuralPatchError(
   state: Y.Doc,
   patch: StructuralPatch,
@@ -2571,6 +2913,27 @@ function requestHash(request: ActionRequest): string {
     ...request,
     textUpdate: request.textUpdate ? Array.from(request.textUpdate) : undefined,
   });
+}
+
+interface CachedActionResponse {
+  readonly hash: string;
+  readonly accepted: AcceptedAction;
+  readonly bytes: number;
+}
+
+function copyAcceptedAction(accepted: AcceptedAction): AcceptedAction {
+  return Object.freeze({ ...accepted, update: Uint8Array.from(accepted.update) });
+}
+
+function acceptedResponseBytes(accepted: AcceptedAction): number {
+  const envelope = stableJson({
+    actionId: accepted.actionId,
+    sessionId: accepted.sessionId,
+    authorityEpoch: accepted.authorityEpoch,
+    revision: accepted.revision,
+    receipt: accepted.receipt,
+  });
+  return accepted.update.byteLength + new TextEncoder().encode(envelope).byteLength;
 }
 
 function copyRequest(request: ActionRequest): ActionRequest {
@@ -2839,10 +3202,10 @@ function destroyHistoryEntry(entry: HistoryEntry): void {
 
 function updateRevisionsAfterHistory(
   state: Y.Doc,
-  before: TapeStateSummary,
+  mutations: NativeMutationEvidence,
   structuralEffect = false,
 ): { revision: number; changed: TapeId[] } {
-  const changed = changedTapeIds(before, state);
+  const changed = [...mutations.changedTapeIds];
   if (!changed.length && !structuralEffect)
     return { revision: metaMap(state).get('acceptedRevision') as number, changed };
   const revision = (metaMap(state).get('acceptedRevision') as number) + 1;
@@ -2866,13 +3229,12 @@ export class CanonicalWriter {
   private readonly state: Y.Doc;
   private readonly access: ReturnType<typeof canonicalWriterAccess>;
   private readonly sessions = new Map<string, SessionHistory>();
-  private readonly acceptedRequests = new Map<
-    string,
-    { readonly hash: string; readonly sessionId: string; readonly accepted: AcceptedAction }
-  >();
+  private readonly acceptedRequests = new Map<string, CachedActionResponse>();
   private readonly listeners = new Set<WriterListener>();
   private readonly localQueue: QueuedLocalEdit[] = [];
   private readonly maxHistoryGroups: number;
+  private readonly verifyWithFullClone: boolean;
+  private acceptedResponseBytes = 0;
   private historyResetPending: boolean;
   private preparing = false;
   private publishing = false;
@@ -2891,11 +3253,13 @@ export class CanonicalWriter {
     assert(!activeWriters.has(document), 'canonical document already has an active writer');
     this.state = this.access.state;
     this.maxHistoryGroups = options.maxHistoryGroups ?? 500;
+    this.verifyWithFullClone = options.verifyWithFullClone ?? false;
     assert(
       Number.isSafeInteger(this.maxHistoryGroups) && this.maxHistoryGroups > 0,
       'history limit must be a positive integer',
     );
     activeWriters.set(document, this);
+    this.admitSession('local');
   }
 
   get poisonedWriter(): boolean {
@@ -2917,6 +3281,7 @@ export class CanonicalWriter {
     }
     this.sessions.clear();
     this.acceptedRequests.clear();
+    this.acceptedResponseBytes = 0;
     this.listeners.clear();
     this.localQueue.length = 0;
     this.closed = true;
@@ -2928,6 +3293,21 @@ export class CanonicalWriter {
     return () => this.listeners.delete(listener);
   }
 
+  /** Host admission is explicit for requests received from another session. */
+  admitSession(sessionId: string): void {
+    assert(!this.closed, 'canonical writer is closed');
+    assert(sessionId.length > 0, 'session ID cannot be empty');
+    if (this.sessions.has(sessionId)) return;
+    const epoch = metaMap(this.state).get('authorityEpoch') as string;
+    const watermark =
+      sessionWatermarkMap(this.state).get(sessionWatermarkKey(epoch, sessionId)) ?? 0;
+    assert(
+      Number.isSafeInteger(watermark) && watermark >= 0,
+      'stored session watermark is invalid',
+    );
+    this.sessions.set(sessionId, { sequence: watermark, undo: [], redo: [], all: new Set() });
+  }
+
   prepareCommand(options: ActionOptions, callback: DraftCommand): ActionRequest {
     this.assertCanPrepare();
     assert(options.actionId.length > 0, 'action ID cannot be empty');
@@ -2937,7 +3317,14 @@ export class CanonicalWriter {
       sessionId.length > 0 && historyGroupId.length > 0,
       'session and history group IDs cannot be empty',
     );
-    const draft = new MutableTreeDraft(this.state, options.actionId);
+    const sessionSequence = options.sessionSequence ?? this.nextSequence(sessionId);
+    const identity = actionIdentity(
+      metaMap(this.state).get('documentId') as string,
+      metaMap(this.state).get('authorityEpoch') as string,
+      sessionId,
+      sessionSequence,
+    );
+    const draft = new MutableTreeDraft(this.state, identity);
     this.preparing = true;
     try {
       const result = callback(draft);
@@ -2969,7 +3356,8 @@ export class CanonicalWriter {
         mode: 'command',
         documentId: metaMap(this.state).get('documentId') as string,
         authorityEpoch: metaMap(this.state).get('authorityEpoch') as string,
-        sessionSequence: options.sessionSequence ?? this.nextSequence(sessionId),
+        sessionId,
+        sessionSequence,
         actionId: options.actionId,
         baseRevision: metaMap(this.state).get('acceptedRevision') as number,
         historyGroupId,
@@ -2991,6 +3379,10 @@ export class CanonicalWriter {
       options.actionId.length > 0 && sessionId.length > 0 && historyGroupId.length > 0,
       'action, session and history group IDs cannot be empty',
     );
+    const sessionSequence = options.sessionSequence ?? this.nextSequence(sessionId);
+    const documentId = metaMap(this.state).get('documentId') as string;
+    const authorityEpoch = metaMap(this.state).get('authorityEpoch') as string;
+    const identity = actionIdentity(documentId, authorityEpoch, sessionId, sessionSequence);
     const record = nodeMap(this.state).get(nodeId);
     assert(record, `unknown node ${nodeId}`);
     const kind = readCell<NodeKind>(record, 'kind');
@@ -3000,20 +3392,21 @@ export class CanonicalWriter {
     const tapes = new Map(tapeMap(this.state).entries());
     const mapped = mapTextEdit(spans.value, tapes, edit);
     const branch = cloneDocument(this.state);
-    const stateVector = Y.encodeStateVector(branch);
+    const authoredUpdates: Uint8Array[] = [];
+    const captureAuthoredUpdate = (update: Uint8Array) =>
+      authoredUpdates.push(Uint8Array.from(update));
+    branch.on('update', captureAuthoredUpdate);
     try {
-      applyMappedTextEdit(
-        branch,
-        mapped,
-        edit.insert,
-        Object.freeze({ actionId: options.actionId }),
-      );
-      const textUpdate = Y.encodeStateAsUpdate(branch, stateVector);
+      applyMappedTextEdit(branch, mapped, edit.insert, Object.freeze({ actionIdentity: identity }));
+      const textUpdate = authoredUpdates.length
+        ? Y.mergeUpdates(authoredUpdates)
+        : new Uint8Array();
       const request: ActionRequest = {
         mode: 'text-input',
-        documentId: metaMap(this.state).get('documentId') as string,
-        authorityEpoch: metaMap(this.state).get('authorityEpoch') as string,
-        sessionSequence: options.sessionSequence ?? this.nextSequence(sessionId),
+        documentId,
+        authorityEpoch,
+        sessionId,
+        sessionSequence,
         actionId: options.actionId,
         baseRevision: metaMap(this.state).get('acceptedRevision') as number,
         historyGroupId,
@@ -3025,6 +3418,7 @@ export class CanonicalWriter {
       } as ActionRequest;
       return copyRequest(request);
     } finally {
+      branch.off('update', captureAuthoredUpdate);
       branch.destroy();
     }
   }
@@ -3045,6 +3439,7 @@ export class CanonicalWriter {
     }
     const sessionId = admittedContext.sessionId;
     if (!sessionId) return { status: 'rejected', reason: 'wrong-session' };
+    if (request.sessionId !== sessionId) return { status: 'rejected', reason: 'wrong-session' };
     if (admittedContext.sessionSequence !== request.sessionSequence)
       return { status: 'rejected', reason: 'wrong-sequence' };
     if (request.documentId !== (metaMap(this.state).get('documentId') as string)) {
@@ -3054,15 +3449,23 @@ export class CanonicalWriter {
     if (request.authorityEpoch !== epoch || admittedContext.authorityEpoch !== epoch) {
       return { status: 'rejected', reason: 'wrong-authority-epoch' };
     }
-    const key = actionKey(request.actionId);
+    const key = actionIdentity(
+      request.documentId,
+      request.authorityEpoch,
+      request.sessionId,
+      request.sessionSequence,
+    );
     const hash = requestHash(request);
-    const prior = this.acceptedRequests.get(key);
-    if (prior) {
-      return prior.hash === hash && prior.sessionId === sessionId
-        ? { status: 'duplicate', accepted: prior.accepted }
-        : { status: 'rejected', reason: 'duplicate-action-id' };
+    const session = this.sessions.get(sessionId);
+    if (!session) return { status: 'rejected', reason: 'wrong-session' };
+    if (request.sessionSequence <= session.sequence) {
+      const prior = this.acceptedRequests.get(key);
+      if (!prior) return { status: 'rejected', reason: 'receipt-expired/resync-required' };
+      return prior.hash === hash
+        ? { status: 'duplicate', accepted: copyAcceptedAction(prior.accepted) }
+        : { status: 'rejected', reason: 'retry-payload-conflict' };
     }
-    if (request.sessionSequence !== this.nextSequence(sessionId))
+    if (request.sessionSequence !== session.sequence + 1)
       return { status: 'rejected', reason: 'wrong-sequence' };
     const revision = metaMap(this.state).get('acceptedRevision') as number;
     if (request.baseRevision > revision)
@@ -3073,18 +3476,18 @@ export class CanonicalWriter {
       return { status: 'rejected', reason: 'stale-precondition' };
     }
 
-    const previousSummary = tapeStateSummary(this.state);
     const candidate = cloneDocument(this.state);
-    let inputChanged: TapeId[] = [];
+    const candidateMutations = trackNativeMutations(candidate);
+    const inputChanged = candidateMutations.changedTapeIds;
     const nextRevision = revision + 1;
     try {
       if (request.textUpdate?.length) {
         Y.applyUpdate(candidate, Uint8Array.from(request.textUpdate));
         assertResolvedUpdate(candidate);
         assertTextOnlyUpdate(this.state, candidate);
-        inputChanged = changedTapeIds(previousSummary, candidate);
       }
     } catch {
+      candidateMutations.close();
       candidate.destroy();
       return { status: 'rejected', reason: 'invalid-text-update' };
     }
@@ -3093,7 +3496,16 @@ export class CanonicalWriter {
     let plan: LowLevelPlan;
     let receiptFocus = request.focus;
     try {
-      draft = new MutableTreeDraft(candidate, request.actionId, request.operations);
+      draft = new MutableTreeDraft(
+        candidate,
+        actionIdentity(
+          request.documentId,
+          request.authorityEpoch,
+          sessionId,
+          request.sessionSequence,
+        ),
+        request.operations,
+      );
       const promotion = request.promotionTarget;
       if (
         request.mode === 'text-input' &&
@@ -3135,24 +3547,36 @@ export class CanonicalWriter {
         candidate,
         plan,
         Object.freeze({ stagedAction: request.actionId }),
-        previousSummary,
         nextRevision,
+        candidateMutations,
+      );
+      candidate.transact(
+        () =>
+          sessionWatermarkMap(candidate).set(
+            sessionWatermarkKey(epoch, sessionId),
+            request.sessionSequence,
+          ),
+        'grain:session-watermark',
       );
       draft.assertMatches(candidate);
       draft.close();
       validateCandidate(this.state, candidate, nextRevision);
     } catch (_error) {
       draft?.close();
+      candidateMutations.close();
       candidate.destroy();
       return { status: 'rejected', reason: 'invalid-operation' };
     }
 
     const structuralPatch = structuralPatchBetween(this.state, candidate, plan);
-    const finalChangedTapes = changedTapeIds(previousSummary, candidate);
+    const finalChangedTapes = new Set([
+      ...candidateMutations.changedTapeIds,
+      ...plan.newTapes.map(({ id }) => id),
+    ]);
     const textTapes = new Set([...inputChanged, ...plan.textTapes]);
     const structuralEffect = structuralPatch.cells.length > 0 || structuralPatch.births.length > 0;
     const noEffect =
-      !finalChangedTapes.length &&
+      !finalChangedTapes.size &&
       !structuralEffect &&
       !plan.deletions.length &&
       !plan.insertions.length;
@@ -3165,7 +3589,12 @@ export class CanonicalWriter {
         ? 'ownershipChanged'
         : undefined;
     const receipt: ActionReceipt = Object.freeze({
-      requestId: `${sessionId}:${request.actionId}`,
+      requestId: actionIdentity(
+        request.documentId,
+        request.authorityEpoch,
+        request.sessionId,
+        request.sessionSequence,
+      ),
       historyGroupId: request.historyGroupId,
       touchedNodeIds: Object.freeze([
         ...new Set([
@@ -3208,8 +3637,9 @@ export class CanonicalWriter {
       selectionAnchors,
     );
     const context = Object.freeze({ ...admittedContext });
-    const liveBefore = cloneDocument(this.state);
-    const liveSummary = tapeStateSummary(this.state);
+    const touchedSnapshot = captureTouchedResources(this.state, plan, finalChangedTapes);
+    const liveBefore = this.verifyWithFullClone ? cloneDocument(this.state) : undefined;
+    const liveMutations = trackNativeMutations(this.state);
     const updates: Uint8Array[] = [];
     const collect = (update: Uint8Array) => updates.push(Uint8Array.from(update));
     this.access.beginPending();
@@ -3218,16 +3648,43 @@ export class CanonicalWriter {
       if (request.textUpdate?.length) {
         Y.applyUpdate(this.state, Uint8Array.from(request.textUpdate), reservation.entry.origin);
       }
-      applyPlan(this.state, plan, reservation.entry.origin, liveSummary, nextRevision);
-      validateCandidate(liveBefore, this.state, nextRevision);
-      const livePatch = structuralPatchBetween(liveBefore, this.state, plan);
+      applyPlan(this.state, plan, reservation.entry.origin, nextRevision, liveMutations);
+      this.state.transact(
+        () =>
+          sessionWatermarkMap(this.state).set(
+            sessionWatermarkKey(epoch, sessionId),
+            request.sessionSequence,
+          ),
+        'grain:session-watermark',
+      );
+      assertTouchedResourcesMatch(
+        candidate,
+        this.state,
+        plan,
+        finalChangedTapes,
+        candidateMutations,
+        liveMutations,
+        touchedSnapshot,
+        epoch,
+        sessionId,
+        request.sessionSequence,
+      );
+      const liveValidation = validateCanonicalState(this.state);
+      assert(
+        liveValidation.valid,
+        `live action failed canonical validation: ${liveValidation.errors.join('; ')}`,
+      );
+      if (liveBefore) validateCandidate(liveBefore, this.state, nextRevision);
+      const livePatch = structuralPatchWithLiveIdentities(structuralPatch, this.state);
       reservation.entry.structuralPatch = livePatch;
       const acceptedReceipt: ActionReceipt = Object.freeze({
         ...receipt,
         structuralPatch: livePatch,
       });
       this.state.off('update', collect);
-      liveBefore.destroy();
+      liveMutations.close();
+      candidateMutations.close();
+      liveBefore?.destroy();
       const update = Y.mergeUpdates(updates);
       const pending: PendingCommit = Object.freeze({
         actionId: request.actionId,
@@ -3240,7 +3697,9 @@ export class CanonicalWriter {
       return { status: 'pending', pending };
     } catch (error) {
       this.state.off('update', collect);
-      liveBefore.destroy();
+      liveMutations.close();
+      candidateMutations.close();
+      liveBefore?.destroy();
       candidate.destroy();
       this.poisoned = true;
       this.access.poison();
@@ -3290,11 +3749,28 @@ export class CanonicalWriter {
       callbackErrors.push(...this.notifyListeners(event));
       Object.freeze(callbackErrors);
       const result = Object.freeze(accepted);
-      this.acceptedRequests.set(actionKey(record.request.actionId), {
-        hash: record.requestHash,
-        sessionId: record.context.sessionId,
-        accepted: result,
-      });
+      const key = actionIdentity(
+        record.request.documentId,
+        record.request.authorityEpoch,
+        record.context.sessionId,
+        record.context.sessionSequence,
+      );
+      const cached = copyAcceptedAction(result);
+      const bytes = acceptedResponseBytes(cached);
+      if (bytes <= MAX_CACHED_RESPONSE_BYTES) {
+        this.acceptedRequests.set(key, { hash: record.requestHash, accepted: cached, bytes });
+        this.acceptedResponseBytes += bytes;
+        while (
+          this.acceptedRequests.size > MAX_CACHED_RESPONSES ||
+          this.acceptedResponseBytes > MAX_CACHED_RESPONSE_BYTES
+        ) {
+          const oldestKey = this.acceptedRequests.keys().next().value as string | undefined;
+          if (oldestKey === undefined) break;
+          const oldest = this.acceptedRequests.get(oldestKey);
+          this.acceptedRequests.delete(oldestKey);
+          if (oldest) this.acceptedResponseBytes -= oldest.bytes;
+        }
+      }
       return result;
     } finally {
       this.publishing = false;
@@ -3307,6 +3783,9 @@ export class CanonicalWriter {
       this.localQueue.push({ options: deepCopy(options), callback });
       return { status: 'queued', actionId: options.actionId };
     }
+    // This in-process convenience is itself a host-originated admission. Network
+    // requests must use admitSession() before they reach apply().
+    this.admitSession(options.sessionId ?? 'local');
     const request = this.prepareCommand(options, callback);
     const context: AdmittedContext = Object.freeze({
       sessionId: options.sessionId ?? 'local',
@@ -3635,11 +4114,13 @@ export class CanonicalWriter {
       };
     }
 
-    const before = tapeStateSummary(this.state);
+    const previousRevision = metaMap(this.state).get('acceptedRevision') as number;
     const markersBefore = markerSummary(this.state);
+    const touchedSnapshot = captureHistoryTouchedResources(this.state, entry);
     const updates: Uint8Array[] = [];
     const collect = (update: Uint8Array) => updates.push(Uint8Array.from(update));
-    const liveBefore = cloneDocument(this.state);
+    const liveBefore = this.verifyWithFullClone ? cloneDocument(this.state) : undefined;
+    const mutations = trackNativeMutations(this.state);
     this.access.beginPending();
     this.state.on('update', collect);
     try {
@@ -3654,10 +4135,25 @@ export class CanonicalWriter {
         );
       }
       applyStructuralPatch(this.state, entry.structuralPatch, direction);
-      const updated = updateRevisionsAfterHistory(this.state, before, structuralEffect);
-      validateCandidate(liveBefore, this.state, updated.revision);
+      const updated = updateRevisionsAfterHistory(this.state, mutations, structuralEffect);
+      assertHistoryMutationEvidence(
+        this.state,
+        entry,
+        touchedSnapshot,
+        mutations,
+        previousRevision,
+        updated.revision,
+        updated.changed,
+      );
+      const validation = validateCanonicalState(this.state);
+      assert(
+        validation.valid,
+        `history failed canonical validation: ${validation.errors.join('; ')}`,
+      );
+      if (liveBefore) validateCandidate(liveBefore, this.state, updated.revision);
       this.state.off('update', collect);
-      liveBefore.destroy();
+      mutations.close();
+      liveBefore?.destroy();
       const update = updates.length ? Y.mergeUpdates(updates) : undefined;
       const textChanged = updated.changed.length > 0;
       if (!textChanged && !structuralEffect) {
@@ -3723,7 +4219,8 @@ export class CanonicalWriter {
       return { status: 'pending', pending: publicValue };
     } catch (error) {
       this.state.off('update', collect);
-      liveBefore.destroy();
+      mutations.close();
+      liveBefore?.destroy();
       this.poisoned = true;
       this.access.poison();
       throw new Error(
@@ -3763,20 +4260,24 @@ export class CanonicalWriter {
   }
 
   private getSession(sessionId: string): SessionHistory {
-    let session = this.sessions.get(sessionId);
-    if (!session) {
-      session = { sequence: 0, undo: [], redo: [], all: new Set() };
-      this.sessions.set(sessionId, session);
-    }
+    const session = this.sessions.get(sessionId);
+    assert(session, `session ${sessionId} has not been admitted by the host`);
     return session;
   }
 
   private nextSequence(sessionId: string): number {
-    return (this.sessions.get(sessionId)?.sequence ?? 0) + 1;
+    const session = this.sessions.get(sessionId);
+    if (session) return session.sequence + 1;
+    const epoch = metaMap(this.state).get('authorityEpoch') as string;
+    return (sessionWatermarkMap(this.state).get(sessionWatermarkKey(epoch, sessionId)) ?? 0) + 1;
   }
 
   private validateRequestShape(request: ActionRequest): void {
     assert(request.mode === 'command' || request.mode === 'text-input', 'unknown action mode');
+    assert(
+      typeof request.sessionId === 'string' && request.sessionId.length > 0,
+      'request session ID is missing',
+    );
     assert(
       typeof request.actionId === 'string' && request.actionId.length > 0,
       'request action ID is missing',
