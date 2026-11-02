@@ -133,6 +133,21 @@ function run(ops: Op[]) {
 }
 
 describe('M4 fragment composition', () => {
+  it('preserves original gap order when a deletion collapses insertion positions', () => {
+    run([
+      { type: 'edit', node: 0, from: 1, to: 1, insert: 'NEW' },
+      { type: 'edit', node: 0, from: 0, to: 1, insert: 'zz' },
+    ]);
+  });
+
+  it('preserves original gap order across a transfer and a collapsed deletion', () => {
+    run([
+      { type: 'edit', node: 0, from: 1, to: 1, insert: 'NEW' },
+      { type: 'move', source: 0, from: 1, to: 2, destination: 1, at: 1 },
+      { type: 'edit', node: 0, from: 0, to: 1, insert: 'zz' },
+    ]);
+  });
+
   it.each([0, 1, 2])('moves a split action-local buffer range at destination offset %i', (at) => {
     run([
       { type: 'edit', node: 0, from: 1, to: 1, insert: 'NEW' },

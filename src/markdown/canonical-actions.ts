@@ -3509,11 +3509,16 @@ function applyPlan(
       const sorted = plan.insertions
         .map((insertion) => ({
           ...insertion,
+          originalIndex: insertion.index,
           index: indexAfterDeletes(insertion.index, deletions, insertion.tapeId),
         }))
+        // Same-index Y.Text inserts prepend, so apply later native gaps first.
         .sort(
           (a, b) =>
-            a.tapeId.localeCompare(b.tapeId) || b.index - a.index || b.slotOrder - a.slotOrder,
+            a.tapeId.localeCompare(b.tapeId) ||
+            b.index - a.index ||
+            b.originalIndex - a.originalIndex ||
+            b.slotOrder - a.slotOrder,
         );
       for (const insertion of sorted) {
         const tape = tapeMap(state).get(insertion.tapeId);
