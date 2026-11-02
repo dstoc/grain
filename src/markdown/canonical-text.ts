@@ -56,12 +56,32 @@ export interface NativeTapePart {
   readonly nativeTo: number;
 }
 
+export interface NativeBoundaryItem {
+  readonly boundaryId: string;
+  readonly itemId: string;
+  readonly index: number;
+}
+
+interface NativeItem {
+  readonly id: { readonly client: number; readonly clock: number };
+  readonly right: NativeItem | null;
+  readonly deleted: boolean;
+  readonly length: number;
+  readonly content: unknown;
+}
+
+interface NativeText {
+  readonly _start: NativeItem | null;
+}
+
 /** A reconstructible index over one tape revision. Build it once per revision. */
 export interface NativeTapeIndex {
   readonly tapeId: TapeId;
   readonly parts: readonly NativeTapePart[];
   readonly partStarts: readonly number[];
   readonly boundaries: ReadonlyMap<string, number>;
+  readonly boundaryItems: readonly NativeBoundaryItem[];
+  readonly hasFormatting: boolean;
   readonly length: number;
 }
 
@@ -105,19 +125,55 @@ function assertBoundary(value: string, offset: number, label: string): void {
 export function indexNativeTape(tapeId: TapeId, tape: Y.Text): NativeTapeIndex {
   const parts: NativeTapePart[] = [];
   const boundaries = new Map<string, number>();
+  const boundaryItems: NativeBoundaryItem[] = [];
   let native = 0;
-  for (const part of tape.toDelta()) {
-    const insert = part.insert;
-    const length = typeof insert === 'string' ? insert.length : 1;
-    parts.push(Object.freeze({ insert, nativeFrom: native, nativeTo: native + length }));
-    if (isBoundary(insert)) boundaries.set(insert.grainBoundary, native);
-    native += length;
+  let hasFormatting = false;
+  let item = (tape as unknown as NativeText)._start;
+  while (item) {
+    if (!item.deleted) {
+      const content =
+        item.content && typeof item.content === 'object'
+          ? (item.content as {
+              readonly str?: unknown;
+              readonly embed?: unknown;
+              readonly key?: unknown;
+            })
+          : {};
+      if ('key' in content) {
+        hasFormatting = true;
+        item = item.right;
+        continue;
+      }
+      const insert =
+        typeof content.str === 'string'
+          ? content.str
+          : 'embed' in content
+            ? content.embed
+            : Object.freeze({ grainUnsupported: true });
+      const nativeTo = native + item.length;
+      parts.push(Object.freeze({ insert, nativeFrom: native, nativeTo }));
+      const boundary = isBoundary(insert) ? insert.grainBoundary : undefined;
+      if (boundary !== undefined) {
+        boundaries.set(boundary, native);
+        boundaryItems.push(
+          Object.freeze({
+            boundaryId: boundary,
+            itemId: `${item.id.client}:${item.id.clock}`,
+            index: native,
+          }),
+        );
+      }
+      native = nativeTo;
+    }
+    item = item.right;
   }
   return Object.freeze({
     tapeId,
     parts: Object.freeze(parts),
     partStarts: Object.freeze(parts.map((part) => part.nativeFrom)),
     boundaries,
+    boundaryItems: Object.freeze(boundaryItems),
+    hasFormatting,
     length: native,
   });
 }

@@ -39,7 +39,7 @@ import { classifyInlineInput, parseBlocks } from './block-parser/api.js';
 import type { ParserConversionPlan } from './block-parser/api.js';
 import { applyParserConversion } from './canonical-promotion.js';
 import {
-  createCanonicalTextAnchorFromState,
+  createCanonicalTextAnchorFromIndexes,
   type CanonicalTextAnchor,
 } from './canonical-selection.js';
 
@@ -447,7 +447,7 @@ type PreparedAction = PreparedActionBase &
   (
     | {
         readonly kind: 'literal';
-        readonly boundarySignatures: ReadonlyMap<TapeId, string>;
+        readonly boundarySnapshots: ReadonlyMap<TapeId, string>;
         readonly snapshot: TouchedResourceSnapshot;
       }
     | {
@@ -664,6 +664,8 @@ class CanonicalIndexes {
   readonly boundaryIds = new Set<string>();
   readonly parentByChild = new Map<NodeId, NodeId>();
   readonly activeNodes = new Set<NodeId>();
+  readonly visibleInlineNodeIds: NodeId[] = [];
+  private readonly visibleInlinePosition = new Map<NodeId, number>();
   readonly activeTapeOwners = new Map<TapeId, Set<NodeId>>();
   readonly tapeOwners = new Map<TapeId, Set<NodeId>>();
   readonly boundaryLocations = new Map<
@@ -687,6 +689,8 @@ class CanonicalIndexes {
     this.boundaryIds.clear();
     this.parentByChild.clear();
     this.activeNodes.clear();
+    this.visibleInlineNodeIds.length = 0;
+    this.visibleInlinePosition.clear();
     this.activeTapeOwners.clear();
     this.tapeOwners.clear();
     this.boundaryLocations.clear();
@@ -708,7 +712,13 @@ class CanonicalIndexes {
       if (this.activeNodes.has(id)) continue;
       this.activeNodes.add(id);
       const record = nodes.get(id);
-      if (record) pending.push(...readCell<readonly NodeId[]>(record, 'children').value);
+      if (record) {
+        if (INLINE_KINDS.has(readCell<NodeKind>(record, 'kind').value)) {
+          this.visibleInlinePosition.set(id, this.visibleInlineNodeIds.length);
+          this.visibleInlineNodeIds.push(id);
+        }
+        pending.push(...readCell<readonly NodeId[]>(record, 'children').value);
+      }
     }
 
     for (const [id, record] of nodes) {
@@ -755,6 +765,24 @@ class CanonicalIndexes {
 
   content(nodeId: NodeId): string {
     return this.projected(nodeId).index.text;
+  }
+
+  projectedText(nodeId: NodeId): ProjectedTextIndex {
+    return this.projected(nodeId).index;
+  }
+
+  visibleInlineNeighbors(nodeId: NodeId): {
+    readonly previousNodeId?: NodeId;
+    readonly nextNodeId?: NodeId;
+  } {
+    const index = this.visibleInlinePosition.get(nodeId);
+    if (index === undefined) return {};
+    return {
+      ...(index > 0 ? { previousNodeId: this.visibleInlineNodeIds[index - 1]! } : {}),
+      ...(index + 1 < this.visibleInlineNodeIds.length
+        ? { nextNodeId: this.visibleInlineNodeIds[index + 1]! }
+        : {}),
+    };
   }
 
   mapTextEdit(nodeId: NodeId, spans: readonly Span[], edit: TextEdit) {
@@ -806,7 +834,8 @@ function assertTextMutationOnly(
   evidence: NativeMutationEvidence,
   state: Y.Doc,
   changedTapeIds: ReadonlySet<TapeId>,
-  boundarySignatures: ReadonlyMap<TapeId, string>,
+  boundarySnapshots: ReadonlyMap<TapeId, string>,
+  indexes: CanonicalIndexes,
 ): void {
   assert(evidence.changedOtherTypes.size === 0, 'text update changed an unsupported shared type');
   assert(evidence.changedNodeCells.size === 0, 'text update changed node metadata');
@@ -824,16 +853,19 @@ function assertTextMutationOnly(
   for (const tapeId of changedTapeIds) {
     const tape = tapes.get(tapeId);
     assert(tape, `text update references missing tape ${tapeId}`);
+    const index = indexes.tape(tapeId);
+    assertCanonicalTapeShape(index);
     assert(
-      boundarySignatures.get(tapeId) === boundarySignature(tape),
-      `text update changed permanent markers on ${tapeId}`,
+      boundarySnapshots.get(tapeId) === markerIdentitySignature(index),
+      `text update changed permanent marker identity or order on ${tapeId}`,
     );
-    for (const part of tape.toDelta()) {
+    for (const part of index.parts) {
       assert(
-        !part.attributes || Object.keys(part.attributes).length === 0,
-        `text update added formatting to tape ${tapeId}`,
+        typeof part.insert === 'string' || boundaryIdFromInsert(part.insert) !== undefined,
+        `text update added an unsupported embed to tape ${tapeId}`,
       );
     }
+    assert(!index.hasFormatting, `text update added formatting to tape ${tapeId}`);
   }
 }
 
@@ -2767,6 +2799,54 @@ function boundarySignature(tape: Y.Text): string {
   );
 }
 
+function boundaryIdFromInsert(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || !('grainBoundary' in value)) return undefined;
+  const boundaryId = (value as { readonly grainBoundary: unknown }).grainBoundary;
+  return typeof boundaryId === 'string' ? boundaryId : undefined;
+}
+
+function markerIdentitySignature(index: NativeTapeIndex): string {
+  return stableJson(index.boundaryItems.map(({ boundaryId, itemId }) => ({ boundaryId, itemId })));
+}
+
+function assertCanonicalTapeShape(index: NativeTapeIndex): void {
+  const first = index.parts[0];
+  const last = index.parts.at(-1);
+  assert(
+    first && boundaryIdFromInsert(first.insert),
+    `tape ${index.tapeId} lacks a leading boundary`,
+  );
+  assert(
+    last && boundaryIdFromInsert(last.insert),
+    `tape ${index.tapeId} lacks a trailing boundary`,
+  );
+  assert(first.nativeFrom === 0, `tape ${index.tapeId} has text before its first boundary`);
+  assert(last.nativeTo === index.length, `tape ${index.tapeId} has text after its last boundary`);
+  const markerParts = index.parts.flatMap((part) => {
+    const boundaryId = boundaryIdFromInsert(part.insert);
+    return boundaryId === undefined ? [] : [{ boundaryId, index: part.nativeFrom }];
+  });
+  assert(
+    stableJson(markerParts) ===
+      stableJson(
+        index.boundaryItems.map(({ boundaryId, index: position }) => ({
+          boundaryId,
+          index: position,
+        })),
+      ),
+    `tape ${index.tapeId} has unresolved native boundary identities`,
+  );
+  assert(
+    new Set(index.boundaryItems.map(({ boundaryId }) => boundaryId)).size ===
+      index.boundaryItems.length,
+    `tape ${index.tapeId} has duplicate boundary IDs`,
+  );
+  assert(
+    new Set(index.boundaryItems.map(({ itemId }) => itemId)).size === index.boundaryItems.length,
+    `tape ${index.tapeId} has duplicate native boundary items`,
+  );
+}
+
 function assertTextOnlyUpdate(previous: Y.Doc, candidate: Y.Doc): void {
   assertRetainedResources(previous, candidate);
   assert(
@@ -2805,16 +2885,21 @@ function assertTextOnlyUpdate(previous: Y.Doc, candidate: Y.Doc): void {
   for (const [id, tape] of previousTapes.entries()) {
     const next = candidateTapes.get(id);
     assert(next, `text update removed tape ${id}`);
+    const previousIndex = indexNativeTape(id, tape);
+    const nextIndex = indexNativeTape(id, next);
+    assertCanonicalTapeShape(previousIndex);
+    assertCanonicalTapeShape(nextIndex);
     assert(
-      boundarySignature(tape) === boundarySignature(next),
-      `text update changed boundary markers on ${id}`,
+      markerIdentitySignature(previousIndex) === markerIdentitySignature(nextIndex),
+      `text update changed boundary marker identity or order on ${id}`,
     );
-    for (const part of next.toDelta()) {
+    for (const part of nextIndex.parts) {
       assert(
-        !part.attributes || Object.keys(part.attributes).length === 0,
-        `text update added formatting to tape ${id}`,
+        typeof part.insert === 'string' || boundaryIdFromInsert(part.insert) !== undefined,
+        `text update added an unsupported embed to tape ${id}`,
       );
     }
+    assert(!nextIndex.hasFormatting, `text update added formatting to tape ${id}`);
   }
 }
 
@@ -3323,7 +3408,7 @@ interface HistoryEntry {
   focus?: ActionFocus;
   focusAnchors?: ActionFocusAnchors;
   selectionAnchors?: { readonly anchor: CanonicalTextAnchor; readonly focus: CanonicalTextAnchor };
-  readonly manager?: Y.UndoManager;
+  manager?: Y.UndoManager;
   sealed: boolean;
   noEffect: boolean;
   structuralEffect: boolean;
@@ -3402,11 +3487,18 @@ interface HistoryReservation {
   readonly sessionId: string;
   readonly entry: HistoryEntry;
   readonly isNew: boolean;
+  readonly managerExisted: boolean;
   readonly nextCurrent: boolean;
   readonly noEffect: boolean;
   readonly structuralEffect: boolean;
   readonly textTapes: readonly TapeId[];
   readonly structuralPatch: StructuralPatch;
+  readonly focus?: ActionFocus;
+  readonly focusAnchors?: ActionFocusAnchors;
+  readonly selectionAnchors?: {
+    readonly anchor: CanonicalTextAnchor;
+    readonly focus: CanonicalTextAnchor;
+  };
 }
 
 interface PendingRecord {
@@ -3435,27 +3527,14 @@ interface PendingHistoryRecord {
 }
 
 function projectionNodeIds(
-  state: Y.Doc,
+  indexes: CanonicalIndexes,
   touchedNodeIds: readonly NodeId[],
   touchedTapeIds: readonly TapeId[],
   patch: StructuralPatch,
 ): NodeId[] {
   const affected = new Set(touchedNodeIds);
-  const touchedTapes = new Set(touchedTapeIds);
-  if (touchedTapes.size) {
-    const nodes = nodeMap(state);
-    const pending = [metaMap(state).get('rootId') as NodeId];
-    const visited = new Set<NodeId>();
-    while (pending.length) {
-      const id = pending.pop()!;
-      if (visited.has(id)) continue;
-      visited.add(id);
-      const record = nodes.get(id);
-      if (!record) continue;
-      const spans = readCell<readonly Span[]>(record, 'spans').value;
-      if (spans.some((span) => touchedTapes.has(span.tapeId))) affected.add(id);
-      pending.push(...readCell<readonly NodeId[]>(record, 'children').value);
-    }
+  for (const tapeId of touchedTapeIds) {
+    for (const nodeId of indexes.activeTapeOwners.get(tapeId) ?? []) affected.add(nodeId);
   }
   const addChildren = (value: unknown) => {
     if (Array.isArray(value)) {
@@ -3900,7 +3979,7 @@ export class CanonicalWriter {
     | {
         readonly kind: 'literal';
         readonly changedTapeIds: ReadonlySet<TapeId>;
-        readonly boundarySignatures: ReadonlyMap<TapeId, string>;
+        readonly boundarySnapshots: ReadonlyMap<TapeId, string>;
       }
     | { readonly kind: 'conversion'; readonly plan: ParserConversionPlan }
     | { readonly kind: 'slow' } {
@@ -3916,11 +3995,18 @@ export class CanonicalWriter {
       kindCell.token === target.kindToken &&
       spansCell.token === target.spansToken;
     const allowedTapeIds = new Set((spansCell?.value ?? []).map((span) => span.tapeId));
-    const boundarySignatures = new Map<TapeId, string>();
+    const boundarySnapshots = new Map<TapeId, string>();
     for (const tapeId of allowedTapeIds) {
-      const tape = tapeMap(validation.state).get(tapeId);
-      assert(tape, `missing validation tape ${tapeId}`);
-      boundarySignatures.set(tapeId, boundarySignature(tape));
+      const liveIndex = this.indexes.tape(tapeId);
+      const stagedIndex = validation.indexes.tape(tapeId);
+      assertCanonicalTapeShape(liveIndex);
+      assertCanonicalTapeShape(stagedIndex);
+      const snapshot = markerIdentitySignature(liveIndex);
+      assert(
+        snapshot === markerIdentitySignature(stagedIndex),
+        `validation replica has different boundary identities on ${tapeId}`,
+      );
+      boundarySnapshots.set(tapeId, snapshot);
     }
 
     const evidence = trackNativeMutations(
@@ -3938,8 +4024,14 @@ export class CanonicalWriter {
           [...changedTapeIds].every((tapeId) => allowedTapeIds.has(tapeId)),
           'text input updated a tape outside its target spans',
         );
-        assertTextMutationOnly(evidence, validation.state, changedTapeIds, boundarySignatures);
         validation.indexes.refreshText(changedTapeIds);
+        assertTextMutationOnly(
+          evidence,
+          validation.state,
+          changedTapeIds,
+          boundarySnapshots,
+          validation.indexes,
+        );
         if (
           request.textUpdate?.length &&
           this.indexes.isActive(target!.nodeId) &&
@@ -3952,7 +4044,7 @@ export class CanonicalWriter {
           }
         }
         evidence.close();
-        return { kind: 'literal', changedTapeIds, boundarySignatures };
+        return { kind: 'literal', changedTapeIds, boundarySnapshots };
       }
       evidence.close();
       return { kind: 'slow' };
@@ -3985,6 +4077,7 @@ export class CanonicalWriter {
     );
     const updates: Uint8Array[] = [];
     const collect = (update: Uint8Array) => updates.push(Uint8Array.from(update));
+    this.activateHistoryReservation(reservation);
     this.access.beginPending();
     this.state.on('update', collect);
     try {
@@ -4005,6 +4098,7 @@ export class CanonicalWriter {
 
       if (literal) {
         const validation = this.ensureValidationReplica();
+        this.indexes.refreshText(changedTapeIds);
         assert(
           liveMutations.changedOtherTypes.size === 0,
           'literal input changed an unsupported shared type',
@@ -4044,14 +4138,19 @@ export class CanonicalWriter {
           const staged = validationTapes.get(tapeId);
           assert(live && staged, `literal input is missing tape ${tapeId}`);
           assert(live === prior, `literal input replaced tape resource ${tapeId}`);
+          const liveIndex = this.indexes.tape(tapeId);
+          const stagedIndex = validation.indexes.tape(tapeId);
+          assertCanonicalTapeShape(liveIndex);
+          assertCanonicalTapeShape(stagedIndex);
           assert(
-            prepared.boundarySignatures.get(tapeId) === boundarySignature(live),
-            `literal input changed permanent markers on tape ${tapeId}`,
+            prepared.boundarySnapshots.get(tapeId) === markerIdentitySignature(liveIndex) &&
+              prepared.boundarySnapshots.get(tapeId) === markerIdentitySignature(stagedIndex),
+            `literal input changed permanent marker identity or order on tape ${tapeId}`,
           );
           assert(
-            stableJson(live.toDelta()) === stableJson(staged.toDelta()),
+            stableJson(liveIndex.parts) === stableJson(stagedIndex.parts),
             `literal input differs from its staged text on tape ${tapeId}: ` +
-              `${stableJson(live.toDelta())} !== ${stableJson(staged.toDelta())}`,
+              `${stableJson(liveIndex.parts)} !== ${stableJson(stagedIndex.parts)}`,
           );
           assert(
             revisionMap(this.state).get(tapeId) ===
@@ -4102,7 +4201,7 @@ export class CanonicalWriter {
       const update = Y.mergeUpdates(updates);
       this.syncAcceptedValidation(update, changedTapeIds, structuralEffect, nextRevision, literal);
       if (structuralEffect) this.indexes.rebuild();
-      else this.indexes.refreshText(changedTapeIds);
+      else if (!literal) this.indexes.refreshText(changedTapeIds);
       const pending: PendingCommit = Object.freeze({
         actionId: request.actionId,
         revision: nextRevision,
@@ -4122,6 +4221,7 @@ export class CanonicalWriter {
       liveBefore?.destroy();
       this.discardValidationReplica();
       this.discardAuthorReplica(request.sessionId);
+      this.cancelHistoryReservation(reservation);
       this.poisoned = true;
       this.access.poison();
       throw new Error(
@@ -4132,13 +4232,13 @@ export class CanonicalWriter {
     }
   }
 
-  private applyLiteralTextInput(
+  private prepareLiteralTextInput(
     request: ActionRequest,
     admittedContext: AdmittedContext,
     hash: string,
     changedTapeIds: ReadonlySet<TapeId>,
-    boundarySignatures: ReadonlyMap<TapeId, string>,
-  ): ApplyResult {
+    boundarySnapshots: ReadonlyMap<TapeId, string>,
+  ): PreparedAction {
     this.literalTextInputCount++;
     const revision = metaMap(this.state).get('acceptedRevision') as number;
     const nextRevision = revision + 1;
@@ -4170,19 +4270,40 @@ export class CanonicalWriter {
     const focusAnchors: ActionFocusAnchors | undefined = receipt.focus
       ? Object.freeze({
           ...(receipt.focus.start
-            ? { start: createCanonicalTextAnchorFromState(this.state, receipt.focus.start) }
+            ? {
+                start: createCanonicalTextAnchorFromIndexes(
+                  this.state,
+                  receipt.focus.start,
+                  this.indexes,
+                ),
+              }
             : {}),
           ...(receipt.focus.end
-            ? { end: createCanonicalTextAnchorFromState(validation.state, receipt.focus.end) }
+            ? {
+                end: createCanonicalTextAnchorFromIndexes(
+                  validation.state,
+                  receipt.focus.end,
+                  validation.indexes,
+                ),
+              }
             : {}),
         })
       : undefined;
     const selectionAnchors = receipt.focus?.selection
       ? Object.freeze({
-          anchor: createCanonicalTextAnchorFromState(this.state, receipt.focus.selection.anchor),
-          focus: createCanonicalTextAnchorFromState(this.state, receipt.focus.selection.focus),
+          anchor: createCanonicalTextAnchorFromIndexes(
+            this.state,
+            receipt.focus.selection.anchor,
+            this.indexes,
+          ),
+          focus: createCanonicalTextAnchorFromIndexes(
+            this.state,
+            receipt.focus.selection.focus,
+            this.indexes,
+          ),
         })
       : undefined;
+    const snapshot = captureTouchedResources(this.state, EMPTY_PLAN, changedTapeIds);
     const reservation = this.reserveHistory(
       request.sessionId,
       request.historyGroupId,
@@ -4194,7 +4315,7 @@ export class CanonicalWriter {
       focusAnchors,
       selectionAnchors,
     );
-    return this.commitPreparedAction({
+    return {
       kind: 'literal',
       request,
       context: Object.freeze({ ...admittedContext }),
@@ -4208,9 +4329,9 @@ export class CanonicalWriter {
       structuralEffect: false,
       receipt,
       reservation,
-      boundarySignatures,
-      snapshot: captureTouchedResources(this.state, EMPTY_PLAN, changedTapeIds),
-    });
+      boundarySnapshots,
+      snapshot,
+    };
   }
 
   apply(requestInput: ActionRequest, admittedContext: AdmittedContext): ApplyResult {
@@ -4275,205 +4396,250 @@ export class CanonicalWriter {
       return reject('stale-precondition');
     }
 
-    let stagedPromotion: ParserConversionPlan | undefined;
-    if (request.mode === 'text-input') {
-      const staged = this.stageTextInput(request);
-      if (staged.kind === 'invalid') return reject('invalid-text-update');
-      if (staged.kind === 'literal') {
-        return this.applyLiteralTextInput(
-          request,
-          admittedContext,
-          hash,
-          staged.changedTapeIds,
-          staged.boundarySignatures,
-        );
-      }
-      if (staged.kind === 'conversion') stagedPromotion = staged.plan;
-    }
-
-    const candidate = this.cloneState();
-    const candidateMutations = trackNativeMutations(candidate);
-    const inputChanged = candidateMutations.changedTapeIds;
-    const nextRevision = revision + 1;
+    let candidate: Y.Doc | undefined;
+    let candidateMutations: NativeMutationEvidence | undefined;
+    let reservation: HistoryReservation | undefined;
     try {
-      if (request.textUpdate?.length) {
-        Y.applyUpdate(candidate, Uint8Array.from(request.textUpdate));
-        assertResolvedUpdate(candidate);
-        assertTextOnlyUpdate(this.state, candidate);
-      }
-    } catch {
-      candidateMutations.close();
-      candidate.destroy();
-      this.discardValidationReplica();
-      return reject('invalid-text-update');
-    }
-
-    let draft: MutableTreeDraft | undefined;
-    let plan: LowLevelPlan;
-    let receiptFocus = request.focus;
-    try {
-      draft = new MutableTreeDraft(
-        candidate,
-        actionIdentity(
-          request.documentId,
-          request.authorityEpoch,
-          sessionId,
-          request.sessionSequence,
-        ),
-        new CanonicalIndexes(candidate),
-        request.operations,
-      );
-      const promotion = request.promotionTarget;
-      if (
-        request.mode === 'text-input' &&
-        request.textUpdate?.length &&
-        promotion &&
-        this.indexes.isActive(promotion.nodeId) &&
-        nodeCell(this.state, promotion.nodeId, 'kind').token === promotion.kindToken &&
-        nodeCell(this.state, promotion.nodeId, 'spans').token === promotion.spansToken
-      ) {
-        const sourceNode = draft.node(promotion.nodeId);
-        if (sourceNode.type === 'paragraph' && sourceNode.content !== undefined) {
-          const parsed = stagedPromotion
-            ? { provenance: stagedPromotion }
-            : parseBlocks(sourceNode.content, { provenance: true });
-          let mapSourceBookmark: ((bookmark: Bookmark) => Bookmark) | undefined;
-          if (
-            applyParserConversion(
-              draft,
-              metaMap(candidate).get('rootId') as NodeId,
-              promotion.nodeId,
-              sourceNode.content,
-              parsed.provenance,
-              (mapper) => {
-                mapSourceBookmark = mapper;
-              },
-            )
-          ) {
-            const end = receiptFocus?.end;
-            if (end?.nodeId === promotion.nodeId && mapSourceBookmark) {
-              receiptFocus = copyActionFocus({
-                ...receiptFocus,
-                end: mapSourceBookmark(end),
-              });
-            }
-            normalizeCanonicalDraft(draft, metaMap(candidate).get('rootId') as NodeId);
-          }
+      let stagedPromotion: ParserConversionPlan | undefined;
+      if (request.mode === 'text-input') {
+        const staged = this.stageTextInput(request);
+        if (staged.kind === 'invalid') return reject('invalid-text-update');
+        if (staged.kind === 'literal') {
+          const prepared = this.prepareLiteralTextInput(
+            request,
+            admittedContext,
+            hash,
+            staged.changedTapeIds,
+            staged.boundarySnapshots,
+          );
+          reservation = prepared.reservation;
+          return this.commitPreparedAction(prepared);
         }
+        if (staged.kind === 'conversion') stagedPromotion = staged.plan;
       }
-      plan = draft.compilePlan();
-      applyPlan(
-        candidate,
-        plan,
-        Object.freeze({ stagedAction: request.actionId }),
-        nextRevision,
-        candidateMutations,
-      );
-      candidate.transact(
-        () =>
-          sessionWatermarkMap(candidate).set(
-            sessionWatermarkKey(epoch, sessionId),
+
+      candidate = this.cloneState();
+      const candidateState = candidate;
+      candidateMutations = trackNativeMutations(candidate);
+      const inputChanged = candidateMutations.changedTapeIds;
+      const nextRevision = revision + 1;
+      try {
+        if (request.textUpdate?.length) {
+          Y.applyUpdate(candidate, Uint8Array.from(request.textUpdate));
+          assertResolvedUpdate(candidate);
+          assertTextOnlyUpdate(this.state, candidate);
+        }
+      } catch {
+        candidateMutations.close();
+        candidate.destroy();
+        candidateMutations = undefined;
+        candidate = undefined;
+        this.discardValidationReplica();
+        return reject('invalid-text-update');
+      }
+
+      const candidateIndexes = new CanonicalIndexes(candidate);
+      let draft: MutableTreeDraft | undefined;
+      let plan: LowLevelPlan;
+      let receiptFocus = request.focus;
+      try {
+        draft = new MutableTreeDraft(
+          candidate,
+          actionIdentity(
+            request.documentId,
+            request.authorityEpoch,
+            sessionId,
             request.sessionSequence,
           ),
-        'grain:session-watermark',
-      );
-      draft.assertMatches(candidate);
-      draft.close();
-      validateCandidate(this.state, candidate, nextRevision);
-    } catch (_error) {
-      draft?.close();
-      candidateMutations.close();
-      candidate.destroy();
-      this.discardValidationReplica();
-      return reject('invalid-operation');
-    }
+          candidateIndexes,
+          request.operations,
+        );
+        const promotion = request.promotionTarget;
+        if (
+          request.mode === 'text-input' &&
+          request.textUpdate?.length &&
+          promotion &&
+          this.indexes.isActive(promotion.nodeId) &&
+          nodeCell(this.state, promotion.nodeId, 'kind').token === promotion.kindToken &&
+          nodeCell(this.state, promotion.nodeId, 'spans').token === promotion.spansToken
+        ) {
+          const sourceNode = draft.node(promotion.nodeId);
+          if (sourceNode.type === 'paragraph' && sourceNode.content !== undefined) {
+            const parsed = stagedPromotion
+              ? { provenance: stagedPromotion }
+              : parseBlocks(sourceNode.content, { provenance: true });
+            let mapSourceBookmark: ((bookmark: Bookmark) => Bookmark) | undefined;
+            if (
+              applyParserConversion(
+                draft,
+                metaMap(candidate).get('rootId') as NodeId,
+                promotion.nodeId,
+                sourceNode.content,
+                parsed.provenance,
+                (mapper) => {
+                  mapSourceBookmark = mapper;
+                },
+              )
+            ) {
+              const end = receiptFocus?.end;
+              if (end?.nodeId === promotion.nodeId && mapSourceBookmark) {
+                receiptFocus = copyActionFocus({
+                  ...receiptFocus,
+                  end: mapSourceBookmark(end),
+                });
+              }
+              normalizeCanonicalDraft(draft, metaMap(candidate).get('rootId') as NodeId);
+            }
+          }
+        }
+        plan = draft.compilePlan();
+        applyPlan(
+          candidate,
+          plan,
+          Object.freeze({ stagedAction: request.actionId }),
+          nextRevision,
+          candidateMutations,
+        );
+        candidate.transact(
+          () =>
+            sessionWatermarkMap(candidateState).set(
+              sessionWatermarkKey(epoch, sessionId),
+              request.sessionSequence,
+            ),
+          'grain:session-watermark',
+        );
+        draft.assertMatches(candidate);
+        draft.close();
+        validateCandidate(this.state, candidate, nextRevision);
+        candidateIndexes.rebuild();
+      } catch (_error) {
+        draft?.close();
+        candidateMutations.close();
+        candidate.destroy();
+        candidateMutations = undefined;
+        candidate = undefined;
+        this.discardValidationReplica();
+        return reject('invalid-operation');
+      }
 
-    const structuralPatch = structuralPatchBetween(this.state, candidate, plan);
-    const finalChangedTapes = new Set([
-      ...candidateMutations.changedTapeIds,
-      ...plan.newTapes.map(({ id }) => id),
-    ]);
-    const textTapes = new Set([...inputChanged, ...plan.textTapes]);
-    const structuralEffect = structuralPatch.cells.length > 0 || structuralPatch.births.length > 0;
-    const noEffect =
-      !finalChangedTapes.size &&
-      !structuralEffect &&
-      !plan.deletions.length &&
-      !plan.insertions.length;
-    const target = request.promotionTarget;
-    const promotionSkipped =
-      target &&
-      (!this.indexes.isActive(target.nodeId) ||
-        nodeCell(this.state, target.nodeId, 'kind').token !== target.kindToken ||
-        nodeCell(this.state, target.nodeId, 'spans').token !== target.spansToken)
-        ? 'ownershipChanged'
-        : undefined;
-    const receipt: ActionReceipt = Object.freeze({
-      requestId: actionIdentity(
-        request.documentId,
-        request.authorityEpoch,
-        request.sessionId,
-        request.sessionSequence,
-      ),
-      historyGroupId: request.historyGroupId,
-      touchedNodeIds: Object.freeze([
-        ...new Set([
-          ...plan.touchedNodes,
-          ...structuralPatch.visibility.map((item) => item.nodeId),
-          ...(target ? [target.nodeId] : []),
+      const structuralPatch = structuralPatchBetween(this.state, candidate, plan);
+      const finalChangedTapes = new Set([
+        ...candidateMutations.changedTapeIds,
+        ...plan.newTapes.map(({ id }) => id),
+      ]);
+      const textTapes = new Set([...inputChanged, ...plan.textTapes]);
+      const structuralEffect =
+        structuralPatch.cells.length > 0 || structuralPatch.births.length > 0;
+      const noEffect =
+        !finalChangedTapes.size &&
+        !structuralEffect &&
+        !plan.deletions.length &&
+        !plan.insertions.length;
+      const target = request.promotionTarget;
+      const promotionSkipped =
+        target &&
+        (!this.indexes.isActive(target.nodeId) ||
+          nodeCell(this.state, target.nodeId, 'kind').token !== target.kindToken ||
+          nodeCell(this.state, target.nodeId, 'spans').token !== target.spansToken)
+          ? 'ownershipChanged'
+          : undefined;
+      const receipt: ActionReceipt = Object.freeze({
+        requestId: actionIdentity(
+          request.documentId,
+          request.authorityEpoch,
+          request.sessionId,
+          request.sessionSequence,
+        ),
+        historyGroupId: request.historyGroupId,
+        touchedNodeIds: Object.freeze([
+          ...new Set([
+            ...plan.touchedNodes,
+            ...structuralPatch.visibility.map((item) => item.nodeId),
+            ...(target ? [target.nodeId] : []),
+          ]),
         ]),
-      ]),
-      touchedTapeIds: Object.freeze([...new Set([...plan.touchedTapes, ...finalChangedTapes])]),
-      structuralPatch,
-      ...(receiptFocus ? { focus: receiptFocus } : {}),
-      noEffect,
-      ...(promotionSkipped ? { promotionSkipped } : {}),
-    });
-    const focusAnchors: ActionFocusAnchors | undefined = receipt.focus
-      ? Object.freeze({
-          ...(receipt.focus.start
-            ? { start: createCanonicalTextAnchorFromState(this.state, receipt.focus.start) }
-            : {}),
-          ...(receipt.focus.end
-            ? { end: createCanonicalTextAnchorFromState(candidate, receipt.focus.end) }
-            : {}),
-        })
-      : undefined;
-    const selectionAnchors = receipt.focus?.selection
-      ? Object.freeze({
-          anchor: createCanonicalTextAnchorFromState(this.state, receipt.focus.selection.anchor),
-          focus: createCanonicalTextAnchorFromState(this.state, receipt.focus.selection.focus),
-        })
-      : undefined;
-    const reservation = this.reserveHistory(
-      sessionId,
-      request.historyGroupId,
-      noEffect,
-      structuralEffect,
-      [...textTapes],
-      receipt,
-      structuralPatch,
-      focusAnchors,
-      selectionAnchors,
-    );
-    return this.commitPreparedAction({
-      kind: 'candidate',
-      request,
-      context: Object.freeze({ ...admittedContext }),
-      requestHash: hash,
-      revision,
-      nextRevision,
-      plan,
-      structuralPatch,
-      changedTapeIds: finalChangedTapes,
-      historyTapeIds: [...textTapes],
-      structuralEffect,
-      receipt,
-      reservation,
-      candidate,
-      candidateMutations,
-      snapshot: captureTouchedResources(this.state, plan, finalChangedTapes),
-    });
+        touchedTapeIds: Object.freeze([...new Set([...plan.touchedTapes, ...finalChangedTapes])]),
+        structuralPatch,
+        ...(receiptFocus ? { focus: receiptFocus } : {}),
+        noEffect,
+        ...(promotionSkipped ? { promotionSkipped } : {}),
+      });
+      const focusAnchors: ActionFocusAnchors | undefined = receipt.focus
+        ? Object.freeze({
+            ...(receipt.focus.start
+              ? {
+                  start: createCanonicalTextAnchorFromIndexes(
+                    this.state,
+                    receipt.focus.start,
+                    this.indexes,
+                  ),
+                }
+              : {}),
+            ...(receipt.focus.end
+              ? {
+                  end: createCanonicalTextAnchorFromIndexes(
+                    candidate,
+                    receipt.focus.end,
+                    candidateIndexes,
+                  ),
+                }
+              : {}),
+          })
+        : undefined;
+      const selectionAnchors = receipt.focus?.selection
+        ? Object.freeze({
+            anchor: createCanonicalTextAnchorFromIndexes(
+              this.state,
+              receipt.focus.selection.anchor,
+              this.indexes,
+            ),
+            focus: createCanonicalTextAnchorFromIndexes(
+              this.state,
+              receipt.focus.selection.focus,
+              this.indexes,
+            ),
+          })
+        : undefined;
+      const snapshot = captureTouchedResources(this.state, plan, finalChangedTapes);
+      const actionReservation = this.reserveHistory(
+        sessionId,
+        request.historyGroupId,
+        noEffect,
+        structuralEffect,
+        [...textTapes],
+        receipt,
+        structuralPatch,
+        focusAnchors,
+        selectionAnchors,
+      );
+      reservation = actionReservation;
+      return this.commitPreparedAction({
+        kind: 'candidate',
+        request,
+        context: Object.freeze({ ...admittedContext }),
+        requestHash: hash,
+        revision,
+        nextRevision,
+        plan,
+        structuralPatch,
+        changedTapeIds: finalChangedTapes,
+        historyTapeIds: [...textTapes],
+        structuralEffect,
+        receipt,
+        reservation: actionReservation,
+        candidate,
+        candidateMutations,
+        snapshot,
+      });
+    } catch (error) {
+      if (this.poisoned) throw error;
+      candidateMutations?.close();
+      candidate?.destroy();
+      if (reservation) this.cancelHistoryReservation(reservation);
+      this.discardValidationReplica();
+      this.rejectPreparedAuthor(request);
+      return { status: 'rejected', reason: 'invalid-operation' };
+    }
   }
 
   publish(pending: PendingCommit): AcceptedAction {
@@ -4502,7 +4668,7 @@ export class CanonicalWriter {
       callbackErrors.push(
         ...this.access.publish(
           projectionNodeIds(
-            this.state,
+            this.indexes,
             pending.receipt.touchedNodeIds,
             pending.receipt.touchedTapeIds,
             pending.receipt.structuralPatch,
@@ -4635,7 +4801,7 @@ export class CanonicalWriter {
       const callbackErrors = [
         ...this.access.publish(
           projectionNodeIds(
-            this.state,
+            this.indexes,
             record.entry.touchedNodeIds,
             record.entry.touchedTapeIds,
             record.entry.structuralPatch,
@@ -4711,41 +4877,20 @@ export class CanonicalWriter {
       sameTextTarget;
     if (canJoin) {
       const entry = session.current!;
-      if (receipt.focus) {
-        entry.focus = Object.freeze({
-          ...((entry.focus?.start ?? receipt.focus.start)
-            ? { start: entry.focus?.start ?? receipt.focus.start }
-            : {}),
-          ...(receipt.focus.end ? { end: receipt.focus.end } : {}),
-        });
-      }
-      if (focusAnchors) {
-        entry.focusAnchors = Object.freeze({
-          ...((entry.focusAnchors?.start ?? focusAnchors.start)
-            ? { start: entry.focusAnchors?.start ?? focusAnchors.start }
-            : {}),
-          ...(focusAnchors.end ? { end: focusAnchors.end } : {}),
-        });
-      }
-      if (selectionAnchors) entry.selectionAnchors = selectionAnchors;
-      if (textTapes.length && !entry.manager) {
-        Object.assign(entry, { manager: makeTextHistoryManager(this.state, entry, textTapes) });
-      } else if (textTapes.length && entry.manager)
-        addHistoryTapesToScope(this.state, entry, textTapes);
       return {
         sessionId,
         entry,
         isNew: false,
+        managerExisted: !!entry.manager,
         nextCurrent: true,
         noEffect,
         structuralEffect,
         textTapes,
         structuralPatch,
+        ...(receipt.focus ? { focus: receipt.focus } : {}),
+        ...(focusAnchors ? { focusAnchors } : {}),
+        ...(selectionAnchors ? { selectionAnchors } : {}),
       };
-    }
-    if (session.current) {
-      closeHistoryEntry(session.current);
-      session.current = undefined;
     }
     const entryId = noEffect
       ? `${groupId}:noop:${receipt.requestId}`
@@ -4754,7 +4899,7 @@ export class CanonicalWriter {
       id: entryId,
       sessionId,
       groupId,
-      createdSequence: this.sequenceOrdinal++,
+      createdSequence: this.sequenceOrdinal,
       origin: Object.freeze({ entryId }),
       textTapes: new Set(textTapes),
       touchedNodeIds: receipt.touchedNodeIds,
@@ -4768,20 +4913,39 @@ export class CanonicalWriter {
       structuralEffect,
       actionCount: 0,
     };
-    const manager = textTapes.length
-      ? makeTextHistoryManager(this.state, base as HistoryEntry, textTapes)
-      : undefined;
-    const entry: HistoryEntry = { ...base, ...(manager ? { manager } : {}) };
+    const entry: HistoryEntry = { ...base };
     return {
       sessionId,
       entry,
       isNew: true,
+      managerExisted: false,
       nextCurrent: !noEffect && !structuralEffect && textTapes.length > 0,
       noEffect,
       structuralEffect,
       textTapes,
       structuralPatch,
+      ...(receipt.focus ? { focus: receipt.focus } : {}),
+      ...(focusAnchors ? { focusAnchors } : {}),
+      ...(selectionAnchors ? { selectionAnchors } : {}),
     };
+  }
+
+  private activateHistoryReservation(reservation: HistoryReservation): void {
+    const entry = reservation.entry;
+    if (!reservation.textTapes.length) return;
+    if (!entry.manager) {
+      const tapeIds = [...new Set([...entry.textTapes, ...reservation.textTapes])];
+      entry.manager = makeTextHistoryManager(this.state, entry, tapeIds);
+    } else if (!reservation.isNew) {
+      addHistoryTapesToScope(this.state, entry, reservation.textTapes);
+    }
+  }
+
+  private cancelHistoryReservation(reservation: HistoryReservation): void {
+    if (reservation.isNew || !reservation.managerExisted) {
+      reservation.entry.manager?.destroy();
+      delete reservation.entry.manager;
+    }
   }
 
   private finishHistory(reservation: HistoryReservation): void {
@@ -4792,9 +4956,29 @@ export class CanonicalWriter {
     }
     const entry = reservation.entry;
     if (reservation.isNew) {
+      if (session.current && session.current !== entry) closeHistoryEntry(session.current);
+      if (session.current !== entry) session.current = undefined;
+      this.sequenceOrdinal++;
       session.undo.push(entry);
       session.all.add(entry);
     }
+    if (!reservation.isNew && reservation.focus) {
+      entry.focus = Object.freeze({
+        ...((entry.focus?.start ?? reservation.focus.start)
+          ? { start: entry.focus?.start ?? reservation.focus.start }
+          : {}),
+        ...(reservation.focus.end ? { end: reservation.focus.end } : {}),
+      });
+    }
+    if (!reservation.isNew && reservation.focusAnchors) {
+      entry.focusAnchors = Object.freeze({
+        ...((entry.focusAnchors?.start ?? reservation.focusAnchors.start)
+          ? { start: entry.focusAnchors?.start ?? reservation.focusAnchors.start }
+          : {}),
+        ...(reservation.focusAnchors.end ? { end: reservation.focusAnchors.end } : {}),
+      });
+    }
+    if (reservation.selectionAnchors) entry.selectionAnchors = reservation.selectionAnchors;
     for (const tapeId of reservation.textTapes) entry.textTapes.add(tapeId);
     entry.noEffect &&= reservation.noEffect;
     entry.structuralEffect ||= reservation.structuralEffect;

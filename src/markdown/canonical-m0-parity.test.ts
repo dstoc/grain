@@ -139,7 +139,7 @@ describe('M0 canonical parity corpus', () => {
 });
 
 describe('Yjs native operation counters', () => {
-  it('writes only the changed tape revision in the M1 action path', () => {
+  it('writes the changed tape revision once on the M2 literal input path', () => {
     const document = makeDocument('alpha\n\nbeta\n\ngamma', 'revision-write-counter');
     const writer = new CanonicalWriter(document);
     const initial = snapshotNativeState(document);
@@ -184,7 +184,7 @@ describe('Yjs native operation counters', () => {
     expect(measured.counts.updateEvents).toBeGreaterThan(0);
     expect(measured.counts.updateEventBytes).toBeGreaterThan(0);
     expect(measured.counts.publicDocTransactCalls).toBeGreaterThan(0);
-    expect(revisionAssignments).toBeGreaterThanOrEqual(2);
+    expect(revisionAssignments).toBe(1);
     expect(unchangedRevisionAssignments).toBe(0);
     expect(measured.counts.unchangedMapSets).toBe(0);
     expect([...new Set(liveRevisionKeys)]).toEqual([targetTapeId]);

@@ -3,7 +3,8 @@ import * as Y from 'yjs';
 import { canonicalWriterAccess, CanonicalDocument, CanonicalNode } from './canonical-model.js';
 import type { NodeId, Span, TapeId } from './canonical-model.js';
 import type { Bookmark } from './canonical-actions.js';
-import { mapTextEdit } from './canonical-text.js';
+import { mapProjectedTextEdit, mapTextEdit } from './canonical-text.js';
+import type { ProjectedTextIndex } from './canonical-text.js';
 
 export interface CanonicalTextAnchor {
   readonly bookmark: Bookmark;
@@ -17,6 +18,14 @@ interface IndexedSpan {
   readonly start: number;
   readonly end: number;
   readonly text: string;
+}
+
+export interface CanonicalTextAnchorIndexes {
+  projectedText(nodeId: NodeId): ProjectedTextIndex;
+  visibleInlineNeighbors(nodeId: NodeId): {
+    readonly previousNodeId?: NodeId;
+    readonly nextNodeId?: NodeId;
+  };
 }
 
 /** Captures a transient Yjs text anchor plus the structural fallback order. */
@@ -68,6 +77,39 @@ export function createCanonicalTextAnchorFromState(
     relativePosition: Object.freeze([...Y.encodeRelativePosition(relativePosition)]),
     ...(index > 0 ? { previousNodeId: visible[index - 1]! } : {}),
     ...(index >= 0 && index + 1 < visible.length ? { nextNodeId: visible[index + 1]! } : {}),
+  });
+}
+
+/** Captures an anchor from writer-owned resource and visible-order indexes. */
+export function createCanonicalTextAnchorFromIndexes(
+  state: Y.Doc,
+  bookmark: Bookmark,
+  indexes: CanonicalTextAnchorIndexes,
+): CanonicalTextAnchor {
+  const projected = indexes.projectedText(bookmark.nodeId);
+  const adjustedBookmark = {
+    ...bookmark,
+    offset: clampUtf16(projected.text, bookmark.offset, bookmark.affinity),
+  };
+  const mapped = mapProjectedTextEdit(projected, {
+    from: adjustedBookmark.offset,
+    to: adjustedBookmark.offset,
+    insert: '',
+    affinity: adjustedBookmark.affinity,
+    spanIndex: adjustedBookmark.spanIndex,
+  });
+  const tape = state.getMap<Y.Text>('tapes').get(mapped.insertion.tapeId);
+  if (!tape) throw new Error(`missing bookmark tape ${mapped.insertion.tapeId}`);
+  const relativePosition = Y.createRelativePositionFromTypeIndex(
+    tape,
+    mapped.insertion.index,
+    adjustedBookmark.affinity === 'left' ? -1 : 1,
+  );
+  return Object.freeze({
+    bookmark: Object.freeze(adjustedBookmark),
+    tapeId: mapped.insertion.tapeId,
+    relativePosition: Object.freeze([...Y.encodeRelativePosition(relativePosition)]),
+    ...indexes.visibleInlineNeighbors(bookmark.nodeId),
   });
 }
 
