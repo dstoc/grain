@@ -6,7 +6,7 @@ import { createSyntaxNode, createTree } from './parser-tree.js';
 import type { Caches } from './view-model-node.js';
 import { MarkdownTree } from './view-model.js';
 import { parseBlocks } from './block-parser/api.js';
-import { signal } from '../signals.js';
+import { batch, signal } from '../signals.js';
 
 export type NodeId = string;
 export type TapeId = string;
@@ -120,7 +120,7 @@ const writerAccesses = new WeakMap<CanonicalDocument, CanonicalWriterAccess>();
 export interface CanonicalWriterAccess {
   readonly state: Y.Doc;
   beginPending(): void;
-  publish(): void;
+  publish(): readonly unknown[];
   poison(): void;
 }
 
@@ -653,7 +653,7 @@ export class CanonicalDocument {
       publish: () => {
         assert(this.publicationPending, 'canonical document has no pending commit');
         this.publicationPending = false;
-        this.advanceProjection();
+        return this.advanceProjection();
       },
       poison: () => {
         this.publicationPending = true;
@@ -836,18 +836,22 @@ export class CanonicalDocument {
   }
 
   get root(): CanonicalNode {
+    this.assertLive();
     return this.node(metaValue(ymap<unknown>(this.document, META), 'rootId'));
   }
 
   get documentId(): string {
+    this.assertLive();
     return metaValue(ymap<unknown>(this.document, META), 'documentId');
   }
 
   get acceptedRevision(): number {
+    this.assertLive();
     return metaValue(ymap<unknown>(this.document, META), 'acceptedRevision');
   }
 
   get projectionVersion(): number {
+    this.assertLive();
     return this.revisionVersion;
   }
 
@@ -944,7 +948,7 @@ export class CanonicalDocument {
    * Applies the next authority-accepted update after validating it on a fresh
    * candidate replica. This path only materializes accepted shared state.
    */
-  applyAccepted(envelope: AcceptedUpdate): void {
+  applyAccepted(envelope: AcceptedUpdate): readonly unknown[] {
     this.assertLive();
     assert(
       envelope.revision === this.acceptedRevision + 1,
@@ -954,6 +958,10 @@ export class CanonicalDocument {
     try {
       Y.applyUpdate(candidate, Y.encodeStateAsUpdate(this.document));
       Y.applyUpdate(candidate, Uint8Array.from(envelope.update));
+      assert(
+        !candidate.store.pendingStructs && !candidate.store.pendingDs,
+        'accepted update has unresolved native dependencies',
+      );
       const candidateMeta = ymap<unknown>(candidate, META);
       assert(
         metaValue(candidateMeta, 'documentId') === this.documentId,
@@ -986,7 +994,7 @@ export class CanonicalDocument {
       );
       assertTapeRevisions(this.document, candidate, envelope.revision);
       Y.applyUpdate(this.document, Uint8Array.from(envelope.update));
-      this.advanceProjection();
+      return this.advanceProjection();
     } finally {
       candidate.destroy();
     }
@@ -1107,7 +1115,7 @@ export class CanonicalDocument {
   }
 
   isConnected(id: NodeId): boolean {
-    if (this.disposed) return false;
+    this.assertLive();
     const rootId = metaValue(ymap<unknown>(this.document, META), 'rootId') as string;
     const pending = [rootId];
     const visited = new Set<string>();
@@ -1132,10 +1140,17 @@ export class CanonicalDocument {
     this.assertLive();
   }
 
-  private advanceProjection(): void {
+  private advanceProjection(): readonly unknown[] {
     this.revisionVersion++;
     this.localCaches.clear();
-    for (const facade of this.facades.values()) facade.renderSignal.value++;
+    try {
+      batch(() => {
+        for (const facade of this.facades.values()) facade.renderSignal.value++;
+      });
+      return Object.freeze([]);
+    } catch (error) {
+      return Object.freeze([error]);
+    }
   }
 
   private requireRecord(id: NodeId): RecordMap {

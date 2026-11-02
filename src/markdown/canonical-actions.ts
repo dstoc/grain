@@ -723,6 +723,44 @@ class MutableTreeDraft implements TreeDraft {
     return this.compiledPlan;
   }
 
+  assertMatches(state: Y.Doc): void {
+    this.assertActive();
+    const records = nodeMap(state);
+    assert(records.size === this.nodes.size, 'compiled action changed the node registry');
+    for (const [id, expected] of this.nodes) {
+      const record = records.get(id);
+      assert(record, `compiled action omitted draft node ${id}`);
+      assert(
+        readCell<NodeKind>(record, 'kind').value === expected.type,
+        `compiled action changed the draft kind for ${id}`,
+      );
+      assert(
+        stableJson(readCell<readonly NodeId[]>(record, 'children').value) ===
+          stableJson(expected.children),
+        `compiled action changed the draft children for ${id}`,
+      );
+      const actualSpans = readCell<readonly Span[]>(record, 'spans').value;
+      const expectedSpans = expected.spans.map((span) => span.span);
+      assert(
+        stableJson(actualSpans) === stableJson(expectedSpans),
+        `compiled action changed the draft spans for ${id}`,
+      );
+      assert(
+        sameValue(readCell<string | null>(record, 'marker').value, expected.marker) &&
+          sameValue(readCell<boolean | null>(record, 'checked').value, expected.checked) &&
+          sameValue(readCell<string | null>(record, 'info').value, expected.info),
+        `compiled action changed the draft properties for ${id}`,
+      );
+      if (INLINE_KINDS.has(expected.type)) {
+        const actualText = actualSpans.map((span) => spanText(state, span)).join('');
+        assert(
+          actualText === inlineContent(expected),
+          `compiled action text differs from draft intent for ${id}`,
+        );
+      }
+    }
+  }
+
   node(id: NodeId): DraftNode {
     this.assertActive();
     const state = this.requireNode(id);
@@ -1828,11 +1866,12 @@ function applyPlan(
   if (plan.insertions.length) {
     state.transact(() => {
       const sorted = plan.insertions
-        .map((insertion) => ({
+        .map((insertion, order) => ({
           ...insertion,
+          order,
           index: indexAfterDeletes(insertion.index, deletions, insertion.tapeId),
         }))
-        .sort((a, b) => a.tapeId.localeCompare(b.tapeId) || b.index - a.index);
+        .sort((a, b) => a.tapeId.localeCompare(b.tapeId) || b.index - a.index || b.order - a.order);
       for (const insertion of sorted) {
         const tape = tapeMap(state).get(insertion.tapeId);
         assert(tape, `missing text tape ${insertion.tapeId}`);
@@ -1952,6 +1991,11 @@ function cloneDocument(state: Y.Doc): Y.Doc {
   return clone;
 }
 
+function assertResolvedUpdate(state: Y.Doc): void {
+  assert(!state.store.pendingStructs, 'text update has unresolved struct dependencies');
+  assert(!state.store.pendingDs, 'text update has unresolved delete dependencies');
+}
+
 export interface HistoryResult {
   readonly status: 'applied' | 'no-effect' | 'blocked' | 'empty' | 'queued';
   readonly revision?: number;
@@ -1959,6 +2003,18 @@ export interface HistoryResult {
   readonly reason?: 'structural-history-pending';
   readonly callbackErrors?: readonly unknown[];
 }
+
+export interface PendingHistoryCommit {
+  readonly sessionId: string;
+  readonly direction: 'undo' | 'redo';
+  readonly revision: number;
+  /** Returns a defensive copy for persistence before publication. */
+  readonly update: Uint8Array;
+}
+
+export type HistoryPreparationResult =
+  | { readonly status: 'pending'; readonly pending: PendingHistoryCommit }
+  | HistoryResult;
 
 export interface WriterEvent {
   readonly type: 'commit' | 'history';
@@ -2008,6 +2064,15 @@ interface PendingRecord {
   readonly request: ActionRequest;
   readonly requestHash: string;
   readonly reservation: HistoryReservation;
+}
+
+interface PendingHistoryRecord {
+  readonly publicValue: PendingHistoryCommit;
+  readonly sessionId: string;
+  readonly direction: 'undo' | 'redo';
+  readonly entry: HistoryEntry;
+  readonly revision: number;
+  readonly update: Uint8Array;
 }
 
 interface QueuedLocalEdit {
@@ -2076,6 +2141,7 @@ export class CanonicalWriter {
   private poisoned = false;
   private closed = false;
   private pending?: PendingRecord;
+  private pendingHistory?: PendingHistoryRecord;
   private sequenceOrdinal = 0;
 
   constructor(
@@ -2098,7 +2164,10 @@ export class CanonicalWriter {
   }
 
   close(): void {
-    assert(!this.pending, 'cannot close a writer with an unpublished commit');
+    assert(
+      !this.pending && !this.pendingHistory,
+      'cannot close a writer with an unpublished commit',
+    );
     if (this.closed) return;
     for (const session of this.sessions.values()) {
       for (const entry of session.all) destroyHistoryEntry(entry);
@@ -2206,7 +2275,8 @@ export class CanonicalWriter {
   apply(requestInput: ActionRequest, admittedContext: AdmittedContext): ApplyResult {
     if (this.closed) return { status: 'rejected', reason: 'closed-writer' };
     if (this.poisoned) return { status: 'rejected', reason: 'poisoned-writer' };
-    if (this.pending) return { status: 'rejected', reason: 'pending-commit' };
+    if (this.pending || this.pendingHistory)
+      return { status: 'rejected', reason: 'pending-commit' };
     if (this.preparing || this.publishing)
       return { status: 'rejected', reason: 'publication-order' };
     let request: ActionRequest;
@@ -2255,6 +2325,7 @@ export class CanonicalWriter {
     try {
       if (request.textUpdate?.length) {
         Y.applyUpdate(candidate, Uint8Array.from(request.textUpdate));
+        assertResolvedUpdate(candidate);
         assertTextOnlyUpdate(this.state, candidate);
         inputChanged = changedTapeIds(previousSummary, candidate);
       }
@@ -2268,7 +2339,6 @@ export class CanonicalWriter {
     try {
       draft = new MutableTreeDraft(candidate, request.actionId, request.operations);
       plan = draft.compilePlan();
-      draft.close();
       applyPlan(
         candidate,
         plan,
@@ -2276,6 +2346,8 @@ export class CanonicalWriter {
         previousSummary,
         nextRevision,
       );
+      draft.assertMatches(candidate);
+      draft.close();
       validateCandidate(this.state, candidate, nextRevision);
     } catch (_error) {
       draft?.close();
@@ -2370,39 +2442,36 @@ export class CanonicalWriter {
     this.sessions.get(record.context.sessionId)!.sequence = record.context.sessionSequence;
     this.pending = undefined;
     this.publishing = true;
-    this.access.publish();
     const callbackErrors: unknown[] = [];
-    const accepted = {
-      actionId: record.request.actionId,
-      sessionId: record.context.sessionId,
-      authorityEpoch: record.context.authorityEpoch,
-      revision: pending.revision,
-      update: Uint8Array.from(pending.update),
-      receipt: pending.receipt,
-      callbackErrors,
-    } as AcceptedAction;
-    const event: WriterEvent = Object.freeze({
-      type: 'commit',
-      actionId: accepted.actionId,
-      revision: accepted.revision,
-    });
-    for (const listener of this.listeners) {
-      try {
-        listener(event);
-      } catch (error) {
-        callbackErrors.push(error);
-      }
+    try {
+      callbackErrors.push(...this.access.publish());
+      const accepted = {
+        actionId: record.request.actionId,
+        sessionId: record.context.sessionId,
+        authorityEpoch: record.context.authorityEpoch,
+        revision: pending.revision,
+        update: Uint8Array.from(pending.update),
+        receipt: pending.receipt,
+        callbackErrors,
+      } as AcceptedAction;
+      const event: WriterEvent = Object.freeze({
+        type: 'commit',
+        actionId: accepted.actionId,
+        revision: accepted.revision,
+      });
+      callbackErrors.push(...this.notifyListeners(event));
+      Object.freeze(callbackErrors);
+      const result = Object.freeze(accepted);
+      this.acceptedRequests.set(actionKey(record.request.actionId), {
+        hash: record.requestHash,
+        sessionId: record.context.sessionId,
+        accepted: result,
+      });
+      return result;
+    } finally {
+      this.publishing = false;
+      this.flushLocalQueue();
     }
-    Object.freeze(callbackErrors);
-    const result = Object.freeze(accepted);
-    this.acceptedRequests.set(actionKey(record.request.actionId), {
-      hash: record.requestHash,
-      sessionId: record.context.sessionId,
-      accepted: result,
-    });
-    this.publishing = false;
-    this.flushLocalQueue();
-    return result;
   }
 
   edit(options: ActionOptions, callback: (draft: TreeDraft) => void): AcceptedAction | ApplyResult {
@@ -2430,11 +2499,57 @@ export class CanonicalWriter {
   }
 
   undo(sessionId = 'local'): HistoryResult {
-    return this.applyHistory(sessionId, 'undo');
+    const result = this.prepareUndo(sessionId);
+    return result.status === 'pending' ? this.publishHistory(result.pending) : result;
   }
 
   redo(sessionId = 'local'): HistoryResult {
-    return this.applyHistory(sessionId, 'redo');
+    const result = this.prepareRedo(sessionId);
+    return result.status === 'pending' ? this.publishHistory(result.pending) : result;
+  }
+
+  /** Stages undo and holds the publication barrier until publishHistory is called. */
+  prepareUndo(sessionId = 'local'): HistoryPreparationResult {
+    return this.prepareHistory(sessionId, 'undo');
+  }
+
+  /** Stages redo and holds the publication barrier until publishHistory is called. */
+  prepareRedo(sessionId = 'local'): HistoryPreparationResult {
+    return this.prepareHistory(sessionId, 'redo');
+  }
+
+  /** Publishes a staged history update after the host's durability gate succeeds. */
+  publishHistory(pending: PendingHistoryCommit): HistoryResult {
+    assert(!this.closed, 'canonical writer is closed');
+    assert(!this.poisoned, 'canonical writer is poisoned');
+    const record = this.pendingHistory;
+    assert(
+      record && record.publicValue === pending,
+      'pending history commit does not belong to this writer',
+    );
+    const session = this.sessions.get(record.sessionId);
+    assert(session, `missing history session ${record.sessionId}`);
+    const source = record.direction === 'undo' ? session.undo : session.redo;
+    const destination = record.direction === 'undo' ? session.redo : session.undo;
+    assert(source.at(-1) === record.entry, 'pending history entry is no longer current');
+    source.pop();
+    destination.push(record.entry);
+    if (session.current === record.entry) session.current = undefined;
+    this.pendingHistory = undefined;
+    this.publishing = true;
+    try {
+      const callbackErrors = [...this.access.publish()];
+      callbackErrors.push(...this.notifyListeners({ type: 'history', revision: record.revision }));
+      return Object.freeze({
+        status: 'applied',
+        revision: record.revision,
+        update: Uint8Array.from(record.update),
+        callbackErrors: Object.freeze(callbackErrors),
+      });
+    } finally {
+      this.publishing = false;
+      this.flushLocalQueue();
+    }
   }
 
   sealTextGroup(sessionId = 'local'): void {
@@ -2537,10 +2652,10 @@ export class CanonicalWriter {
     this.trimHistory(session);
   }
 
-  private applyHistory(sessionId: string, direction: 'undo' | 'redo'): HistoryResult {
+  private prepareHistory(sessionId: string, direction: 'undo' | 'redo'): HistoryPreparationResult {
     if (this.closed) return { status: 'blocked', reason: 'structural-history-pending' };
     if (this.poisoned) return { status: 'blocked', reason: 'structural-history-pending' };
-    if (this.pending || this.preparing || this.publishing)
+    if (this.pending || this.pendingHistory || this.preparing || this.publishing)
       return { status: 'blocked', reason: 'structural-history-pending' };
     const session = this.sessions.get(sessionId);
     if (!session) return { status: 'empty' };
@@ -2579,24 +2694,40 @@ export class CanonicalWriter {
       }
       this.state.off('update', collect);
       liveBefore.destroy();
-      source.pop();
-      destination.push(entry);
-      if (session.current === entry) session.current = undefined;
       const update = updates.length ? Y.mergeUpdates(updates) : undefined;
-      this.publishing = true;
-      this.access.publish();
-      const callbackErrors = this.notifyListeners({
-        type: 'history',
-        revision: updated.changed.length ? updated.revision : undefined,
+      if (!updated.changed.length) {
+        source.pop();
+        destination.push(entry);
+        if (session.current === entry) session.current = undefined;
+        this.publishing = true;
+        try {
+          const callbackErrors = [...this.access.publish()];
+          callbackErrors.push(...this.notifyListeners({ type: 'history' }));
+          return { status: 'no-effect', callbackErrors: Object.freeze(callbackErrors) };
+        } finally {
+          this.publishing = false;
+          this.flushLocalQueue();
+        }
+      }
+      assert(update, 'changed history did not produce an update');
+      const updateBytes = Uint8Array.from(update);
+      const publicValue: PendingHistoryCommit = Object.freeze({
+        sessionId,
+        direction,
+        revision: updated.revision,
+        get update(): Uint8Array {
+          return Uint8Array.from(updateBytes);
+        },
       });
-      this.publishing = false;
-      this.flushLocalQueue();
-      return {
-        status: updated.changed.length ? 'applied' : 'no-effect',
-        ...(updated.changed.length ? { revision: updated.revision } : {}),
-        ...(update ? { update } : {}),
-        callbackErrors,
+      this.pendingHistory = {
+        publicValue,
+        sessionId,
+        direction,
+        entry,
+        revision: updated.revision,
+        update: updateBytes,
       };
+      return { status: 'pending', pending: publicValue };
     } catch (error) {
       this.state.off('update', collect);
       liveBefore.destroy();
@@ -2682,7 +2813,7 @@ export class CanonicalWriter {
   private assertCanPrepare(): void {
     assert(!this.closed, 'canonical writer is closed');
     assert(!this.poisoned, 'canonical writer is poisoned');
-    assert(!this.pending, 'canonical writer has an unpublished commit');
+    assert(!this.pending && !this.pendingHistory, 'canonical writer has an unpublished commit');
     assert(!this.preparing, 'nested draft preparation is not allowed');
   }
 
