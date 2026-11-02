@@ -128,6 +128,18 @@ async function settleHarness(harness: LitElement) {
   await harness.updateComplete;
 }
 
+async function nextAnimationFrame() {
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+async function settleMobileLayout(harness: LitElement) {
+  await settleHarness(harness);
+  for (let frame = 0; frame < 4; frame += 1) {
+    await nextAnimationFrame();
+    await harness.updateComplete;
+  }
+}
+
 function expectDocumentWithinViewport() {
   expect(document.documentElement.scrollHeight).toBe(document.documentElement.clientHeight);
   expect(document.documentElement.scrollWidth).toBe(document.documentElement.clientWidth);
@@ -151,8 +163,38 @@ async function showSimulatedKeyboard(harness: LitElement, inline: HTMLElement) {
     new PointerEvent('pointerdown', { bubbles: true, button: 0, cancelable: true }),
   );
   toggle.click();
-  await settleHarness(harness);
+  await settleMobileLayout(harness);
   return harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
+}
+
+async function resizeForPhoneToolbarSpace(harness: LitElement, availableHeight: number) {
+  await page.viewport(390, availableHeight + 346);
+  await settleMobileLayout(harness);
+  const frame = harness.shadowRoot!.querySelector<HTMLElement>('.app-frame')!;
+  const toolbar = harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
+  expect(toolbar.getBoundingClientRect().top - frame.getBoundingClientRect().top).toBeCloseTo(
+    availableHeight,
+    0,
+  );
+}
+
+function expectUsableToolbarCanvas(harness: LitElement, toolbar: HTMLElement) {
+  const stack = harness.shadowRoot!.querySelector<HTMLElement>('.panel-stack')!;
+  const canvas = harness.shadowRoot!.querySelector<HTMLElement>('.preview-card')!;
+  const canvasRect = canvas.getBoundingClientRect();
+  const stackRect = stack.getBoundingClientRect();
+  const toolbarRect = toolbar.getBoundingClientRect();
+  const style = getComputedStyle(canvas);
+  const contentHeight =
+    canvas.clientHeight -
+    Number.parseFloat(style.paddingTop) -
+    Number.parseFloat(style.paddingBottom);
+
+  expect(contentHeight).toBeGreaterThanOrEqual(44);
+  expect(canvasRect.bottom).toBeLessThanOrEqual(Math.min(stackRect.bottom, toolbarRect.top) + 1);
+  expect(toolbarRect.top - stackRect.bottom).toBeGreaterThanOrEqual(0);
+  expect(toolbarRect.top - stackRect.bottom).toBeLessThanOrEqual(2);
+  expectDocumentWithinViewport();
 }
 
 test('responsive shell disclosures preserve the editor and expose live outputs and tools', async () => {
@@ -304,9 +346,10 @@ test('Source and simulated keyboard leave a usable phone output viewport', async
     const [inline] = currentEditorInlines(harness);
     const toolbar = await showSimulatedKeyboard(harness, inline!);
     const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
-    if (!keepToolsOpen) {
+    const tools = harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!;
+    if (tools.hidden === keepToolsOpen) {
       toolsToggle.click();
-      await harness.updateComplete;
+      await settleMobileLayout(harness);
     }
 
     const focusedInline = await waitForFocusedInline(harness);
@@ -318,7 +361,6 @@ test('Source and simulated keyboard leave a usable phone output viewport', async
     await settleHarness(harness);
 
     const frame = harness.shadowRoot!.querySelector<HTMLElement>('.app-frame')!;
-    const tools = harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!;
     const preview = harness.shadowRoot!.querySelector<HTMLElement>('.preview')!;
     const tabs = harness.shadowRoot!.querySelector<HTMLElement>('.tabs')!;
     const canvas = harness.shadowRoot!.querySelector<HTMLElement>('.preview-card')!;
@@ -354,6 +396,10 @@ test('Source and simulated keyboard leave a usable phone output viewport', async
     expect(previewRect.top).toBeGreaterThanOrEqual(frameRect.top);
     expect(previewRect.bottom).toBeLessThan(frameRect.bottom);
     expect(previewRect.bottom).toBeLessThanOrEqual(toolbarRect.top);
+    expect(previewRect.bottom).toBeLessThanOrEqual(
+      harness.shadowRoot!.querySelector<HTMLElement>('.panel-stack')!.getBoundingClientRect()
+        .bottom,
+    );
     expect(preview.scrollTop).toBe(0);
     expect(canvasStyle.overflowY).toBe('auto');
     expect(usableCanvasHeight).toBeGreaterThanOrEqual(44);
@@ -365,6 +411,180 @@ test('Source and simulated keyboard leave a usable phone output viewport', async
 
   await expectUsableOutput(390, 667, false);
   await expectUsableOutput(390, 844, true);
+});
+
+test('short phone panel scrolling preserves the editor and keeps Test tools reachable', async () => {
+  await page.viewport(390, 546);
+  const { harness, source } = await createSettledHarness('alpha\n\nbeta');
+  const editor = harness.shadowRoot!.querySelector('md-editor')!;
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  await resizeForPhoneToolbarSpace(harness, 200);
+
+  const sourceToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.source-toggle')!;
+  const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+  const tools = harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!;
+  const panelStack = harness.shadowRoot!.querySelector<HTMLElement>('.panel-stack')!;
+  const frame = harness.shadowRoot!.querySelector<HTMLElement>('.app-frame')!;
+  const frameRect = frame.getBoundingClientRect();
+  const sourceToggleRect = sourceToggle.getBoundingClientRect();
+  const toolsToggleRect = toolsToggle.getBoundingClientRect();
+  expect(toolbar.visible).toBe(true);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(sourceToggleRect.top).toBeGreaterThanOrEqual(0);
+  expect(toolsToggleRect.bottom).toBeLessThanOrEqual(frameRect.top + 57);
+  expect(tools.textContent).toContain('Playback delay: 10 ms per character');
+  expect(tools.textContent).toContain('pending tail:');
+  expect(tools.textContent).toContain('mode:');
+  expect(tools.getBoundingClientRect().height).toBeLessThanOrEqual(112);
+  expect(tools.scrollHeight).toBeGreaterThan(tools.clientHeight);
+
+  const focused = await waitForFocusedInline(harness);
+  focused.setSelectionOffsets(1, 3);
+  const selection = focused.getTextSelection();
+  await settleMobileLayout(harness);
+  expectUsableToolbarCanvas(harness, toolbar);
+  expect(focused.getCaretPosition().y).toBeLessThan(toolbar.getBoundingClientRect().top);
+
+  panelStack.scrollTop = 0;
+  await nextAnimationFrame();
+  expect(panelStack.scrollTop).toBe(0);
+  const play = harness.shadowRoot!.querySelector<HTMLButtonElement>('.play')!;
+  const progress = harness.shadowRoot!.querySelector<HTMLInputElement>('input[type="range"]')!;
+  expect(play.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+    tools.getBoundingClientRect().top,
+  );
+  expect(progress.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+    tools.getBoundingClientRect().bottom,
+  );
+
+  tools.scrollTop = tools.scrollHeight;
+  await nextAnimationFrame();
+  const simulationToggle =
+    harness.shadowRoot!.querySelector<HTMLButtonElement>('.simulation-toggle')!;
+  const simulationRect = simulationToggle.getBoundingClientRect();
+  const toolsRect = tools.getBoundingClientRect();
+  expect(simulationRect.top).toBeGreaterThanOrEqual(toolsRect.top);
+  expect(simulationRect.bottom).toBeLessThanOrEqual(toolsRect.bottom);
+  expect(panelStack.scrollTop).toBe(0);
+  await nextAnimationFrame();
+  expect(panelStack.scrollTop).toBe(0);
+
+  panelStack.scrollTop = panelStack.scrollHeight;
+  await settleMobileLayout(harness);
+  expectUsableToolbarCanvas(harness, toolbar);
+  expect(focused.getTextSelection()).toEqual(selection);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+
+  await userEvent.click(sourceToggle);
+  await settleMobileLayout(harness);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.hidden).toBe(true);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  expect(await waitForFocusedInline(harness)).toBe(focused);
+  expect(focused.getTextSelection()).toEqual(selection);
+  expectUsableToolbarCanvas(harness, toolbar);
+
+  await userEvent.click(toolsToggle);
+  await settleMobileLayout(harness);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(tools.hidden).toBe(false);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  expect(await waitForFocusedInline(harness)).toBe(focused);
+  expect(focused.getTextSelection()).toEqual(selection);
+
+  await userEvent.keyboard('X');
+  await settleMobileLayout(harness);
+  expect(source.value).toContain('aXha');
+  expect(currentEditorInlines(harness).some((item) => item.textContent?.includes('aXha'))).toBe(
+    true,
+  );
+  expect(focused.matches(':focus')).toBe(true);
+  expectUsableToolbarCanvas(harness, toolbar);
+
+  await userEvent.click(simulationToggle);
+  await settleMobileLayout(harness);
+  expect(toolbar.visible).toBe(false);
+  expect(panelStack.classList.contains('keyboard-visible')).toBe(false);
+  expect(harness.style.getPropertyValue('--mobile-keyboard-reserve')).toBe('0px');
+  expect(getComputedStyle(panelStack).overflowY).toBe('visible');
+  expect(getComputedStyle(tools).maxHeight).toBe('none');
+  expectDocumentWithinViewport();
+
+  await userEvent.click(simulationToggle);
+  await settleMobileLayout(harness);
+  expect(toolbar.visible).toBe(true);
+  expectUsableToolbarCanvas(harness, toolbar);
+  harness.remove();
+});
+
+test('mobile toolbar disclosure changes below 410 px and keeps the tools cap continuous', async () => {
+  await page.viewport(390, 757);
+  const { harness } = await createSettledHarness('alpha\n\nbeta');
+  const sourceToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.source-toggle')!;
+  sourceToggle.click();
+  await harness.updateComplete;
+  const editor = harness.shadowRoot!.querySelector('md-editor')!;
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+  const tools = harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!;
+  const focused = await waitForFocusedInline(harness);
+  focused.setSelectionOffsets(1, 3);
+  const selection = focused.getTextSelection();
+
+  await resizeForPhoneToolbarSpace(harness, 411);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.getBoundingClientRect().height).toBeLessThanOrEqual(112);
+  expectUsableToolbarCanvas(harness, toolbar);
+
+  await resizeForPhoneToolbarSpace(harness, 410);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.getBoundingClientRect().height).toBeLessThanOrEqual(112);
+
+  await resizeForPhoneToolbarSpace(harness, 409);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(tools.hidden).toBe(true);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  expect(await waitForFocusedInline(harness)).toBe(focused);
+  expect(focused.getTextSelection()).toEqual(selection);
+  expectUsableToolbarCanvas(harness, toolbar);
+
+  await resizeForPhoneToolbarSpace(harness, 411);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
+  await resizeForPhoneToolbarSpace(harness, 410);
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
+
+  await userEvent.click(toolsToggle);
+  await settleMobileLayout(harness);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.getBoundingClientRect().height).toBeLessThanOrEqual(112);
+  expect(focused.getTextSelection()).toEqual(selection);
+
+  await resizeForPhoneToolbarSpace(harness, 409);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
+  await userEvent.click(toolsToggle);
+  await settleMobileLayout(harness);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.getBoundingClientRect().height).toBeLessThanOrEqual(112);
+  expectUsableToolbarCanvas(harness, toolbar);
+
+  await resizeForPhoneToolbarSpace(harness, 411);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.getBoundingClientRect().height).toBeLessThanOrEqual(112);
+  expectUsableToolbarCanvas(harness, toolbar);
+  harness.remove();
 });
 
 test('output tabs switch between live views with keyboard navigation', async () => {
@@ -1031,46 +1251,67 @@ test('VirtualKeyboard geometry controls visibility and overlay ownership restore
     const { harness } = await createSettledHarness('alpha\n\nbeta');
     const inline = currentEditorInlines(harness)[0]!;
     inline.focus();
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     const toolbar = harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
     expect(keyboard.overlaysContent).toBe(true);
     expect(toolbar.visible).toBe(true);
     expect(toolbar.getBoundingClientRect().top).toBe(364);
     expect(toolbar.getBoundingClientRect().bottom).toBe(rect.top);
+    const frame = harness.shadowRoot!.querySelector<HTMLElement>('.app-frame')!;
+    const panelStack = harness.shadowRoot!.querySelector<HTMLElement>('.panel-stack')!;
+    expect(
+      toolbar.getBoundingClientRect().top - panelStack.getBoundingClientRect().bottom,
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      toolbar.getBoundingClientRect().top - panelStack.getBoundingClientRect().bottom,
+    ).toBeLessThanOrEqual(2);
+    expect(harness.style.getPropertyValue('--mobile-keyboard-reserve')).toBe(
+      `${frame.getBoundingClientRect().bottom - toolbar.getBoundingClientRect().top}px`,
+    );
 
     const button = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button')!;
     button.focus();
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     expect(keyboard.overlaysContent).toBe(false);
     rect = new DOMRect(0, 720, 800, 0);
     keyboard.dispatchEvent(new Event('geometrychange'));
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     expect(toolbar.visible).toBe(false);
+    expect(panelStack.classList.contains('keyboard-visible')).toBe(false);
+    expect(harness.style.getPropertyValue('--mobile-keyboard-reserve')).toBe('0px');
+    expect(getComputedStyle(panelStack).overflowY).toBe('visible');
 
     rect = new DOMRect(0, 420, 800, 300);
     inline.focus();
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     keyboard.dispatchEvent(new Event('geometrychange'));
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     expect(keyboard.overlaysContent).toBe(true);
     expect(toolbar.visible).toBe(true);
+    rect = new DOMRect(0, 400, 800, 320);
+    keyboard.dispatchEvent(new Event('geometrychange'));
+    await settleMobileLayout(harness);
+    expect(toolbar.getBoundingClientRect().top).toBe(344);
+    expect(
+      toolbar.getBoundingClientRect().top - panelStack.getBoundingClientRect().bottom,
+    ).toBeLessThanOrEqual(2);
     window.dispatchEvent(new Event('orientationchange'));
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     expect(toolbar.visible).toBe(true);
 
     rect = new DOMRect(0, 720, 800, 0);
     keyboard.dispatchEvent(new Event('geometrychange'));
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     expect(toolbar.visible).toBe(false);
     expect(keyboard.overlaysContent).toBe(true);
 
     harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab')[1]!.click();
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     expect(keyboard.overlaysContent).toBe(false);
     expect(toolbar.visible).toBe(false);
 
     harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab')[0]!.click();
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     currentEditorInlines(harness)[0]!.focus();
     expect(keyboard.overlaysContent).toBe(true);
     harness.remove();

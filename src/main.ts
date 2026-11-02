@@ -123,6 +123,7 @@ class MarkdownDevHarness extends LitElement {
     }
 
     .app-frame {
+      --app-header-height: 64px;
       display: flex;
       flex-direction: column;
       box-sizing: border-box;
@@ -303,13 +304,34 @@ class MarkdownDevHarness extends LitElement {
       color: var(--harness-accent);
     }
 
+    .panel-stack {
+      display: flex;
+      flex: 1 1 auto;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .panel-stack.keyboard-visible {
+      flex: 1 1 auto;
+      max-height: calc(100% - var(--app-header-height) - var(--mobile-keyboard-reserve, 0px));
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .panel-stack.keyboard-visible .tools-panel {
+      max-height: 112px;
+      overflow-y: auto;
+    }
+
     .shell {
       display: grid;
       grid-template-columns: minmax(250px, 0.36fr) minmax(0, 0.64fr);
       flex: 1 1 auto;
       min-width: 0;
       min-height: 0;
-      padding-bottom: var(--mobile-keyboard-reserve, 0px);
     }
 
     .shell.source-collapsed {
@@ -529,6 +551,7 @@ class MarkdownDevHarness extends LitElement {
 
     @media (max-width: 700px) {
       .app-frame {
+        --app-header-height: 56px;
         width: calc(100% - 20px);
         height: calc(100dvh - 20px);
         min-height: 0;
@@ -574,7 +597,7 @@ class MarkdownDevHarness extends LitElement {
 
       .shell {
         grid-template-columns: minmax(0, 1fr);
-        grid-template-rows: minmax(0, 1fr);
+        grid-template-rows: minmax(144px, 1fr);
         min-height: 0;
       }
 
@@ -680,6 +703,8 @@ class MarkdownDevHarness extends LitElement {
   private visualViewportBaseline = 0;
   private readinessTimer: number | undefined;
   private caretFrame: number | undefined;
+  private panelLayoutFrame: number | undefined;
+  private availablePanelHeight = Number.POSITIVE_INFINITY;
   private readonly mobileLayoutQuery = window.matchMedia('(max-width: 700px)');
   private sourceManuallyToggled = false;
 
@@ -725,6 +750,7 @@ class MarkdownDevHarness extends LitElement {
               class="source-toggle"
               aria-controls="source-pane"
               aria-expanded=${this.sourceExpanded}
+              @pointerdown=${this.preserveControlFocus}
               @click=${this.toggleSource}
             >
               Source
@@ -733,136 +759,139 @@ class MarkdownDevHarness extends LitElement {
               class="tools-toggle"
               aria-controls="test-tools-panel"
               aria-expanded=${this.testToolsExpanded}
+              @pointerdown=${this.preserveControlFocus}
               @click=${this.toggleTestTools}
             >
               Test tools
             </button>
           </nav>
         </header>
-        <section
-          id="test-tools-panel"
-          class="tools-panel"
-          ?hidden=${!this.testToolsExpanded}
-          aria-label="Parser and playback controls"
-        >
-          <div class="playback-controls">
-            <button class="play" @click=${this.onPlayToggle}>
-              ${this.playing ? 'Stop' : 'Play'}
-            </button>
-            <label class="slider-wrap">
-              <span class="slider-label"
-                >Playback progress: ${this.playbackIndex}/${this.source.length}</span
-              >
-              <input
-                type="range"
-                aria-label="Playback progress"
-                min="0"
-                max=${String(this.source.length)}
-                step="1"
-                .value=${String(this.playbackIndex)}
-                @input=${this.onProgressInput}
-              />
-            </label>
-            <span class="playback-delay"
-              >Playback delay: ${this.playbackDelayMs} ms per character</span
-            >
-          </div>
-          <div class="meta" aria-live="polite">
-            <span>${this.source.length} chars</span>
-            <span>${this.source.split('\n').length} lines</span>
-            <span>pending tail: ${this.pendingText.length}</span>
-            <span>mode: ${this.parseMode}</span>
-          </div>
-          <button
-            class="simulation-toggle"
-            aria-pressed=${this.simulatedKeyboard}
-            @pointerdown=${this.preserveControlFocus}
-            @click=${this.toggleSimulatedKeyboard}
-          >
-            ${this.simulatedKeyboard ? 'Hide simulated keyboard' : 'Show simulated keyboard'}
-          </button>
-        </section>
-        <main class="shell ${this.sourceExpanded ? 'source-expanded' : 'source-collapsed'}">
+        <div class="panel-stack ${this.toolbarVisible ? 'keyboard-visible' : ''}">
           <section
-            id="source-pane"
-            class="panel editor source-pane"
-            ?hidden=${!this.sourceExpanded}
+            id="test-tools-panel"
+            class="tools-panel"
+            ?hidden=${!this.testToolsExpanded}
+            aria-label="Parser and playback controls"
           >
-            <div class="source-heading">
-              <label class="label" for="source">Markdown Source</label>
-              <span class="badge">input</span>
+            <div class="playback-controls">
+              <button class="play" @click=${this.onPlayToggle}>
+                ${this.playing ? 'Stop' : 'Play'}
+              </button>
+              <label class="slider-wrap">
+                <span class="slider-label"
+                  >Playback progress: ${this.playbackIndex}/${this.source.length}</span
+                >
+                <input
+                  type="range"
+                  aria-label="Playback progress"
+                  min="0"
+                  max=${String(this.source.length)}
+                  step="1"
+                  .value=${String(this.playbackIndex)}
+                  @input=${this.onProgressInput}
+                />
+              </label>
+              <span class="playback-delay"
+                >Playback delay: ${this.playbackDelayMs} ms per character</span
+              >
             </div>
-            <textarea
-              id="source"
-              .value=${this.source}
-              @input=${this.onInput}
-              spellcheck="false"
-            ></textarea>
-          </section>
-          <section class="panel preview">
-            <div class="tabs" role="tablist" aria-label="Output view">
-              <button
-                class="tab"
-                id="render-tab"
-                role="tab"
-                aria-controls="output-panel"
-                aria-selected=${this.activeTab === 'render'}
-                tabindex=${this.activeTab === 'render' ? '0' : '-1'}
-                ?selected=${this.activeTab === 'render'}
-                @click=${() => this.setTab('render')}
-                @keydown=${this.onTabKeydown}
-              >
-                Render
-              </button>
-              <button
-                class="tab"
-                id="serialize-tab"
-                role="tab"
-                aria-controls="output-panel"
-                aria-selected=${this.activeTab === 'serialize'}
-                tabindex=${this.activeTab === 'serialize' ? '0' : '-1'}
-                ?selected=${this.activeTab === 'serialize'}
-                @click=${() => this.setTab('serialize')}
-                @keydown=${this.onTabKeydown}
-              >
-                Serialize
-              </button>
-              <button
-                class="tab"
-                id="tree-tab"
-                role="tab"
-                aria-controls="output-panel"
-                aria-selected=${this.activeTab === 'tree'}
-                tabindex=${this.activeTab === 'tree' ? '0' : '-1'}
-                ?selected=${this.activeTab === 'tree'}
-                @click=${() => this.setTab('tree')}
-                @keydown=${this.onTabKeydown}
-              >
-                Tree
-              </button>
+            <div class="meta" aria-live="polite">
+              <span>${this.source.length} chars</span>
+              <span>${this.source.split('\n').length} lines</span>
+              <span>pending tail: ${this.pendingText.length}</span>
+              <span>mode: ${this.parseMode}</span>
             </div>
-            <div
-              id="output-panel"
-              class="preview-card"
-              role="tabpanel"
-              tabindex="0"
-              aria-labelledby="${this.activeTab}-tab"
+            <button
+              class="simulation-toggle"
+              aria-pressed=${this.simulatedKeyboard}
+              @pointerdown=${this.preserveControlFocus}
+              @click=${this.toggleSimulatedKeyboard}
             >
-              ${
-                this.activeTab === 'render'
-                  ? this.root
-                    ? html`<md-editor
-                        .root=${this.root}
-                        .renderDelegate=${transclusionRenderDelegate}
-                      ></md-editor>`
-                    : html``
-                  : this.activeTab === 'serialize'
-                    ? html`<pre class="serialized">${this.serializedMarkdown}</pre>`
-                    : html`<pre class="tree">${this.treeJson}</pre>`
-              }
-            </div>
+              ${this.simulatedKeyboard ? 'Hide simulated keyboard' : 'Show simulated keyboard'}
+            </button>
           </section>
-        </main>
+          <main class="shell ${this.sourceExpanded ? 'source-expanded' : 'source-collapsed'}">
+            <section
+              id="source-pane"
+              class="panel editor source-pane"
+              ?hidden=${!this.sourceExpanded}
+            >
+              <div class="source-heading">
+                <label class="label" for="source">Markdown Source</label>
+                <span class="badge">input</span>
+              </div>
+              <textarea
+                id="source"
+                .value=${this.source}
+                @input=${this.onInput}
+                spellcheck="false"
+              ></textarea>
+            </section>
+            <section class="panel preview">
+              <div class="tabs" role="tablist" aria-label="Output view">
+                <button
+                  class="tab"
+                  id="render-tab"
+                  role="tab"
+                  aria-controls="output-panel"
+                  aria-selected=${this.activeTab === 'render'}
+                  tabindex=${this.activeTab === 'render' ? '0' : '-1'}
+                  ?selected=${this.activeTab === 'render'}
+                  @click=${() => this.setTab('render')}
+                  @keydown=${this.onTabKeydown}
+                >
+                  Render
+                </button>
+                <button
+                  class="tab"
+                  id="serialize-tab"
+                  role="tab"
+                  aria-controls="output-panel"
+                  aria-selected=${this.activeTab === 'serialize'}
+                  tabindex=${this.activeTab === 'serialize' ? '0' : '-1'}
+                  ?selected=${this.activeTab === 'serialize'}
+                  @click=${() => this.setTab('serialize')}
+                  @keydown=${this.onTabKeydown}
+                >
+                  Serialize
+                </button>
+                <button
+                  class="tab"
+                  id="tree-tab"
+                  role="tab"
+                  aria-controls="output-panel"
+                  aria-selected=${this.activeTab === 'tree'}
+                  tabindex=${this.activeTab === 'tree' ? '0' : '-1'}
+                  ?selected=${this.activeTab === 'tree'}
+                  @click=${() => this.setTab('tree')}
+                  @keydown=${this.onTabKeydown}
+                >
+                  Tree
+                </button>
+              </div>
+              <div
+                id="output-panel"
+                class="preview-card"
+                role="tabpanel"
+                tabindex="0"
+                aria-labelledby="${this.activeTab}-tab"
+              >
+                ${
+                  this.activeTab === 'render'
+                    ? this.root
+                      ? html`<md-editor
+                          .root=${this.root}
+                          .renderDelegate=${transclusionRenderDelegate}
+                        ></md-editor>`
+                      : html``
+                    : this.activeTab === 'serialize'
+                      ? html`<pre class="serialized">${this.serializedMarkdown}</pre>`
+                      : html`<pre class="tree">${this.treeJson}</pre>`
+                }
+              </div>
+            </section>
+          </main>
+        </div>
       </div>
       <md-mobile-keyboard-toolbar
         .visible=${this.toolbarVisible}
@@ -899,7 +928,9 @@ class MarkdownDevHarness extends LitElement {
 
   private toggleSource = () => {
     this.sourceManuallyToggled = true;
-    this.sourceExpanded = !this.sourceExpanded;
+    const opening = !this.sourceExpanded;
+    this.sourceExpanded = opening;
+    if (opening && this.isCompactKeyboardLayout()) this.testToolsExpanded = false;
   };
 
   private onMobileLayoutChange = (event: MediaQueryListEvent) => {
@@ -907,8 +938,14 @@ class MarkdownDevHarness extends LitElement {
   };
 
   private toggleTestTools = () => {
-    this.testToolsExpanded = !this.testToolsExpanded;
+    const opening = !this.testToolsExpanded;
+    this.testToolsExpanded = opening;
+    if (opening && this.isCompactKeyboardLayout()) this.sourceExpanded = false;
   };
+
+  private isCompactKeyboardLayout() {
+    return this.toolbarVisible && this.availablePanelHeight < 410;
+  }
 
   private onInput = (event: Event) => {
     const value = (event.currentTarget as HTMLTextAreaElement).value;
@@ -985,11 +1022,13 @@ class MarkdownDevHarness extends LitElement {
     this.clearReadinessTimer();
     this.stopObservingNativeSelection();
     this.stopObservingVirtualKeyboard();
+    if (this.panelLayoutFrame !== undefined) cancelAnimationFrame(this.panelLayoutFrame);
     super.disconnectedCallback();
   }
 
   protected override updated() {
     this.observeRootTree(this.root?.[viewModel].tree);
+    this.schedulePanelLayoutUpdate();
   }
 
   private startPlayback() {
@@ -1220,6 +1259,7 @@ class MarkdownDevHarness extends LitElement {
     this.toolbarUndoDisabled = true;
     this.toolbarRedoDisabled = true;
     this.keyboardHeight = 0;
+    this.availablePanelHeight = Number.POSITIVE_INFINITY;
     this.style.setProperty('--mobile-keyboard-reserve', '0px');
     this.stopObservingNativeSelection();
     this.stopObservingVirtualKeyboard();
@@ -1451,7 +1491,9 @@ class MarkdownDevHarness extends LitElement {
     if (!inline || this.activeTab !== 'render') {
       this.toolbarVisible = false;
       this.keyboardHeight = 0;
+      this.availablePanelHeight = Number.POSITIVE_INFINITY;
       this.style.setProperty('--mobile-keyboard-reserve', '0px');
+      void this.updateComplete.then(() => this.schedulePanelLayoutUpdate());
       return;
     }
     if (inline.matches(':focus')) this.claimVirtualKeyboardOverlay();
@@ -1479,11 +1521,44 @@ class MarkdownDevHarness extends LitElement {
     this.toolbarVisible = keyboardHeight > 0;
     this.keyboardTop = keyboardTop;
     this.toolbarTop = Math.max(0, keyboardTop - 56);
-    this.style.setProperty(
-      '--mobile-keyboard-reserve',
-      keyboardHeight > 0 ? `${keyboardHeight + 68}px` : '0px',
-    );
+    void this.updateComplete.then(() => this.schedulePanelLayoutUpdate());
     if (this.toolbarVisible) this.scheduleCaretVisibilityCheck();
+  }
+
+  private schedulePanelLayoutUpdate() {
+    if (!this.toolbarVisible) {
+      if (this.panelLayoutFrame !== undefined) cancelAnimationFrame(this.panelLayoutFrame);
+      this.panelLayoutFrame = undefined;
+      this.availablePanelHeight = Number.POSITIVE_INFINITY;
+      this.style.setProperty('--mobile-keyboard-reserve', '0px');
+      return;
+    }
+    if (this.panelLayoutFrame !== undefined) return;
+
+    this.panelLayoutFrame = requestAnimationFrame(() => {
+      this.panelLayoutFrame = undefined;
+      if (!this.toolbarVisible) return;
+
+      const frame = this.shadowRoot?.querySelector<HTMLElement>('.app-frame');
+      const toolbar = this.shadowRoot?.querySelector('md-mobile-keyboard-toolbar');
+      if (!frame || !toolbar) return;
+
+      const frameRect = frame.getBoundingClientRect();
+      const toolbarRect = toolbar.getBoundingClientRect();
+      if (frameRect.height === 0 || toolbarRect.height === 0) return;
+
+      const availableHeight = Math.max(0, toolbarRect.top - frameRect.top);
+      const reserve = Math.max(0, frameRect.bottom - toolbarRect.top);
+      this.availablePanelHeight = availableHeight;
+      this.style.setProperty('--mobile-keyboard-reserve', `${reserve}px`);
+
+      if (availableHeight < 410 && this.sourceExpanded && this.testToolsExpanded) {
+        this.testToolsExpanded = false;
+        return;
+      }
+
+      this.scheduleCaretVisibilityCheck();
+    });
   }
 
   private scheduleCaretVisibilityCheck() {
@@ -1499,17 +1574,36 @@ class MarkdownDevHarness extends LitElement {
     if (!inline || !inline.isConnected) return;
     try {
       const caretBottom = inline.getCaretPosition().y;
-      const visibleBottom = this.toolbarVisible
-        ? this.toolbarTop
-        : (window.visualViewport?.offsetTop ?? 0) +
-          (window.visualViewport?.height ?? window.innerHeight);
-      if (caretBottom > visibleBottom - 12) {
-        const scrollAmount = caretBottom - visibleBottom + 28;
-        const canvas = this.shadowRoot?.querySelector<HTMLElement>('.preview-card');
-        if (canvas && canvas.scrollHeight > canvas.clientHeight) {
-          canvas.scrollTop += scrollAmount;
-        } else {
-          window.scrollBy(0, scrollAmount);
+      const canvas = this.shadowRoot?.querySelector<HTMLElement>('.preview-card');
+      if (!canvas) return;
+
+      if (this.toolbarVisible) {
+        const panelStack = this.shadowRoot?.querySelector<HTMLElement>('.panel-stack');
+        const toolbar = this.shadowRoot?.querySelector('md-mobile-keyboard-toolbar');
+        if (!panelStack || !toolbar) return;
+
+        let stackRect = panelStack.getBoundingClientRect();
+        let canvasRect = canvas.getBoundingClientRect();
+        const visibleBottom = Math.min(stackRect.bottom, toolbar.getBoundingClientRect().top);
+        if (canvasRect.bottom > visibleBottom) {
+          panelStack.scrollTop += canvasRect.bottom - visibleBottom;
+          stackRect = panelStack.getBoundingClientRect();
+          canvasRect = canvas.getBoundingClientRect();
+        }
+
+        const visibleTop = Math.max(stackRect.top, canvasRect.top);
+        const canvasVisibleBottom = Math.min(stackRect.bottom, toolbar.getBoundingClientRect().top);
+        if (caretBottom > canvasVisibleBottom - 12) {
+          canvas.scrollTop += caretBottom - canvasVisibleBottom + 28;
+        } else if (caretBottom < visibleTop + 12) {
+          canvas.scrollTop -= visibleTop - caretBottom + 28;
+        }
+      } else {
+        const canvasRect = canvas.getBoundingClientRect();
+        if (caretBottom > canvasRect.bottom - 12) {
+          canvas.scrollTop += caretBottom - canvasRect.bottom + 28;
+        } else if (caretBottom < canvasRect.top + 12) {
+          canvas.scrollTop -= canvasRect.top - caretBottom + 28;
         }
       }
     } catch {
