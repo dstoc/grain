@@ -2335,6 +2335,23 @@ class MutableTreeDraft implements ParserTreeDraft {
       string,
       { readonly path: readonly number[]; readonly spanIndex: number; readonly pieceIndex: number }
     >();
+    // Span order within one owner is a hard lane constraint. Across owners, document
+    // order remains a priority only, since a moved fragment can precede its retained text.
+    const orderConstraints = new Map<string, Map<string, Set<string>>>();
+    const rootBufferFor = (id: string): string => {
+      let rootId = id;
+      let buffer = this.textBuffers.get(rootId);
+      while (buffer?.parentBufferId !== undefined) {
+        rootId = buffer.parentBufferId;
+        buffer = this.textBuffers.get(rootId);
+      }
+      return rootId;
+    };
+    const groupKeyForRoot = (id: string): string => {
+      const buffer = this.textBuffers.get(id);
+      assert(buffer, `missing root action-local text buffer ${id}`);
+      return JSON.stringify([buffer.anchor.tapeId, buffer.anchor.index]);
+    };
     const comparePositions = (
       left: {
         readonly path: readonly number[];
@@ -2383,24 +2400,31 @@ class MutableTreeDraft implements ParserTreeDraft {
     };
     for (const node of this.nodes.values()) {
       const path = pathForNode(node.id);
+      const lastRootByGroup = new Map<string, string>();
       for (const [spanIndex, span] of node.spans.entries()) {
         for (const [pieceIndex, piece] of span.pieces.entries()) {
           if (piece.kind !== 'inserted' || !piece.text) continue;
           const ranges = liveRanges.get(piece.bufferId) ?? [];
           ranges.push([piece.from, piece.to]);
           liveRanges.set(piece.bufferId, ranges);
-          let rootBufferId = piece.bufferId;
-          let buffer = this.textBuffers.get(rootBufferId);
-          while (buffer?.parentBufferId !== undefined) {
-            rootBufferId = buffer.parentBufferId;
-            buffer = this.textBuffers.get(rootBufferId);
-          }
+          const rootBufferId = rootBufferFor(piece.bufferId);
+          const buffer = this.textBuffers.get(rootBufferId);
           if (path && buffer) {
             const position = { path, spanIndex, pieceIndex };
             const prior = semanticOrder.get(rootBufferId);
             if (!prior || comparePositions(position, prior) < 0) {
               semanticOrder.set(rootBufferId, position);
             }
+            const groupKey = groupKeyForRoot(rootBufferId);
+            const previousRoot = lastRootByGroup.get(groupKey);
+            if (previousRoot && previousRoot !== rootBufferId) {
+              const edges = orderConstraints.get(groupKey) ?? new Map<string, Set<string>>();
+              const successors = edges.get(previousRoot) ?? new Set<string>();
+              successors.add(rootBufferId);
+              edges.set(previousRoot, successors);
+              orderConstraints.set(groupKey, edges);
+            }
+            lastRootByGroup.set(groupKey, rootBufferId);
           }
         }
       }
@@ -2467,10 +2491,37 @@ class MutableTreeDraft implements ParserTreeDraft {
       for (const siblings of byOffset.values()) siblings.sort(orderByAffinity);
     }
 
+    const orderRoots = (groupKey: string, ids: readonly string[]): string[] => {
+      const constraints = orderConstraints.get(groupKey);
+      if (!constraints) return [...ids].sort(orderByAffinity);
+
+      const remaining = new Set(ids);
+      const indegree = new Map(ids.map((id) => [id, 0]));
+      for (const [from, successors] of constraints) {
+        if (!indegree.has(from)) continue;
+        for (const to of successors) {
+          if (indegree.has(to)) indegree.set(to, indegree.get(to)! + 1);
+        }
+      }
+
+      const result: string[] = [];
+      while (remaining.size) {
+        const ready = [...remaining].filter((id) => indegree.get(id) === 0).sort(orderByAffinity);
+        assert(ready.length > 0, 'shared-gap fragment ordering contains a cycle');
+        const next = ready[0]!;
+        remaining.delete(next);
+        result.push(next);
+        for (const successor of constraints.get(next) ?? []) {
+          if (indegree.has(successor)) indegree.set(successor, indegree.get(successor)! - 1);
+        }
+      }
+      return result;
+    };
+
     const positions = new Map<string, BufferLanePositions>();
     const insertions: PlanTextInsert[] = [];
-    for (const group of roots.values()) {
-      group.ids.sort(orderByAffinity);
+    for (const [groupKey, group] of roots) {
+      group.ids = orderRoots(groupKey, group.ids);
       const chunks: string[] = [];
       let laneLength = 0;
       const emit = (id: string): void => {
