@@ -22,6 +22,22 @@ The wide-list structural move counter sample recorded 2,004 map sets, including 
 
 These are baseline observations from the runner, not portable performance claims. The proposal's engineering budgets apply to later implementation milestones.
 
+## Browser profiles
+
+Both browser reports use system Chromium `156.0.8078.73` at a `1280 × 720` viewport. Each profile has two fresh processes with 25 warm-up and 200 measured operations per process. The table reports the median across processes of each process's p50 and p95; `p50 MAD` describes the two process p50 values.
+
+| Profile           | Report                         |       p50 |       p95 |  p50 MAD | Other observations                     |
+| ----------------- | ------------------------------ | --------: | --------: | -------: | -------------------------------------- |
+| Editor            | [editor.json](./editor.json)   | 50.150 ms | 73.400 ms | 0.050 ms | 0 unaffected-block DOM mutations       |
+| Full demo harness | [harness.json](./harness.json) | 58.400 ms | 86.950 ms | 0.800 ms | 200 parser rebuilds for 200 operations |
+
+```sh
+npm run bench:yjs-m0 -- --profile editor --runs 2 --output benchmarks/yjs-m0/results/editor.json
+npm run bench:yjs-m0 -- --profile harness --runs 2 --output benchmarks/yjs-m0/results/harness.json
+```
+
+The full harness measurement includes canonical change handling, Markdown and JSON serialization, parser rebuilds, and settled rendering. Browser timing is desktop Chromium simulation; it does not cover physical mobile input or IME behavior.
+
 ## Environment and command
 
 The core report records the exact invocation and environment. It ran on Node.js `v26.13.0`, npm `12.2.1`, Linux x64 (`6.17.7-300.fc43.x86_64`), and an AMD Ryzen 9 5900X with 24 logical CPUs. This is not a pinned performance-worker result.
@@ -34,9 +50,17 @@ Ownership snapshots group tapes by `spanCount` and `ownerCount`, with `tapeCount
 
 ## Profile status
 
-| Profile                                                | Report                   | Status                        |
-| ------------------------------------------------------ | ------------------------ | ----------------------------- |
-| Core acceptance, projection, serialization, checkpoint | [core.json](./core.json) | Complete, two fresh processes |
-| Chromium editor                                        | —                        | Pending                       |
-| Full demo harness                                      | —                        | Pending                       |
-| Retained history and 10,000-action trace               | —                        | Pending                       |
+| Profile                                                | Report                         | Status                        |
+| ------------------------------------------------------ | ------------------------------ | ----------------------------- |
+| Core acceptance, projection, serialization, checkpoint | [core.json](./core.json)       | Complete, two fresh processes |
+| Chromium editor                                        | [editor.json](./editor.json)   | Complete, two fresh processes |
+| Full demo harness                                      | [harness.json](./harness.json) | Complete, two fresh processes |
+| Retained history and 10,000-action trace               | —                              | Incomplete; see below         |
+
+The first retention process completed the 0-, 64-, and 500-group measurements, then ran for over an hour in the 10,000-action trace. It was stopped before it emitted a report, so none of those partial measurements are counted as results. The exact command was:
+
+```sh
+npm run bench:yjs-m0 -- --profile retention --runs 1 --output benchmarks/yjs-m0/results/retention-run-1.json
+```
+
+Run this profile on a worker with enough time for the full trace. Commit its first complete report before starting the repeated fresh-process run.
