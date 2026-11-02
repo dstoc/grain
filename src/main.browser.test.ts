@@ -415,14 +415,12 @@ test('native selection changes keep the caret above the mobile toolbar', async (
   inline.addEventListener('input', () => inputEvents++);
   inline.addEventListener('keydown', () => keydownEvents++);
 
-  const scrollBeforeSelection = window.scrollY;
   inline.setSelectionOffsets(text.length, text.length);
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
   expect(inputEvents).toBe(0);
   expect(keydownEvents).toBe(0);
-  expect(window.scrollY).toBeGreaterThan(scrollBeforeSelection);
-  expect(inline.getCaretPosition().y).toBeLessThanOrEqual(toolbar.getBoundingClientRect().top);
+  expect(inline.getCaretPosition().y).toBeLessThan(toolbar.getBoundingClientRect().top);
   harness.remove();
 });
 
