@@ -56,6 +56,7 @@ function serializeBlocks(
   indents: Indents,
   result: string[],
   predicate?: (node: MarkdownNode) => boolean,
+  sectionChildrenSeparator?: (node: MarkdownNode) => string | undefined,
 ) {
   let prev: MarkdownNode | undefined;
   let serializedContent = false;
@@ -70,7 +71,7 @@ function serializeBlocks(
       }
       result.push(nextSeparator);
     }
-    if (serialize(block, indents, result, predicate)) {
+    if (serialize(block, indents, result, predicate, sectionChildrenSeparator)) {
       prev = block;
       serializedContent = true;
     } else {
@@ -109,6 +110,7 @@ function serialize(
   indents: Indents,
   result: string[],
   predicate?: (node: MarkdownNode) => boolean,
+  sectionChildrenSeparator?: (node: MarkdownNode) => string | undefined,
 ) {
   function indent() {
     for (const indent of indents) {
@@ -141,6 +143,7 @@ function serialize(
         result.push(node.content.trimStart());
       }
       result.push('\n');
+      result.push(sectionChildrenSeparator?.(node) ?? '');
       break;
     case 'list-item':
       assert(node.children?.length);
@@ -190,7 +193,13 @@ function serialize(
       // TODO: assert not reached?
       assert(false);
   }
-  const serializedChild = serializeBlocks(node.children ?? [], indents, result, predicate);
+  const serializedChild = serializeBlocks(
+    node.children ?? [],
+    indents,
+    result,
+    predicate,
+    sectionChildrenSeparator,
+  );
   return shouldSerializeNodeContent || serializedChild;
 }
 
@@ -198,8 +207,9 @@ export function serializeToString(
   node: MarkdownNode,
   predicate?: (node: MarkdownNode) => boolean,
   prefix?: string,
+  sectionChildrenSeparator?: (node: MarkdownNode) => string | undefined,
 ): string {
   const result: string[] = [];
-  serialize(node, prefix ? [always(prefix)] : [], result, predicate);
+  serialize(node, prefix ? [always(prefix)] : [], result, predicate, sectionChildrenSeparator);
   return result.join('');
 }

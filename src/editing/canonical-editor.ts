@@ -41,6 +41,8 @@ interface CompositionDraft {
   readonly content: string;
   readonly version: number;
   readonly selection: { readonly anchor: number; readonly focus: number };
+  readonly selectionAnchor: CanonicalTextAnchor;
+  readonly selectionFocus: CanonicalTextAnchor;
   readonly blockSelection?: readonly NodeId[];
   invalidate: () => void;
 }
@@ -579,32 +581,72 @@ export class CanonicalEditor extends LitElement {
     const document = this.document;
     if (!document) return '';
     const selected = new Set(selection.map((node) => node.sharedId));
-    const ownerByNode = new WeakMap<MarkdownNode, NodeId>();
-    const convert = (node: CanonicalNode): MarkdownNode => {
-      const children = node.children.map(convert);
+    const sectionsWithSelectedChildren = new WeakSet<MarkdownNode>();
+    const hasSelectedDescendant = (node: CanonicalNode): boolean =>
+      node.children.some((child) => selected.has(child.sharedId) || hasSelectedDescendant(child));
+    const roots = new Set<CanonicalNode>();
+    for (const node of selection) {
+      if (node.previousSibling) {
+        roots.add(node);
+        continue;
+      }
+      let root = node;
+      for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+        if (ancestor.type === 'section') break;
+        root = ancestor;
+        if (ancestor.previousSibling) break;
+      }
+      roots.add(root);
+    }
+    for (const root of roots) {
+      for (let ancestor = root.parent; ancestor; ancestor = ancestor.parent) {
+        if (roots.has(ancestor)) {
+          roots.delete(root);
+          break;
+        }
+      }
+    }
+    const order = new Map<CanonicalNode, number>();
+    const visit = (node: CanonicalNode) => {
+      order.set(node, order.size);
+      node.children.forEach(visit);
+    };
+    visit(document.root);
+    const convert = (node: CanonicalNode): MarkdownNode | undefined => {
+      const children = node.children
+        .map(convert)
+        .filter((child): child is MarkdownNode => child !== undefined);
+      const isSelected = selected.has(node.sharedId);
       let result: MarkdownNode;
       switch (node.type) {
         case 'document':
+          if (!children.length) return undefined;
           result = { type: 'document', children };
           break;
         case 'paragraph':
+          if (!isSelected) return undefined;
           result = { type: 'paragraph', content: node.content ?? '' };
           break;
         case 'section':
+          if (!isSelected && !children.length) return undefined;
           result = {
             type: 'section',
             marker: node.marker ?? '',
-            content: node.content ?? '',
+            content: isSelected ? (node.content ?? '') : '',
             children,
           };
+          if (isSelected && hasSelectedDescendant(node)) sectionsWithSelectedChildren.add(result);
           break;
         case 'code-block':
+          if (!isSelected) return undefined;
           result = { type: 'code-block', info: node.info ?? null, content: node.content ?? '' };
           break;
         case 'list':
+          if (!children.length) return undefined;
           result = { type: 'list', children };
           break;
         case 'list-item':
+          if (!children.length) return undefined;
           result = {
             type: 'list-item',
             marker: node.marker ?? '',
@@ -613,29 +655,21 @@ export class CanonicalEditor extends LitElement {
           };
           break;
         case 'block-quote':
+          if (!children.length) return undefined;
           result = { type: 'block-quote', marker: node.marker ?? '', children };
           break;
       }
-      ownerByNode.set(result, node.sharedId);
       return result;
     };
-    let markdown = serializeToString(convert(document.root), (node) => {
-      if (node.type !== 'paragraph' && node.type !== 'section' && node.type !== 'code-block')
-        return true;
-      return selected.has(ownerByNode.get(node)!);
-    });
-    const hasSelectedDescendant = (node: CanonicalNode): boolean =>
-      node.children.some((child) => selected.has(child.sharedId) || hasSelectedDescendant(child));
-    for (const node of selection) {
-      if (node.type !== 'section' || !hasSelectedDescendant(node)) continue;
-      const heading = `${node.marker ?? ''} ${node.content?.trimStart() ?? ''}\n`;
-      const index = markdown.indexOf(heading);
-      if (index >= 0) {
-        const end = index + heading.length;
-        markdown = `${markdown.slice(0, end)}\n${markdown.slice(end)}`;
-      }
-    }
-    return markdown;
+    const orderedRoots = [...roots].toSorted((a, b) => order.get(a)! - order.get(b)!);
+    const blocks = orderedRoots
+      .map(convert)
+      .filter((block): block is MarkdownNode => block !== undefined);
+    return blocks.length
+      ? serializeToString({ type: 'document', children: blocks }, undefined, undefined, (node) =>
+          sectionsWithSelectedChildren.has(node) ? '\n' : undefined,
+        )
+      : '';
   }
 
   private onInlineKeyDown = (event: CustomEvent<InlineKeyDown>) => {
@@ -813,14 +847,27 @@ export class CanonicalEditor extends LitElement {
     const inline = event.detail.inline;
     const node = this.activeInline(inline);
     const selection = inline.getTextSelection();
-    if (!node || !selection || inline.textContent !== node.content) return;
+    const document = this.document;
+    if (!node || !selection || !document || inline.textContent !== node.content) return;
     const blockSelection = this.currentBlockSelection().map((item) => item.sharedId);
+    const selectionAnchor = createCanonicalTextAnchor(document, {
+      nodeId: node.sharedId,
+      offset: selection.anchor,
+      affinity: selection.anchor <= selection.focus ? 'left' : 'right',
+    });
+    const selectionFocus = createCanonicalTextAnchor(document, {
+      nodeId: node.sharedId,
+      offset: selection.focus,
+      affinity: selection.focus >= selection.anchor ? 'right' : 'left',
+    });
     const session: CompositionDraft = {
       inline,
       node,
       content: node.content ?? '',
       version: node.version,
       selection,
+      selectionAnchor,
+      selectionFocus,
       ...(blockSelection.length ? { blockSelection } : {}),
       invalidate: () => this.invalidateComposition(session),
     };
@@ -834,7 +881,31 @@ export class CanonicalEditor extends LitElement {
     this.composition = undefined;
     session.inline.removeEventListener('composition-invalidated', session.invalidate);
     session.inline.composing = false;
-    if (session.inline.isConnected) void session.inline.recoverComposition(session.selection);
+    if (session.inline.isConnected) void this.recoverInvalidatedComposition(session);
+  }
+
+  private async recoverInvalidatedComposition(session: CompositionDraft) {
+    const document = this.document;
+    if (!document) return;
+    let anchor: Bookmark;
+    let focus: Bookmark;
+    try {
+      anchor = resolveCanonicalTextAnchor(document, session.selectionAnchor);
+      focus = resolveCanonicalTextAnchor(document, session.selectionFocus);
+    } catch {
+      await session.inline.recoverComposition(session.selection);
+      return;
+    }
+    const sameInline =
+      anchor.nodeId === session.node.sharedId && focus.nodeId === session.node.sharedId;
+    const selection = sameInline
+      ? { anchor: anchor.offset, focus: focus.offset }
+      : session.selection;
+    await session.inline.recoverComposition(selection, sameInline);
+    if (this.document !== document || sameInline) return;
+    await this.restoreAnchors(session.selectionAnchor, session.selectionFocus);
+    const target = this.findInline(focus.nodeId);
+    target?.replayRecoveryEvents();
   }
 
   private onCompositionEnd = (
