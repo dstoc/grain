@@ -7,6 +7,9 @@ import { ListItemNode } from './node.js';
 import { NodeSignalController } from './node-signal-controller.js';
 import type { ViewModelNode } from './view-model-node.js';
 import { viewModel } from './view-model-node.js';
+import { consume } from '@lit/context';
+import { hostContext, type HostContext } from './host-context.js';
+import { CanonicalNode } from './canonical-model.js';
 
 @customElement('md-section-ui')
 export class Section extends LitElement {
@@ -109,6 +112,10 @@ export class ListItem extends LitElement {
   @property({ attribute: false })
   accessor node!: ListItemNode & ViewModelNode;
 
+  @consume({ context: hostContext, subscribe: true })
+  @property({ attribute: false })
+  accessor hostContext: HostContext | undefined;
+
   private nodeSignal = new NodeSignalController(this, () => this.node);
 
   protected override render() {
@@ -146,19 +153,29 @@ export class ListItem extends LitElement {
 
   #handleClick = (e: Event) => {
     e.preventDefault();
+    let newValue: boolean | undefined;
+    switch (this.node.checked) {
+      case true:
+        newValue = undefined;
+        break;
+      case false:
+        newValue = true;
+        break;
+      case undefined:
+        newValue = false;
+        break;
+    }
+    const canonicalNode = this.node as unknown;
+    if (canonicalNode instanceof CanonicalNode) {
+      const writer = this.hostContext?.canonicalWriter;
+      if (!writer) return;
+      const actionId = `checkbox:${crypto.randomUUID()}`;
+      writer.edit({ actionId }, (draft) => {
+        draft.setChecked(canonicalNode.sharedId, newValue ?? null);
+      });
+      return;
+    }
     this.node[viewModel].tree.edit(() => {
-      let newValue: boolean | undefined;
-      switch (this.node.checked) {
-        case true:
-          newValue = undefined;
-          break;
-        case false:
-          newValue = true;
-          break;
-        case undefined:
-          newValue = false;
-          break;
-      }
       this.node[viewModel].updateChecked(newValue);
       return {};
     });

@@ -1,6 +1,6 @@
 import { LitElement, css, html } from 'lit';
 
-import './editing/editor.js';
+import './editing/canonical-editor.js';
 import './editing/mobile-keyboard-toolbar.js';
 import './markdown/transclusion.js';
 import { MarkdownInline } from './markdown/inline-render.js';
@@ -10,7 +10,10 @@ import type {
   MobileToolbarFocusEvent,
 } from './editing/mobile-keyboard-toolbar.js';
 import { createBlockParser, parseMarkdownTree } from './markdown/block-parser/api.js';
+import { CanonicalWriter } from './markdown/canonical-actions.js';
+import { CanonicalDocument } from './markdown/canonical-model.js';
 import type { BlockParser } from './markdown/block-parser/api.js';
+import type { DocumentNode } from './markdown/node.js';
 import { serializeToString } from './markdown/block-serializer.js';
 import type { MarkdownRenderDelegate } from './markdown/render-delegate.js';
 import { viewModel } from './markdown/view-model-node.js';
@@ -250,6 +253,15 @@ class MarkdownDevHarness extends LitElement {
       padding: 1.35rem 1.35rem 1.6rem;
     }
 
+    .history-status {
+      margin: 0.75rem 0 0;
+      color: var(--md-accent-color);
+      font:
+        600 0.82rem/1.4 ui-sans-serif,
+        system-ui,
+        sans-serif;
+    }
+
     .tabs {
       display: inline-flex;
       box-sizing: border-box;
@@ -418,6 +430,8 @@ class MarkdownDevHarness extends LitElement {
     playbackIndex: { state: true },
     playing: { state: true },
     renderVersion: { state: true },
+    canonicalDocument: { state: true },
+    canonicalWriter: { state: true },
     activeTab: { state: true },
     serializedMarkdown: { state: true },
     treeJson: { state: true },
@@ -425,6 +439,7 @@ class MarkdownDevHarness extends LitElement {
     toolbarDisabled: { state: true },
     toolbarUndoDisabled: { state: true },
     toolbarRedoDisabled: { state: true },
+    historyStatus: { state: true },
     toolbarTop: { state: true },
     simulatedKeyboard: { state: true },
     keyboardTop: { state: true },
@@ -437,6 +452,8 @@ class MarkdownDevHarness extends LitElement {
   declare private playbackIndex: number;
   declare private playing: boolean;
   declare private renderVersion: number;
+  declare private canonicalDocument: CanonicalDocument | undefined;
+  declare private canonicalWriter: CanonicalWriter | undefined;
   declare private activeTab: 'render' | 'serialize' | 'tree';
   declare private serializedMarkdown: string;
   declare private treeJson: string;
@@ -444,6 +461,7 @@ class MarkdownDevHarness extends LitElement {
   declare private toolbarDisabled: boolean;
   declare private toolbarUndoDisabled: boolean;
   declare private toolbarRedoDisabled: boolean;
+  declare private historyStatus: string;
   declare private toolbarTop: number;
   declare private simulatedKeyboard: boolean;
   declare private keyboardTop: number;
@@ -473,6 +491,8 @@ class MarkdownDevHarness extends LitElement {
     this.playbackIndex = sample.length;
     this.playing = false;
     this.renderVersion = 0;
+    this.canonicalDocument = undefined;
+    this.canonicalWriter = undefined;
     this.activeTab = 'render';
     this.serializedMarkdown = '';
     this.treeJson = '';
@@ -480,6 +500,7 @@ class MarkdownDevHarness extends LitElement {
     this.toolbarDisabled = true;
     this.toolbarUndoDisabled = true;
     this.toolbarRedoDisabled = true;
+    this.historyStatus = '';
     this.toolbarTop = 0;
     this.simulatedKeyboard = false;
     this.keyboardTop = 0;
@@ -491,6 +512,8 @@ class MarkdownDevHarness extends LitElement {
     this.addEventListener('inline-composition-start', this.onCompositionChange);
     this.addEventListener('inline-composition-end', this.onCompositionChange);
     this.addEventListener('inline-projection-recovery', this.onCompositionChange);
+    this.addEventListener('canonical-change', this.onCanonicalChange as EventListener);
+    this.addEventListener('canonical-history-reset', this.onCanonicalHistoryReset as EventListener);
   }
 
   override render() {
@@ -571,15 +594,29 @@ class MarkdownDevHarness extends LitElement {
           <div class="preview-card">
             ${
               this.activeTab === 'render'
-                ? this.root
-                  ? html`<md-editor
-                      .root=${this.root}
-                      .renderDelegate=${transclusionRenderDelegate}
-                    ></md-editor>`
-                  : html``
+                ? this.playing
+                  ? this.root
+                    ? html`<md-block-render
+                        inert
+                        .block=${this.root}
+                        .renderDelegate=${transclusionRenderDelegate}
+                      ></md-block-render>`
+                    : html``
+                  : this.canonicalDocument && this.canonicalWriter
+                    ? html`<md-canonical-editor
+                        .document=${this.canonicalDocument}
+                        .writer=${this.canonicalWriter}
+                        .renderDelegate=${transclusionRenderDelegate}
+                      ></md-canonical-editor>`
+                    : html``
                 : this.activeTab === 'serialize'
                   ? html`<pre class="serialized">${this.serializedMarkdown}</pre>`
                   : html`<pre class="tree">${this.treeJson}</pre>`
+            }
+            ${
+              this.historyStatus
+                ? html`<p class="history-status" role="status">${this.historyStatus}</p>`
+                : ''
             }
           </div>
         </section>
@@ -645,6 +682,7 @@ class MarkdownDevHarness extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    if (!this.canonicalDocument || !this.canonicalWriter) this.reparse(this.source, true);
     window.addEventListener('resize', this.onViewportChange);
     window.addEventListener('orientationchange', this.onOrientationChange);
     window.visualViewport?.addEventListener('resize', this.onViewportChange);
@@ -661,6 +699,13 @@ class MarkdownDevHarness extends LitElement {
     this.clearReadinessTimer();
     this.stopObservingNativeSelection();
     this.stopObservingVirtualKeyboard();
+    const retiredWriter = this.canonicalWriter;
+    const retiredDocument = this.canonicalDocument;
+    const pendingRenderUpdates = this.pendingRenderUpdates();
+    this.canonicalWriter = undefined;
+    this.canonicalDocument = undefined;
+    if (retiredWriter && retiredDocument)
+      void this.disposeCanonical(retiredWriter, retiredDocument, undefined, pendingRenderUpdates);
     super.disconnectedCallback();
   }
 
@@ -751,7 +796,82 @@ class MarkdownDevHarness extends LitElement {
     this.pendingText = this.parser.getPendingText();
     this.treeJson = JSON.stringify(serializedTree, null, 2);
     this.renderVersion++;
+    if (!this.playing) this.replaceCanonicalDocument(serializedTree as DocumentNode);
   }
+
+  private replaceCanonicalDocument(tree: DocumentNode) {
+    const previousDocument = this.canonicalDocument;
+    const previousWriter = this.canonicalWriter;
+    const pendingRenderUpdates = this.pendingRenderUpdates();
+    const nextDocument = CanonicalDocument.fromTree(tree);
+    const nextWriter = new CanonicalWriter(nextDocument);
+    this.canonicalDocument = nextDocument;
+    this.canonicalWriter = nextWriter;
+    if (previousDocument && previousWriter) {
+      void this.disposeCanonical(
+        previousWriter,
+        previousDocument,
+        nextDocument,
+        pendingRenderUpdates,
+      );
+    }
+  }
+
+  private pendingRenderUpdates() {
+    const elements: Array<HTMLElement & { updateComplete?: Promise<unknown> }> = [];
+    const visit = (root: ParentNode) => {
+      for (const element of root.querySelectorAll<HTMLElement>('*')) {
+        if ('updateComplete' in element) {
+          elements.push(element as HTMLElement & { updateComplete?: Promise<unknown> });
+        }
+        if (element.shadowRoot) visit(element.shadowRoot);
+      }
+    };
+    if (this.shadowRoot) visit(this.shadowRoot);
+    return elements;
+  }
+
+  private async disposeCanonical(
+    writer: CanonicalWriter,
+    document: CanonicalDocument,
+    replacement?: CanonicalDocument,
+    pendingRenderUpdates: readonly (HTMLElement & { updateComplete?: Promise<unknown> })[] = [],
+  ) {
+    await this.updateComplete;
+    if (replacement) {
+      const editor = this.shadowRoot?.querySelector('md-canonical-editor');
+      if (editor?.document === replacement) await editor.updateComplete;
+    }
+    for (const element of pendingRenderUpdates) await element.updateComplete;
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    writer.close();
+    document.close();
+  }
+
+  private onCanonicalChange = (event: CustomEvent<{ readonly document: CanonicalDocument }>) => {
+    const document = event.detail.document;
+    if (document !== this.canonicalDocument) return;
+    const serializedTree = document.exportMarkdownTree();
+    const markdown = serializeToString(serializedTree);
+    this.source = markdown;
+    this.historyStatus = '';
+    this.serializedMarkdown = markdown;
+    this.treeJson = JSON.stringify(serializedTree, null, 2);
+    this.pendingText = '';
+    this.parseMode = 'edited';
+    this.playbackIndex = markdown.length;
+    this.parserReusable = false;
+    this.parser = createBlockParser();
+    this.parser.push(markdown);
+    this.parser.finish();
+    this.root = this.parser.getTree().root;
+    this.requestUpdate();
+  };
+
+  private onCanonicalHistoryReset = () => {
+    this.historyStatus = 'Undo history was reset.';
+    this.refreshToolbarHistoryAvailability();
+  };
 
   private preserveControlFocus = (event: PointerEvent) => {
     if (event.button === 0) event.preventDefault();
@@ -824,7 +944,9 @@ class MarkdownDevHarness extends LitElement {
   }
 
   private activeEditor() {
-    return this.activeTab === 'render' ? this.shadowRoot?.querySelector('md-editor') : undefined;
+    return this.activeTab === 'render'
+      ? this.shadowRoot?.querySelector('md-canonical-editor')
+      : undefined;
   }
 
   private findFocusedInline(editor: HTMLElement): MarkdownInline | undefined {
@@ -915,6 +1037,12 @@ class MarkdownDevHarness extends LitElement {
     if (!root) {
       this.toolbarUndoDisabled = true;
       this.toolbarRedoDisabled = true;
+      return;
+    }
+    const writer = inline?.hostContext?.canonicalWriter;
+    if (writer) {
+      this.toolbarUndoDisabled = !writer.canUndo('local');
+      this.toolbarRedoDisabled = !writer.canRedo('local');
       return;
     }
     const tree = root[viewModel].tree;

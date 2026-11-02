@@ -4,12 +4,14 @@ import { cast } from '../asserts.js';
 import type { MarkdownRenderDelegate } from './render-delegate.js';
 import { compareDocumentOrder } from './view-model-util.js';
 import { type InlineViewModelNode, type ViewModelNode, viewModel } from './view-model-node.js';
+import type { CanonicalWriter } from './canonical-actions.js';
 
 export class HostContext {
   focusNode?: InlineViewModelNode;
   focusOffset?: number;
   root?: ViewModelNode;
   renderDelegate?: MarkdownRenderDelegate;
+  canonicalWriter?: CanonicalWriter;
   readonly selection = new Set<InlineViewModelNode>();
   selectionAnchor?: InlineViewModelNode;
   selectionFocus?: InlineViewModelNode;

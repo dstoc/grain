@@ -25,6 +25,10 @@ import type { NativeTextRun, TextAffinity, TextEdit } from './canonical-text.js'
 import { normalizeCanonicalDraft } from './canonical-normalize.js';
 import { parseBlocks } from './block-parser/api.js';
 import { applyParserConversion } from './canonical-promotion.js';
+import {
+  createCanonicalTextAnchorFromState,
+  type CanonicalTextAnchor,
+} from './canonical-selection.js';
 
 const META = 'meta';
 const NODES = 'nodes';
@@ -92,6 +96,10 @@ export interface Bookmark {
 export interface ActionFocus {
   readonly start?: Bookmark;
   readonly end?: Bookmark;
+  readonly selection?: {
+    readonly anchor: Bookmark;
+    readonly focus: Bookmark;
+  };
 }
 
 export type DraftCommand = (draft: TreeDraft) => void | ActionFocus;
@@ -173,6 +181,7 @@ export interface ActionOptions {
   readonly actionId: string;
   readonly historyGroupId?: string;
   readonly sessionSequence?: number;
+  readonly focus?: ActionFocus;
 }
 
 export interface AdmittedContext {
@@ -462,12 +471,23 @@ function copyActionFocus(value: unknown): ActionFocus | undefined {
     return Object.freeze({ ...bookmark });
   };
   assert(
-    Object.keys(focus).every((key) => key === 'start' || key === 'end'),
+    Object.keys(focus).every((key) => key === 'start' || key === 'end' || key === 'selection'),
     'focus contains an unsupported field',
   );
   const start = copyBookmark(focus.start);
   const end = copyBookmark(focus.end);
-  return Object.freeze({ ...(start ? { start } : {}), ...(end ? { end } : {}) });
+  let selection: ActionFocus['selection'];
+  if (focus.selection !== undefined) {
+    const anchor = copyBookmark(focus.selection.anchor);
+    const selectionFocus = copyBookmark(focus.selection.focus);
+    assert(anchor && selectionFocus, 'focus selection endpoints are required');
+    selection = Object.freeze({ anchor, focus: selectionFocus });
+  }
+  return Object.freeze({
+    ...(start ? { start } : {}),
+    ...(end ? { end } : {}),
+    ...(selection ? { selection } : {}),
+  });
 }
 
 function immutableCell<T>(token: string, value: T): CellValue<T> {
@@ -2565,6 +2585,11 @@ export interface HistoryResult {
   readonly update?: Uint8Array;
   readonly textChanged?: boolean;
   readonly focus?: Bookmark;
+  readonly focusAnchor?: CanonicalTextAnchor;
+  readonly selectionAnchors?: {
+    readonly anchor: CanonicalTextAnchor;
+    readonly focus: CanonicalTextAnchor;
+  };
   readonly reason?:
     | 'structural-history-pending'
     | 'resource-conflict'
@@ -2581,6 +2606,11 @@ export interface PendingHistoryCommit {
   readonly revision: number;
   readonly textChanged: boolean;
   readonly focus?: Bookmark;
+  readonly focusAnchor?: CanonicalTextAnchor;
+  readonly selectionAnchors?: {
+    readonly anchor: CanonicalTextAnchor;
+    readonly focus: CanonicalTextAnchor;
+  };
   /** Returns a defensive copy for persistence before publication. */
   readonly update: Uint8Array;
 }
@@ -2609,7 +2639,9 @@ interface HistoryEntry {
   readonly touchedNodeIds: readonly NodeId[];
   readonly touchedTapeIds: readonly TapeId[];
   structuralPatch: StructuralPatch;
-  readonly focus?: ActionFocus;
+  focus?: ActionFocus;
+  focusAnchors?: ActionFocusAnchors;
+  selectionAnchors?: { readonly anchor: CanonicalTextAnchor; readonly focus: CanonicalTextAnchor };
   readonly manager?: Y.UndoManager;
   sealed: boolean;
   noEffect: boolean;
@@ -2617,8 +2649,24 @@ interface HistoryEntry {
   actionCount: number;
 }
 
+interface ActionFocusAnchors {
+  readonly start?: CanonicalTextAnchor;
+  readonly end?: CanonicalTextAnchor;
+}
+
 function historyFocus(entry: HistoryEntry, direction: 'undo' | 'redo'): Bookmark | undefined {
   return direction === 'undo' ? entry.focus?.start : entry.focus?.end;
+}
+
+function historyFocusAnchor(
+  entry: HistoryEntry,
+  direction: 'undo' | 'redo',
+): CanonicalTextAnchor | undefined {
+  return direction === 'undo' ? entry.focusAnchors?.start : entry.focusAnchors?.end;
+}
+
+function historySelectionAnchors(entry: HistoryEntry, direction: 'undo' | 'redo') {
+  return direction === 'undo' ? entry.selectionAnchors : undefined;
 }
 
 type HistoryScope = 'inside' | 'outside' | 'mixed';
@@ -2695,7 +2743,32 @@ interface PendingHistoryRecord {
   readonly revision: number;
   readonly textChanged: boolean;
   readonly focus?: Bookmark;
+  readonly focusAnchor?: CanonicalTextAnchor;
+  readonly selectionAnchors?: {
+    readonly anchor: CanonicalTextAnchor;
+    readonly focus: CanonicalTextAnchor;
+  };
   readonly update: Uint8Array;
+}
+
+function projectionNodeIds(touchedNodeIds: readonly NodeId[], patch: StructuralPatch): NodeId[] {
+  const affected = new Set(touchedNodeIds);
+  const addChildren = (value: unknown) => {
+    if (Array.isArray(value)) {
+      for (const id of value) if (typeof id === 'string') affected.add(id);
+    }
+  };
+  for (const cell of patch.cells) {
+    if (cell.field !== 'children') continue;
+    affected.add(cell.nodeId);
+    addChildren(cell.before.value);
+    addChildren(cell.after.value);
+  }
+  for (const birth of patch.births) {
+    affected.add(birth.nodeId);
+    addChildren(birth.cells.children.value);
+  }
+  return [...affected];
 }
 
 interface QueuedLocalEdit {
@@ -2907,6 +2980,7 @@ export class CanonicalWriter {
         preconditions: [],
         textUpdate: Uint8Array.from(textUpdate),
         operations: [],
+        ...(options.focus ? { focus: copyActionFocus(options.focus) } : {}),
         promotionTarget: Object.freeze({ nodeId, kindToken: kind.token, spansToken: spans.token }),
       } as ActionRequest;
       return copyRequest(request);
@@ -3054,6 +3128,22 @@ export class CanonicalWriter {
       noEffect,
       ...(promotionSkipped ? { promotionSkipped } : {}),
     });
+    const focusAnchors: ActionFocusAnchors | undefined = receipt.focus
+      ? Object.freeze({
+          ...(receipt.focus.start
+            ? { start: createCanonicalTextAnchorFromState(this.state, receipt.focus.start) }
+            : {}),
+          ...(receipt.focus.end
+            ? { end: createCanonicalTextAnchorFromState(candidate, receipt.focus.end) }
+            : {}),
+        })
+      : undefined;
+    const selectionAnchors = receipt.focus?.selection
+      ? Object.freeze({
+          anchor: createCanonicalTextAnchorFromState(this.state, receipt.focus.selection.anchor),
+          focus: createCanonicalTextAnchorFromState(this.state, receipt.focus.selection.focus),
+        })
+      : undefined;
     const reservation = this.reserveHistory(
       sessionId,
       request.historyGroupId,
@@ -3062,6 +3152,8 @@ export class CanonicalWriter {
       [...textTapes],
       receipt,
       structuralPatch,
+      focusAnchors,
+      selectionAnchors,
     );
     const context = Object.freeze({ ...admittedContext });
     const liveBefore = cloneDocument(this.state);
@@ -3119,7 +3211,11 @@ export class CanonicalWriter {
     this.publishing = true;
     const callbackErrors: unknown[] = [];
     try {
-      callbackErrors.push(...this.access.publish());
+      callbackErrors.push(
+        ...this.access.publish(
+          projectionNodeIds(pending.receipt.touchedNodeIds, pending.receipt.structuralPatch),
+        ),
+      );
       const accepted = {
         actionId: record.request.actionId,
         sessionId: record.context.sessionId,
@@ -3216,13 +3312,19 @@ export class CanonicalWriter {
     this.pendingHistory = undefined;
     this.publishing = true;
     try {
-      const callbackErrors = [...this.access.publish()];
+      const callbackErrors = [
+        ...this.access.publish(
+          projectionNodeIds(record.entry.touchedNodeIds, record.entry.structuralPatch),
+        ),
+      ];
       callbackErrors.push(...this.notifyListeners({ type: 'history', revision: record.revision }));
       return Object.freeze({
         status: 'applied',
         revision: record.revision,
         textChanged: record.textChanged,
         ...(record.focus ? { focus: record.focus } : {}),
+        ...(record.focusAnchor ? { focusAnchor: record.focusAnchor } : {}),
+        ...(record.selectionAnchors ? { selectionAnchors: record.selectionAnchors } : {}),
         update: Uint8Array.from(record.update),
         callbackErrors: Object.freeze(callbackErrors),
       });
@@ -3263,6 +3365,11 @@ export class CanonicalWriter {
     textTapes: readonly TapeId[],
     receipt: ActionReceipt,
     structuralPatch: StructuralPatch,
+    focusAnchors?: ActionFocusAnchors,
+    selectionAnchors?: {
+      readonly anchor: CanonicalTextAnchor;
+      readonly focus: CanonicalTextAnchor;
+    },
   ): HistoryReservation {
     const session = this.getSession(sessionId);
     const current = session.current;
@@ -3279,6 +3386,23 @@ export class CanonicalWriter {
       sameTextTarget;
     if (canJoin) {
       const entry = session.current!;
+      if (receipt.focus) {
+        entry.focus = Object.freeze({
+          ...((entry.focus?.start ?? receipt.focus.start)
+            ? { start: entry.focus?.start ?? receipt.focus.start }
+            : {}),
+          ...(receipt.focus.end ? { end: receipt.focus.end } : {}),
+        });
+      }
+      if (focusAnchors) {
+        entry.focusAnchors = Object.freeze({
+          ...((entry.focusAnchors?.start ?? focusAnchors.start)
+            ? { start: entry.focusAnchors?.start ?? focusAnchors.start }
+            : {}),
+          ...(focusAnchors.end ? { end: focusAnchors.end } : {}),
+        });
+      }
+      if (selectionAnchors) entry.selectionAnchors = selectionAnchors;
       if (textTapes.length && !entry.manager) {
         Object.assign(entry, { manager: makeTextHistoryManager(this.state, entry) });
       }
@@ -3311,6 +3435,8 @@ export class CanonicalWriter {
       touchedTapeIds: receipt.touchedTapeIds,
       structuralPatch,
       ...(receipt.focus ? { focus: receipt.focus } : {}),
+      ...(focusAnchors ? { focusAnchors } : {}),
+      ...(selectionAnchors ? { selectionAnchors } : {}),
       sealed: noEffect || structuralEffect,
       noEffect,
       structuralEffect,
@@ -3437,6 +3563,12 @@ export class CanonicalWriter {
         status: 'no-effect',
         textChanged: false,
         ...(historyFocus(entry, direction) ? { focus: historyFocus(entry, direction) } : {}),
+        ...(historyFocusAnchor(entry, direction)
+          ? { focusAnchor: historyFocusAnchor(entry, direction) }
+          : {}),
+        ...(historySelectionAnchors(entry, direction)
+          ? { selectionAnchors: historySelectionAnchors(entry, direction) }
+          : {}),
         callbackErrors,
       };
     }
@@ -3472,12 +3604,18 @@ export class CanonicalWriter {
         if (session.current === entry) session.current = undefined;
         this.publishing = true;
         try {
-          const callbackErrors = [...this.access.publish()];
+          const callbackErrors = [...this.access.publish([])];
           callbackErrors.push(...this.notifyListeners({ type: 'history' }));
           return {
             status: 'no-effect',
             textChanged: false,
             ...(historyFocus(entry, direction) ? { focus: historyFocus(entry, direction) } : {}),
+            ...(historyFocusAnchor(entry, direction)
+              ? { focusAnchor: historyFocusAnchor(entry, direction) }
+              : {}),
+            ...(historySelectionAnchors(entry, direction)
+              ? { selectionAnchors: historySelectionAnchors(entry, direction) }
+              : {}),
             callbackErrors: Object.freeze(callbackErrors),
           };
         } finally {
@@ -3493,6 +3631,12 @@ export class CanonicalWriter {
         revision: updated.revision,
         textChanged,
         ...(historyFocus(entry, direction) ? { focus: historyFocus(entry, direction) } : {}),
+        ...(historyFocusAnchor(entry, direction)
+          ? { focusAnchor: historyFocusAnchor(entry, direction) }
+          : {}),
+        ...(historySelectionAnchors(entry, direction)
+          ? { selectionAnchors: historySelectionAnchors(entry, direction) }
+          : {}),
         get update(): Uint8Array {
           return Uint8Array.from(updateBytes);
         },
@@ -3506,6 +3650,12 @@ export class CanonicalWriter {
         revision: updated.revision,
         textChanged,
         ...(historyFocus(entry, direction) ? { focus: historyFocus(entry, direction) } : {}),
+        ...(historyFocusAnchor(entry, direction)
+          ? { focusAnchor: historyFocusAnchor(entry, direction) }
+          : {}),
+        ...(historySelectionAnchors(entry, direction)
+          ? { selectionAnchors: historySelectionAnchors(entry, direction) }
+          : {}),
         update: updateBytes,
       };
       return { status: 'pending', pending: publicValue };
