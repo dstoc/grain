@@ -94,6 +94,27 @@ function createGarbageCollector(): (() => void) | undefined {
 
 const collectGarbage = createGarbageCollector();
 
+function emitRetentionProgress(event: Readonly<Record<string, unknown>>): void {
+  const record = {
+    at: new Date().toISOString(),
+    profile: 'retention',
+    runIndex,
+    side: runtimeProcess.env.YJS_M0_PROGRESS_SIDE ?? 'workspace',
+    fixtureSeed: seed,
+    ...event,
+  };
+  const progressFile = runtimeProcess.env.YJS_M0_PROGRESS_FILE;
+  if (progressFile) {
+    const getBuiltinModule = runtimeProcess.getBuiltinModule;
+    if (!getBuiltinModule)
+      throw new Error('Node.js getBuiltinModule is required for retention progress');
+    const fileSystem = getBuiltinModule.call(runtimeProcess, 'node:fs') as {
+      appendFileSync(path: string, data: string): void;
+    };
+    fileSystem.appendFileSync(progressFile, `${JSON.stringify(record)}\n`);
+  }
+}
+
 function fixtureMarkdown(fixture: CoreFixture): string {
   switch (fixture.shape) {
     case 'paragraphs':
@@ -232,6 +253,7 @@ function counterSample(fixture: CoreFixture) {
     receiptBytes: receiptByteLength(measured.value.receipt),
     targetOffset: offset,
   };
+  expect(document.validate().valid).toBe(true);
   writer.close();
   document.close();
   return result;
@@ -413,6 +435,31 @@ function runCoreProfile() {
     ? config.fixtures.filter((fixture) => fixture.id === selectedFixture)
     : config.fixtures;
   if (!fixtures.length) throw new Error(`Unknown M0 core fixture: ${selectedFixture}`);
+  if (runtimeProcess.env.YJS_M0_COUNTERS_ONLY === '1') {
+    const measuredFixtures = fixtures.map((fixture) => ({
+      fixture,
+      nativeCounterSample: counterSample(fixture),
+      ...(fixture.shape === 'wide-list'
+        ? { structuralListCounterSample: countWideListMove(fixture) }
+        : {}),
+    }));
+    const report = {
+      profile: 'core',
+      counterSamplesOnly: true,
+      runIndex,
+      baselineCommit: manifest.baseline.commit,
+      fixtureSeed: seed,
+      yjsVersion: packageManifest.dependencies?.yjs,
+      environment: {
+        node: runtimeProcess.version,
+        platform: runtimeProcess.platform,
+        arch: runtimeProcess.arch,
+      },
+      fixtures: measuredFixtures,
+    };
+    console.log(`GRAIN_YJS_M0_REPORT=${JSON.stringify(report)}`);
+    return;
+  }
   const measuredFixtures = [];
   for (const fixture of fixtures) {
     runtimeProcess.stderr?.write(`GRAIN_YJS_M0_PROGRESS=core ${fixture.id} started\n`);
@@ -595,6 +642,18 @@ function benchmarkLongTrace(actionCount: number, sampleCount: number) {
   collectGarbage?.();
   const memoryBefore = runtimeProcess.memoryUsage();
   const resourcesBefore = snapshotNativeState(document);
+  const traceStartedAt = performance.now();
+  const checkpointInterval = 100;
+  let checkpointStart = 0;
+  let checkpointAcceptedUpdateBytes = 0;
+  let checkpointReceiptBytes = 0;
+  emitRetentionProgress({
+    kind: 'long-trace-started',
+    completedActions: 0,
+    targetActions: actionCount,
+    warmupOperationCount: sampleCount,
+    fixture: retentionFixture,
+  });
 
   for (let index = 0; index < actionCount; index++) {
     const prepareStart = performance.now();
@@ -612,6 +671,39 @@ function benchmarkLongTrace(actionCount: number, sampleCount: number) {
     applyPublishTimes.push(performance.now() - applyStart);
     acceptedUpdateBytes += accepted.update.byteLength;
     receiptBytes += receiptByteLength(accepted.receipt);
+
+    const completedActions = index + 1;
+    if (completedActions % checkpointInterval === 0 || completedActions === actionCount) {
+      const memory = runtimeProcess.memoryUsage();
+      const chunkPrepareTimes = prepareTimes.slice(checkpointStart, completedActions);
+      const chunkApplyPublishTimes = applyPublishTimes.slice(checkpointStart, completedActions);
+      emitRetentionProgress({
+        kind: 'long-trace-progress',
+        completedActions,
+        targetActions: actionCount,
+        elapsedMs: rounding(performance.now() - traceStartedAt),
+        chunk: {
+          fromAction: checkpointStart + 1,
+          throughAction: completedActions,
+          prepareTextInputMs: chunkPrepareTimes.map(rounding),
+          applyAndPublishMs: chunkApplyPublishTimes.map(rounding),
+          acceptedUpdateBytes: acceptedUpdateBytes - checkpointAcceptedUpdateBytes,
+          receiptBytes: receiptBytes - checkpointReceiptBytes,
+        },
+        cumulative: {
+          acceptedUpdateBytes,
+          receiptBytes,
+          heapUsedBytes: memory.heapUsed,
+          rssBytes: memory.rss,
+        },
+      });
+      runtimeProcess.stderr?.write(
+        `GRAIN_YJS_M0_PROGRESS=retention long trace ${completedActions}/${actionCount} actions (${rounding(performance.now() - traceStartedAt)} ms)\n`,
+      );
+      checkpointStart = completedActions;
+      checkpointAcceptedUpdateBytes = acceptedUpdateBytes;
+      checkpointReceiptBytes = receiptBytes;
+    }
   }
 
   const resourcesAfter = snapshotNativeState(document);
@@ -652,6 +744,36 @@ function benchmarkLongTrace(actionCount: number, sampleCount: number) {
 
 function runRetentionProfile() {
   const config = manifest.profiles.retention;
+  emitRetentionProgress({
+    kind: 'profile-started',
+    baselineCommit: manifest.baseline.commit,
+    yjsVersion: manifest.baseline.yjsVersion,
+    environment: {
+      node: runtimeProcess.version,
+      platform: runtimeProcess.platform,
+      arch: runtimeProcess.arch,
+    },
+    warmupOperationsPerDistribution: config.warmupOperationsPerDistribution,
+    measuredOperationsPerDistribution: config.measuredOperationsPerDistribution,
+    retainedGroupCounts: config.retainedGroupCounts,
+    longTraceActions: config.longTraceActions,
+  });
+  const retainedHistory = [];
+  for (const depth of config.retainedGroupCounts) {
+    runtimeProcess.stderr?.write(`GRAIN_YJS_M0_PROGRESS=retention depth ${depth} started\n`);
+    const result = benchmarkHistoryDepth(
+      depth,
+      config.warmupOperationsPerDistribution,
+      config.measuredOperationsPerDistribution,
+    );
+    retainedHistory.push(result);
+    emitRetentionProgress({ kind: 'retained-history-depth-complete', depth, result });
+    runtimeProcess.stderr?.write(`GRAIN_YJS_M0_PROGRESS=retention depth ${depth} finished\n`);
+  }
+  const longTrace = benchmarkLongTrace(
+    config.longTraceActions,
+    config.warmupOperationsPerDistribution,
+  );
   const report = {
     profile: 'retention',
     runIndex,
@@ -662,18 +784,10 @@ function runRetentionProfile() {
       platform: runtimeProcess.platform,
       arch: runtimeProcess.arch,
     },
-    retainedHistory: config.retainedGroupCounts.map((depth) => {
-      runtimeProcess.stderr?.write(`GRAIN_YJS_M0_PROGRESS=retention depth ${depth} started\n`);
-      const result = benchmarkHistoryDepth(
-        depth,
-        config.warmupOperationsPerDistribution,
-        config.measuredOperationsPerDistribution,
-      );
-      runtimeProcess.stderr?.write(`GRAIN_YJS_M0_PROGRESS=retention depth ${depth} finished\n`);
-      return result;
-    }),
-    longTrace: benchmarkLongTrace(config.longTraceActions, config.warmupOperationsPerDistribution),
+    retainedHistory,
+    longTrace,
   };
+  emitRetentionProgress({ kind: 'profile-complete', report });
   console.log(`GRAIN_YJS_M0_REPORT=${JSON.stringify(report)}`);
 }
 

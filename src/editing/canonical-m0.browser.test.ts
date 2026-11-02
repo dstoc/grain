@@ -88,10 +88,17 @@ it.skipIf(profile !== 'editor')(
       inline = renderer.shadowRoot!.querySelector('md-inline') as MarkdownInline;
     }
 
-    const blocks = [...renderer.shadowRoot!.querySelectorAll('md-block')];
-    const targetBlock = blocks[0]!;
-    const unaffectedBlock = blocks[75]!;
-    const unaffectedNode = document.root.children[75] as CanonicalNode;
+    type BlockElement = HTMLElement & { readonly node?: unknown };
+    const liveBlocks = () =>
+      [...renderer.shadowRoot!.querySelectorAll('md-block')] as BlockElement[];
+    const blockFor = (node: CanonicalNode): BlockElement => {
+      const block = liveBlocks().find((candidate) => candidate.node === node);
+      if (!block) throw new Error(`No live md-block projects canonical node ${node.sharedId}`);
+      return block;
+    };
+    const targetBlock = blockFor(targetNode);
+    const unaffectedNode = document.root.children[74] as CanonicalNode;
+    const unaffectedBlock = blockFor(unaffectedNode);
     const unaffectedVersion = unaffectedNode.version;
     let targetMutations = 0;
     let unaffectedMutations = 0;
@@ -120,12 +127,15 @@ it.skipIf(profile !== 'editor')(
     unaffectedMutations += unaffectedObserver.takeRecords().length;
     targetObserver.disconnect();
     unaffectedObserver.disconnect();
+    const liveTargetBlock = blockFor(targetNode);
+    const liveUnaffectedBlock = blockFor(unaffectedNode);
 
     expect(targetNode.content!.length).toBe(targetOffset + warmupCount + operationCount);
     expect(targetMutations).toBeGreaterThan(0);
     expect(unaffectedMutations).toBe(0);
     expect(unaffectedNode.version).toBe(unaffectedVersion);
-    expect(blocks[75]).toBe(unaffectedBlock);
+    expect(liveTargetBlock).toBe(targetBlock);
+    expect(liveUnaffectedBlock).toBe(unaffectedBlock);
 
     console.log(
       `GRAIN_YJS_M0_REPORT=${JSON.stringify({
@@ -141,6 +151,10 @@ it.skipIf(profile !== 'editor')(
         stage: summary(samples),
         affectedBlockDomMutations: targetMutations,
         unaffectedBlockDomMutations: unaffectedMutations,
+        affectedBlockNodeId: targetNode.sharedId,
+        unaffectedBlockNodeId: unaffectedNode.sharedId,
+        affectedBlockIdentityPreserved: liveTargetBlock === targetBlock,
+        unaffectedBlockIdentityPreserved: liveUnaffectedBlock === unaffectedBlock,
         unaffectedNodeVersionBefore: unaffectedVersion,
         unaffectedNodeVersionAfter: unaffectedNode.version,
         browser: navigator.userAgent,

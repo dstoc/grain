@@ -173,7 +173,7 @@ describe('M0 native operation counters', () => {
     expect(measured.counts.textInserts).toBeGreaterThan(0);
     expect(measured.counts.updateEvents).toBeGreaterThan(0);
     expect(measured.counts.updateEventBytes).toBeGreaterThan(0);
-    expect(measured.counts.transactions).toBeGreaterThan(0);
+    expect(measured.counts.publicDocTransactCalls).toBeGreaterThan(0);
     expect(revisionAssignments).toBeGreaterThanOrEqual(initial.tapeCount * 2);
     expect(unchangedRevisionAssignments).toBe(unchangedTapeCount * 2);
     expect(measured.counts.unchangedMapSets).toBe(unchangedRevisionAssignments);

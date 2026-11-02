@@ -94,7 +94,7 @@
     {
       "id": "cloning-and-prepare",
       "profile": "core",
-      "observable": "prepare/apply timing, Y.Doc transactions, introduced client IDs, structures, and heap",
+      "observable": "prepare/apply timing, public Y.Doc.transact calls, introduced client IDs, structures, and heap",
       "proposalSection": "5.1, 6.1"
     },
     {

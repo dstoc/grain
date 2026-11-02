@@ -27,8 +27,9 @@ type InternalDoc = Y.Doc & {
 };
 
 export interface NativeOperationCounts {
-  readonly transactions: number;
-  readonly transactionsByOrigin: Readonly<Record<string, number>>;
+  /** Calls to Y.Doc.prototype.transact, including nested/reused transactions. */
+  readonly publicDocTransactCalls: number;
+  readonly publicDocTransactCallsByOrigin: Readonly<Record<string, number>>;
   readonly mapSets: number;
   readonly unchangedMapSets: number;
   readonly mapDeletes: number;
@@ -72,8 +73,8 @@ export interface NativeStateSnapshot {
 }
 
 interface MutableCounts {
-  transactions: number;
-  transactionsByOrigin: Map<string, number>;
+  publicDocTransactCalls: number;
+  publicDocTransactCallsByOrigin: Map<unknown, number>;
   mapSets: number;
   unchangedMapSets: number;
   mapDeletes: number;
@@ -134,6 +135,44 @@ function writePath(type: SharedType, operation: string, key?: string): string {
 function mapCounts(map: Map<string, number>): Record<string, number> {
   return Object.fromEntries(
     [...map.entries()].sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function mapOriginCounts(map: Map<unknown, number>): Record<string, number> {
+  let nextReferenceId = 0;
+  const objectIds = new WeakMap<object, number>();
+  const symbolIds = new Map<symbol, number>();
+  const originLabel = (origin: unknown): string => {
+    if (origin === undefined) return 'undefined';
+    if (origin === null) return 'null';
+    switch (typeof origin) {
+      case 'string':
+        return `string:${JSON.stringify(origin)}`;
+      case 'number':
+        return `number:${String(origin)}`;
+      case 'boolean':
+        return `boolean:${String(origin)}`;
+      case 'bigint':
+        return `bigint:${String(origin)}`;
+      case 'symbol': {
+        let id = symbolIds.get(origin);
+        if (id === undefined) symbolIds.set(origin, (id = ++nextReferenceId));
+        return `symbol#${id}`;
+      }
+      case 'object':
+      case 'function': {
+        const reference = origin as object;
+        let id = objectIds.get(reference);
+        if (id === undefined) objectIds.set(reference, (id = ++nextReferenceId));
+        return `${typeof origin}#${id}`;
+      }
+    }
+    return 'unknown';
+  };
+  return Object.fromEntries(
+    [...map.entries()]
+      .map(([origin, count]) => [originLabel(origin), count] as const)
+      .sort(([left], [right]) => left.localeCompare(right)),
   );
 }
 
@@ -218,8 +257,8 @@ export function measureNativeOperations<T>(
 ): { readonly value: T; readonly counts: NativeOperationCounts } {
   const state = canonicalWriterAccess(document).state;
   const mutable: MutableCounts = {
-    transactions: 0,
-    transactionsByOrigin: new Map(),
+    publicDocTransactCalls: 0,
+    publicDocTransactCallsByOrigin: new Map(),
     mapSets: 0,
     unchangedMapSets: 0,
     mapDeletes: 0,
@@ -365,8 +404,11 @@ export function measureNativeOperations<T>(
     docPrototype,
     'transact',
     function (this: Y.Doc, callback: () => void, origin?: unknown, local?: boolean) {
-      mutable.transactions++;
-      increment(mutable.transactionsByOrigin, origin === undefined ? 'undefined' : String(origin));
+      mutable.publicDocTransactCalls++;
+      mutable.publicDocTransactCallsByOrigin.set(
+        origin,
+        (mutable.publicDocTransactCallsByOrigin.get(origin) ?? 0) + 1,
+      );
       return originalTransact.call(this, callback, origin, local);
     },
   );
@@ -394,10 +436,7 @@ export function measureNativeOperations<T>(
     const updateHandler = (update: Uint8Array) => {
       mutable.updateEvents++;
       mutable.updateEventBytes += update.byteLength;
-      const deleteSet = Y.decodeUpdate(update).ds as unknown as {
-        readonly clients: Record<string, readonly { readonly len: number }[]>;
-      };
-      const clients = Object.values(deleteSet.clients);
+      const clients = [...Y.decodeUpdate(update).ds.clients.values()];
       mutable.deleteSetClients += clients.filter((ranges) => ranges.length > 0).length;
       mutable.deleteSetRanges += clients.reduce((total, ranges) => total + ranges.length, 0);
     };
@@ -458,8 +497,8 @@ export function measureNativeOperations<T>(
 
   const stateAfter = canonicalWriterAccess(document).state;
   const counts: NativeOperationCounts = {
-    transactions: mutable.transactions,
-    transactionsByOrigin: mapCounts(mutable.transactionsByOrigin),
+    publicDocTransactCalls: mutable.publicDocTransactCalls,
+    publicDocTransactCallsByOrigin: mapOriginCounts(mutable.publicDocTransactCallsByOrigin),
     mapSets: mutable.mapSets,
     unchangedMapSets: mutable.unchangedMapSets,
     mapDeletes: mutable.mapDeletes,

@@ -23,24 +23,27 @@
       }
     ]
   },
-  "createdAt": "2026-11-02T14:50:56.846Z",
+  "createdAt": "2026-11-02T15:09:04.006Z",
   "invocation": {
     "nodeExecutable": "/usr/local/bin/node",
     "args": [
-      "/home/user/workspaces/run-184c74e4-12fe-4e07-bb4e-ddecb6296241/grain/benchmarks/yjs-m0/run.mjs",
+      "/home/user/workspaces/run-22a366e1-dcea-4a53-9ccd-64a533274002/grain/benchmarks/yjs-m0/run.mjs",
       "--profile",
       "editor",
       "--runs",
       "2",
       "--output",
-      "benchmarks/yjs-m0/results/editor.json"
+      "benchmarks/yjs-m0/results/editor.json",
+      "--force"
     ],
     "selectedProfiles": ["editor"],
     "runs": {
       "editor": 2
     },
     "against": null,
-    "fixture": null
+    "fixture": null,
+    "countersOnly": false,
+    "progressFile": null
   },
   "environment": {
     "node": "v26.13.0",
@@ -56,7 +59,7 @@
       "profile": "editor",
       "candidate": {
         "label": "workspace",
-        "head": "768310a6ce3abd0ed08ed15b1aace85f0393a6da",
+        "head": "4cabae46dd27020054901185585e2477e76ba3e1",
         "runs": [
           {
             "report": {
@@ -71,20 +74,24 @@
               "operationCount": 200,
               "stage": {
                 "sampleCount": 200,
-                "p50Ms": 50.2,
-                "p95Ms": 75.9,
-                "meanMs": 55.013,
-                "populationStandardDeviationMs": 13.282309,
-                "minimumMs": 30.2,
-                "maximumMs": 104.4
+                "p50Ms": 50.4,
+                "p95Ms": 76.4,
+                "meanMs": 55.1235,
+                "populationStandardDeviationMs": 13.03824,
+                "minimumMs": 30.4,
+                "maximumMs": 102.2
               },
               "affectedBlockDomMutations": 200,
               "unaffectedBlockDomMutations": 0,
+              "affectedBlockNodeId": "m0-editor-node-1",
+              "unaffectedBlockNodeId": "m0-editor-node-741",
+              "affectedBlockIdentityPreserved": true,
+              "unaffectedBlockIdentityPreserved": true,
               "unaffectedNodeVersionBefore": 0,
               "unaffectedNodeVersionAfter": 0,
               "browser": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36"
             },
-            "processElapsedMs": 14104.629
+            "processElapsedMs": 14104.84
           },
           {
             "report": {
@@ -100,19 +107,23 @@
               "stage": {
                 "sampleCount": 200,
                 "p50Ms": 50.1,
-                "p95Ms": 70.9,
-                "meanMs": 52.174,
-                "populationStandardDeviationMs": 11.743242,
-                "minimumMs": 29.7,
-                "maximumMs": 99
+                "p95Ms": 71.1,
+                "meanMs": 52.088,
+                "populationStandardDeviationMs": 12.292878,
+                "minimumMs": 28.6,
+                "maximumMs": 98.6
               },
               "affectedBlockDomMutations": 200,
               "unaffectedBlockDomMutations": 0,
+              "affectedBlockNodeId": "m0-editor-node-1",
+              "unaffectedBlockNodeId": "m0-editor-node-741",
+              "affectedBlockIdentityPreserved": true,
+              "unaffectedBlockIdentityPreserved": true,
               "unaffectedNodeVersionBefore": 0,
               "unaffectedNodeVersionAfter": 0,
               "browser": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/156.0.0.0 Safari/537.36"
             },
-            "processElapsedMs": 13466.429
+            "processElapsedMs": 13427.543
           }
         ],
         "aggregate": {
@@ -120,11 +131,11 @@
             {
               "path": "stage",
               "processCount": 2,
-              "medianOfProcessP50Ms": 50.15,
-              "p95OfProcessP50Ms": 50.2,
-              "medianAbsoluteDeviationOfProcessP50Ms": 0.05,
-              "processP50Ms": [50.2, 50.1],
-              "processP95Ms": [75.9, 70.9]
+              "medianOfProcessP50Ms": 50.25,
+              "p95OfProcessP50Ms": 50.4,
+              "medianAbsoluteDeviationOfProcessP50Ms": 0.15,
+              "processP50Ms": [50.4, 50.1],
+              "processP95Ms": [76.4, 71.1]
             }
           ]
         }

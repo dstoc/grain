@@ -20,21 +20,25 @@ The table reports the median across processes of each process's `prepareThroughP
 
 The wide-list structural move counter sample recorded 2,004 map sets, including 2,000 unchanged map sets; its accepted update was 50,611 bytes, receipt was 75,257 bytes, and checkpoint growth was 50,592 bytes. This is a single untimed counter sample, separate from the 200-operation timing distribution.
 
+The original core timing distributions are retained. After instrumentation review, a two-process counters-only run refreshed the native count objects in `core.json`; the timed distributions, state snapshots, and memory observations were not rerun. Its exact command and environment are recorded in the report metadata. Delete-set counts now enumerate Yjs's `Map` values, and `publicDocTransactCalls` explicitly describes public method calls rather than native transaction lifecycles.
+
 These are baseline observations from the runner, not portable performance claims. The proposal's engineering budgets apply to later implementation milestones.
 
 ## Browser profiles
 
 Both browser reports use system Chromium `156.0.8078.73` at a `1280 × 720` viewport. Each profile has two fresh processes with 25 warm-up and 200 measured operations per process. The table reports the median across processes of each process's p50 and p95; `p50 MAD` describes the two process p50 values.
 
-| Profile           | Report                         |       p50 |       p95 |  p50 MAD | Other observations                     |
-| ----------------- | ------------------------------ | --------: | --------: | -------: | -------------------------------------- |
-| Editor            | [editor.json](./editor.json)   | 50.150 ms | 73.400 ms | 0.050 ms | 0 unaffected-block DOM mutations       |
-| Full demo harness | [harness.json](./harness.json) | 58.400 ms | 86.950 ms | 0.800 ms | 200 parser rebuilds for 200 operations |
+| Profile           | Report                         |       p50 |       p95 |  p50 MAD | Other observations                                          |
+| ----------------- | ------------------------------ | --------: | --------: | -------: | ----------------------------------------------------------- |
+| Editor            | [editor.json](./editor.json)   | 50.250 ms | 73.750 ms | 0.150 ms | 0 unaffected-block mutations; live block identity preserved |
+| Full demo harness | [harness.json](./harness.json) | 58.400 ms | 86.950 ms | 0.800 ms | 200 parser rebuilds for 200 operations                      |
 
 ```sh
-npm run bench:yjs-m0 -- --profile editor --runs 2 --output benchmarks/yjs-m0/results/editor.json
+npm run bench:yjs-m0 -- --profile editor --runs 2 --output benchmarks/yjs-m0/results/editor.json --force
 npm run bench:yjs-m0 -- --profile harness --runs 2 --output benchmarks/yjs-m0/results/harness.json
 ```
+
+The editor report was refreshed after correcting the browser control: it resolves the affected and unaffected `md-block` elements by their `.node` identity and re-queries live DOM after all measured input has settled. Both live identities were retained in both fresh processes. The report uses system Chromium `156.0.8078.73` at `1280 × 720`.
 
 The full harness measurement includes canonical change handling, Markdown and JSON serialization, parser rebuilds, and settled rendering. Browser timing is desktop Chromium simulation; it does not cover physical mobile input or IME behavior.
 
@@ -57,10 +61,10 @@ Ownership snapshots group tapes by `spanCount` and `ownerCount`, with `tapeCount
 | Full demo harness                                      | [harness.json](./harness.json) | Complete, two fresh processes |
 | Retained history and 10,000-action trace               | —                              | Incomplete; see below         |
 
-The first retention process completed the 0-, 64-, and 500-group measurements, then ran for over an hour in the 10,000-action trace. It was stopped before it emitted a report, so none of those partial measurements are counted as results. The exact command was:
+The earlier all-or-nothing retention process completed the 0-, 64-, and 500-group measurements, then ran for over an hour in the 10,000-action trace without persisting them. The runner now writes each completed depth and every 100 actions, including exact per-action timing chunks and cumulative byte totals, to a JSONL progress file beside the final report. Partial trace data is not a completed measurement. The exact full-profile command is:
 
 ```sh
 npm run bench:yjs-m0 -- --profile retention --runs 1 --output benchmarks/yjs-m0/results/retention-run-1.json
 ```
 
-Run this profile on a worker with enough time for the full trace. Commit its first complete report before starting the repeated fresh-process run.
+Inspect and preserve `benchmarks/yjs-m0/results/retention-run-1.json.progress.jsonl` as it grows. The records contain the baseline commit, seed, environment, command, fixture selections, completed depth reports, and trace checkpoints. Do not treat an incomplete trace as a result or restart it from a checkpoint; the measured 10,000-action trace must remain one uninterrupted writer/history sequence.

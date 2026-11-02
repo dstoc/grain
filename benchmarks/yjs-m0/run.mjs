@@ -2,6 +2,7 @@
 
 import { spawn } from 'node:child_process';
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -12,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { arch, cpus, platform, release, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
@@ -41,6 +42,8 @@ Options:
       --fixture <id>    run one core fixture (for focused checks or ablations)
       --against <ref>   compare the current workspace with this Git ref
   -o, --output <file>   write the JSON report to a new file
+      --progress-file <file> append durable retention checkpoints to this JSONL file
+      --counters-only   collect core counter samples without rerunning timing distributions
       --force           replace the output file if it already exists
   -h, --help            show this help
 
@@ -48,7 +51,8 @@ Examples:
   npm run bench:yjs-m0 -- --profile core --runs 5 --output benchmarks/yjs-m0/results/core.json
   npm run bench:yjs-m0 -- --profile core --fixture paragraphs-10 --runs 1
   npm run bench:yjs-m0 -- --profile editor --against origin/yjs --runs 5
-  npm run bench:yjs-m0 -- --profile retention --runs 3
+  npm run bench:yjs-m0 -- --profile retention --runs 1 --output benchmarks/yjs-m0/results/retention-run-1.json
+  npm run bench:yjs-m0 -- --profile core --runs 2 --counters-only --output benchmarks/yjs-m0/results/counter-correction.json
 `;
 
 function usageError(message) {
@@ -68,6 +72,8 @@ function parseOptions() {
         fixture: { type: 'string' },
         against: { type: 'string' },
         output: { type: 'string', short: 'o' },
+        'progress-file': { type: 'string' },
+        'counters-only': { type: 'boolean' },
         force: { type: 'boolean' },
         help: { type: 'boolean', short: 'h' },
       },
@@ -145,7 +151,14 @@ function npmCommand(profile, junitOutputFile) {
   ];
 }
 
-async function runFreshProcess(cwd, profile, runIndex, sideLabel, fixture) {
+async function runFreshProcess(
+  cwd,
+  profile,
+  runIndex,
+  sideLabel,
+  fixture,
+  { progressFile, countersOnly = false } = {},
+) {
   const started = performance.now();
   const browser = profile === 'editor' || profile === 'harness';
   const junitOutputFile = browser
@@ -153,17 +166,55 @@ async function runFreshProcess(cwd, profile, runIndex, sideLabel, fixture) {
     : undefined;
   const args = npmCommand(profile, junitOutputFile);
   process.stderr.write(`[${sideLabel}] ${profile} run ${runIndex + 1}: npm ${args.join(' ')}\n`);
-  const output = await new Promise((resolvePromise, rejectPromise) => {
+  const childEnvironment = {
+    ...process.env,
+    YJS_M0_PROFILE: profile,
+    YJS_M0_RUN_INDEX: String(runIndex),
+    VITE_GRAIN_YJS_M0_PROFILE: profile,
+    VITE_GRAIN_YJS_M0_RUN_INDEX: String(runIndex),
+    ...(fixture ? { YJS_M0_FIXTURE: fixture } : {}),
+    ...(countersOnly ? { YJS_M0_COUNTERS_ONLY: '1' } : {}),
+    ...(progressFile
+      ? {
+          YJS_M0_PROGRESS_FILE: progressFile,
+          YJS_M0_PROGRESS_SIDE: sideLabel,
+        }
+      : {}),
+  };
+  if (progressFile) {
+    appendFileSync(
+      progressFile,
+      `${JSON.stringify({
+        kind: 'process-started',
+        at: new Date().toISOString(),
+        profile,
+        runIndex,
+        side: sideLabel,
+        sourceCommit: await git(['rev-parse', 'HEAD'], cwd),
+        progressFile: relative(repository, progressFile),
+        command: `npm ${args.join(' ')}`,
+        runnerArguments: process.argv.slice(1),
+        node: process.version,
+        platform: platform(),
+        architecture: arch(),
+        osRelease: release(),
+        cpuModel: cpus()[0]?.model ?? null,
+        logicalCpuCount: cpus().length,
+        npmUserAgent: process.env.npm_config_user_agent ?? null,
+        fixtureSeed: manifest.baseline.fixtureSeed,
+        retainedGroupCounts: manifest.profiles.retention.retainedGroupCounts,
+        longTraceActions: manifest.profiles.retention.longTraceActions,
+        warmupOperationsPerDistribution:
+          manifest.profiles.retention.warmupOperationsPerDistribution,
+        measuredOperationsPerDistribution:
+          manifest.profiles.retention.measuredOperationsPerDistribution,
+      })}\n`,
+    );
+  }
+  const childPromise = new Promise((resolvePromise, rejectPromise) => {
     const child = spawn('npm', args, {
       cwd,
-      env: {
-        ...process.env,
-        YJS_M0_PROFILE: profile,
-        YJS_M0_RUN_INDEX: String(runIndex),
-        VITE_GRAIN_YJS_M0_PROFILE: profile,
-        VITE_GRAIN_YJS_M0_RUN_INDEX: String(runIndex),
-        ...(fixture ? { YJS_M0_FIXTURE: fixture } : {}),
-      },
+      env: childEnvironment,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -179,6 +230,25 @@ async function runFreshProcess(cwd, profile, runIndex, sideLabel, fixture) {
       else rejectPromise(new Error(`${profile} run failed (${code})\n${stderr}\n${stdout}`));
     });
   });
+  let output;
+  try {
+    output = await childPromise;
+  } catch (error) {
+    if (progressFile)
+      appendFileSync(
+        progressFile,
+        `${JSON.stringify({
+          kind: 'process-failed',
+          at: new Date().toISOString(),
+          profile,
+          runIndex,
+          side: sideLabel,
+          error: error instanceof Error ? error.message : String(error),
+          processElapsedMs: Number((performance.now() - started).toFixed(3)),
+        })}\n`,
+      );
+    throw error;
+  }
   let capturedOutput = `${output.stdout}\n${output.stderr}`;
   if (junitOutputFile && existsSync(junitOutputFile)) {
     const xml = readFileSync(junitOutputFile, 'utf8');
@@ -206,9 +276,23 @@ async function runFreshProcess(cwd, profile, runIndex, sideLabel, fixture) {
   const reportStart = reportLine.indexOf('GRAIN_YJS_M0_REPORT=') + 'GRAIN_YJS_M0_REPORT='.length;
   const report = JSON.parse(reportLine.slice(reportStart));
   if (junitOutputFile) rmSync(junitOutputFile, { force: true });
+  const processElapsedMs = Number((performance.now() - started).toFixed(3));
+  if (progressFile)
+    appendFileSync(
+      progressFile,
+      `${JSON.stringify({
+        kind: 'process-complete',
+        at: new Date().toISOString(),
+        profile,
+        runIndex,
+        side: sideLabel,
+        processElapsedMs,
+        report,
+      })}\n`,
+    );
   return {
     report,
-    processElapsedMs: Number((performance.now() - started).toFixed(3)),
+    processElapsedMs,
   };
 }
 
@@ -258,10 +342,10 @@ function aggregateRuns(runs) {
   return { distributions: distributionSummary };
 }
 
-async function runSide(cwd, label, profile, count, fixture) {
+async function runSide(cwd, label, profile, count, fixture, options) {
   const runs = [];
   for (let index = 0; index < count; index++)
-    runs.push(await runFreshProcess(cwd, profile, index, label, fixture));
+    runs.push(await runFreshProcess(cwd, profile, index, label, fixture, options));
   return {
     label,
     head: await git(['rev-parse', 'HEAD'], cwd),
@@ -319,14 +403,38 @@ async function main() {
       return;
     }
   }
-  if (options.force && !options.output) {
-    usageError('--force requires --output');
+  if (options['counters-only'] && options.profile !== 'core') {
+    usageError('--counters-only is only valid with --profile core');
+    return;
+  }
+  if (options['progress-file'] && !['all', 'retention'].includes(options.profile)) {
+    usageError('--progress-file is only valid with --profile retention or --profile all');
+    return;
+  }
+  if (options.force && !options.output && !options['progress-file']) {
+    usageError('--force requires --output or --progress-file');
     return;
   }
   const outputPath = options.output ? resolve(repository, options.output) : undefined;
   if (outputPath && existsSync(outputPath) && !options.force)
     throw new Error(`Output already exists: ${outputPath} (use --force to replace it)`);
   const selectedProfiles = options.profile === 'all' ? profiles : [options.profile];
+  let progressFile;
+  if (selectedProfiles.includes('retention')) {
+    progressFile = options['progress-file']
+      ? resolve(repository, options['progress-file'])
+      : outputPath
+        ? `${outputPath}.progress.jsonl`
+        : join(
+            repository,
+            'benchmarks/yjs-m0/results',
+            `retention-progress-${new Date().toISOString().replaceAll(/[:.]/g, '-')}.jsonl`,
+          );
+    if (existsSync(progressFile) && !options.force)
+      throw new Error(`Progress file already exists: ${progressFile} (use --force to replace it)`);
+    mkdirSync(dirname(progressFile), { recursive: true });
+    writeFileSync(progressFile, '', { flag: options.force ? 'w' : 'wx' });
+  }
   const runOverrides = new Map();
   if (options.runs !== undefined) {
     const count = Number(options.runs);
@@ -340,19 +448,44 @@ async function main() {
   const results = [];
   for (const profile of selectedProfiles) {
     const runs = runOverrides.get(profile) ?? manifest.profiles[profile].defaultFreshProcesses;
+    const processOptions = {
+      progressFile: profile === 'retention' ? progressFile : undefined,
+      countersOnly: Boolean(options['counters-only']),
+    };
     await validateYjsVersion(repository);
     if (options.against) {
       const against = await withReferenceWorktree(options.against, async (worktree) => {
         await validateYjsVersion(worktree);
-        return runSide(worktree, `against ${options.against}`, profile, runs, options.fixture);
+        return runSide(
+          worktree,
+          `against ${options.against}`,
+          profile,
+          runs,
+          options.fixture,
+          processOptions,
+        );
       });
-      const candidate = await runSide(repository, 'workspace', profile, runs, options.fixture);
+      const candidate = await runSide(
+        repository,
+        'workspace',
+        profile,
+        runs,
+        options.fixture,
+        processOptions,
+      );
       results.push({ profile, against, candidate, comparisons: compareSides(against, candidate) });
     } else {
       results.push({
         profile,
         fixture: options.fixture,
-        candidate: await runSide(repository, 'workspace', profile, runs, options.fixture),
+        candidate: await runSide(
+          repository,
+          'workspace',
+          profile,
+          runs,
+          options.fixture,
+          processOptions,
+        ),
       });
     }
   }
@@ -373,6 +506,8 @@ async function main() {
       ),
       against: options.against ?? null,
       fixture: options.fixture ?? null,
+      countersOnly: Boolean(options['counters-only']),
+      progressFile: progressFile ? relative(repository, progressFile) : null,
     },
     environment: {
       node: process.version,
