@@ -18,6 +18,7 @@ import type {
 } from './canonical-model.js';
 import { mapTextEdit } from './canonical-text.js';
 import type { NativeTextRun, TextAffinity, TextEdit } from './canonical-text.js';
+import { normalizeCanonicalDraft } from './canonical-normalize.js';
 
 const META = 'meta';
 const NODES = 'nodes';
@@ -35,7 +36,7 @@ const BLOCK_KINDS = new Set<NodeKind>([
 
 type RecordMap = Y.Map<unknown>;
 type CellValue<T> = { readonly token: ResourceToken; readonly value: T };
-type CellField = 'kind' | 'children' | 'spans' | 'marker' | 'checked' | 'info';
+export type CellField = 'kind' | 'children' | 'spans' | 'marker' | 'checked' | 'info';
 
 export interface NodeSpec {
   readonly type: NodeKind;
@@ -81,6 +82,13 @@ export interface Bookmark {
   readonly affinity: TextAffinity;
   readonly spanIndex?: number;
 }
+
+export interface ActionFocus {
+  readonly start?: Bookmark;
+  readonly end?: Bookmark;
+}
+
+export type DraftCommand = (draft: TreeDraft) => void | ActionFocus;
 
 export interface TreeDraft {
   node(id: NodeId): DraftNode;
@@ -132,6 +140,7 @@ export interface ActionRequest {
   readonly preconditions: readonly ReadPrecondition[];
   readonly textUpdate?: Uint8Array;
   readonly operations: readonly SemanticOperation[];
+  readonly focus?: ActionFocus;
   readonly promotionTarget?: {
     readonly nodeId: NodeId;
     readonly kindToken: ResourceToken;
@@ -168,8 +177,45 @@ export interface ActionReceipt {
   readonly historyGroupId: string;
   readonly touchedNodeIds: readonly NodeId[];
   readonly touchedTapeIds: readonly TapeId[];
+  readonly structuralPatch: StructuralPatch;
+  readonly focus?: ActionFocus;
   readonly noEffect: boolean;
   readonly promotionSkipped?: 'ownershipChanged';
+}
+
+export interface StructuralCellValue {
+  readonly token: ResourceToken;
+  readonly value: unknown;
+}
+
+export interface StructuralCellPatch {
+  readonly nodeId: NodeId;
+  readonly field: CellField;
+  readonly before: StructuralCellValue;
+  readonly after: StructuralCellValue;
+}
+
+export interface StructuralBirth {
+  readonly nodeId: NodeId;
+  readonly cells: Readonly<Record<CellField, StructuralCellValue>>;
+}
+
+export interface StructuralVisibility {
+  readonly nodeId: NodeId;
+  readonly before: boolean;
+  readonly after: boolean;
+}
+
+export interface StructuralPatch {
+  readonly cells: readonly StructuralCellPatch[];
+  readonly births: readonly StructuralBirth[];
+  readonly visibility: readonly StructuralVisibility[];
+  readonly bornTapes: readonly { readonly tapeId: TapeId; readonly sharedTypeId: string }[];
+  readonly bornMarkers: readonly {
+    readonly tapeId: TapeId;
+    readonly boundaryId: string;
+    readonly itemId: string;
+  }[];
 }
 
 export interface PendingCommit {
@@ -235,6 +281,9 @@ interface TransferredPiece {
   readonly text: string;
   readonly source: NodeId;
   readonly tapeId: TapeId;
+  readonly sourceSpanIndex?: number;
+  readonly sourceFrom?: number;
+  readonly sourceTo?: number;
 }
 
 type DraftPiece = RetainedPiece | InsertedPiece | TransferredPiece;
@@ -299,6 +348,51 @@ interface LowLevelPlan {
   readonly textTapes: readonly TapeId[];
 }
 
+interface NativeItem {
+  readonly id: { readonly client: number; readonly clock: number };
+  readonly right: NativeItem | null;
+  readonly deleted: boolean;
+  readonly content: unknown;
+}
+
+interface NativeSharedType {
+  readonly _item: NativeItem | null;
+  readonly _start: NativeItem | null;
+}
+
+function nativeItemId(item: NativeItem): string {
+  return `${item.id.client}:${item.id.clock}`;
+}
+
+function sharedTypeId(type: Y.Map<unknown> | Y.Text): string {
+  const item = (type as unknown as NativeSharedType)._item;
+  assert(item, 'canonical shared type is not integrated');
+  return nativeItemId(item);
+}
+
+function markerItems(state: Y.Doc): Map<string, { tapeId: TapeId; itemId: string }> {
+  const result = new Map<string, { tapeId: TapeId; itemId: string }>();
+  for (const [tapeId, tape] of tapeMap(state)) {
+    let item = (tape as unknown as NativeSharedType)._start;
+    while (item) {
+      const content = item.content;
+      const embed =
+        content && typeof content === 'object' && 'embed' in content
+          ? (content as { embed: unknown }).embed
+          : undefined;
+      const boundaryId =
+        embed && typeof embed === 'object' && 'grainBoundary' in embed
+          ? (embed as { grainBoundary: unknown }).grainBoundary
+          : undefined;
+      if (!item.deleted && typeof boundaryId === 'string') {
+        result.set(boundaryId, { tapeId, itemId: nativeItemId(item) });
+      }
+      item = item.right;
+    }
+  }
+  return result;
+}
+
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
@@ -319,6 +413,40 @@ function deepFreeze<T>(value: T): T {
     for (const item of Object.values(value)) deepFreeze(item);
   }
   return value;
+}
+
+function copyActionFocus(value: unknown): ActionFocus | undefined {
+  if (value === undefined) return undefined;
+  assert(
+    value !== null && typeof value === 'object' && !Array.isArray(value),
+    'focus must be an object',
+  );
+  const focus = value as ActionFocus;
+  const copyBookmark = (bookmark: Bookmark | undefined): Bookmark | undefined => {
+    if (bookmark === undefined) return undefined;
+    assert(
+      typeof bookmark.nodeId === 'string' && bookmark.nodeId.length > 0,
+      'focus node ID is invalid',
+    );
+    assert(Number.isInteger(bookmark.offset) && bookmark.offset >= 0, 'focus offset is invalid');
+    assert(
+      bookmark.affinity === 'left' || bookmark.affinity === 'right',
+      'focus affinity is invalid',
+    );
+    if (bookmark.spanIndex !== undefined)
+      assert(
+        Number.isInteger(bookmark.spanIndex) && bookmark.spanIndex >= 0,
+        'focus span index is invalid',
+      );
+    return Object.freeze({ ...bookmark });
+  };
+  assert(
+    Object.keys(focus).every((key) => key === 'start' || key === 'end'),
+    'focus contains an unsupported field',
+  );
+  const start = copyBookmark(focus.start);
+  const end = copyBookmark(focus.end);
+  return Object.freeze({ ...(start ? { start } : {}), ...(end ? { end } : {}) });
 }
 
 function immutableCell<T>(token: string, value: T): CellValue<T> {
@@ -562,18 +690,24 @@ class MutableTreeDraft implements TreeDraft {
           cells,
         });
         touchedNodes.add(node.id);
-        for (const span of spans) {
-          newTapes.push({ id: span.tapeId, span });
-          touchedTapes.add(span.tapeId);
-          if (inlineContent(node)) {
-            insertions.push({ tapeId: span.tapeId, index: 1, text: inlineContent(node) });
-            textTapes.add(span.tapeId);
+        for (const draftSpan of node.spans) {
+          const span = draftSpan.span;
+          if (draftSpan.created) {
+            newTapes.push({ id: span.tapeId, span });
+            touchedTapes.add(span.tapeId);
+            const insertedText = draftSpan.pieces
+              .filter((piece): piece is InsertedPiece => piece.kind === 'inserted')
+              .map((piece) => piece.text)
+              .join('');
+            if (insertedText) {
+              insertions.push({ tapeId: span.tapeId, index: 1, text: insertedText });
+              textTapes.add(span.tapeId);
+            }
           }
         }
       }
 
       if (node.textEdited && !node.created) {
-        assert(!node.transferred, 'a node cannot combine text edits and ownership transfer');
         const baseSpans = node.baseCells.get('spans')!.value as readonly Span[];
         const baseStarts: number[] = [];
         let baseLength = 0;
@@ -581,18 +715,39 @@ class MutableTreeDraft implements TreeDraft {
           baseStarts.push(baseLength);
           baseLength += spanText(this.state, span).length;
         }
-        const bySource = new Map<number, DraftSpan>();
+        const bySource = new Map<number, DraftSpan[]>();
         for (const span of node.spans) {
-          if (span.sourceSpanIndex !== undefined) bySource.set(span.sourceSpanIndex, span);
+          if (span.sourceSpanIndex !== undefined) {
+            const spans = bySource.get(span.sourceSpanIndex) ?? [];
+            spans.push(span);
+            bySource.set(span.sourceSpanIndex, spans);
+          }
         }
         for (let spanIndex = 0; spanIndex < baseSpans.length; spanIndex++) {
           const baseSpan = baseSpans[spanIndex]!;
           const baseText = spanText(this.state, baseSpan);
-          const currentSpan = bySource.get(spanIndex);
-          assert(currentSpan, `text span ${spanIndex} disappeared during a splice`);
-          const retained = currentSpan.pieces
-            .filter((piece): piece is RetainedPiece => piece.kind === 'retained')
-            .map((piece) => [piece.sourceFrom, piece.sourceTo] as const)
+          const currentSpans = bySource.get(spanIndex);
+          assert(currentSpans?.length, `text span ${spanIndex} disappeared during a splice`);
+          const retained = [...this.nodes.values()]
+            .flatMap((candidate) =>
+              candidate.spans.flatMap((span) =>
+                span.pieces.filter(
+                  (piece) =>
+                    (candidate.id === node.id &&
+                      span.sourceSpanIndex === spanIndex &&
+                      piece.kind === 'retained') ||
+                    (piece.kind === 'transferred' &&
+                      piece.source === node.id &&
+                      piece.sourceSpanIndex === spanIndex),
+                ),
+              ),
+            )
+            .filter((piece) => piece.kind === 'retained' || piece.kind === 'transferred')
+            .map((piece) =>
+              piece.kind === 'retained'
+                ? ([piece.sourceFrom, piece.sourceTo] as const)
+                : ([piece.sourceFrom!, piece.sourceTo!] as const),
+            )
             .sort((a, b) => a[0] - b[0]);
           const merged: [number, number][] = [];
           for (const [from, to] of retained) {
@@ -628,30 +783,32 @@ class MutableTreeDraft implements TreeDraft {
               textTapes.add(deletion.tapeId);
             }
           }
-          let priorInsertion: PlanTextInsert | undefined;
-          for (const piece of currentSpan.pieces) {
-            if (piece.kind !== 'inserted' || !piece.text) {
-              priorInsertion = undefined;
-              continue;
-            }
-            touchedTapes.add(piece.anchor.tapeId);
-            textTapes.add(piece.anchor.tapeId);
-            if (
-              priorInsertion &&
-              priorInsertion.tapeId === piece.anchor.tapeId &&
-              priorInsertion.index === piece.anchor.index
-            ) {
-              const index = insertions.indexOf(priorInsertion);
-              const combined = { ...priorInsertion, text: priorInsertion.text + piece.text };
-              insertions[index] = combined;
-              priorInsertion = combined;
-            } else {
-              priorInsertion = {
-                tapeId: piece.anchor.tapeId,
-                index: piece.anchor.index,
-                text: piece.text,
-              };
-              insertions.push(priorInsertion);
+          for (const currentSpan of currentSpans) {
+            let priorInsertion: PlanTextInsert | undefined;
+            for (const piece of currentSpan.pieces) {
+              if (piece.kind !== 'inserted' || !piece.text) {
+                priorInsertion = undefined;
+                continue;
+              }
+              touchedTapes.add(piece.anchor.tapeId);
+              textTapes.add(piece.anchor.tapeId);
+              if (
+                priorInsertion &&
+                priorInsertion.tapeId === piece.anchor.tapeId &&
+                priorInsertion.index === piece.anchor.index
+              ) {
+                const index = insertions.indexOf(priorInsertion);
+                const combined = { ...priorInsertion, text: priorInsertion.text + piece.text };
+                insertions[index] = combined;
+                priorInsertion = combined;
+              } else {
+                priorInsertion = {
+                  tapeId: piece.anchor.tapeId,
+                  index: piece.anchor.index,
+                  text: piece.text,
+                };
+                insertions.push(priorInsertion);
+              }
             }
           }
         }
@@ -696,9 +853,10 @@ class MutableTreeDraft implements TreeDraft {
     for (const boundary of this.transferBoundaries) touchedTapes.add(boundary.tapeId);
     const boundaryTapes = new Set(this.transferBoundaries.map((boundary) => boundary.tapeId));
     assert(
-      !deletions.some((deletion) => boundaryTapes.has(deletion.tapeId)) &&
-        !insertions.some((insertion) => boundaryTapes.has(insertion.tapeId)),
-      'text edits and boundary transfers cannot change the same tape in one action',
+      !insertions.some(
+        (insertion) => insertion.text.length > 0 && boundaryTapes.has(insertion.tapeId),
+      ),
+      'text insertions and boundary transfers cannot change the same tape in one action',
     );
     const operationNodeIds = this.operations_.flatMap((operation) => {
       switch (operation.type) {
@@ -1030,12 +1188,17 @@ class MutableTreeDraft implements TreeDraft {
 
   private detachInternal(id: NodeId): void {
     assert(id !== this.rootId(), 'the document root cannot be detached');
+    const node = this.requireNode(id);
     const parentId = parentOf(this.nodes, id);
     assert(parentId, `node ${id} is already detached`);
     this.ensureVisibleOrCreated(this.requireNode(id));
     const parent = this.requireNode(parentId);
     this.readField(parent, 'children');
     parent.children = parent.children.filter((child) => child !== id);
+    if (INLINE_KINDS.has(node.type) && node.transferred && inlineContent(node).length === 0) {
+      this.readField(node, 'spans');
+      node.spans = [];
+    }
   }
 
   private spliceInternal(id: NodeId, edit: TextEdit): void {
@@ -1214,15 +1377,7 @@ class MutableTreeDraft implements TreeDraft {
       INLINE_KINDS.has(source.type) && INLINE_KINDS.has(destination.type),
       'transfers require inline nodes',
     );
-    assert(
-      !source.textEdited && !destination.textEdited,
-      'text edits and transfers cannot share a draft',
-    );
-    assert(
-      !source.transferred && !destination.transferred,
-      'only one transfer per affected node is supported',
-    );
-    assert(!source.created && !destination.created, 'transfers require retained canonical nodes');
+    assert(!source.created, 'a draft-created node cannot source a retained text transfer');
     this.readText(source);
     if (source.id === destination.id) {
       this.reorderInlineRange(source, transfer);
@@ -1292,11 +1447,11 @@ class MutableTreeDraft implements TreeDraft {
       const startBoundary =
         localFrom === 0 && !fullSpan
           ? span.startBoundaryId
-          : this.cutBoundary(node, index, localFrom, 'start');
+          : this.cutBoundary(node, current, localFrom, 'start');
       const endBoundary =
         localTo === text.length && !fullSpan
           ? span.endBoundaryId
-          : this.cutBoundary(node, index, localTo, 'end');
+          : this.cutBoundary(node, current, localTo, 'end');
       if (localFrom > 0 || fullSpan) {
         const left = { ...span, endBoundaryId: startBoundary };
         remaining.push({
@@ -1307,14 +1462,24 @@ class MutableTreeDraft implements TreeDraft {
       }
       moved.push({
         span: { ...span, startBoundaryId: startBoundary, endBoundaryId: endBoundary },
-        pieces: [
-          {
-            kind: 'transferred',
-            text: text.slice(localFrom, localTo),
-            source: node.id,
-            tapeId: span.tapeId,
-          },
-        ],
+        pieces: slicePieces(current.pieces, localFrom, localTo).map((piece) => {
+          if (piece.kind === 'retained') {
+            return {
+              kind: 'transferred',
+              text: piece.text,
+              source: node.id,
+              tapeId: span.tapeId,
+              sourceSpanIndex: current.sourceSpanIndex,
+              sourceFrom: piece.sourceFrom,
+              sourceTo: piece.sourceTo,
+            } satisfies TransferredPiece;
+          }
+          assert(
+            piece.kind === 'transferred',
+            'a new text insertion cannot be ownership-transferred',
+          );
+          return piece;
+        }),
       });
       if (localTo < text.length || fullSpan) {
         const right = { ...span, startBoundaryId: endBoundary };
@@ -1384,7 +1549,7 @@ class MutableTreeDraft implements TreeDraft {
           local,
           this.cutBoundary(
             node,
-            spanIndex,
+            current,
             local,
             absolute === transfer.to ? 'end' : 'start',
             affinity,
@@ -1447,29 +1612,71 @@ class MutableTreeDraft implements TreeDraft {
 
   private cutBoundary(
     node: DraftNodeState,
-    spanIndex: number,
+    current: DraftSpan,
     offset: number,
     role: 'start' | 'end',
     affinity?: TextAffinity,
   ): string {
-    const span = node.spans[spanIndex]!;
-    const baseSpans = this.baseSpans(node.id);
-    const spanTextValue = spanText(this.state, span.span);
-    const baseStart = baseSpans
-      .slice(0, spanIndex)
-      .reduce((total, item) => total + spanText(this.state, item).length, 0);
-    const mapped = mapTextEdit(baseSpans, this.allTapes(), {
-      from: baseStart + offset,
-      to: baseStart + offset,
-      insert: '',
-      affinity: affinity ?? (role === 'start' ? 'right' : 'left'),
-      spanIndex,
-    });
-    assert(offset <= spanTextValue.length, 'transfer boundary is outside its source span');
+    const content = current.pieces.map((piece) => piece.text).join('');
+    assert(offset >= 0 && offset <= content.length, 'transfer boundary is outside its source span');
+    const resolvedAffinity = affinity ?? (role === 'start' ? 'right' : 'left');
+    let cursor = 0;
+    let chosen: { piece: DraftPiece; local: number } | undefined;
+    for (const piece of current.pieces) {
+      const end = cursor + piece.text.length;
+      if (cursor < offset && offset < end) {
+        chosen = { piece, local: offset - cursor };
+        break;
+      }
+      if (offset === cursor && resolvedAffinity === 'right') {
+        chosen = { piece, local: 0 };
+        break;
+      }
+      if (offset === end && resolvedAffinity === 'left') {
+        chosen = { piece, local: piece.text.length };
+      }
+      cursor = end;
+    }
+
+    let mapped: ReturnType<typeof mapTextEdit>['insertion'];
+    if (chosen?.piece.kind === 'inserted') {
+      throw new Error('transfer boundaries cannot split newly inserted text');
+    } else if (chosen?.piece.kind === 'retained' && current.sourceSpanIndex !== undefined) {
+      const sourceSpan = this.baseSpans(node.id)[current.sourceSpanIndex];
+      assert(sourceSpan, 'retained transfer source span is missing');
+      mapped = mapTextEdit([sourceSpan], this.allTapes(), {
+        from: chosen.piece.sourceFrom + chosen.local,
+        to: chosen.piece.sourceFrom + chosen.local,
+        insert: '',
+        affinity: resolvedAffinity,
+      }).insertion;
+    } else if (
+      chosen?.piece.kind === 'transferred' &&
+      chosen.piece.sourceSpanIndex !== undefined &&
+      chosen.piece.sourceFrom !== undefined
+    ) {
+      const original = this.nodes.get(chosen.piece.source);
+      assert(original, `transferred source node ${chosen.piece.source} is missing`);
+      const sourceSpan = this.baseSpans(original.id)[chosen.piece.sourceSpanIndex];
+      assert(sourceSpan, 'transferred source span is missing');
+      mapped = mapTextEdit([sourceSpan], this.allTapes(), {
+        from: chosen.piece.sourceFrom + chosen.local,
+        to: chosen.piece.sourceFrom + chosen.local,
+        insert: '',
+        affinity: resolvedAffinity,
+      }).insertion;
+    } else {
+      mapped = mapTextEdit([current.span], this.allTapes(), {
+        from: offset,
+        to: offset,
+        insert: '',
+        affinity: resolvedAffinity,
+      }).insertion;
+    }
     const boundaryId = this.allocateId('boundary');
     this.transferBoundaries.push({
-      tapeId: mapped.insertion.tapeId,
-      index: mapped.insertion.index,
+      tapeId: mapped.tapeId,
+      index: mapped.index,
       boundaryId,
     });
     return boundaryId;
@@ -1505,7 +1712,7 @@ class MutableTreeDraft implements TreeDraft {
       } else if (local === content.length && (content.length > 0 || affinity === 'left')) {
         result.push(current, ...moved);
       } else {
-        const cutId = this.cutBoundary(node, index, local, affinity === 'left' ? 'end' : 'start');
+        const cutId = this.cutBoundary(node, current, local, affinity === 'left' ? 'end' : 'start');
         const leftSpan = { ...current.span, endBoundaryId: cutId };
         const rightSpan = { ...current.span, startBoundaryId: cutId };
         result.push(
@@ -1834,22 +2041,6 @@ function applyPlan(
     }, 'grain:allocate');
   }
 
-  if (plan.boundaries.length) {
-    state.transact(() => {
-      const sorted = [...plan.boundaries].sort(
-        (a, b) => a.tapeId.localeCompare(b.tapeId) || b.index - a.index,
-      );
-      for (const boundary of sorted) {
-        const tape = tapeMap(state).get(boundary.tapeId);
-        assert(tape, `missing boundary tape ${boundary.tapeId}`);
-        tape.insertEmbed(
-          boundary.index,
-          Object.freeze({ grainBoundary: boundary.boundaryId }) satisfies BoundaryEmbed,
-        );
-      }
-    }, 'grain:allocate-boundaries');
-  }
-
   const deletions = mergeRuns(plan.deletions);
   if (deletions.length) {
     state.transact(() => {
@@ -1861,6 +2052,25 @@ function applyPlan(
         tape.delete(deletion.from, deletion.to - deletion.from);
       }
     }, textOrigin);
+  }
+
+  if (plan.boundaries.length) {
+    state.transact(() => {
+      const sorted = plan.boundaries
+        .map((boundary) => ({
+          ...boundary,
+          index: indexAfterDeletes(boundary.index, deletions, boundary.tapeId),
+        }))
+        .sort((a, b) => a.tapeId.localeCompare(b.tapeId) || b.index - a.index);
+      for (const boundary of sorted) {
+        const tape = tapeMap(state).get(boundary.tapeId);
+        assert(tape, `missing boundary tape ${boundary.tapeId}`);
+        tape.insertEmbed(
+          boundary.index,
+          Object.freeze({ grainBoundary: boundary.boundaryId }) satisfies BoundaryEmbed,
+        );
+      }
+    }, 'grain:allocate-boundaries');
   }
 
   if (plan.insertions.length) {
@@ -1940,6 +2150,164 @@ function currentActive(state: Y.Doc, id: NodeId): boolean {
   return false;
 }
 
+const CELL_FIELDS: readonly CellField[] = [
+  'kind',
+  'children',
+  'spans',
+  'marker',
+  'checked',
+  'info',
+];
+
+function snapshotCell(record: RecordMap, field: CellField): StructuralCellValue {
+  const cell = readCell<unknown>(record, field);
+  return Object.freeze({ token: cell.token, value: deepFreeze(deepCopy(cell.value)) });
+}
+
+function structuralPatchBetween(before: Y.Doc, after: Y.Doc, plan: LowLevelPlan): StructuralPatch {
+  const beforeNodes = nodeMap(before);
+  const afterNodes = nodeMap(after);
+  const changedCells: StructuralCellPatch[] = [];
+  const births: StructuralBirth[] = [];
+  const visibility: StructuralVisibility[] = [];
+  const touched = new Set(plan.touchedNodes);
+  const allocations = new Map(plan.allocations.map((item) => [item.id, item]));
+
+  for (const nodeId of touched) {
+    const oldRecord = beforeNodes.get(nodeId);
+    const newRecord = afterNodes.get(nodeId);
+    assert(newRecord, `structural plan omitted touched node ${nodeId}`);
+    if (!oldRecord) {
+      const allocation = allocations.get(nodeId);
+      assert(allocation, `structural plan omitted allocation for ${nodeId}`);
+      const cells = Object.fromEntries(
+        CELL_FIELDS.map((field) => [field, allocation.cells[field]]),
+      ) as Record<CellField, StructuralCellValue>;
+      births.push(Object.freeze({ nodeId, cells: Object.freeze(cells) }));
+      // Allocations begin with an empty child list. Edges added to a born
+      // wrapper still need an inverse when they point at existing nodes;
+      // otherwise undo leaves the same child listed by both detached and
+      // active parents in the retained forest.
+      for (const field of CELL_FIELDS) {
+        const oldCell = allocation.cells[field];
+        const newCell = snapshotCell(newRecord, field);
+        if (oldCell.token !== newCell.token || !sameValue(oldCell.value, newCell.value)) {
+          changedCells.push(Object.freeze({ nodeId, field, before: oldCell, after: newCell }));
+        }
+      }
+    } else {
+      for (const field of CELL_FIELDS) {
+        const oldCell = snapshotCell(oldRecord, field);
+        const newCell = snapshotCell(newRecord, field);
+        if (oldCell.token !== newCell.token || !sameValue(oldCell.value, newCell.value)) {
+          changedCells.push(Object.freeze({ nodeId, field, before: oldCell, after: newCell }));
+        }
+      }
+    }
+    visibility.push(
+      Object.freeze({
+        nodeId,
+        before: oldRecord ? currentActive(before, nodeId) : false,
+        after: currentActive(after, nodeId),
+      }),
+    );
+  }
+
+  const bornTapes = plan.newTapes.map(({ id }) => {
+    const tape = tapeMap(after).get(id);
+    assert(tape, `structural plan omitted born tape ${id}`);
+    return Object.freeze({ tapeId: id, sharedTypeId: sharedTypeId(tape) });
+  });
+  const createdMarkers = new Set<string>([
+    ...plan.newTapes.flatMap(({ span }) => [span.startBoundaryId, span.endBoundaryId]),
+    ...plan.boundaries.map((boundary) => boundary.boundaryId),
+  ]);
+  const allMarkers = markerItems(after);
+  const bornMarkers = [...createdMarkers].map((boundaryId) => {
+    const marker = allMarkers.get(boundaryId);
+    assert(marker, `structural plan omitted born marker ${boundaryId}`);
+    return Object.freeze({ ...marker, boundaryId });
+  });
+  const hasStructure = changedCells.length > 0 || births.length > 0;
+  return Object.freeze({
+    cells: Object.freeze(changedCells),
+    births: Object.freeze(births),
+    visibility: Object.freeze(hasStructure ? visibility : []),
+    bornTapes: Object.freeze(bornTapes),
+    bornMarkers: Object.freeze(bornMarkers),
+  });
+}
+
+function structuralPatchError(
+  state: Y.Doc,
+  patch: StructuralPatch,
+  direction: 'undo' | 'redo',
+): 'resource-conflict' | 'visibility-conflict' | undefined {
+  const nodes = nodeMap(state);
+  for (const cellPatch of patch.cells) {
+    const record = nodes.get(cellPatch.nodeId);
+    if (!record) return 'resource-conflict';
+    const expected = direction === 'undo' ? cellPatch.after : cellPatch.before;
+    const actual = snapshotCell(record, cellPatch.field);
+    if (actual.token !== expected.token || !sameValue(actual.value, expected.value)) {
+      return 'resource-conflict';
+    }
+  }
+  const patchedBirthFields = new Map<NodeId, Set<CellField>>();
+  for (const cellPatch of patch.cells) {
+    const fields = patchedBirthFields.get(cellPatch.nodeId) ?? new Set<CellField>();
+    fields.add(cellPatch.field);
+    patchedBirthFields.set(cellPatch.nodeId, fields);
+  }
+  for (const birth of patch.births) {
+    const record = nodes.get(birth.nodeId);
+    if (!record) return 'resource-conflict';
+    const patchedFields = patchedBirthFields.get(birth.nodeId);
+    for (const field of CELL_FIELDS) {
+      if (patchedFields?.has(field)) continue;
+      const actual = snapshotCell(record, field);
+      const expected = birth.cells[field];
+      if (actual.token !== expected.token || !sameValue(actual.value, expected.value)) {
+        return 'resource-conflict';
+      }
+    }
+  }
+  for (const visibility of patch.visibility) {
+    const expected = direction === 'undo' ? visibility.after : visibility.before;
+    if (currentActive(state, visibility.nodeId) !== expected) return 'visibility-conflict';
+  }
+  for (const resource of patch.bornTapes) {
+    const tape = tapeMap(state).get(resource.tapeId);
+    if (!tape || sharedTypeId(tape) !== resource.sharedTypeId) return 'resource-conflict';
+  }
+  const liveMarkers = markerItems(state);
+  for (const resource of patch.bornMarkers) {
+    const marker = liveMarkers.get(resource.boundaryId);
+    if (marker?.tapeId !== resource.tapeId || marker.itemId !== resource.itemId)
+      return 'resource-conflict';
+  }
+  return undefined;
+}
+
+function applyStructuralPatch(
+  state: Y.Doc,
+  patch: StructuralPatch,
+  direction: 'undo' | 'redo',
+): void {
+  const cells = [...patch.cells].reverse();
+  state.transact(
+    () => {
+      for (const item of cells) {
+        const record = nodeMap(state).get(item.nodeId);
+        assert(record, `missing structural node ${item.nodeId}`);
+        const value = direction === 'undo' ? item.before : item.after;
+        record.set(item.field, immutableCell(value.token, value.value));
+      }
+    },
+    direction === 'undo' ? 'grain:structural-undo' : 'grain:structural-redo',
+  );
+}
+
 function applyMappedTextEdit(
   state: Y.Doc,
   mapped: ReturnType<typeof mapTextEdit>,
@@ -1977,6 +2345,7 @@ function requestHash(request: ActionRequest): string {
 function copyRequest(request: ActionRequest): ActionRequest {
   return Object.freeze({
     ...request,
+    ...(request.focus ? { focus: copyActionFocus(request.focus) } : {}),
     preconditions: Object.freeze(
       request.preconditions.map((item) => Object.freeze(deepCopy(item))),
     ),
@@ -2000,7 +2369,15 @@ export interface HistoryResult {
   readonly status: 'applied' | 'no-effect' | 'blocked' | 'empty' | 'queued';
   readonly revision?: number;
   readonly update?: Uint8Array;
-  readonly reason?: 'structural-history-pending';
+  readonly textChanged?: boolean;
+  readonly focus?: Bookmark;
+  readonly reason?:
+    | 'structural-history-pending'
+    | 'resource-conflict'
+    | 'visibility-conflict'
+    | 'invalid-inverse'
+    | 'mixed-scope'
+    | 'invalid-scope';
   readonly callbackErrors?: readonly unknown[];
 }
 
@@ -2008,6 +2385,8 @@ export interface PendingHistoryCommit {
   readonly sessionId: string;
   readonly direction: 'undo' | 'redo';
   readonly revision: number;
+  readonly textChanged: boolean;
+  readonly focus?: Bookmark;
   /** Returns a defensive copy for persistence before publication. */
   readonly update: Uint8Array;
 }
@@ -2033,11 +2412,57 @@ interface HistoryEntry {
   readonly createdSequence: number;
   readonly origin: object;
   readonly textTapes: Set<TapeId>;
+  readonly touchedNodeIds: readonly NodeId[];
+  readonly touchedTapeIds: readonly TapeId[];
+  structuralPatch: StructuralPatch;
+  readonly focus?: ActionFocus;
   readonly manager?: Y.UndoManager;
   sealed: boolean;
   noEffect: boolean;
   structuralEffect: boolean;
   actionCount: number;
+}
+
+function historyFocus(entry: HistoryEntry, direction: 'undo' | 'redo'): Bookmark | undefined {
+  return direction === 'undo' ? entry.focus?.start : entry.focus?.end;
+}
+
+type HistoryScope = 'inside' | 'outside' | 'mixed';
+
+function historyScope(state: Y.Doc, entry: HistoryEntry, scopeRoot: NodeId): HistoryScope {
+  const scopeNodes = new Set<NodeId>();
+  const pending = [scopeRoot];
+  while (pending.length) {
+    const id = pending.pop()!;
+    if (scopeNodes.has(id)) continue;
+    scopeNodes.add(id);
+    const record = nodeMap(state).get(id);
+    if (record) pending.push(...readCell<readonly NodeId[]>(record, 'children').value);
+  }
+
+  let inside = false;
+  let outside = false;
+  const add = (id: NodeId) => {
+    if (scopeNodes.has(id)) inside = true;
+    else outside = true;
+  };
+  // Node IDs describe structural participants, but a text-only edit's original
+  // node may since have been detached by a join. Scope its text through the
+  // current active owners of the tape instead.
+  if (entry.structuralEffect) {
+    for (const id of entry.touchedNodeIds) add(id);
+  }
+
+  const touchedTapes = new Set(entry.touchedTapeIds);
+  if (touchedTapes.size) {
+    for (const [id, record] of nodeMap(state)) {
+      if (!currentActive(state, id)) continue;
+      const spans = readCell<readonly Span[]>(record, 'spans').value;
+      if (spans.some((span) => touchedTapes.has(span.tapeId))) add(id);
+    }
+  }
+  if (!inside && !outside) return 'inside';
+  return inside && outside ? 'mixed' : inside ? 'inside' : 'outside';
 }
 
 interface SessionHistory {
@@ -2056,6 +2481,7 @@ interface HistoryReservation {
   readonly noEffect: boolean;
   readonly structuralEffect: boolean;
   readonly textTapes: readonly TapeId[];
+  readonly structuralPatch: StructuralPatch;
 }
 
 interface PendingRecord {
@@ -2071,13 +2497,16 @@ interface PendingHistoryRecord {
   readonly sessionId: string;
   readonly direction: 'undo' | 'redo';
   readonly entry: HistoryEntry;
+  readonly sourceIndex: number;
   readonly revision: number;
+  readonly textChanged: boolean;
+  readonly focus?: Bookmark;
   readonly update: Uint8Array;
 }
 
 interface QueuedLocalEdit {
   readonly options: ActionOptions;
-  readonly callback: (draft: TreeDraft) => void;
+  readonly callback: DraftCommand;
 }
 
 function makeTextHistoryManager(state: Y.Doc, entry: HistoryEntry): Y.UndoManager {
@@ -2104,9 +2533,10 @@ function destroyHistoryEntry(entry: HistoryEntry): void {
 function updateRevisionsAfterHistory(
   state: Y.Doc,
   before: TapeStateSummary,
+  structuralEffect = false,
 ): { revision: number; changed: TapeId[] } {
   const changed = changedTapeIds(before, state);
-  if (!changed.length)
+  if (!changed.length && !structuralEffect)
     return { revision: metaMap(state).get('acceptedRevision') as number, changed };
   const revision = (metaMap(state).get('acceptedRevision') as number) + 1;
   state.transact(() => {
@@ -2189,7 +2619,7 @@ export class CanonicalWriter {
     return () => this.listeners.delete(listener);
   }
 
-  prepareCommand(options: ActionOptions, callback: (draft: TreeDraft) => void): ActionRequest {
+  prepareCommand(options: ActionOptions, callback: DraftCommand): ActionRequest {
     this.assertCanPrepare();
     assert(options.actionId.length > 0, 'action ID cannot be empty');
     const sessionId = options.sessionId ?? 'local';
@@ -2210,6 +2640,22 @@ export class CanonicalWriter {
         draft.close();
         throw new TypeError('TreeDraft callbacks must be synchronous');
       }
+      const focus = copyActionFocus(result);
+      const operations = draft.operationList;
+      if (
+        operations.some(
+          (operation) =>
+            operation.type === 'create' ||
+            operation.type === 'place' ||
+            operation.type === 'detach' ||
+            operation.type === 'transferInlineRange' ||
+            operation.type === 'convertInline' ||
+            operation.type === 'setMarker' ||
+            operation.type === 'setChecked',
+        )
+      ) {
+        normalizeCanonicalDraft(draft, metaMap(this.state).get('rootId') as NodeId);
+      }
       return copyRequest({
         mode: 'command',
         documentId: metaMap(this.state).get('documentId') as string,
@@ -2220,6 +2666,7 @@ export class CanonicalWriter {
         historyGroupId,
         preconditions: draft.readSet,
         operations: draft.operationList,
+        ...(focus ? { focus } : {}),
       } as ActionRequest);
     } finally {
       draft.close();
@@ -2355,15 +2802,13 @@ export class CanonicalWriter {
       return { status: 'rejected', reason: 'invalid-operation' };
     }
 
+    const structuralPatch = structuralPatchBetween(this.state, candidate, plan);
     const finalChangedTapes = changedTapeIds(previousSummary, candidate);
     const textTapes = new Set([...inputChanged, ...plan.textTapes]);
-    const structuralEffect =
-      plan.allocations.length > 0 || plan.boundaries.length > 0 || plan.writes.length > 0;
+    const structuralEffect = structuralPatch.cells.length > 0 || structuralPatch.births.length > 0;
     const noEffect =
       !finalChangedTapes.length &&
-      !plan.allocations.length &&
-      !plan.boundaries.length &&
-      !plan.writes.length &&
+      !structuralEffect &&
       !plan.deletions.length &&
       !plan.insertions.length;
     const target = request.promotionTarget;
@@ -2378,9 +2823,15 @@ export class CanonicalWriter {
       requestId: `${sessionId}:${request.actionId}`,
       historyGroupId: request.historyGroupId,
       touchedNodeIds: Object.freeze([
-        ...new Set([...plan.touchedNodes, ...(target ? [target.nodeId] : [])]),
+        ...new Set([
+          ...plan.touchedNodes,
+          ...structuralPatch.visibility.map((item) => item.nodeId),
+          ...(target ? [target.nodeId] : []),
+        ]),
       ]),
       touchedTapeIds: Object.freeze([...new Set([...plan.touchedTapes, ...finalChangedTapes])]),
+      structuralPatch,
+      ...(request.focus ? { focus: request.focus } : {}),
       noEffect,
       ...(promotionSkipped ? { promotionSkipped } : {}),
     });
@@ -2391,15 +2842,9 @@ export class CanonicalWriter {
       structuralEffect,
       [...textTapes],
       receipt,
+      structuralPatch,
     );
     const context = Object.freeze({ ...admittedContext });
-    const publicPending: PendingCommit = Object.freeze({
-      actionId: request.actionId,
-      revision: nextRevision,
-      update: new Uint8Array(),
-      receipt,
-    });
-
     const liveBefore = cloneDocument(this.state);
     const liveSummary = tapeStateSummary(this.state);
     const updates: Uint8Array[] = [];
@@ -2412,10 +2857,21 @@ export class CanonicalWriter {
       }
       applyPlan(this.state, plan, reservation.entry.origin, liveSummary, nextRevision);
       validateCandidate(liveBefore, this.state, nextRevision);
+      const livePatch = structuralPatchBetween(liveBefore, this.state, plan);
+      reservation.entry.structuralPatch = livePatch;
+      const acceptedReceipt: ActionReceipt = Object.freeze({
+        ...receipt,
+        structuralPatch: livePatch,
+      });
       this.state.off('update', collect);
       liveBefore.destroy();
       const update = Y.mergeUpdates(updates);
-      const pending: PendingCommit = Object.freeze({ ...publicPending, update });
+      const pending: PendingCommit = Object.freeze({
+        actionId: request.actionId,
+        revision: nextRevision,
+        update,
+        receipt: acceptedReceipt,
+      });
       this.pending = { publicValue: pending, context, request, requestHash: hash, reservation };
       candidate.destroy();
       return { status: 'pending', pending };
@@ -2474,7 +2930,7 @@ export class CanonicalWriter {
     }
   }
 
-  edit(options: ActionOptions, callback: (draft: TreeDraft) => void): AcceptedAction | ApplyResult {
+  edit(options: ActionOptions, callback: DraftCommand): AcceptedAction | ApplyResult {
     if (this.publishing) {
       this.localQueue.push({ options: deepCopy(options), callback });
       return { status: 'queued', actionId: options.actionId };
@@ -2490,32 +2946,32 @@ export class CanonicalWriter {
     return result;
   }
 
-  canUndo(sessionId = 'local'): boolean {
-    return (this.sessions.get(sessionId)?.undo.length ?? 0) > 0;
+  canUndo(sessionId = 'local', scopeRoot?: NodeId): boolean {
+    return this.historySelection(sessionId, 'undo', scopeRoot).index !== undefined;
   }
 
-  canRedo(sessionId = 'local'): boolean {
-    return (this.sessions.get(sessionId)?.redo.length ?? 0) > 0;
+  canRedo(sessionId = 'local', scopeRoot?: NodeId): boolean {
+    return this.historySelection(sessionId, 'redo', scopeRoot).index !== undefined;
   }
 
-  undo(sessionId = 'local'): HistoryResult {
-    const result = this.prepareUndo(sessionId);
+  undo(sessionId = 'local', scopeRoot?: NodeId): HistoryResult {
+    const result = this.prepareUndo(sessionId, scopeRoot);
     return result.status === 'pending' ? this.publishHistory(result.pending) : result;
   }
 
-  redo(sessionId = 'local'): HistoryResult {
-    const result = this.prepareRedo(sessionId);
+  redo(sessionId = 'local', scopeRoot?: NodeId): HistoryResult {
+    const result = this.prepareRedo(sessionId, scopeRoot);
     return result.status === 'pending' ? this.publishHistory(result.pending) : result;
   }
 
   /** Stages undo and holds the publication barrier until publishHistory is called. */
-  prepareUndo(sessionId = 'local'): HistoryPreparationResult {
-    return this.prepareHistory(sessionId, 'undo');
+  prepareUndo(sessionId = 'local', scopeRoot?: NodeId): HistoryPreparationResult {
+    return this.prepareHistory(sessionId, 'undo', scopeRoot);
   }
 
   /** Stages redo and holds the publication barrier until publishHistory is called. */
-  prepareRedo(sessionId = 'local'): HistoryPreparationResult {
-    return this.prepareHistory(sessionId, 'redo');
+  prepareRedo(sessionId = 'local', scopeRoot?: NodeId): HistoryPreparationResult {
+    return this.prepareHistory(sessionId, 'redo', scopeRoot);
   }
 
   /** Publishes a staged history update after the host's durability gate succeeds. */
@@ -2531,8 +2987,11 @@ export class CanonicalWriter {
     assert(session, `missing history session ${record.sessionId}`);
     const source = record.direction === 'undo' ? session.undo : session.redo;
     const destination = record.direction === 'undo' ? session.redo : session.undo;
-    assert(source.at(-1) === record.entry, 'pending history entry is no longer current');
-    source.pop();
+    assert(
+      source[record.sourceIndex] === record.entry,
+      'pending history entry is no longer current',
+    );
+    source.splice(record.sourceIndex, 1);
     destination.push(record.entry);
     if (session.current === record.entry) session.current = undefined;
     this.pendingHistory = undefined;
@@ -2543,6 +3002,8 @@ export class CanonicalWriter {
       return Object.freeze({
         status: 'applied',
         revision: record.revision,
+        textChanged: record.textChanged,
+        ...(record.focus ? { focus: record.focus } : {}),
         update: Uint8Array.from(record.update),
         callbackErrors: Object.freeze(callbackErrors),
       });
@@ -2566,14 +3027,21 @@ export class CanonicalWriter {
     structuralEffect: boolean,
     textTapes: readonly TapeId[],
     receipt: ActionReceipt,
+    structuralPatch: StructuralPatch,
   ): HistoryReservation {
     const session = this.getSession(sessionId);
+    const current = session.current;
+    const sameTextTarget =
+      current?.touchedNodeIds.length === 1 &&
+      receipt.touchedNodeIds.length === 1 &&
+      current.touchedNodeIds[0] === receipt.touchedNodeIds[0];
     const canJoin =
       !noEffect &&
       !structuralEffect &&
       textTapes.length > 0 &&
-      session.current?.groupId === groupId &&
-      !session.current.sealed;
+      current?.groupId === groupId &&
+      !current.sealed &&
+      sameTextTarget;
     if (canJoin) {
       const entry = session.current!;
       if (textTapes.length && !entry.manager) {
@@ -2587,6 +3055,7 @@ export class CanonicalWriter {
         noEffect,
         structuralEffect,
         textTapes,
+        structuralPatch,
       };
     }
     if (session.current) {
@@ -2603,6 +3072,10 @@ export class CanonicalWriter {
       createdSequence: this.sequenceOrdinal++,
       origin: Object.freeze({ entryId }),
       textTapes: new Set(textTapes),
+      touchedNodeIds: receipt.touchedNodeIds,
+      touchedTapeIds: receipt.touchedTapeIds,
+      structuralPatch,
+      ...(receipt.focus ? { focus: receipt.focus } : {}),
       sealed: noEffect || structuralEffect,
       noEffect,
       structuralEffect,
@@ -2620,6 +3093,7 @@ export class CanonicalWriter {
       noEffect,
       structuralEffect,
       textTapes,
+      structuralPatch,
     };
   }
 
@@ -2652,24 +3126,77 @@ export class CanonicalWriter {
     this.trimHistory(session);
   }
 
-  private prepareHistory(sessionId: string, direction: 'undo' | 'redo'): HistoryPreparationResult {
-    if (this.closed) return { status: 'blocked', reason: 'structural-history-pending' };
-    if (this.poisoned) return { status: 'blocked', reason: 'structural-history-pending' };
+  private historySelection(
+    sessionId: string,
+    direction: 'undo' | 'redo',
+    scopeRoot?: NodeId,
+  ): { readonly index?: number; readonly reason?: 'invalid-scope' | 'mixed-scope' } {
+    const session = this.sessions.get(sessionId);
+    if (!session) return {};
+    const source = direction === 'undo' ? session.undo : session.redo;
+    if (scopeRoot !== undefined && !currentActive(this.state, scopeRoot)) {
+      return { reason: 'invalid-scope' };
+    }
+    for (let index = source.length - 1; index >= 0; index--) {
+      if (scopeRoot === undefined) return { index };
+      const scope = historyScope(this.state, source[index]!, scopeRoot);
+      if (scope === 'outside') continue;
+      if (scope === 'mixed') return { reason: 'mixed-scope' };
+      return { index };
+    }
+    return {};
+  }
+
+  private prepareHistory(
+    sessionId: string,
+    direction: 'undo' | 'redo',
+    scopeRoot?: NodeId,
+  ): HistoryPreparationResult {
+    if (this.closed || this.poisoned)
+      return { status: 'blocked', reason: 'structural-history-pending' };
     if (this.pending || this.pendingHistory || this.preparing || this.publishing)
       return { status: 'blocked', reason: 'structural-history-pending' };
     const session = this.sessions.get(sessionId);
     if (!session) return { status: 'empty' };
     const source = direction === 'undo' ? session.undo : session.redo;
     const destination = direction === 'undo' ? session.redo : session.undo;
-    const entry = source.at(-1);
-    if (!entry) return { status: 'empty' };
-    if (entry.structuralEffect) return { status: 'blocked', reason: 'structural-history-pending' };
+    const selection = this.historySelection(sessionId, direction, scopeRoot);
+    if (selection.reason) return { status: 'blocked', reason: selection.reason };
+    const sourceIndex = selection.index;
+    if (sourceIndex === undefined) return { status: 'empty' };
+    const entry = source[sourceIndex]!;
+    const patchError = structuralPatchError(this.state, entry.structuralPatch, direction);
+    if (patchError) return { status: 'blocked', reason: patchError };
+
+    const candidate = cloneDocument(this.state);
+    try {
+      applyStructuralPatch(candidate, entry.structuralPatch, direction);
+      const validation = validateCanonicalState(candidate);
+      if (!validation.valid) return { status: 'blocked', reason: 'invalid-inverse' };
+      assertRetainedResources(this.state, candidate);
+    } catch {
+      return { status: 'blocked', reason: 'invalid-inverse' };
+    } finally {
+      candidate.destroy();
+    }
+
     const manager = entry.manager;
-    if (!manager || !(direction === 'undo' ? manager.undoStack.length : manager.redoStack.length)) {
-      source.pop();
+    const canReplayText =
+      !!manager &&
+      (direction === 'undo' ? manager.undoStack.length > 0 : manager.redoStack.length > 0);
+    const structuralEffect =
+      entry.structuralPatch.cells.length > 0 || entry.structuralPatch.births.length > 0;
+    if (!canReplayText && !structuralEffect) {
+      source.splice(sourceIndex, 1);
       destination.push(entry);
       if (session.current === entry) session.current = undefined;
-      return { status: 'no-effect' };
+      const callbackErrors = this.notifyListeners({ type: 'history' });
+      return {
+        status: 'no-effect',
+        textChanged: false,
+        ...(historyFocus(entry, direction) ? { focus: historyFocus(entry, direction) } : {}),
+        callbackErrors,
+      };
     }
 
     const before = tapeStateSummary(this.state);
@@ -2680,30 +3207,37 @@ export class CanonicalWriter {
     this.access.beginPending();
     this.state.on('update', collect);
     try {
-      if (direction === 'undo') manager.undo();
-      else manager.redo();
+      if (canReplayText) {
+        if (direction === 'undo') manager!.undo();
+        else manager!.redo();
+      }
       for (const [id, tape] of tapeMap(this.state).entries()) {
         assert(
           markersBefore.get(id) === boundarySignature(tape),
           `native history changed markers on tape ${id}`,
         );
       }
-      const updated = updateRevisionsAfterHistory(this.state, before);
-      if (updated.changed.length) {
-        validateCandidate(liveBefore, this.state, updated.revision);
-      }
+      applyStructuralPatch(this.state, entry.structuralPatch, direction);
+      const updated = updateRevisionsAfterHistory(this.state, before, structuralEffect);
+      validateCandidate(liveBefore, this.state, updated.revision);
       this.state.off('update', collect);
       liveBefore.destroy();
       const update = updates.length ? Y.mergeUpdates(updates) : undefined;
-      if (!updated.changed.length) {
-        source.pop();
+      const textChanged = updated.changed.length > 0;
+      if (!textChanged && !structuralEffect) {
+        source.splice(sourceIndex, 1);
         destination.push(entry);
         if (session.current === entry) session.current = undefined;
         this.publishing = true;
         try {
           const callbackErrors = [...this.access.publish()];
           callbackErrors.push(...this.notifyListeners({ type: 'history' }));
-          return { status: 'no-effect', callbackErrors: Object.freeze(callbackErrors) };
+          return {
+            status: 'no-effect',
+            textChanged: false,
+            ...(historyFocus(entry, direction) ? { focus: historyFocus(entry, direction) } : {}),
+            callbackErrors: Object.freeze(callbackErrors),
+          };
         } finally {
           this.publishing = false;
           this.flushLocalQueue();
@@ -2715,6 +3249,8 @@ export class CanonicalWriter {
         sessionId,
         direction,
         revision: updated.revision,
+        textChanged,
+        ...(historyFocus(entry, direction) ? { focus: historyFocus(entry, direction) } : {}),
         get update(): Uint8Array {
           return Uint8Array.from(updateBytes);
         },
@@ -2724,7 +3260,10 @@ export class CanonicalWriter {
         sessionId,
         direction,
         entry,
+        sourceIndex,
         revision: updated.revision,
+        textChanged,
+        ...(historyFocus(entry, direction) ? { focus: historyFocus(entry, direction) } : {}),
         update: updateBytes,
       };
       return { status: 'pending', pending: publicValue };
