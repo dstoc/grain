@@ -7,6 +7,14 @@ import { CanonicalDocument } from './markdown/canonical-model.js';
 import { CanonicalWriter } from './markdown/canonical-actions.js';
 import './main.js';
 
+interface HarnessInternals {
+  readonly parser: object;
+  readonly canonicalDocument?: CanonicalDocument;
+  readonly canonicalWriter?: CanonicalWriter;
+  readonly treeJson: string;
+  markdownForSave(): string;
+}
+
 afterEach(async () => {
   await page.viewport(1280, 720);
   document.body.replaceChildren();
@@ -30,6 +38,7 @@ test('Enter replaces selected text in Render and updates Source and Serialize', 
     '{Home}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{Shift>}{ArrowRight}{ArrowRight}{ArrowRight}{ArrowRight}{/Shift}{Enter}X',
   );
   await new Promise((resolve) => setTimeout(resolve, 0));
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   await harness.updateComplete;
   expect(source.value).toBe('alpha \n\nX omega\n');
   harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab')[1]!.click();
@@ -60,6 +69,216 @@ test('Source appends update Tree and Serialize without a full reparse', async ()
   tabs[1]!.click();
   await harness.updateComplete;
   expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe('alphaBETA\n');
+});
+
+test('coalesces canonical exports and flushes the latest source before copy', async () => {
+  const { harness, source } = await createSettledHarness('alpha');
+  const internals = harness as unknown as HarnessInternals;
+  const document = internals.canonicalDocument!;
+  const writer = internals.canonicalWriter!;
+  const node = document.root.children[0]!;
+  const originalParser = internals.parser;
+  const oldTreeJson = internals.treeJson;
+  const exportTree = vi.spyOn(document, 'exportMarkdownTree');
+
+  writer.edit({ actionId: 'coalesced-export-x' }, (draft) => {
+    draft.spliceText(node.sharedId, {
+      from: node.content!.length,
+      to: node.content!.length,
+      insert: 'x',
+    });
+  });
+  writer.edit({ actionId: 'coalesced-export-y' }, (draft) => {
+    draft.spliceText(node.sharedId, {
+      from: node.content!.length,
+      to: node.content!.length,
+      insert: 'y',
+    });
+  });
+
+  expect(exportTree).not.toHaveBeenCalled();
+  expect(internals.parser).toBe(originalParser);
+  source.setSelectionRange(0, 5);
+  source.dispatchEvent(new Event('copy', { bubbles: true, cancelable: true }));
+  expect(exportTree).toHaveBeenCalledTimes(1);
+  expect(source.value).toContain('alphaxy');
+  expect(source.selectionStart).toBe(0);
+  expect(source.selectionEnd).toBe(5);
+  expect(internals.treeJson).toBe(oldTreeJson);
+
+  harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab')[2]!.click();
+  await harness.updateComplete;
+  expect(exportTree).toHaveBeenCalledTimes(1);
+  expect(internals.treeJson).toContain('alphaxy');
+  expect(internals.parser).toBe(originalParser);
+});
+
+test('entering Source flushes the latest canonical Markdown and keeps the caret', async () => {
+  const { harness, source } = await createSettledHarness('alpha');
+  const internals = harness as unknown as HarnessInternals;
+  const document = internals.canonicalDocument!;
+  const writer = internals.canonicalWriter!;
+  const node = document.root.children[0]!;
+
+  source.setSelectionRange(5, 5);
+  writer.edit({ actionId: 'source-focus-prepend' }, (draft) => {
+    draft.spliceText(node.sharedId, { from: 0, to: 0, insert: 'X' });
+  });
+  expect(source.value).toBe('alpha');
+
+  source.focus();
+  await harness.updateComplete;
+  expect(source.value).toBe('Xalpha\n');
+  expect(source.selectionStart).toBe(6);
+  await userEvent.keyboard('!');
+  await settleHarness(harness);
+
+  expect(source.value).toBe('Xalpha!\n');
+  expect(source.selectionStart).toBe(7);
+  expect(
+    (harness as unknown as HarnessInternals).canonicalDocument!.root.children[0]!.content,
+  ).toBe('Xalpha!');
+});
+
+test('rebases a non-overlapping Source edit received before deferred export', async () => {
+  const { harness, source } = await createSettledHarness('alpha');
+  const internals = harness as unknown as HarnessInternals;
+  const document = internals.canonicalDocument!;
+  const writer = internals.canonicalWriter!;
+  const node = document.root.children[0]!;
+  source.focus();
+  source.setSelectionRange(5, 5);
+
+  writer.edit({ actionId: 'source-input-prepend' }, (draft) => {
+    draft.spliceText(node.sharedId, { from: 0, to: 0, insert: 'X' });
+  });
+  source.setRangeText('!', 5, 5, 'end');
+  source.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  await settleHarness(harness);
+
+  expect(source.value).toBe('Xalpha!\n');
+  expect(source.selectionStart).toBe(7);
+  expect(
+    (harness as unknown as HarnessInternals).canonicalDocument!.root.children[0]!.content,
+  ).toBe('Xalpha!');
+});
+
+test.each([
+  {
+    name: 'a long local prefix before a canonical suffix',
+    remote: { from: 5, to: 5, insert: 'X' },
+    local: { from: 0, to: 0, insert: '1234567890' },
+    expectedSource: '1234567890alphaX\n',
+    expectedCaret: 10,
+    expectedAfterTyping: '1234567890!alphaX\n',
+    expectedContent: '1234567890!alphaX',
+  },
+  {
+    name: 'a local range beginning at a canonical insertion gap',
+    remote: { from: 0, to: 0, insert: 'X' },
+    local: { from: 0, to: 5, insert: '' },
+    expectedSource: 'X\n',
+    expectedCaret: 1,
+    expectedAfterTyping: 'X!\n',
+    expectedContent: 'X!',
+  },
+  {
+    name: 'a longer replacement that retains a suffix',
+    remote: { from: 5, to: 5, insert: 'X' },
+    local: { from: 0, to: 5, insert: '123alpha' },
+    expectedSource: '123alphaX\n',
+    expectedCaret: 8,
+    expectedAfterTyping: '123alpha!X\n',
+    expectedContent: '123alpha!X',
+  },
+  {
+    name: 'a shorter replacement that retains a suffix',
+    remote: { from: 5, to: 5, insert: 'X' },
+    local: { from: 0, to: 5, insert: 'pha' },
+    expectedSource: 'phaX\n',
+    expectedCaret: 3,
+    expectedAfterTyping: 'pha!X\n',
+    expectedContent: 'pha!X',
+  },
+])('keeps the Source caret after rebasing $name', async (fixture) => {
+  const { harness, source } = await createSettledHarness('alpha');
+  const internals = harness as unknown as HarnessInternals;
+  const document = internals.canonicalDocument!;
+  const writer = internals.canonicalWriter!;
+  const node = document.root.children[0]!;
+  source.focus();
+  source.setSelectionRange(fixture.local.from, fixture.local.to);
+
+  writer.edit({ actionId: `source-caret-${fixture.name}` }, (draft) => {
+    draft.spliceText(node.sharedId, fixture.remote);
+  });
+  source.setRangeText(fixture.local.insert, fixture.local.from, fixture.local.to, 'end');
+  source.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  await settleHarness(harness);
+
+  expect(source.value).toBe(fixture.expectedSource);
+  expect(source.selectionStart).toBe(fixture.expectedCaret);
+  expect(source.selectionEnd).toBe(fixture.expectedCaret);
+
+  await userEvent.keyboard('!');
+  await settleHarness(harness);
+  expect(source.value).toBe(fixture.expectedAfterTyping);
+  expect(internals.canonicalDocument!.root.children[0]!.content).toBe(fixture.expectedContent);
+});
+
+test('refreshes Source when its pending edit overlaps a newer canonical change', async () => {
+  const { harness, source } = await createSettledHarness('alpha');
+  const internals = harness as unknown as HarnessInternals;
+  const document = internals.canonicalDocument!;
+  const writer = internals.canonicalWriter!;
+  const node = document.root.children[0]!;
+  source.focus();
+  source.setSelectionRange(1, 2);
+
+  writer.edit({ actionId: 'source-overlap-change' }, (draft) => {
+    draft.spliceText(node.sharedId, { from: 1, to: 2, insert: 'X' });
+  });
+  source.setRangeText('!', 1, 2, 'end');
+  source.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  await settleHarness(harness);
+
+  expect(source.value).toBe('aXpha\n');
+  expect(
+    (harness as unknown as HarnessInternals).canonicalDocument!.root.children[0]!.content,
+  ).toBe('aXpha');
+});
+
+test('host save and playback use the latest canonical revision', async () => {
+  const { harness, source } = await createSettledHarness('alpha');
+  const internals = harness as unknown as HarnessInternals;
+  const document = internals.canonicalDocument!;
+  const writer = internals.canonicalWriter!;
+  const node = document.root.children[0]!;
+  const originalParser = internals.parser;
+  const exportTree = vi.spyOn(document, 'exportMarkdownTree');
+  const append = (value: string, actionId: string) => {
+    writer.edit({ actionId }, (draft) => {
+      const content = draft.node(node.sharedId).content!;
+      draft.spliceText(node.sharedId, {
+        from: content.length,
+        to: content.length,
+        insert: value,
+      });
+    });
+  };
+
+  append('x', 'save-latest-x');
+  expect(exportTree).not.toHaveBeenCalled();
+  expect(internals.markdownForSave()).toContain('alphax');
+  expect(exportTree).toHaveBeenCalledTimes(1);
+  expect(internals.parser).toBe(originalParser);
+
+  append('y', 'play-latest-y');
+  harness.shadowRoot!.querySelector<HTMLButtonElement>('button.play')!.click();
+  await harness.updateComplete;
+  expect(exportTree).toHaveBeenCalledTimes(2);
+  expect(source.value).toContain('alphaxy');
+  expect(harness.shadowRoot!.textContent).toContain(`Playback progress: 0/${source.value.length}`);
 });
 
 test('Serialize follows partial, stopped, and finished playback', async () => {
@@ -108,6 +327,7 @@ function currentEditorInlines(harness: LitElement) {
 
 async function settleHarness(harness: LitElement) {
   await nextTask();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
   await harness.updateComplete;
   await nextTask();
   await harness.updateComplete;

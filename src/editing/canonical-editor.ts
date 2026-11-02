@@ -94,6 +94,8 @@ export class CanonicalEditor extends LitElement {
   }
 
   protected override updated(changed: Map<PropertyKey, unknown>) {
+    if (changed.has('sessionId') || changed.has('writer'))
+      this.writer?.admitSession(this.sessionId);
     if (changed.has('document')) {
       this.unsubscribeProjection?.();
       this.unsubscribeProjection = this.document?.subscribeProjection(() => {

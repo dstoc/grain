@@ -80,6 +80,80 @@ const transclusionRenderDelegate: MarkdownRenderDelegate = {
   },
 };
 
+function singleTextReplacement(before: string, after: string) {
+  let from = 0;
+  while (from < before.length && from < after.length && before[from] === after[from]) from++;
+  let oldEnd = before.length;
+  let newEnd = after.length;
+  while (oldEnd > from && newEnd > from && before[oldEnd - 1] === after[newEnd - 1]) {
+    oldEnd--;
+    newEnd--;
+  }
+  return { from, to: oldEnd, insert: after.slice(from, newEnd) };
+}
+
+function sourceChange(before: string, after: string) {
+  // Canonical serialization may add one terminal newline that has no source-edit coordinate yet.
+  const trailingNewline = !before.endsWith('\n') && after.endsWith('\n') ? '\n' : '';
+  const editableAfter = trailingNewline ? after.slice(0, -1) : after;
+  return {
+    ...singleTextReplacement(before, editableAfter),
+    editableAfter,
+    trailingNewline,
+  };
+}
+
+function mapOffsetThroughReplacement(
+  offset: number,
+  from: number,
+  to: number,
+  insertLength: number,
+) {
+  if (offset <= from) return offset;
+  if (offset >= to) return offset + insertLength - (to - from);
+  return from + insertLength;
+}
+
+function mapSelectionThroughRebasedReplacement(
+  offset: number,
+  replacement: { readonly from: number; readonly to: number; readonly insert: string },
+  rebasedFrom: number,
+  rebasedTo: number,
+  canonicalChange: { readonly from: number; readonly to: number; readonly insert: string },
+) {
+  const insertedEnd = replacement.from + replacement.insert.length;
+  if (offset >= replacement.from && offset <= insertedEnd) {
+    return rebasedFrom + offset - replacement.from;
+  }
+
+  // Compose the inverse local edit, canonical edit, then rebased local edit.
+  const originalOffset =
+    offset < replacement.from
+      ? offset
+      : offset + replacement.to - replacement.from - replacement.insert.length;
+  const canonicalOffset = mapOffsetThroughReplacement(
+    originalOffset,
+    canonicalChange.from,
+    canonicalChange.to,
+    canonicalChange.insert.length,
+  );
+  return mapOffsetThroughReplacement(
+    canonicalOffset,
+    rebasedFrom,
+    rebasedTo,
+    replacement.insert.length,
+  );
+}
+
+function replacementsOverlap(
+  first: { readonly from: number; readonly to: number },
+  second: { readonly from: number; readonly to: number },
+) {
+  if (first.from === first.to) return second.from < first.from && first.from < second.to;
+  if (second.from === second.to) return first.from < second.from && second.from < first.to;
+  return first.from < second.to && second.from < first.to;
+}
+
 class MarkdownDevHarness extends LitElement {
   static override styles = css`
     :host {
@@ -422,6 +496,7 @@ class MarkdownDevHarness extends LitElement {
       }
     }
   `;
+
   static override properties = {
     root: { attribute: false },
     source: { state: true },
@@ -480,6 +555,16 @@ class MarkdownDevHarness extends LitElement {
   private visualViewportBaseline = 0;
   private readinessTimer: number | undefined;
   private caretFrame: number | undefined;
+  private canonicalExportFrame: number | undefined;
+  private markdownExportDocument: CanonicalDocument | undefined;
+  private markdownExportRevision = -1;
+  private treeExportDocument: CanonicalDocument | undefined;
+  private treeExportRevision = -1;
+  private canonicalTreeCache?: {
+    readonly document: CanonicalDocument;
+    readonly revision: number;
+    readonly tree: DocumentNode;
+  };
 
   constructor() {
     super();
@@ -504,6 +589,7 @@ class MarkdownDevHarness extends LitElement {
     this.toolbarTop = 0;
     this.simulatedKeyboard = false;
     this.keyboardTop = 0;
+    this.canonicalExportFrame = undefined;
     this.reparse(sample, true);
     this.addEventListener('focusin', this.onFocusIn);
     this.addEventListener('focusout', this.onFocusOut);
@@ -529,7 +615,9 @@ class MarkdownDevHarness extends LitElement {
           <textarea
             id="source"
             .value=${this.source}
+            @focus=${this.onSourceFocus}
             @input=${this.onInput}
+            @copy=${this.onSourceCopy}
             spellcheck="false"
           ></textarea>
           <div class="meta">
@@ -655,12 +743,139 @@ class MarkdownDevHarness extends LitElement {
   }
 
   private onInput = (event: Event) => {
-    const value = (event.currentTarget as HTMLTextAreaElement).value;
+    const field = event.currentTarget as HTMLTextAreaElement;
+    const previousSource = this.source;
+    let value = field.value;
+    const replacement = singleTextReplacement(previousSource, value);
+    const selectionStart = field.selectionStart;
+    const selectionEnd = field.selectionEnd;
+    const selectionDirection = field.selectionDirection ?? 'none';
+    const currentDocument = this.canonicalDocument;
+    if (
+      currentDocument &&
+      (this.markdownExportDocument !== currentDocument ||
+        this.markdownExportRevision < currentDocument.acceptedRevision)
+    ) {
+      this.flushCanonicalExports(currentDocument, false);
+      if (this.source !== previousSource) {
+        const canonicalChange = sourceChange(previousSource, this.source);
+        if (replacementsOverlap(replacement, canonicalChange)) {
+          // The accepted canonical edit wins when the stale Source edit touches the same text.
+          field.value = this.source;
+          field.setSelectionRange(
+            mapOffsetThroughReplacement(
+              selectionStart,
+              canonicalChange.from,
+              canonicalChange.to,
+              canonicalChange.insert.length,
+            ),
+            mapOffsetThroughReplacement(
+              selectionEnd,
+              canonicalChange.from,
+              canonicalChange.to,
+              canonicalChange.insert.length,
+            ),
+            selectionDirection,
+          );
+          return;
+        }
+
+        const rebasedFrom =
+          replacement.from === canonicalChange.from &&
+          replacement.to > replacement.from &&
+          canonicalChange.from === canonicalChange.to
+            ? // A range starting at a canonical insertion gap targets the old text after it.
+              canonicalChange.from + canonicalChange.insert.length
+            : mapOffsetThroughReplacement(
+                replacement.from,
+                canonicalChange.from,
+                canonicalChange.to,
+                canonicalChange.insert.length,
+              );
+        const rebasedTo = mapOffsetThroughReplacement(
+          replacement.to,
+          canonicalChange.from,
+          canonicalChange.to,
+          canonicalChange.insert.length,
+        );
+        value =
+          canonicalChange.editableAfter.slice(0, rebasedFrom) +
+          replacement.insert +
+          canonicalChange.editableAfter.slice(rebasedTo) +
+          canonicalChange.trailingNewline;
+        field.value = value;
+        field.setSelectionRange(
+          mapSelectionThroughRebasedReplacement(
+            selectionStart,
+            replacement,
+            rebasedFrom,
+            rebasedTo,
+            canonicalChange,
+          ),
+          mapSelectionThroughRebasedReplacement(
+            selectionEnd,
+            replacement,
+            rebasedFrom,
+            rebasedTo,
+            canonicalChange,
+          ),
+          selectionDirection,
+        );
+      }
+    }
     this.stopPlayback();
     this.reparse(value);
   };
 
+  private onSourceFocus = (event: FocusEvent) => {
+    const field = event.currentTarget as HTMLTextAreaElement;
+    const previousSource = this.source;
+    const selectionStart = field.selectionStart;
+    const selectionEnd = field.selectionEnd;
+    const selectionDirection = field.selectionDirection ?? 'none';
+    this.flushCanonicalExports(this.canonicalDocument, false);
+    if (this.source === previousSource) return;
+
+    const change = sourceChange(previousSource, this.source);
+    const start = mapOffsetThroughReplacement(
+      selectionStart,
+      change.from,
+      change.to,
+      change.insert.length,
+    );
+    const end = mapOffsetThroughReplacement(
+      selectionEnd,
+      change.from,
+      change.to,
+      change.insert.length,
+    );
+    field.value = this.source;
+    const restoreSelection = () => {
+      if (field.isConnected && field.value === this.source)
+        field.setSelectionRange(start, end, selectionDirection);
+    };
+    restoreSelection();
+    void this.updateComplete.then(restoreSelection);
+  };
+
+  private onSourceCopy = (event: ClipboardEvent) => {
+    const field = event.currentTarget as HTMLTextAreaElement;
+    const start = field.selectionStart;
+    const end = field.selectionEnd;
+    const direction = field.selectionDirection ?? 'none';
+    if (!this.playing) this.flushCanonicalExports(this.canonicalDocument, false);
+    if (field.value !== this.source) {
+      field.value = this.source;
+      field.setSelectionRange(
+        Math.min(start, field.value.length),
+        Math.min(end, field.value.length),
+        direction,
+      );
+    }
+  };
+
   private onProgressInput = (event: Event) => {
+    this.markdownForSave();
     const value = Number((event.currentTarget as HTMLInputElement).value);
     this.stopPlayback();
     this.setPlaybackProgress(value);
@@ -671,10 +886,18 @@ class MarkdownDevHarness extends LitElement {
       this.stopPlayback();
       return;
     }
+    this.markdownForSave();
     this.startPlayback();
   };
 
+  /** Returns the latest Markdown for a host save after flushing canonical edits. */
+  markdownForSave(): string {
+    this.flushCanonicalExports(this.canonicalDocument, false);
+    return this.source;
+  }
+
   private setTab(tab: 'render' | 'serialize' | 'tree') {
+    if (!this.playing) this.flushCanonicalExports(this.canonicalDocument, tab === 'tree');
     this.activeTab = tab;
     if (tab !== 'render') this.clearEditingTarget();
     else this.refreshKeyboardState();
@@ -697,6 +920,10 @@ class MarkdownDevHarness extends LitElement {
     window.visualViewport?.removeEventListener('resize', this.onViewportChange);
     window.visualViewport?.removeEventListener('scroll', this.onViewportChange);
     this.clearReadinessTimer();
+    if (this.canonicalExportFrame !== undefined) {
+      cancelAnimationFrame(this.canonicalExportFrame);
+      this.canonicalExportFrame = undefined;
+    }
     this.stopObservingNativeSelection();
     this.stopObservingVirtualKeyboard();
     const retiredWriter = this.canonicalWriter;
@@ -807,6 +1034,11 @@ class MarkdownDevHarness extends LitElement {
     const nextWriter = new CanonicalWriter(nextDocument);
     this.canonicalDocument = nextDocument;
     this.canonicalWriter = nextWriter;
+    this.markdownExportDocument = nextDocument;
+    this.markdownExportRevision = nextDocument.acceptedRevision;
+    this.treeExportDocument = nextDocument;
+    this.treeExportRevision = nextDocument.acceptedRevision;
+    this.canonicalTreeCache = undefined;
     if (previousDocument && previousWriter) {
       void this.disposeCanonical(
         previousWriter,
@@ -851,22 +1083,60 @@ class MarkdownDevHarness extends LitElement {
   private onCanonicalChange = (event: CustomEvent<{ readonly document: CanonicalDocument }>) => {
     const document = event.detail.document;
     if (document !== this.canonicalDocument) return;
-    const serializedTree = document.exportMarkdownTree();
-    const markdown = serializeToString(serializedTree);
-    this.source = markdown;
     this.historyStatus = '';
-    this.serializedMarkdown = markdown;
-    this.treeJson = JSON.stringify(serializedTree, null, 2);
-    this.pendingText = '';
-    this.parseMode = 'edited';
-    this.playbackIndex = markdown.length;
-    this.parserReusable = false;
-    this.parser = createBlockParser();
-    this.parser.push(markdown);
-    this.parser.finish();
-    this.root = this.parser.getTree().root;
-    this.requestUpdate();
+    this.refreshToolbarHistoryAvailability();
+    this.scheduleCanonicalExports(document.acceptedRevision);
   };
+
+  private scheduleCanonicalExports(revision: number) {
+    if (this.canonicalExportFrame !== undefined) return;
+    this.canonicalExportFrame = requestAnimationFrame(() => {
+      this.canonicalExportFrame = undefined;
+      const document = this.canonicalDocument;
+      if (!document || document.acceptedRevision < revision) return;
+      this.flushCanonicalExports(document, this.activeTab === 'tree');
+    });
+  }
+
+  /** Exports only the current view's derived data; source/export reads force the latest revision. */
+  private flushCanonicalExports(document: CanonicalDocument | undefined, includeTreeJson: boolean) {
+    if (!document || this.playing) return;
+    const revision = document.acceptedRevision;
+    const markdownStale =
+      this.markdownExportDocument !== document || this.markdownExportRevision < revision;
+    const treeStale =
+      includeTreeJson &&
+      (this.treeExportDocument !== document || this.treeExportRevision < revision);
+    if (!markdownStale && !treeStale) return;
+
+    const cachedTree = this.canonicalTreeCache;
+    const exportedTree =
+      cachedTree?.document === document && cachedTree.revision === revision
+        ? cachedTree.tree
+        : document.exportMarkdownTree();
+    if (document !== this.canonicalDocument || document.acceptedRevision !== revision) {
+      this.scheduleCanonicalExports(document.acceptedRevision);
+      return;
+    }
+    this.canonicalTreeCache = { document, revision, tree: exportedTree };
+    if (markdownStale) {
+      const markdown = serializeToString(exportedTree);
+      this.source = markdown;
+      this.serializedMarkdown = markdown;
+      this.pendingText = '';
+      this.parseMode = 'edited';
+      this.playbackIndex = markdown.length;
+      this.parserReusable = false;
+      this.markdownExportDocument = document;
+      this.markdownExportRevision = revision;
+    }
+    if (treeStale) {
+      this.treeJson = JSON.stringify(exportedTree, null, 2);
+      this.treeExportDocument = document;
+      this.treeExportRevision = revision;
+    }
+    this.requestUpdate();
+  }
 
   private onCanonicalHistoryReset = () => {
     this.historyStatus = 'Undo history was reset.';

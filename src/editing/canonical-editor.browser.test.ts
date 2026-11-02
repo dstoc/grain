@@ -26,13 +26,14 @@ describe('CanonicalEditor in Chromium', () => {
     window.getSelection()?.removeAllRanges();
   });
 
-  async function mount(markdown: string) {
+  async function mount(markdown: string, sessionId = 'local') {
     window.getSelection()?.removeAllRanges();
     document = CanonicalDocument.fromMarkdown(markdown);
     writer = new CanonicalWriter(document);
     editor = new CanonicalEditor();
     editor.document = document;
     editor.writer = writer;
+    editor.sessionId = sessionId;
     editor.style.width = '390px';
     editor.style.display = 'block';
     window.document.body.replaceChildren(editor);
@@ -89,6 +90,60 @@ describe('CanonicalEditor in Chromium', () => {
     await nextTask();
     expect(node.content).toBe('alpha!');
     expect(mounted.inline.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
+  });
+
+  test('admits the configured session when replacing the writer', async () => {
+    const mounted = await mount('alpha', 'review-custom-session');
+    const previousDocument = document!;
+    const previousWriter = writer!;
+    const replacementDocument = CanonicalDocument.fromMarkdown('alpha');
+    const replacementWriter = new CanonicalWriter(replacementDocument);
+    document = replacementDocument;
+    writer = replacementWriter;
+    editor!.document = replacementDocument;
+    editor!.writer = replacementWriter;
+    await nextTask();
+    await editor!.updateComplete;
+    await editor!.shadowRoot!.querySelector('md-block-render')!.updateComplete;
+    previousWriter.close();
+    previousDocument.close();
+
+    const inline = mounted.renderer.shadowRoot!.querySelector<MarkdownInline>('md-inline')!;
+    inline.focus();
+    inline.setSelectionOffsets(5, 5);
+    await userEvent.keyboard('!');
+    await nextTask();
+
+    expect(replacementDocument.root.children[0]!.content).toBe('alpha!');
+    expect(inline.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
+  });
+
+  test('admits the configured session when a writer is assigned later', async () => {
+    window.getSelection()?.removeAllRanges();
+    document = CanonicalDocument.fromMarkdown('alpha');
+    editor = new CanonicalEditor();
+    editor.document = document;
+    editor.sessionId = 'review-delayed-session';
+    editor.style.width = '390px';
+    editor.style.display = 'block';
+    window.document.body.replaceChildren(editor);
+    await nextTask();
+    await editor.updateComplete;
+
+    writer = new CanonicalWriter(document);
+    editor.writer = writer;
+    await nextTask();
+    await editor.updateComplete;
+    const renderer = editor.shadowRoot!.querySelector('md-block-render')!;
+    await renderer.updateComplete;
+    const inline = renderer.shadowRoot!.querySelector<MarkdownInline>('md-inline')!;
+    inline.focus();
+    inline.setSelectionOffsets(5, 5);
+    await userEvent.keyboard('!');
+    await nextTask();
+
+    expect(document.root.children[0]!.content).toBe('alpha!');
+    expect(inline.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
   });
 
   test('preserves a reversed text selection while replacing it and restores caret on undo', async () => {

@@ -310,6 +310,7 @@ describe('canonical editing commands', () => {
       { from: 1, to: 1, insert: 'XY' },
       { actionId: 'older-typing', sessionId: 'author-a', historyGroupId: 'typing' },
     );
+    writer.admitSession('author-a');
     const applied = writer.apply(typing, {
       sessionId: 'author-a',
       authorityEpoch: typing.authorityEpoch,
@@ -324,6 +325,7 @@ describe('canonical editing commands', () => {
       { actionId: 'later-split', sessionId: 'author-b' },
       (draft) => insertParagraph(draft, document.root.sharedId, paragraph!.sharedId, 2),
     );
+    writer.admitSession('author-b');
     const splitResult = writer.apply(split, {
       sessionId: 'author-b',
       authorityEpoch: split.authorityEpoch,
@@ -350,6 +352,7 @@ describe('canonical editing commands', () => {
       { from: 1, to: 1, insert: 'X' },
       { actionId: 'typing-before-join', sessionId: 'author-a', historyGroupId: 'typing' },
     );
+    writer.admitSession('author-a');
     const typed = writer.apply(typing, {
       sessionId: 'author-a',
       authorityEpoch: typing.authorityEpoch,
@@ -362,6 +365,7 @@ describe('canonical editing commands', () => {
     const join = writer.prepareCommand({ actionId: 'later-join', sessionId: 'author-b' }, (draft) =>
       deleteContentBackwards(draft, document.root.sharedId, right!.sharedId),
     );
+    writer.admitSession('author-b');
     const joined = writer.apply(join, {
       sessionId: 'author-b',
       authorityEpoch: join.authorityEpoch,
@@ -387,6 +391,7 @@ describe('canonical editing commands', () => {
       { from: 4, to: 4, insert: 'X' },
       { actionId: 'scoped-left-edit', sessionId: 'A', historyGroupId: 'left' },
     );
+    writer.admitSession('A');
     const leftResult = writer.apply(leftInput, {
       sessionId: 'A',
       authorityEpoch: leftInput.authorityEpoch,
@@ -401,6 +406,7 @@ describe('canonical editing commands', () => {
       { from: 0, to: 0, insert: 'Y' },
       { actionId: 'scoped-right-edit', sessionId: 'A', historyGroupId: 'right' },
     );
+    writer.admitSession('A');
     const rightResult = writer.apply(rightInput, {
       sessionId: 'A',
       authorityEpoch: rightInput.authorityEpoch,
@@ -418,6 +424,7 @@ describe('canonical editing commands', () => {
     const split = writer.prepareCommand({ actionId: 'scope-split', sessionId: 'B' }, (draft) =>
       insertParagraph(draft, document.root.sharedId, right!.sharedId, 1),
     );
+    writer.admitSession('B');
     const splitResult = writer.apply(split, {
       sessionId: 'B',
       authorityEpoch: split.authorityEpoch,

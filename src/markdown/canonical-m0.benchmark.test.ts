@@ -204,6 +204,8 @@ function editRequest(
 }
 
 function publishTextInput(writer: CanonicalWriter, request: ActionRequest) {
+  // The matched M0 ref predates explicit session admission.
+  writer.admitSession?.('m0-core-session');
   const applied = writer.apply(request, {
     sessionId: 'm0-core-session',
     authorityEpoch: request.authorityEpoch,

@@ -171,6 +171,7 @@ function plainDocumentMeasurements(markdown: string) {
       canonicalPrepare.push(performance.now() - requestStart);
       canonicalApplyPublish.push(
         elapsed(() => {
+          writer.admitSession('plain');
           const result = writer.apply(request, {
             sessionId: 'plain',
             authorityEpoch: request.authorityEpoch,
@@ -244,6 +245,7 @@ function historyMeasurements(markdown: string) {
           prepareTimes.push(performance.now() - prepareStart);
           applyPublishTimes.push(
             elapsed(() => {
+              writer.admitSession(sessionId);
               const result = writer.apply(request, {
                 sessionId,
                 authorityEpoch: request.authorityEpoch,

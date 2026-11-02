@@ -280,6 +280,8 @@ it('centralized concurrent overlapping deletes do not duplicate restored charact
       { actionId: 'delete-cd', sessionId: 'B' },
     ),
   ];
+  writer.admitSession('A');
+  writer.admitSession('B');
   for (let index = 0; index < requests.length; index++) {
     const request = requests[index]!;
     const result = writer.apply(request, {

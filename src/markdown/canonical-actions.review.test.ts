@@ -14,6 +14,7 @@ function setup(source = 'a') {
   return { doc, writer, node: doc.root.children[0]! };
 }
 function accept(writer: CanonicalWriter, request: ActionRequest, sessionId = 'local') {
+  writer.admitSession(sessionId);
   const result = writer.apply(request, {
     sessionId,
     authorityEpoch: request.authorityEpoch,
@@ -113,6 +114,7 @@ describe('M2 review probes', () => {
       },
     );
     const before = doc.checkpoint().update;
+    writer.admitSession('remote');
     const result = writer.apply(
       { ...base, textUpdate: missingDependencyDelta },
       {
