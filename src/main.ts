@@ -1573,7 +1573,7 @@ class MarkdownDevHarness extends LitElement {
     const inline = this.getActionTarget();
     if (!inline || !inline.isConnected) return;
     try {
-      const caretBottom = inline.getCaretPosition().y;
+      let caretBottom = inline.getCaretPosition().y;
       const canvas = this.shadowRoot?.querySelector<HTMLElement>('.preview-card');
       if (!canvas) return;
 
@@ -1589,6 +1589,7 @@ class MarkdownDevHarness extends LitElement {
           panelStack.scrollTop += canvasRect.bottom - visibleBottom;
           stackRect = panelStack.getBoundingClientRect();
           canvasRect = canvas.getBoundingClientRect();
+          caretBottom = inline.getCaretPosition().y;
         }
 
         const visibleTop = Math.max(stackRect.top, canvasRect.top);

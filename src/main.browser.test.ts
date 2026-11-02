@@ -197,6 +197,37 @@ function expectUsableToolbarCanvas(harness: LitElement, toolbar: HTMLElement) {
   expectDocumentWithinViewport();
 }
 
+async function expectFocusedCaretInVisibleCanvas(
+  harness: LitElement,
+  toolbar: HTMLElement,
+  inline: MarkdownInline,
+  selection: { anchor: number; focus: number },
+) {
+  for (let frame = 0; frame < 10; frame += 1) {
+    await nextAnimationFrame();
+    await harness.updateComplete;
+  }
+  expect(await waitForFocusedInline(harness)).toBe(inline);
+  expect(inline.getTextSelection()).toEqual(selection);
+
+  const canvas = harness.shadowRoot!.querySelector<HTMLElement>('.preview-card')!;
+  const panelStack = harness.shadowRoot!.querySelector<HTMLElement>('.panel-stack')!;
+  const canvasRect = canvas.getBoundingClientRect();
+  const panelStackRect = panelStack.getBoundingClientRect();
+  const visibleTop = Math.max(canvasRect.top, panelStackRect.top);
+  const visibleBottom = Math.min(
+    canvasRect.bottom,
+    panelStackRect.bottom,
+    toolbar.getBoundingClientRect().top,
+  );
+  const caretY = inline.getCaretPosition().y;
+
+  expect(canvas.scrollHeight).toBeGreaterThan(canvas.clientHeight);
+  expect(caretY).toBeGreaterThanOrEqual(visibleTop);
+  expect(caretY).toBeLessThanOrEqual(visibleBottom);
+  expectDocumentWithinViewport();
+}
+
 test('responsive shell disclosures preserve the editor and expose live outputs and tools', async () => {
   await page.viewport(1440, 1000);
   const { harness, source } = await createSettledHarness('# Changed\n\nparagraph');
@@ -517,6 +548,67 @@ test('short phone panel scrolling preserves the editor and keeps Test tools reac
   await settleMobileLayout(harness);
   expect(toolbar.visible).toBe(true);
   expectUsableToolbarCanvas(harness, toolbar);
+  harness.remove();
+});
+
+test('mobile caret recovery remeasures after panel scrolling and preserves selection and history', async () => {
+  await page.viewport(390, 546);
+  const paragraphs = Array.from(
+    { length: 40 },
+    (_, index) => `paragraph ${index} alpha beta omega`,
+  );
+  const { harness, source } = await createSettledHarness(paragraphs.join('\n\n'));
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  inline.setSelectionOffsets(1, 1);
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  const sourceToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.source-toggle')!;
+  const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+  const simulationToggle =
+    harness.shadowRoot!.querySelector<HTMLButtonElement>('.simulation-toggle')!;
+
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  await expectFocusedCaretInVisibleCanvas(harness, toolbar, inline, { anchor: 1, focus: 1 });
+
+  await userEvent.click(sourceToggle);
+  await settleMobileLayout(harness);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
+  await expectFocusedCaretInVisibleCanvas(harness, toolbar, inline, { anchor: 1, focus: 1 });
+
+  await userEvent.click(toolsToggle);
+  await settleMobileLayout(harness);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  await expectFocusedCaretInVisibleCanvas(harness, toolbar, inline, { anchor: 1, focus: 1 });
+
+  await userEvent.click(simulationToggle);
+  await settleMobileLayout(harness);
+  expect(toolbar.visible).toBe(false);
+  await userEvent.click(simulationToggle);
+  await settleMobileLayout(harness);
+  expect(toolbar.visible).toBe(true);
+  await expectFocusedCaretInVisibleCanvas(harness, toolbar, inline, { anchor: 1, focus: 1 });
+
+  inline.setSelectionOffsets(1, 3);
+  const selection = inline.getTextSelection()!;
+  await expectFocusedCaretInVisibleCanvas(harness, toolbar, inline, selection);
+  await userEvent.keyboard('X');
+  await settleHarness(harness);
+  expect(source.value).toContain('pXagraph 0');
+  expect(
+    currentEditorInlines(harness).some((item) => item.textContent?.includes('pXagraph 0')),
+  ).toBe(true);
+
+  await userEvent.keyboard('{Control>}z{/Control}');
+  await settleHarness(harness);
+  expect(source.value).toContain('paragraph 0');
+  expect(source.value).not.toContain('pXagraph 0');
+
+  await userEvent.keyboard('{Control>}y{/Control}');
+  await settleHarness(harness);
+  expect(source.value).toContain('pXagraph 0');
   harness.remove();
 });
 
