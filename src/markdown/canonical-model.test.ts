@@ -136,6 +136,33 @@ describe('CanonicalDocument', () => {
     expect(retried.canonicalSnapshot()).toEqual(first.canonicalSnapshot());
   });
 
+  it('lazily caches inline parse trees and refreshes them after accepted text changes', () => {
+    const document = CanonicalDocument.fromParsed(
+      { type: 'document', children: [{ type: 'paragraph', content: 'before' }] },
+      {
+        documentId: 'inline-cache-doc',
+        actionId: 'inline-cache',
+        authorityEpoch: 'inline-cache-epoch',
+      },
+    );
+    const paragraph = document.root.children[0]!;
+    const firstTree = paragraph.inlineTree;
+    const span = document.canonicalSnapshot().nodes.find((node) => node.id === paragraph.sharedId)!
+      .spans[0]!;
+    const update = applyToAuthority(document.checkpoint(), 1, (authority) => {
+      const tape = authority.getMap('tapes').get(span.tapeId) as Y.Text;
+      tape.insert(tape.length - 1, ' after');
+      const revisions = authority.getMap('tapeRevisions');
+      revisions.set(span.tapeId, (revisions.get(span.tapeId) as number) + 1);
+    });
+
+    expect(paragraph.inlineTree).toBe(firstTree);
+    document.applyAccepted({ revision: 1, update: update.update });
+    expect(paragraph.content).toBe('before after');
+    expect(paragraph.inlineTree).not.toBe(firstTree);
+    expect(paragraph.inlineTree).toBe(paragraph.inlineTree);
+  });
+
   it('keeps checked false distinct from absence and preserves code info null', () => {
     const tree: DocumentNode = {
       type: 'document',

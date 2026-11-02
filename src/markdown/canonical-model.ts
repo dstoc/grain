@@ -1,6 +1,9 @@
 import * as Y from 'yjs';
 
 import type { DocumentNode, MarkdownNode } from './node.js';
+import { parser as inlineParser, type InlineTree, type InlineTreeNode } from './inline-parser.js';
+import { createSyntaxNode, createTree } from './parser-tree.js';
+import type { Caches } from './view-model-node.js';
 import { MarkdownTree } from './view-model.js';
 import { parseBlocks } from './block-parser/api.js';
 import { signal } from '../signals.js';
@@ -127,6 +130,14 @@ interface DeltaLike {
   readonly insert: unknown;
   readonly attributes?: Record<string, unknown>;
 }
+
+interface InlineProjectionCache {
+  readonly type: NodeKind;
+  readonly content: string;
+  readonly tree: InlineTree;
+}
+
+const inlineProjectionCaches = new WeakMap<CanonicalNode, InlineProjectionCache>();
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -423,6 +434,10 @@ export class CanonicalNode {
     return this.owner.projectionVersion;
   }
 
+  get caches(): Readonly<Caches> | undefined {
+    return this.owner.nodeCaches(this.sharedId);
+  }
+
   get content(): string | undefined {
     if (!INLINE_KINDS.has(this.type)) return undefined;
     return this.owner.nodeContent(this.sharedId);
@@ -442,6 +457,21 @@ export class CanonicalNode {
     if (this.type !== 'code-block') return undefined;
     return this.owner.scalar(this.sharedId, 'info') as string | null;
   }
+
+  get inlineTree(): InlineTree {
+    assert(this.connected, 'cannot read the inline parse tree of a disconnected node');
+    const type = this.type;
+    assert(INLINE_KINDS.has(type), `${type} nodes do not have inline parse trees`);
+    const content = this.content ?? '';
+    const cached = inlineProjectionCaches.get(this);
+    if (cached?.type === type && cached.content === content) return cached.tree;
+    const tree =
+      type === 'code-block'
+        ? createTree(createSyntaxNode('text', content) as InlineTreeNode)
+        : inlineParser.parse(content);
+    inlineProjectionCaches.set(this, { type, content, tree });
+    return tree;
+  }
 }
 
 /**
@@ -450,6 +480,7 @@ export class CanonicalNode {
  */
 export class CanonicalDocument {
   private readonly facades = new Map<NodeId, CanonicalNode>();
+  private readonly localCaches = new Map<NodeId, Caches>();
   private disposed = false;
   private revisionVersion = 0;
 
@@ -771,6 +802,7 @@ export class CanonicalDocument {
       );
       Y.applyUpdate(this.document, Uint8Array.from(envelope.update));
       this.revisionVersion++;
+      this.localCaches.clear();
       for (const facade of this.facades.values()) facade.renderSignal.value++;
     } finally {
       candidate.destroy();
@@ -783,6 +815,12 @@ export class CanonicalDocument {
     const revision = ymap<number>(this.document, TAPE_REVISIONS).get(tapeId);
     assert(typeof revision === 'number', `unknown tape ${tapeId}`);
     return revision;
+  }
+
+  /** @internal Local-only cache data for the node projection. */
+  nodeCaches(id: NodeId): Readonly<Caches> | undefined {
+    this.assertLive();
+    return this.localCaches.get(id);
   }
 
   /** Snapshot the canonical fields for reconstruction comparison and diagnostics. */
