@@ -4,6 +4,8 @@ This harness records a repeatable baseline for canonical editing, the Chromium e
 
 The current baseline measurements and exact environment are indexed in [results/README.md](./results/README.md). Timing reports are observations for that runner; they do not prove that later engineering targets pass.
 
+The results report identifies which M0 profiles have completed and records the M5/release gate for the uninterrupted 10,000-action retention trace and its repeated-process distributions.
+
 Run a profile from the Grain repository root:
 
 ```sh

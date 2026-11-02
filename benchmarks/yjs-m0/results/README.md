@@ -54,14 +54,16 @@ Ownership snapshots group tapes by `spanCount` and `ownerCount`, with `tapeCount
 
 ## Profile status
 
-| Profile                                                | Report                         | Status                                                           |
-| ------------------------------------------------------ | ------------------------------ | ---------------------------------------------------------------- |
-| Core acceptance, projection, serialization, checkpoint | [core.json](./core.json)       | Complete, two fresh processes                                    |
-| Chromium editor                                        | [editor.json](./editor.json)   | Complete, two fresh processes                                    |
-| Full demo harness                                      | [harness.json](./harness.json) | Complete, two fresh processes                                    |
-| Retained history and 10,000-action trace               | —                              | Incomplete: three depths complete; trace stopped at 1,000/10,000 |
+| Profile                                                | Report                                                  | Status                                                                                     |
+| ------------------------------------------------------ | ------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Core acceptance, projection, serialization, checkpoint | [core.json](./core.json)                                | Complete, two fresh processes                                                              |
+| Chromium editor                                        | [editor.json](./editor.json)                            | Complete, two fresh processes                                                              |
+| Full demo harness                                      | [harness.json](./harness.json)                          | Complete, two fresh processes                                                              |
+| Retained history and 10,000-action trace               | [progress JSONL](./retention-run-1.json.progress.jsonl) | Partial M0 evidence: one process completed all three depths; trace stopped at 1,000/10,000 |
 
-The instrumented retention process completed the 0-, 64-, and 500-group measurements with 25 warm-up and 200 measured operations each. It then recorded ten 100-action chunks in [retention-run-1.json.progress.jsonl](./retention-run-1.json.progress.jsonl). Each chunk includes exact per-action timings, accepted-update and receipt bytes, and a heap/RSS sample.
+One instrumented retention process completed the 0-, 64-, and 500-group measurements with 25 warm-up and 200 measured operations each. These are single-process observations; they do not provide a repeated-process retention distribution. The process then recorded ten 100-action chunks in [retention-run-1.json.progress.jsonl](./retention-run-1.json.progress.jsonl). Each chunk includes exact per-action timings, accepted-update and receipt bytes, and a heap/RSS sample.
+
+The bounded M0 baseline and harness are ready for review with this limitation recorded. The uninterrupted 10,000-action trace and appropriate repeated-process distributions remain an M5/release gate. Keep the baseline long-job path available for that gate. Do not report the partial trace as complete or treat it as release evidence.
 
 The trace reached 1,000 of 10,000 actions in 223.390 seconds. Its last 100 actions took 43.995 seconds. A quadratic extrapolation from the first 1,000 actions projects 6.21 hours for one trace and 18.62 hours for the manifest's three fresh processes. This is a planning estimate, not a completed measurement. The process was interrupted at action 1,000 because this runner has a 120-minute limit. The progress file records the stop and marks the trace incomplete. No final retention report exists. Do not count the partial trace or resume from its checkpoint.
 
