@@ -3425,7 +3425,14 @@ export class CanonicalWriter {
       source.splice(sourceIndex, 1);
       destination.push(entry);
       if (session.current === entry) session.current = undefined;
-      const callbackErrors = this.notifyListeners({ type: 'history' });
+      this.publishing = true;
+      let callbackErrors: readonly unknown[];
+      try {
+        callbackErrors = this.notifyListeners({ type: 'history' });
+      } finally {
+        this.publishing = false;
+        this.flushLocalQueue();
+      }
       return {
         status: 'no-effect',
         textChanged: false,

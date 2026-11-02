@@ -714,6 +714,10 @@ export class CanonicalDocument {
     const document = new Y.Doc({ gc: false });
     try {
       Y.applyUpdate(document, Uint8Array.from(checkpoint.update));
+      assert(
+        !document.store.pendingStructs && !document.store.pendingDs,
+        'checkpoint has unresolved native dependencies',
+      );
       const meta = ymap<unknown>(document, META);
       assert(
         metaValue<number>(meta, 'schemaVersion') === SCHEMA_VERSION,
