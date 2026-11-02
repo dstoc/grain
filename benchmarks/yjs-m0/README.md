@@ -2,6 +2,8 @@
 
 This harness records a repeatable baseline for canonical editing, the Chromium editor, the full demo harness, and retained history. It separates timing from test-only native operation counters. The baseline ref and fixture definitions are in [manifest.json](./manifest.json). Visible behavior cases and the intentional identity difference are in [parity-corpus.json](./parity-corpus.json).
 
+The current baseline measurements and exact environment are indexed in [results/README.md](./results/README.md). Timing reports are observations for that runner; they do not prove that later engineering targets pass.
+
 Run a profile from the Grain repository root:
 
 ```sh

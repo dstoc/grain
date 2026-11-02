@@ -144,9 +144,12 @@ describe('M0 native operation counters', () => {
     expect(initial.ownership.distinctOwnerNodeCount).toBeGreaterThan(0);
     expect(
       initial.ownership.byTape.every(
-        ({ spanCount, ownerNodeIds }) => spanCount > 0 && ownerNodeIds.length > 0,
+        ({ spanCount, ownerCount, tapeCount }) => spanCount > 0 && ownerCount > 0 && tapeCount > 0,
       ),
     ).toBe(true);
+    expect(initial.ownership.byTape.reduce((count, entry) => count + entry.tapeCount, 0)).toBe(
+      initial.tapeCount,
+    );
     const target = document.root.children[0]!;
     const measured = measureNativeOperations(document, () => {
       const request = writer.prepareTextInput(

@@ -62,9 +62,9 @@ export interface NativeStateSnapshot {
     readonly multiSpanNodeCount: number;
     readonly multiOwnerTapeCount: number;
     readonly byTape: readonly {
-      readonly tapeId: string;
       readonly spanCount: number;
-      readonly ownerNodeIds: readonly string[];
+      readonly ownerCount: number;
+      readonly tapeCount: number;
     }[];
   };
   readonly checkpointBytes: number;
@@ -174,13 +174,21 @@ export function snapshotNativeState(document: CanonicalDocument): NativeStateSna
       spanCountsByTape.set(span.tapeId, (spanCountsByTape.get(span.tapeId) ?? 0) + 1);
     }
   }
-  const ownershipByTape = [...ownersByTape.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([tapeId, owners]) => ({
-      tapeId,
-      spanCount: spanCountsByTape.get(tapeId) ?? 0,
-      ownerNodeIds: [...owners].sort(),
-    }));
+  const ownershipCounts = new Map<
+    string,
+    { spanCount: number; ownerCount: number; tapeCount: number }
+  >();
+  for (const [tapeId, owners] of ownersByTape) {
+    const spanCount = spanCountsByTape.get(tapeId) ?? 0;
+    const ownerCount = owners.size;
+    const signature = `${spanCount}:${ownerCount}`;
+    const count = ownershipCounts.get(signature);
+    if (count) count.tapeCount++;
+    else ownershipCounts.set(signature, { spanCount, ownerCount, tapeCount: 1 });
+  }
+  const ownershipByTape = [...ownershipCounts.values()].sort(
+    (left, right) => left.spanCount - right.spanCount || left.ownerCount - right.ownerCount,
+  );
   return {
     clientIds: [...state.store.clients.keys()].sort((left, right) => left - right),
     clientCount: state.store.clients.size,
@@ -196,8 +204,7 @@ export function snapshotNativeState(document: CanonicalDocument): NativeStateSna
         spansByNode.filter(({ spans }) => spans.length > 0).map(({ nodeId }) => nodeId),
       ).size,
       multiSpanNodeCount: spansByNode.filter(({ spans }) => spans.length > 1).length,
-      multiOwnerTapeCount: ownershipByTape.filter(({ ownerNodeIds }) => ownerNodeIds.length > 1)
-        .length,
+      multiOwnerTapeCount: [...ownersByTape.values()].filter((owners) => owners.size > 1).length,
       byTape: ownershipByTape,
     },
     checkpointBytes: document.checkpoint().update.byteLength,
