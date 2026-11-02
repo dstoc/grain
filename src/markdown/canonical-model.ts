@@ -122,6 +122,13 @@ export interface CanonicalWriterAccess {
   historyWasReset(): boolean;
   beginPending(): void;
   publish(affectedNodeIds: readonly NodeId[]): readonly unknown[];
+  observeAcceptedUpdates(
+    listener: (
+      update: Uint8Array,
+      changedTapeIds: readonly TapeId[],
+      structuralEffect: boolean,
+    ) => void,
+  ): () => void;
   poison(): void;
 }
 
@@ -494,12 +501,15 @@ function addChildIds(target: Set<NodeId>, value: unknown): void {
 
 function changedProjectionResources(before: Y.Doc, after: Y.Doc) {
   const affectedNodeIds = new Set<NodeId>();
+  const touchedTapeIds = new Set<TapeId>();
+  let structuralEffect = false;
   const beforeNodes = ymap<RecordMap>(before, NODES);
   const afterNodes = ymap<RecordMap>(after, NODES);
   for (const id of new Set([...beforeNodes.keys(), ...afterNodes.keys()])) {
     const oldRecord = beforeNodes.get(id);
     const newRecord = afterNodes.get(id);
     if (!oldRecord || !newRecord) {
+      structuralEffect = true;
       affectedNodeIds.add(id);
       addChildIds(affectedNodeIds, oldRecord && nodeCell(oldRecord, 'children'));
       addChildIds(affectedNodeIds, newRecord && nodeCell(newRecord, 'children'));
@@ -509,6 +519,7 @@ function changedProjectionResources(before: Y.Doc, after: Y.Doc) {
       const oldCell = cellValue(oldRecord, field);
       const newCell = cellValue(newRecord, field);
       if (oldCell.token === newCell.token) continue;
+      structuralEffect = true;
       affectedNodeIds.add(id);
       if (field === 'children') {
         addChildIds(affectedNodeIds, oldCell.value);
@@ -517,11 +528,17 @@ function changedProjectionResources(before: Y.Doc, after: Y.Doc) {
     }
   }
 
-  const touchedTapeIds = new Set<TapeId>();
   const beforeRevisions = ymap<number>(before, TAPE_REVISIONS);
   const afterRevisions = ymap<number>(after, TAPE_REVISIONS);
   for (const id of new Set([...beforeRevisions.keys(), ...afterRevisions.keys()])) {
     if (beforeRevisions.get(id) !== afterRevisions.get(id)) touchedTapeIds.add(id);
+  }
+  const beforeTapes = ymap<Y.Text>(before, TAPES);
+  const afterTapes = ymap<Y.Text>(after, TAPES);
+  for (const id of new Set([...beforeTapes.keys(), ...afterTapes.keys()])) {
+    if (beforeTapes.has(id) === afterTapes.has(id)) continue;
+    touchedTapeIds.add(id);
+    structuralEffect = true;
   }
   if (touchedTapeIds.size) {
     const rootId = metaValue<string>(ymap<unknown>(after, META), 'rootId');
@@ -542,7 +559,11 @@ function changedProjectionResources(before: Y.Doc, after: Y.Doc) {
       pending.push(...readChildren(record));
     }
   }
-  return [...affectedNodeIds];
+  return {
+    affectedNodeIds: [...affectedNodeIds],
+    touchedTapeIds: [...touchedTapeIds],
+    structuralEffect,
+  };
 }
 
 function readSpans(record: RecordMap): readonly Span[] {
@@ -756,6 +777,11 @@ export class CanonicalDocument {
   private disposed = false;
   private publicationPending = false;
   private revisionVersion = 0;
+  private acceptedUpdateObserver?: (
+    update: Uint8Array,
+    changedTapeIds: readonly TapeId[],
+    structuralEffect: boolean,
+  ) => void;
 
   private constructor(
     private readonly document: Y.Doc,
@@ -774,6 +800,16 @@ export class CanonicalDocument {
         assert(this.publicationPending, 'canonical document has no pending commit');
         this.publicationPending = false;
         return this.advanceProjection(affectedNodeIds);
+      },
+      observeAcceptedUpdates: (listener) => {
+        assert(
+          !this.acceptedUpdateObserver,
+          'canonical document already has an accepted-update observer',
+        );
+        this.acceptedUpdateObserver = listener;
+        return () => {
+          if (this.acceptedUpdateObserver === listener) this.acceptedUpdateObserver = undefined;
+        };
       },
       poison: () => {
         this.publicationPending = true;
@@ -1160,7 +1196,17 @@ export class CanonicalDocument {
       assertSessionWatermarkProgress(this.document, candidate);
       const changed = changedProjectionResources(this.document, candidate);
       Y.applyUpdate(this.document, Uint8Array.from(envelope.update));
-      return this.advanceProjection(changed);
+      try {
+        this.acceptedUpdateObserver?.(
+          Uint8Array.from(envelope.update),
+          changed.touchedTapeIds,
+          changed.structuralEffect,
+        );
+      } catch (error) {
+        this.publicationPending = true;
+        throw error;
+      }
+      return this.advanceProjection(changed.affectedNodeIds);
     } finally {
       candidate.destroy();
     }

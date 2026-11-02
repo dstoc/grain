@@ -3552,6 +3552,7 @@ function markerSummary(state: Y.Doc): Map<TapeId, string> {
 export class CanonicalWriter {
   private readonly state: Y.Doc;
   private readonly access: ReturnType<typeof canonicalWriterAccess>;
+  private readonly unsubscribeAcceptedUpdates: () => void;
   private readonly indexes: CanonicalIndexes;
   private validationReplica?: Y.Doc;
   private validationIndexes?: CanonicalIndexes;
@@ -3596,6 +3597,10 @@ export class CanonicalWriter {
       'history limit must be a positive integer',
     );
     activeWriters.set(document, this);
+    this.unsubscribeAcceptedUpdates = this.access.observeAcceptedUpdates(
+      (update, changedTapeIds, structuralEffect) =>
+        this.onExternallyAcceptedUpdate(update, changedTapeIds, structuralEffect),
+    );
     this.admitSession('local');
   }
 
@@ -3683,12 +3688,46 @@ export class CanonicalWriter {
     else if (!textIndexFresh) validation.indexes.refreshText(changedTapeIds);
   }
 
+  private onExternallyAcceptedUpdate(
+    update: Uint8Array,
+    changedTapeIds: readonly TapeId[],
+    structuralEffect: boolean,
+  ): void {
+    try {
+      const revision = metaMap(this.state).get('acceptedRevision') as number;
+      const changed = new Set(changedTapeIds);
+      this.syncAcceptedValidation(update, changed, structuralEffect, revision);
+      for (const [sessionId, replica] of this.authorReplicas) {
+        try {
+          Y.applyUpdate(replica, Uint8Array.from(update));
+          assertResolvedUpdate(replica);
+          assert(
+            metaMap(replica).get('documentId') === metaMap(this.state).get('documentId') &&
+              metaMap(replica).get('authorityEpoch') ===
+                metaMap(this.state).get('authorityEpoch') &&
+              metaMap(replica).get('acceptedRevision') === revision,
+            'author replica did not receive the accepted document prefix',
+          );
+        } catch {
+          this.discardAuthorReplica(sessionId);
+        }
+      }
+      if (structuralEffect) this.indexes.rebuild();
+      else this.indexes.refreshText(changed);
+    } catch (error) {
+      this.poisoned = true;
+      this.access.poison();
+      throw error;
+    }
+  }
+
   close(): void {
     assert(
       !this.pending && !this.pendingHistory,
       'cannot close a writer with an unpublished commit',
     );
     if (this.closed) return;
+    this.unsubscribeAcceptedUpdates();
     for (const session of this.sessions.values()) {
       for (const entry of session.all) destroyHistoryEntry(entry);
       session.all.clear();

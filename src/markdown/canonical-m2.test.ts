@@ -82,6 +82,57 @@ describe('Yjs M2 incremental input', () => {
     }
   });
 
+  it('refreshes persistent input replicas after an externally accepted text edit', () => {
+    const document = makeDocument('seed');
+    const writer = new CanonicalWriter(document);
+    const target = document.root.children[0]!;
+    try {
+      accept(
+        writer,
+        writer.prepareTextInput(
+          target.sharedId,
+          { from: target.content!.length, to: target.content!.length, insert: '!' },
+          { actionId: 'm2-before-external-update', sessionId: 'steady-author' },
+        ),
+      );
+
+      const replica = CanonicalDocument.open(document.checkpoint());
+      const remoteWriter = new CanonicalWriter(replica);
+      try {
+        const remote = remoteWriter.edit(
+          { actionId: 'm2-external-update', sessionId: 'remote' },
+          (draft) => draft.spliceText(target.sharedId, { from: 0, to: 0, insert: 'R' }),
+        );
+        if (!('receipt' in remote)) throw new Error(`expected remote commit, got ${remote.status}`);
+        document.applyAccepted({ revision: remote.revision, update: remote.update });
+      } finally {
+        remoteWriter.close();
+        replica.close();
+      }
+
+      const beforeReuse = writer.operationCounts;
+      const content = target.content!;
+      accept(
+        writer,
+        writer.prepareTextInput(
+          target.sharedId,
+          { from: content.length, to: content.length, insert: '?' },
+          { actionId: 'm2-after-external-update', sessionId: 'steady-author' },
+        ),
+      );
+
+      expect(target.content).toBe('Rseed!?');
+      expect(writer.operationCounts).toEqual({
+        ...beforeReuse,
+        literalTextInputs: beforeReuse.literalTextInputs + 1,
+      });
+      expect(document.validate()).toEqual({ valid: true, errors: [] });
+    } finally {
+      writer.close();
+      document.close();
+    }
+  });
+
   it('rejects marker changes before publication and rebuilds a contaminated replica on retry', () => {
     const document = makeDocument('seed');
     const writer = new CanonicalWriter(document);
