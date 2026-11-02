@@ -114,6 +114,15 @@ interface YjsSharedTypeInternals {
 
 const backingDocuments = new WeakMap<CanonicalDocument, Y.Doc>();
 const closedDocuments = new WeakSet<CanonicalDocument>();
+const writerAccesses = new WeakMap<CanonicalDocument, CanonicalWriterAccess>();
+
+/** @internal Access for the synchronous canonical action coordinator only. */
+export interface CanonicalWriterAccess {
+  readonly state: Y.Doc;
+  beginPending(): void;
+  publish(): void;
+  poison(): void;
+}
 
 interface MutableSemanticNode {
   type: NodeKind;
@@ -237,7 +246,7 @@ function retainedMarkers(
   return markers;
 }
 
-function tapeItemSignature(tape: Y.Text): string {
+export function tapeItemSignature(tape: Y.Text): string {
   const items: [string, number, boolean][] = [];
   let item = (tape as unknown as YjsSharedTypeInternals)._start;
   while (item) {
@@ -247,7 +256,8 @@ function tapeItemSignature(tape: Y.Text): string {
   return JSON.stringify(items);
 }
 
-function assertRetainedResources(previous: Y.Doc, candidate: Y.Doc): void {
+/** @internal Verify that accepted writes retain every integrated permanent Yjs type. */
+export function assertRetainedResources(previous: Y.Doc, candidate: Y.Doc): void {
   const previousMeta = ymap<unknown>(previous, META);
   const candidateMeta = ymap<unknown>(candidate, META);
   const rootId = metaValue<string>(previousMeta, 'rootId');
@@ -304,7 +314,7 @@ function assertRetainedResources(previous: Y.Doc, candidate: Y.Doc): void {
   }
 }
 
-function assertTapeRevisions(previous: Y.Doc, candidate: Y.Doc, revision: number): void {
+export function assertTapeRevisions(previous: Y.Doc, candidate: Y.Doc, revision: number): void {
   const previousTapes = ymap<Y.Text>(previous, TAPES);
   const candidateTapes = ymap<Y.Text>(candidate, TAPES);
   const previousRevisions = ymap<number>(previous, TAPE_REVISIONS);
@@ -628,10 +638,27 @@ export class CanonicalDocument {
   private readonly facades = new Map<NodeId, CanonicalNode>();
   private readonly localCaches = new Map<NodeId, Caches>();
   private disposed = false;
+  private publicationPending = false;
   private revisionVersion = 0;
 
   private constructor(private readonly document: Y.Doc) {
     backingDocuments.set(this, document);
+    writerAccesses.set(this, {
+      state: document,
+      beginPending: () => {
+        this.assertLive();
+        assert(!this.publicationPending, 'canonical document already has a pending commit');
+        this.publicationPending = true;
+      },
+      publish: () => {
+        assert(this.publicationPending, 'canonical document has no pending commit');
+        this.publicationPending = false;
+        this.advanceProjection();
+      },
+      poison: () => {
+        this.publicationPending = true;
+      },
+    });
   }
 
   static fromMarkdown(markdown: string, options: CanonicalDocumentOptions = {}): CanonicalDocument {
@@ -649,6 +676,16 @@ export class CanonicalDocument {
     const input = cloneSemanticTree(tree) as DocumentNode;
     const normalized = new MarkdownTree(input).serialize() as DocumentNode;
     return CanonicalDocument.importTree(cloneSemanticTree(normalized), options);
+  }
+
+  /** @internal Validate an already-disposable staging document. */
+  static validateState(state: Y.Doc): ValidationResult {
+    const document = new CanonicalDocument(state);
+    try {
+      return document.validate();
+    } finally {
+      closedDocuments.add(document);
+    }
   }
 
   /** Reconstructs accepted Yjs state without normalization or user-history capture. */
@@ -949,9 +986,7 @@ export class CanonicalDocument {
       );
       assertTapeRevisions(this.document, candidate, envelope.revision);
       Y.applyUpdate(this.document, Uint8Array.from(envelope.update));
-      this.revisionVersion++;
-      this.localCaches.clear();
-      for (const facade of this.facades.values()) facade.renderSignal.value++;
+      this.advanceProjection();
     } finally {
       candidate.destroy();
     }
@@ -1089,6 +1124,18 @@ export class CanonicalDocument {
 
   private assertLive(): void {
     assert(!this.disposed, 'canonical document is closed');
+    assert(!this.publicationPending, 'canonical document has an unpublished commit');
+  }
+
+  /** @internal Read guard for exported validation helpers. */
+  assertReadable(): void {
+    this.assertLive();
+  }
+
+  private advanceProjection(): void {
+    this.revisionVersion++;
+    this.localCaches.clear();
+    for (const facade of this.facades.values()) facade.renderSignal.value++;
   }
 
   private requireRecord(id: NodeId): RecordMap {
@@ -1098,11 +1145,19 @@ export class CanonicalDocument {
   }
 }
 
+/** @internal Keep raw Yjs state behind the canonical writer boundary. */
+export function canonicalWriterAccess(document: CanonicalDocument): CanonicalWriterAccess {
+  const access = writerAccesses.get(document);
+  assert(access, 'canonical document is closed');
+  return access;
+}
+
 export function validateRetainedForest(document: CanonicalDocument): ValidationResult {
   const errors: string[] = [];
   let nodes: NodeMap;
   let rootId: string;
   try {
+    document.assertReadable();
     const backing = closedDocuments.has(document) ? undefined : backingDocuments.get(document);
     assert(backing, 'canonical document is closed');
     nodes = ymap<RecordMap>(backing, NODES);
@@ -1217,6 +1272,11 @@ export function validateRetainedForest(document: CanonicalDocument): ValidationR
 
 export function validateActiveSpans(document: CanonicalDocument): ValidationResult {
   const errors: string[] = [];
+  try {
+    document.assertReadable();
+  } catch (error) {
+    return Object.freeze({ valid: false, errors: Object.freeze([String(error)]) });
+  }
   const backing = closedDocuments.has(document) ? undefined : backingDocuments.get(document);
   if (!backing)
     return Object.freeze({ valid: false, errors: Object.freeze(['canonical document is closed']) });
@@ -1385,4 +1445,9 @@ export function validateActiveSpans(document: CanonicalDocument): ValidationResu
   }
 
   return Object.freeze({ valid: errors.length === 0, errors: Object.freeze(errors) });
+}
+
+/** @internal Validate a disposable staging document without constructing a checkpoint copy. */
+export function validateCanonicalState(state: Y.Doc): ValidationResult {
+  return CanonicalDocument.validateState(state);
 }
