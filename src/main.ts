@@ -118,6 +118,7 @@ function mapSelectionThroughRebasedReplacement(
   offset: number,
   replacement: { readonly from: number; readonly to: number; readonly insert: string },
   rebasedFrom: number,
+  rebasedTo: number,
   canonicalChange: { readonly from: number; readonly to: number; readonly insert: string },
 ) {
   const insertedEnd = replacement.from + replacement.insert.length;
@@ -125,15 +126,22 @@ function mapSelectionThroughRebasedReplacement(
     return rebasedFrom + offset - replacement.from;
   }
 
+  // Compose the inverse local edit, canonical edit, then rebased local edit.
   const originalOffset =
     offset < replacement.from
       ? offset
       : offset + replacement.to - replacement.from - replacement.insert.length;
-  return mapOffsetThroughReplacement(
+  const canonicalOffset = mapOffsetThroughReplacement(
     originalOffset,
     canonicalChange.from,
     canonicalChange.to,
     canonicalChange.insert.length,
+  );
+  return mapOffsetThroughReplacement(
+    canonicalOffset,
+    rebasedFrom,
+    rebasedTo,
+    replacement.insert.length,
   );
 }
 
@@ -801,12 +809,14 @@ class MarkdownDevHarness extends LitElement {
             selectionStart,
             replacement,
             rebasedFrom,
+            rebasedTo,
             canonicalChange,
           ),
           mapSelectionThroughRebasedReplacement(
             selectionEnd,
             replacement,
             rebasedFrom,
+            rebasedTo,
             canonicalChange,
           ),
           selectionDirection,

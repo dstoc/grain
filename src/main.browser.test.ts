@@ -182,6 +182,24 @@ test.each([
     expectedAfterTyping: 'X!\n',
     expectedContent: 'X!',
   },
+  {
+    name: 'a longer replacement that retains a suffix',
+    remote: { from: 5, to: 5, insert: 'X' },
+    local: { from: 0, to: 5, insert: '123alpha' },
+    expectedSource: '123alphaX\n',
+    expectedCaret: 8,
+    expectedAfterTyping: '123alpha!X\n',
+    expectedContent: '123alpha!X',
+  },
+  {
+    name: 'a shorter replacement that retains a suffix',
+    remote: { from: 5, to: 5, insert: 'X' },
+    local: { from: 0, to: 5, insert: 'pha' },
+    expectedSource: 'phaX\n',
+    expectedCaret: 3,
+    expectedAfterTyping: 'pha!X\n',
+    expectedContent: 'pha!X',
+  },
 ])('keeps the Source caret after rebasing $name', async (fixture) => {
   const { harness, source } = await createSettledHarness('alpha');
   const internals = harness as unknown as HarnessInternals;
