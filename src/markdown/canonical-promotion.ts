@@ -1,18 +1,30 @@
 import { isInlineNode, type InlineNode, type MarkdownNode } from './node.js';
 import type { ParserConversionPlan } from './block-parser/types.js';
 import type { NodeId } from './canonical-model.js';
-import type { DraftNode, NodeSpec, TreeDraft } from './canonical-actions.js';
-
-interface InlineTarget {
-  readonly id: NodeId;
-  readonly pieces: ParserConversionPlan['inlinePieces'][string];
-}
+import type {
+  DraftNode,
+  DraftTextPiece,
+  NodeSpec,
+  ParserTreeDraft,
+  TreeDraft,
+} from './canonical-actions.js';
 
 interface TextEvent {
   readonly from: number;
   readonly to: number;
-  readonly targetId?: NodeId;
-  readonly at?: number;
+  readonly targetId: NodeId;
+  readonly at: number;
+}
+
+type ComposedPiece =
+  | { readonly kind: 'retain'; readonly from: number; readonly to: number }
+  | { readonly kind: 'inserted'; readonly from: number; readonly to: number; readonly text: string }
+  | { readonly kind: 'synthesize'; readonly text: string };
+
+interface SyntheticInsertion {
+  readonly at: number;
+  readonly text: string;
+  readonly order: number;
 }
 
 function nodeKey(path: readonly number[]): string {
@@ -40,22 +52,84 @@ function findLocation(
   return visit(draft.node(rootId));
 }
 
-function syntheticContent(
-  pieces: readonly ParserConversionPlan['inlinePieces'][string][number][],
-): string {
+function sourceTextForPiece(source: string, piece: ComposedPiece): string {
+  return piece.kind === 'synthesize' ? piece.text : source.slice(piece.from, piece.to);
+}
+
+function composedText(source: string, pieces: readonly ComposedPiece[]): string {
+  return pieces.map((piece) => sourceTextForPiece(source, piece)).join('');
+}
+
+function validateDraftSourcePieces(source: string, pieces: readonly DraftTextPiece[]): void {
+  let cursor = 0;
+  for (const piece of pieces) {
+    if (piece.from !== cursor || piece.to <= piece.from || piece.to > source.length) {
+      throw new Error('draft source pieces do not cover the current inline text');
+    }
+    cursor = piece.to;
+  }
+  if (cursor !== source.length && source.length !== 0) {
+    throw new Error('draft source pieces do not cover the current inline text');
+  }
+}
+
+function composePieces(
+  source: string,
+  parserPieces: ParserConversionPlan['inlinePieces'][string],
+  sourcePieces: readonly DraftTextPiece[],
+): readonly ComposedPiece[] {
+  const result: ComposedPiece[] = [];
+  for (const piece of parserPieces) {
+    if (piece.kind === 'synthesize') {
+      result.push({ kind: 'synthesize', text: piece.text });
+      continue;
+    }
+    let cursor = piece.sourceFrom;
+    for (const sourcePiece of sourcePieces) {
+      const from = Math.max(piece.sourceFrom, sourcePiece.from);
+      const to = Math.min(piece.sourceTo, sourcePiece.to);
+      if (from >= to) continue;
+      if (from !== cursor) throw new Error('parser range crosses an unmapped draft source gap');
+      result.push(
+        sourcePiece.kind === 'inserted'
+          ? { kind: 'inserted', from, to, text: source.slice(from, to) }
+          : { kind: 'retain', from, to },
+      );
+      cursor = to;
+    }
+    if (cursor !== piece.sourceTo) {
+      throw new Error('parser range is not fully mapped to draft source pieces');
+    }
+  }
+  return Object.freeze(result);
+}
+
+function seedContent(pieces: readonly ComposedPiece[]): string {
   return pieces
     .filter(
-      (piece): piece is Extract<(typeof pieces)[number], { kind: 'synthesize' }> =>
-        piece.kind === 'synthesize',
+      (piece): piece is Extract<ComposedPiece, { kind: 'inserted' | 'synthesize' }> =>
+        piece.kind === 'inserted' || piece.kind === 'synthesize',
     )
     .map((piece) => piece.text)
     .join('');
 }
 
-function specFor(node: MarkdownNode, syntheticText = ''): NodeSpec {
+function sourceBoundaryBefore(pieces: readonly ComposedPiece[], index: number): number {
+  for (let next = index + 1; next < pieces.length; next++) {
+    const piece = pieces[next]!;
+    if (piece.kind !== 'synthesize') return piece.from;
+  }
+  for (let previous = index - 1; previous >= 0; previous--) {
+    const piece = pieces[previous]!;
+    if (piece.kind !== 'synthesize') return piece.to;
+  }
+  return 0;
+}
+
+function specFor(node: MarkdownNode, content = ''): NodeSpec {
   const spec: NodeSpec = {
     type: node.type,
-    ...(isInlineNode(node) ? { content: syntheticText } : {}),
+    ...(isInlineNode(node) ? { content } : {}),
     ...(node.type === 'section' || node.type === 'list-item' || node.type === 'block-quote'
       ? { marker: node.marker }
       : {}),
@@ -129,33 +203,47 @@ export function applyParserConversion(
 ): boolean {
   const validated = validateTextPieces(source, plan);
   if (!validated) return false;
+  if (typeof (draft as Partial<ParserTreeDraft>).sourcePieces !== 'function') {
+    throw new Error('parser conversion requires draft source-piece mapping');
+  }
+  const parserDraft = draft as ParserTreeDraft;
   const location = findLocation(draft, rootId, sourceId);
   if (!location) throw new Error(`promotion source ${sourceId} is not active`);
 
+  const draftSourcePieces = parserDraft.sourcePieces(sourceId);
+  validateDraftSourcePieces(source, draftSourcePieces);
   const parsedNodes = new Map<string, MarkdownNode>();
-  const ids = new Map<string, NodeId>();
-  const targets: InlineTarget[] = [];
-  const visit = (node: MarkdownNode, path: number[]) => {
+  const composedByKey = new Map<string, readonly ComposedPiece[]>();
+  const visitParsed = (node: MarkdownNode, path: number[]) => {
     const key = nodeKey(path);
     parsedNodes.set(key, node);
+    if (isInlineNode(node)) {
+      const pieces = composePieces(source, plan.inlinePieces[key]!, draftSourcePieces);
+      if (composedText(source, pieces) !== node.content) {
+        throw new Error(`composed parser pieces do not reconstruct ${key}`);
+      }
+      composedByKey.set(key, pieces);
+    }
+    for (const [index, child] of parsedChildren(node).entries()) {
+      visitParsed(child, [...path, index]);
+    }
+  };
+  visitParsed(plan.output, []);
+
+  const ids = new Map<string, NodeId>();
+  const visit = (node: MarkdownNode, path: number[]) => {
+    const key = nodeKey(path);
     let id: NodeId;
     if (isInlineNode(node) && key === validated.firstInlineKey) {
       id = sourceId;
-      targets.push({ id, pieces: plan.inlinePieces[key]! });
     } else {
-      const pieces = plan.inlinePieces[key] ?? [];
-      id = draft.create(specFor(node, isInlineNode(node) ? syntheticContent(pieces) : ''));
-      if (isInlineNode(node)) targets.push({ id, pieces });
+      const pieces = composedByKey.get(key) ?? [];
+      id = draft.create(specFor(node, isInlineNode(node) ? seedContent(pieces) : ''));
     }
     ids.set(key, id);
     for (const [index, child] of parsedChildren(node).entries()) visit(child, [...path, index]);
   };
   for (const [index, child] of parsedChildren(plan.output).entries()) visit(child, [index]);
-  if (!targets.length) return false;
-
-  const firstTarget = targets[0]!;
-  if (firstTarget.id !== sourceId)
-    throw new Error('the first parsed inline node must retain source identity');
 
   const outputTargetByKey = new Map<string, NodeId>();
   for (const [key, node] of parsedNodes) {
@@ -163,67 +251,81 @@ export function applyParserConversion(
   }
 
   const events: TextEvent[] = [];
+  const sourceDeletes = [...plan.consumed].map((range) => ({ from: range.from, to: range.to }));
+  const firstSynthetic: SyntheticInsertion[] = [];
+  let syntheticOrder = 0;
   for (const [key, node] of parsedNodes) {
     if (!isInlineNode(node)) continue;
-    const pieces = plan.inlinePieces[key]!;
-    let syntheticPrefix = 0;
-    for (const piece of pieces) {
+    const pieces = composedByKey.get(key)!;
+    const isFirstTarget = key === validated.firstInlineKey;
+    const targetId = outputTargetByKey.get(key)!;
+    let seedPrefix = 0;
+    for (let index = 0; index < pieces.length; index++) {
+      const piece = pieces[index]!;
       if (piece.kind === 'synthesize') {
-        syntheticPrefix += piece.text.length;
+        if (isFirstTarget) {
+          firstSynthetic.push({
+            at: sourceBoundaryBefore(pieces, index),
+            text: piece.text,
+            order: syntheticOrder++,
+          });
+        } else {
+          seedPrefix += piece.text.length;
+        }
         continue;
       }
-      events.push({
-        from: piece.sourceFrom,
-        to: piece.sourceTo,
-        targetId: outputTargetByKey.get(key)!,
-        at: syntheticPrefix,
-      });
+      if (piece.kind === 'inserted') {
+        if (isFirstTarget) continue;
+        sourceDeletes.push({ from: piece.from, to: piece.to });
+        seedPrefix += piece.to - piece.from;
+        continue;
+      }
+      if (!isFirstTarget) events.push({ from: piece.from, to: piece.to, targetId, at: seedPrefix });
     }
   }
-  for (const range of [...plan.consumed].sort((a, b) => b.from - a.from)) {
+
+  sourceDeletes.sort((a, b) => a.from - b.from || a.to - b.to);
+  let deleteEnd = -1;
+  for (const range of sourceDeletes) {
+    if (range.from < deleteEnd) throw new Error('parser conversion source deletions overlap');
+    deleteEnd = range.to;
+  }
+  const afterSourceDeletes = (offset: number): number => {
+    let removed = 0;
+    for (const range of sourceDeletes) {
+      if (range.to <= offset) removed += range.to - range.from;
+      else if (range.from < offset) removed += offset - range.from;
+      else break;
+    }
+    return offset - removed;
+  };
+  for (const range of [...sourceDeletes].sort((a, b) => b.from - a.from)) {
     draft.spliceText(sourceId, { from: range.from, to: range.to, insert: '' });
   }
 
-  const firstPieces = firstTarget.pieces;
-  let firstOutputOffset = 0;
-  const firstSynthetic: { readonly at: number; readonly text: string }[] = [];
-  let previousSourceEnd = -1;
-  for (const piece of firstPieces) {
-    if (piece.kind === 'synthesize') {
-      firstSynthetic.push({ at: firstOutputOffset, text: piece.text });
-      firstOutputOffset += piece.text.length;
-    } else {
-      if (piece.sourceFrom < previousSourceEnd) {
-        throw new Error('the first parsed inline output reorders retained source');
-      }
-      previousSourceEnd = piece.sourceTo;
-      firstOutputOffset += piece.sourceTo - piece.sourceFrom;
-    }
-  }
-  for (const piece of firstSynthetic.sort((a, b) => b.at - a.at)) {
+  const syntheticAfterDeletes = firstSynthetic.map((piece) => ({
+    ...piece,
+    at: afterSourceDeletes(piece.at),
+  }));
+  for (const piece of [...syntheticAfterDeletes].sort((a, b) => b.at - a.at || b.order - a.order)) {
     draft.spliceText(sourceId, { from: piece.at, to: piece.at, insert: piece.text });
   }
 
-  const firstSyntheticLength = firstSynthetic.reduce(
-    (length, piece) => length + piece.text.length,
-    0,
-  );
-  const transfers = events
-    .filter((event): event is TextEvent & { readonly targetId: NodeId } =>
-      Boolean(event.targetId && event.targetId !== sourceId),
-    )
-    .sort((a, b) => b.from - a.from || b.to - a.to);
+  const afterConversionEdits = (offset: number, edge: 'start' | 'end'): number => {
+    const afterDeletes = afterSourceDeletes(offset);
+    const insertedBefore = syntheticAfterDeletes
+      .filter((piece) => (edge === 'start' ? piece.at <= afterDeletes : piece.at < afterDeletes))
+      .reduce((length, piece) => length + piece.text.length, 0);
+    return afterDeletes + insertedBefore;
+  };
+  const transfers = events.sort((a, b) => b.from - a.from || b.to - a.to);
   for (const event of transfers) {
-    const consumedBefore = plan.consumed
-      .filter((range) => range.to <= event.from)
-      .reduce((length, range) => length + range.to - range.from, 0);
-    const from = event.from - consumedBefore + firstSyntheticLength;
     draft.transferInlineRange({
       source: sourceId,
-      from,
-      to: from + event.to - event.from,
+      from: afterConversionEdits(event.from, 'start'),
+      to: afterConversionEdits(event.to, 'end'),
       destination: event.targetId,
-      at: event.at ?? 0,
+      at: event.at,
       affinity: 'left',
     });
   }

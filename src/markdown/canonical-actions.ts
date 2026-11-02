@@ -110,6 +110,18 @@ export interface TreeDraft {
   bookmark(id: NodeId, offset: number, affinity: TextAffinity, spanIndex?: number): Bookmark;
 }
 
+export interface DraftTextPiece {
+  /** Half-open UTF-16 coordinates in the current draft string. */
+  readonly from: number;
+  readonly to: number;
+  readonly kind: 'retained' | 'inserted' | 'transferred';
+}
+
+/** Parser conversion reads the draft's own source mapping before changing ownership. */
+export interface ParserTreeDraft extends TreeDraft {
+  sourcePieces(id: NodeId): readonly DraftTextPiece[];
+}
+
 export type ReadPrecondition =
   | {
       readonly kind: 'cell';
@@ -319,6 +331,8 @@ interface PlanBoundary {
   readonly tapeId: TapeId;
   readonly index: number;
   readonly boundaryId: string;
+  /** Position inside action-local text inserted at this native index. */
+  readonly insertionOffset: number;
 }
 
 interface PlanTextInsert {
@@ -625,7 +639,7 @@ function actionKey(actionId: string): string {
   return actionId;
 }
 
-class MutableTreeDraft implements TreeDraft {
+class MutableTreeDraft implements ParserTreeDraft {
   private active = true;
   private readonly nodes = new Map<NodeId, DraftNodeState>();
   private readonly preconditions = new Map<string, ReadPrecondition>();
@@ -705,19 +719,22 @@ class MutableTreeDraft implements TreeDraft {
           cells,
         });
         touchedNodes.add(node.id);
-        for (const draftSpan of node.spans) {
-          const span = draftSpan.span;
-          if (draftSpan.created) {
-            newTapes.push({ id: span.tapeId, span });
-            touchedTapes.add(span.tapeId);
-            const insertedText = draftSpan.pieces
-              .filter((piece): piece is InsertedPiece => piece.kind === 'inserted')
-              .map((piece) => piece.text)
-              .join('');
-            if (insertedText) {
-              insertions.push({ tapeId: span.tapeId, index: 1, text: insertedText });
-              textTapes.add(span.tapeId);
-            }
+        const createdSpan = this.newTapeSpans.get(node.id);
+        if (createdSpan) {
+          newTapes.push({ id: createdSpan.tapeId, span: createdSpan });
+          touchedTapes.add(createdSpan.tapeId);
+          const insertedText = node.spans
+            .filter(
+              (draftSpan) => draftSpan.created && draftSpan.span.tapeId === createdSpan.tapeId,
+            )
+            .flatMap((draftSpan) =>
+              draftSpan.pieces.filter((piece): piece is InsertedPiece => piece.kind === 'inserted'),
+            )
+            .map((piece) => piece.text)
+            .join('');
+          if (insertedText) {
+            insertions.push({ tapeId: createdSpan.tapeId, index: 1, text: insertedText });
+            textTapes.add(createdSpan.tapeId);
           }
         }
       }
@@ -866,13 +883,6 @@ class MutableTreeDraft implements TreeDraft {
     }
 
     for (const boundary of this.transferBoundaries) touchedTapes.add(boundary.tapeId);
-    const boundaryTapes = new Set(this.transferBoundaries.map((boundary) => boundary.tapeId));
-    assert(
-      !insertions.some(
-        (insertion) => insertion.text.length > 0 && boundaryTapes.has(insertion.tapeId),
-      ),
-      'text insertions and boundary transfers cannot change the same tape in one action',
-    );
     const operationNodeIds = this.operations_.flatMap((operation) => {
       switch (operation.type) {
         case 'transferInlineRange':
@@ -1048,6 +1058,23 @@ class MutableTreeDraft implements TreeDraft {
       affinity,
       ...(spanIndex === undefined ? {} : { spanIndex }),
     });
+  }
+
+  sourcePieces(id: NodeId): readonly DraftTextPiece[] {
+    this.assertActive();
+    const node = this.requireNode(id);
+    assert(INLINE_KINDS.has(node.type), `${node.type} nodes do not have inline text`);
+    this.readText(node);
+    let from = 0;
+    const pieces: DraftTextPiece[] = [];
+    for (const span of node.spans) {
+      for (const piece of span.pieces) {
+        const to = from + piece.text.length;
+        if (to > from) pieces.push(Object.freeze({ from, to, kind: piece.kind }));
+        from = to;
+      }
+    }
+    return Object.freeze(pieces);
   }
 
   private apply(operation: SemanticOperation, record: boolean): void {
@@ -1584,6 +1611,7 @@ class MutableTreeDraft implements TreeDraft {
             },
             sourceSpanIndex: current.sourceSpanIndex,
             pieces: slicePieces(current.pieces, from, to),
+            created: current.created,
           },
           from: globalStart + from,
           to: globalStart + to,
@@ -1655,7 +1683,12 @@ class MutableTreeDraft implements TreeDraft {
 
     let mapped: ReturnType<typeof mapTextEdit>['insertion'];
     if (chosen?.piece.kind === 'inserted') {
-      throw new Error('transfer boundaries cannot split newly inserted text');
+      mapped = {
+        tapeId: chosen.piece.anchor.tapeId,
+        index: chosen.piece.anchor.index,
+        spanIndex: chosen.piece.anchor.spanIndex,
+        affinity: resolvedAffinity,
+      };
     } else if (chosen?.piece.kind === 'retained' && current.sourceSpanIndex !== undefined) {
       const sourceSpan = this.baseSpans(node.id)[current.sourceSpanIndex];
       assert(sourceSpan, 'retained transfer source span is missing');
@@ -1688,11 +1721,31 @@ class MutableTreeDraft implements TreeDraft {
         affinity: resolvedAffinity,
       }).insertion;
     }
+    let insertionOffset = 0;
+    let foundBoundaryPiece = false;
+    for (const span of node.spans) {
+      for (const piece of span.pieces) {
+        if (chosen && span === current && piece === chosen.piece) {
+          if (piece.kind === 'inserted') insertionOffset += chosen.local;
+          foundBoundaryPiece = true;
+          break;
+        }
+        if (
+          piece.kind === 'inserted' &&
+          piece.anchor.tapeId === mapped.tapeId &&
+          piece.anchor.index === mapped.index
+        ) {
+          insertionOffset += piece.text.length;
+        }
+      }
+      if (foundBoundaryPiece) break;
+    }
     const boundaryId = this.allocateId('boundary');
     this.transferBoundaries.push({
       tapeId: mapped.tapeId,
       index: mapped.index,
       boundaryId,
+      insertionOffset,
     });
     return boundaryId;
   }
@@ -1735,12 +1788,14 @@ class MutableTreeDraft implements TreeDraft {
             span: leftSpan,
             sourceSpanIndex: current.sourceSpanIndex,
             pieces: slicePieces(current.pieces, 0, local),
+            created: current.created,
           },
           ...moved,
           {
             span: rightSpan,
             sourceSpanIndex: current.sourceSpanIndex,
             pieces: slicePieces(current.pieces, local, content.length),
+            created: current.created,
           },
         );
       }
@@ -2181,25 +2236,6 @@ function applyPlan(
     }, textOrigin);
   }
 
-  if (plan.boundaries.length) {
-    state.transact(() => {
-      const sorted = plan.boundaries
-        .map((boundary) => ({
-          ...boundary,
-          index: indexAfterDeletes(boundary.index, deletions, boundary.tapeId),
-        }))
-        .sort((a, b) => a.tapeId.localeCompare(b.tapeId) || b.index - a.index);
-      for (const boundary of sorted) {
-        const tape = tapeMap(state).get(boundary.tapeId);
-        assert(tape, `missing boundary tape ${boundary.tapeId}`);
-        tape.insertEmbed(
-          boundary.index,
-          Object.freeze({ grainBoundary: boundary.boundaryId }) satisfies BoundaryEmbed,
-        );
-      }
-    }, 'grain:allocate-boundaries');
-  }
-
   if (plan.insertions.length) {
     state.transact(() => {
       const sorted = plan.insertions
@@ -2215,6 +2251,37 @@ function applyPlan(
         if (insertion.text) tape.insert(insertion.index, insertion.text);
       }
     }, textOrigin);
+  }
+
+  if (plan.boundaries.length) {
+    state.transact(() => {
+      const sorted = plan.boundaries
+        .map((boundary) => {
+          const index = indexAfterDeletes(boundary.index, deletions, boundary.tapeId);
+          const priorInsertions = plan.insertions
+            .filter((insertion) => insertion.tapeId === boundary.tapeId)
+            .map((insertion) => ({
+              index: indexAfterDeletes(insertion.index, deletions, insertion.tapeId),
+              length: insertion.text.length,
+            }));
+          const before = priorInsertions
+            .filter((insertion) => insertion.index < index)
+            .reduce((total, insertion) => total + insertion.length, 0);
+          return {
+            ...boundary,
+            index: index + before + boundary.insertionOffset,
+          };
+        })
+        .sort((a, b) => a.tapeId.localeCompare(b.tapeId) || b.index - a.index);
+      for (const boundary of sorted) {
+        const tape = tapeMap(state).get(boundary.tapeId);
+        assert(tape, `missing boundary tape ${boundary.tapeId}`);
+        tape.insertEmbed(
+          boundary.index,
+          Object.freeze({ grainBoundary: boundary.boundaryId }) satisfies BoundaryEmbed,
+        );
+      }
+    }, 'grain:allocate-boundaries');
   }
 
   if (plan.writes.length) {

@@ -4,6 +4,7 @@ import { canonicalWriterAccess, CanonicalDocument, type CanonicalNode } from './
 import { CanonicalWriter } from './canonical-actions.js';
 import type { ActionRequest, AdmittedContext } from './canonical-actions.js';
 import { parseBlocks } from './block-parser/api.js';
+import { applyParserConversion } from './canonical-promotion.js';
 
 function context(request: ActionRequest, sessionId = 'A'): AdmittedContext {
   return {
@@ -35,10 +36,8 @@ function descendants(root: CanonicalNode): CanonicalNode[] {
 
 function visibleCharacterIds(document: CanonicalDocument, nodeId: string): string[] {
   const node = document.canonicalSnapshot().nodes.find((candidate) => candidate.id === nodeId);
-  const tapeId = node?.spans[0]?.tapeId;
-  if (!tapeId) throw new Error(`missing tape for ${nodeId}`);
-  const tape = canonicalWriterAccess(document).state.getMap<Y.Text>('tapes').get(tapeId);
-  if (!tape) throw new Error(`missing tape ${tapeId}`);
+  if (!node?.spans.length) throw new Error(`missing text spans for ${nodeId}`);
+  const tapes = canonicalWriterAccess(document).state.getMap<Y.Text>('tapes');
   type Item = {
     id: { client: number; clock: number };
     length: number;
@@ -46,25 +45,143 @@ function visibleCharacterIds(document: CanonicalDocument, nodeId: string): strin
     content: unknown;
     right: Item | null;
   };
-  let item = (tape as unknown as { _start: Item | null })._start;
   const ids: string[] = [];
-  while (item) {
-    const content = item.content;
-    const text =
-      content && typeof content === 'object' && 'str' in content
-        ? (content as { str: string }).str
-        : undefined;
-    if (!item.deleted && typeof text === 'string') {
-      for (let offset = 0; offset < text.length; offset++) {
-        ids.push(`${item.id.client}:${item.id.clock + offset}`);
+  for (const span of node.spans) {
+    const tape = tapes.get(span.tapeId);
+    if (!tape) throw new Error(`missing tape ${span.tapeId}`);
+    let item = (tape as unknown as { _start: Item | null })._start;
+    let inside = false;
+    while (item) {
+      const content = item.content;
+      const boundary =
+        content && typeof content === 'object' && 'embed' in content
+          ? (content as { embed?: { grainBoundary?: string } }).embed?.grainBoundary
+          : undefined;
+      if (boundary === span.startBoundaryId) inside = true;
+      else if (boundary === span.endBoundaryId) break;
+      else if (inside && !item.deleted) {
+        const text =
+          content && typeof content === 'object' && 'str' in content
+            ? (content as { str: string }).str
+            : undefined;
+        if (typeof text === 'string') {
+          for (let offset = 0; offset < text.length; offset++) {
+            ids.push(`${item.id.client}:${item.id.clock + offset}`);
+          }
+        }
       }
+      item = item.right;
     }
-    item = item.right;
   }
   return ids;
 }
 
 describe('canonical parser promotion', () => {
+  it('orders inserted first-block text before a retained native transfer boundary', () => {
+    const source = '- first\n\nsecond';
+    const document = documentFor('second', 'explicit-insert-native-transfer');
+    const writer = new CanonicalWriter(document);
+    const sourceId = document.root.children[0]!.sharedId;
+    const originalBodyIds = visibleCharacterIds(document, sourceId);
+
+    try {
+      const result = writer.edit({ actionId: 'insert-and-promote', sessionId: 'A' }, (draft) => {
+        draft.spliceText(sourceId, { from: 0, to: 0, insert: '- first\n\n' });
+        const current = draft.node(sourceId).content!;
+        const parsed = parseBlocks(current, { provenance: true });
+        expect(
+          applyParserConversion(
+            draft,
+            document.root.sharedId,
+            sourceId,
+            current,
+            parsed.provenance,
+          ),
+        ).toBe(true);
+      });
+
+      expect('receipt' in result, JSON.stringify(result)).toBe(true);
+      expect(document.exportMarkdownTree()).toEqual(parseBlocks(source).node);
+      const second = descendants(document.root).find(
+        (node) => node.type === 'paragraph' && node.content === 'second',
+      )!;
+      expect(visibleCharacterIds(document, second.sharedId)).toEqual(originalBodyIds);
+      expect(document.validate()).toEqual({ valid: true, errors: [] });
+
+      expect(writer.undo('A').status).toBe('applied');
+      expect(document.root.children[0]).toMatchObject({
+        sharedId: sourceId,
+        type: 'paragraph',
+        content: 'second',
+      });
+      expect(visibleCharacterIds(document, sourceId)).toEqual(originalBodyIds);
+      expect(writer.redo('A').status).toBe('applied');
+      expect(document.exportMarkdownTree()).toEqual(parseBlocks(source).node);
+      expect(document.validate()).toEqual({ valid: true, errors: [] });
+    } finally {
+      writer.close();
+      document.close();
+    }
+  });
+
+  it('splices retained text between action-local pieces in a seeded output tape', () => {
+    const source = '# first\n\n before original after';
+    const document = documentFor('original', 'inserted-around-retained-output');
+    const writer = new CanonicalWriter(document);
+    const sourceId = document.root.children[0]!.sharedId;
+    const originalBodyIds = visibleCharacterIds(document, sourceId);
+    const prefix = '# first\n\n before ';
+    const suffix = ' after';
+
+    try {
+      const result = writer.edit({ actionId: 'wrap-native-output', sessionId: 'A' }, (draft) => {
+        draft.spliceText(sourceId, { from: 0, to: 0, insert: prefix });
+        const beforeSuffix = draft.node(sourceId).content!;
+        draft.spliceText(sourceId, {
+          from: beforeSuffix.length,
+          to: beforeSuffix.length,
+          insert: suffix,
+        });
+        const current = draft.node(sourceId).content!;
+        const parsed = parseBlocks(current, { provenance: true });
+        expect(
+          applyParserConversion(
+            draft,
+            document.root.sharedId,
+            sourceId,
+            current,
+            parsed.provenance,
+          ),
+        ).toBe(true);
+      });
+
+      expect('receipt' in result, JSON.stringify(result)).toBe(true);
+      expect(document.exportMarkdownTree()).toEqual(parseBlocks(source).node);
+      const paragraph = descendants(document.root).find(
+        (node) => node.type === 'paragraph' && node.content === ' before original after',
+      )!;
+      expect(
+        visibleCharacterIds(document, paragraph.sharedId).slice(
+          ' before '.length,
+          ' before '.length + originalBodyIds.length,
+        ),
+      ).toEqual(originalBodyIds);
+      expect(document.validate()).toEqual({ valid: true, errors: [] });
+      expect(writer.undo('A').status).toBe('applied');
+      expect(document.root.children[0]).toMatchObject({
+        sharedId: sourceId,
+        type: 'paragraph',
+        content: 'original',
+      });
+      expect(writer.redo('A').status).toBe('applied');
+      expect(document.exportMarkdownTree()).toEqual(parseBlocks(source).node);
+      expect(document.validate()).toEqual({ valid: true, errors: [] });
+    } finally {
+      writer.close();
+      document.close();
+    }
+  });
+
   it('keeps the triggering input, consumed marker and heading promotion in one undo group', () => {
     const document = documentFor('#abc', 'heading-undo');
     const writer = new CanonicalWriter(document);

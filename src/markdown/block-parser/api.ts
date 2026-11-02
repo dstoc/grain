@@ -28,6 +28,12 @@ import type { ViewModelNode } from '../view-model-node.js';
 
 import type { BlockParser, BlockParserSnapshot } from './types.js';
 
+function withoutTrailingHighSurrogate(text: string): string {
+  if (!text.length) return text;
+  const last = text.charCodeAt(text.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? text.slice(0, -1) : text;
+}
+
 export function createBlockParser(
   snapshot?: BlockParserSnapshot,
   options: BlockParserOptions = {},
@@ -99,7 +105,11 @@ export function createBlockParser(
             parseSettledLine(state, line);
           }
 
-          projectedPending = projectPendingLine(state, pendingText);
+          // A stream may end between the two UTF-16 units of a valid code point.
+          // Keep the unmatched high surrogate in pendingText/snapshots, but do
+          // not place it in the strict canonical construction draft until its
+          // low surrogate arrives.
+          projectedPending = projectPendingLine(state, withoutTrailingHighSurrogate(pendingText));
           cleanupInactiveEmptyBlocks(state);
           return {};
         },
