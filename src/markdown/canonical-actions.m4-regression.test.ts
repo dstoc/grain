@@ -218,3 +218,71 @@ describe('M4 fragment composition', () => {
     }
   });
 });
+
+describe('M4 same-gap semantic ordering', () => {
+  for (const affinity of [undefined, 'left', 'right'] as const) {
+    for (const count of [1, 2, 3] as const) {
+      it(`replays ${affinity ?? 'default'}-affinity same-gap replacements (${count})`, () => {
+        const document = CanonicalDocument.fromMarkdown('ab');
+        const writer = new CanonicalWriter(document);
+        const id = document.root.children[0]!.sharedId;
+        let expected = '';
+
+        try {
+          const result = writer.edit({ actionId: 'same-gap-replacements' }, (draft) => {
+            draft.spliceText(id, { from: 1, to: 1, insert: 'NEW', affinity });
+            if (count >= 2) draft.spliceText(id, { from: 1, to: 3, insert: 'zz', affinity });
+            if (count >= 3) draft.spliceText(id, { from: 1, to: 3, insert: 'LONG', affinity });
+            expected = draft.node(id).content ?? '';
+          });
+
+          expect(expected).toBe(count === 1 ? 'aNEWb' : count === 2 ? 'azzWb' : 'aLONGWb');
+          if ('status' in result && result.status === 'rejected') {
+            expect(document.node(id).content).toBe('ab');
+            expect(document.validate()).toEqual({ valid: true, errors: [] });
+          }
+          expect(result, JSON.stringify({ result, expected })).toHaveProperty('receipt');
+          expect(document.node(id).content).toBe(expected);
+          expect(document.validate()).toEqual({ valid: true, errors: [] });
+          expect(writer.undo().status).toBe('applied');
+          expect(document.node(id).content).toBe('ab');
+          expect(writer.redo().status).toBe('applied');
+          expect(document.node(id).content).toBe(expected);
+          expect(document.validate()).toEqual({ valid: true, errors: [] });
+        } finally {
+          writer.close();
+          document.close();
+        }
+      });
+    }
+  }
+
+  it('prepends a second left-affinity insertion at the same gap', () => {
+    const document = CanonicalDocument.fromMarkdown('ab');
+    const writer = new CanonicalWriter(document);
+    const id = document.root.children[0]!.sharedId;
+
+    try {
+      const result = writer.edit({ actionId: 'same-gap-insertions' }, (draft) => {
+        draft.spliceText(id, { from: 1, to: 1, insert: 'NEW', affinity: 'left' });
+        draft.spliceText(id, { from: 1, to: 1, insert: 'X', affinity: 'left' });
+        expect(draft.node(id).content).toBe('aXNEWb');
+      });
+
+      if ('status' in result && result.status === 'rejected') {
+        expect(document.node(id).content).toBe('ab');
+        expect(document.validate()).toEqual({ valid: true, errors: [] });
+      }
+      expect(result).toHaveProperty('receipt');
+      expect(document.node(id).content).toBe('aXNEWb');
+      expect(document.validate()).toEqual({ valid: true, errors: [] });
+      expect(writer.undo().status).toBe('applied');
+      expect(document.node(id).content).toBe('ab');
+      expect(writer.redo().status).toBe('applied');
+      expect(document.node(id).content).toBe('aXNEWb');
+    } finally {
+      writer.close();
+      document.close();
+    }
+  });
+});

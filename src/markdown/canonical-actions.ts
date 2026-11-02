@@ -2331,13 +2331,77 @@ class MutableTreeDraft implements ParserTreeDraft {
     readonly positions: ReadonlyMap<string, BufferLanePositions>;
   } {
     const liveRanges = new Map<string, [number, number][]>();
+    const semanticOrder = new Map<
+      string,
+      { readonly path: readonly number[]; readonly spanIndex: number; readonly pieceIndex: number }
+    >();
+    const comparePositions = (
+      left: {
+        readonly path: readonly number[];
+        readonly spanIndex: number;
+        readonly pieceIndex: number;
+      },
+      right: {
+        readonly path: readonly number[];
+        readonly spanIndex: number;
+        readonly pieceIndex: number;
+      },
+    ): number => {
+      const commonLength = Math.min(left.path.length, right.path.length);
+      for (let index = 0; index < commonLength; index++) {
+        const difference = left.path[index]! - right.path[index]!;
+        if (difference) return difference;
+      }
+      const pathOrder = left.path.length - right.path.length;
+      if (pathOrder) return pathOrder;
+      return left.spanIndex - right.spanIndex || left.pieceIndex - right.pieceIndex;
+    };
+    const pathByNode = new Map<NodeId, readonly number[] | undefined>();
+    const pathForNode = (id: NodeId): readonly number[] | undefined => {
+      if (pathByNode.has(id)) return pathByNode.get(id);
+      const path: number[] = [];
+      let current = id;
+      const root = this.rootId();
+      while (current !== root) {
+        const parentId = this.parentId(current);
+        if (!parentId) {
+          pathByNode.set(id, undefined);
+          return undefined;
+        }
+        const parent = this.requireNode(parentId);
+        const index = parent.children.indexOf(current);
+        if (index < 0) {
+          pathByNode.set(id, undefined);
+          return undefined;
+        }
+        path.push(index);
+        current = parentId;
+      }
+      path.reverse();
+      pathByNode.set(id, path);
+      return path;
+    };
     for (const node of this.nodes.values()) {
-      for (const span of node.spans) {
-        for (const piece of span.pieces) {
+      const path = pathForNode(node.id);
+      for (const [spanIndex, span] of node.spans.entries()) {
+        for (const [pieceIndex, piece] of span.pieces.entries()) {
           if (piece.kind !== 'inserted' || !piece.text) continue;
           const ranges = liveRanges.get(piece.bufferId) ?? [];
           ranges.push([piece.from, piece.to]);
           liveRanges.set(piece.bufferId, ranges);
+          let rootBufferId = piece.bufferId;
+          let buffer = this.textBuffers.get(rootBufferId);
+          while (buffer?.parentBufferId !== undefined) {
+            rootBufferId = buffer.parentBufferId;
+            buffer = this.textBuffers.get(rootBufferId);
+          }
+          if (path && buffer) {
+            const position = { path, spanIndex, pieceIndex };
+            const prior = semanticOrder.get(rootBufferId);
+            if (!prior || comparePositions(position, prior) < 0) {
+              semanticOrder.set(rootBufferId, position);
+            }
+          }
         }
       }
     }
@@ -2376,9 +2440,25 @@ class MutableTreeDraft implements ParserTreeDraft {
       roots.set(key, group);
     }
 
+    const compareSemanticOrder = (leftId: string, rightId: string): number => {
+      const left = semanticOrder.get(leftId);
+      const right = semanticOrder.get(rightId);
+      if (!left || !right) return 0;
+      return comparePositions(left, right);
+    };
     const orderByAffinity = (leftId: string, rightId: string): number => {
       const left = this.textBuffers.get(leftId)!;
       const right = this.textBuffers.get(rightId)!;
+      const leftOrder = semanticOrder.has(leftId);
+      const rightOrder = semanticOrder.has(rightId);
+      if (leftOrder && rightOrder) {
+        const draftOrder = compareSemanticOrder(leftId, rightId);
+        if (draftOrder) return draftOrder;
+      } else if (leftOrder) {
+        return -1;
+      } else if (rightOrder) {
+        return 1;
+      }
       const affinityOrder =
         Number(left.anchor.affinity === 'right') - Number(right.anchor.affinity === 'right');
       return affinityOrder || left.anchor.order - right.anchor.order;
