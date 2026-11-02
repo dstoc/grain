@@ -119,6 +119,7 @@ const writerAccesses = new WeakMap<CanonicalDocument, CanonicalWriterAccess>();
 /** @internal Access for the synchronous canonical action coordinator only. */
 export interface CanonicalWriterAccess {
   readonly state: Y.Doc;
+  historyWasReset(): boolean;
   beginPending(): void;
   publish(): readonly unknown[];
   poison(): void;
@@ -641,10 +642,14 @@ export class CanonicalDocument {
   private publicationPending = false;
   private revisionVersion = 0;
 
-  private constructor(private readonly document: Y.Doc) {
+  private constructor(
+    private readonly document: Y.Doc,
+    private readonly historyWasReset = false,
+  ) {
     backingDocuments.set(this, document);
     writerAccesses.set(this, {
       state: document,
+      historyWasReset: () => this.historyWasReset,
       beginPending: () => {
         this.assertLive();
         assert(!this.publicationPending, 'canonical document already has a pending commit');
@@ -730,12 +735,43 @@ export class CanonicalDocument {
         metaValue<number>(meta, 'acceptedRevision') === checkpoint.acceptedRevision,
         'checkpoint revision does not match its state',
       );
-      const result = new CanonicalDocument(document);
+      const result = new CanonicalDocument(document, true);
       const validation = result.validate();
       assert(validation.valid, `checkpoint failed validation: ${validation.errors.join('; ')}`);
       return result;
     } catch (error) {
       document.destroy();
+      throw error;
+    }
+  }
+
+  /**
+   * Restores a durable checkpoint for a new authority epoch. Native history
+   * and tape revision guards are epoch-local, so both start at revision zero.
+   */
+  static restore(checkpoint: CanonicalCheckpoint, authorityEpoch: string): CanonicalDocument {
+    assert(authorityEpoch.length > 0, 'authority epoch cannot be empty');
+    assert(
+      authorityEpoch !== checkpoint.authorityEpoch,
+      'restored authority epoch must differ from the checkpoint epoch',
+    );
+    const restored = CanonicalDocument.open(checkpoint);
+    try {
+      const meta = ymap<unknown>(restored.document, META);
+      const revisions = ymap<number>(restored.document, TAPE_REVISIONS);
+      restored.document.transact(() => {
+        meta.set('authorityEpoch', authorityEpoch);
+        meta.set('acceptedRevision', 0);
+        for (const tapeId of revisions.keys()) revisions.set(tapeId, 0);
+      }, 'grain:epoch-restore');
+      const validation = restored.validate();
+      assert(
+        validation.valid,
+        `restored checkpoint failed validation: ${validation.errors.join('; ')}`,
+      );
+      return restored;
+    } catch (error) {
+      restored.close();
       throw error;
     }
   }

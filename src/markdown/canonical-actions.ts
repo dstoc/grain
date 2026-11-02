@@ -156,6 +156,7 @@ export interface ActionRequest {
   readonly baseRevision: number;
   readonly historyGroupId: string;
   readonly preconditions: readonly ReadPrecondition[];
+  /** Internal trusted Grain-engine input; not an arbitrary-update security filter. */
   readonly textUpdate?: Uint8Array;
   readonly operations: readonly SemanticOperation[];
   readonly focus?: ActionFocus;
@@ -2559,7 +2560,7 @@ function assertResolvedUpdate(state: Y.Doc): void {
 }
 
 export interface HistoryResult {
-  readonly status: 'applied' | 'no-effect' | 'blocked' | 'empty' | 'queued';
+  readonly status: 'applied' | 'no-effect' | 'blocked' | 'empty' | 'history-reset' | 'queued';
   readonly revision?: number;
   readonly update?: Uint8Array;
   readonly textChanged?: boolean;
@@ -2759,6 +2760,7 @@ export class CanonicalWriter {
   private readonly listeners = new Set<WriterListener>();
   private readonly localQueue: QueuedLocalEdit[] = [];
   private readonly maxHistoryGroups: number;
+  private historyResetPending: boolean;
   private preparing = false;
   private publishing = false;
   private poisoned = false;
@@ -2772,6 +2774,7 @@ export class CanonicalWriter {
     options: WriterOptions = {},
   ) {
     this.access = canonicalWriterAccess(document);
+    this.historyResetPending = this.access.historyWasReset();
     assert(!activeWriters.has(document), 'canonical document already has an active writer');
     this.state = this.access.state;
     this.maxHistoryGroups = options.maxHistoryGroups ?? 500;
@@ -2928,6 +2931,15 @@ export class CanonicalWriter {
     }
     const sessionId = admittedContext.sessionId;
     if (!sessionId) return { status: 'rejected', reason: 'wrong-session' };
+    if (admittedContext.sessionSequence !== request.sessionSequence)
+      return { status: 'rejected', reason: 'wrong-sequence' };
+    if (request.documentId !== (metaMap(this.state).get('documentId') as string)) {
+      return { status: 'rejected', reason: 'wrong-document' };
+    }
+    const epoch = metaMap(this.state).get('authorityEpoch') as string;
+    if (request.authorityEpoch !== epoch || admittedContext.authorityEpoch !== epoch) {
+      return { status: 'rejected', reason: 'wrong-authority-epoch' };
+    }
     const key = actionKey(request.actionId);
     const hash = requestHash(request);
     const prior = this.acceptedRequests.get(key);
@@ -2936,17 +2948,6 @@ export class CanonicalWriter {
         ? { status: 'duplicate', accepted: prior.accepted }
         : { status: 'rejected', reason: 'duplicate-action-id' };
     }
-    if (request.documentId !== (metaMap(this.state).get('documentId') as string)) {
-      return { status: 'rejected', reason: 'wrong-document' };
-    }
-    const epoch = metaMap(this.state).get('authorityEpoch') as string;
-    if (request.authorityEpoch !== epoch || admittedContext.authorityEpoch !== epoch) {
-      return { status: 'rejected', reason: 'wrong-authority-epoch' };
-    }
-    if (admittedContext.sessionId !== sessionId)
-      return { status: 'rejected', reason: 'wrong-session' };
-    if (admittedContext.sessionSequence !== request.sessionSequence)
-      return { status: 'rejected', reason: 'wrong-sequence' };
     if (request.sessionSequence !== this.nextSequence(sessionId))
       return { status: 'rejected', reason: 'wrong-sequence' };
     const revision = metaMap(this.state).get('acceptedRevision') as number;
@@ -3231,6 +3232,22 @@ export class CanonicalWriter {
     }
   }
 
+  /**
+   * Rejects publication after a host durability failure. Native writes already
+   * applied to the in-memory Y.Doc cannot be rolled back safely, so the host
+   * must restore its last durable checkpoint in a new epoch.
+   */
+  failPendingCommit(pending: PendingCommit | PendingHistoryCommit): void {
+    assert(!this.closed, 'canonical writer is closed');
+    const ownsAction = this.pending?.publicValue === pending;
+    const ownsHistory = this.pendingHistory?.publicValue === pending;
+    assert(ownsAction || ownsHistory, 'pending commit does not belong to this writer');
+    this.pending = undefined;
+    this.pendingHistory = undefined;
+    this.poisoned = true;
+    this.access.poison();
+  }
+
   sealTextGroup(sessionId = 'local'): void {
     const session = this.sessions.get(sessionId);
     if (!session?.current) return;
@@ -3375,13 +3392,13 @@ export class CanonicalWriter {
     if (this.pending || this.pendingHistory || this.preparing || this.publishing)
       return { status: 'blocked', reason: 'structural-history-pending' };
     const session = this.sessions.get(sessionId);
-    if (!session) return { status: 'empty' };
+    if (!session) return this.consumeHistoryReset();
     const source = direction === 'undo' ? session.undo : session.redo;
     const destination = direction === 'undo' ? session.redo : session.undo;
     const selection = this.historySelection(sessionId, direction, scopeRoot);
     if (selection.reason) return { status: 'blocked', reason: selection.reason };
     const sourceIndex = selection.index;
-    if (sourceIndex === undefined) return { status: 'empty' };
+    if (sourceIndex === undefined) return this.consumeHistoryReset();
     const entry = source[sourceIndex]!;
     const patchError = structuralPatchError(this.state, entry.structuralPatch, direction);
     if (patchError) return { status: 'blocked', reason: patchError };
@@ -3506,6 +3523,12 @@ export class CanonicalWriter {
       }
     }
     return Object.freeze(errors);
+  }
+
+  private consumeHistoryReset(): HistoryResult {
+    if (!this.historyResetPending) return { status: 'empty' };
+    this.historyResetPending = false;
+    return { status: 'history-reset' };
   }
 
   private trimHistory(session: SessionHistory): void {
