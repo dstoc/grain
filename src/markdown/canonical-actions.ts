@@ -1,4 +1,8 @@
 import * as Y from 'yjs';
+import {
+  RoutedNativeTextHistoryCapture,
+  type NativeTextHistoryCapture,
+} from './canonical-history-capture.js';
 
 import {
   CanonicalDocument,
@@ -3566,21 +3570,14 @@ function makeTextHistoryManager(
   state: Y.Doc,
   entry: HistoryEntry,
   tapeIds: readonly TapeId[],
+  historyCapture: NativeTextHistoryCapture,
 ): Y.UndoManager {
   const tapes = tapeMap(state);
   const scope = tapeIds.flatMap((id) => {
     const tape = tapes.get(id);
     return tape ? [tape] : [];
   });
-  let manager: Y.UndoManager;
-  manager = new Y.UndoManager(scope, {
-    doc: state,
-    captureTimeout: Number.POSITIVE_INFINITY,
-    trackedOrigins: new Set([entry.origin]),
-    captureTransaction: (transaction) =>
-      transaction.origin === entry.origin || transaction.origin === manager,
-  });
-  return manager;
+  return historyCapture.create(scope, entry.origin);
 }
 
 function addHistoryTapesToScope(
@@ -3602,8 +3599,10 @@ function closeHistoryEntry(entry: HistoryEntry): void {
   entry.manager?.stopCapturing();
 }
 
-function destroyHistoryEntry(entry: HistoryEntry): void {
-  entry.manager?.destroy();
+function destroyHistoryEntry(entry: HistoryEntry, historyCapture: NativeTextHistoryCapture): void {
+  if (!entry.manager) return;
+  historyCapture.dispose(entry.manager, entry.origin);
+  delete entry.manager;
 }
 
 function updateRevisionsAfterHistory(
@@ -3636,6 +3635,7 @@ export class CanonicalWriter {
   private readonly access: ReturnType<typeof canonicalWriterAccess>;
   private readonly unsubscribeAcceptedUpdates: () => void;
   private readonly indexes: CanonicalIndexes;
+  private readonly historyCapture: NativeTextHistoryCapture;
   private validationReplica?: Y.Doc;
   private validationIndexes?: CanonicalIndexes;
   private readonly authorReplicas = new Map<string, Y.Doc>();
@@ -3669,6 +3669,7 @@ export class CanonicalWriter {
     assert(!activeWriters.has(document), 'canonical document already has an active writer');
     this.state = this.access.state;
     this.indexes = new CanonicalIndexes(this.state);
+    this.historyCapture = new RoutedNativeTextHistoryCapture(this.state);
     this.validationReplica = this.cloneState();
     this.validationIndexes = new CanonicalIndexes(this.validationReplica);
     this.validationReplicaCreationCount++;
@@ -3811,7 +3812,7 @@ export class CanonicalWriter {
     if (this.closed) return;
     this.unsubscribeAcceptedUpdates();
     for (const session of this.sessions.values()) {
-      for (const entry of session.all) destroyHistoryEntry(entry);
+      for (const entry of session.all) destroyHistoryEntry(entry, this.historyCapture);
       session.all.clear();
       session.undo.length = 0;
       session.redo.length = 0;
@@ -3828,6 +3829,7 @@ export class CanonicalWriter {
     this.acceptedResponseBytes = 0;
     this.listeners.clear();
     this.localQueue.length = 0;
+    this.historyCapture.close();
     this.closed = true;
     activeWriters.delete(this.document);
   }
@@ -4938,7 +4940,7 @@ export class CanonicalWriter {
     if (!reservation.textTapes.length) return;
     if (!entry.manager) {
       const tapeIds = [...new Set([...entry.textTapes, ...reservation.textTapes])];
-      entry.manager = makeTextHistoryManager(this.state, entry, tapeIds);
+      entry.manager = makeTextHistoryManager(this.state, entry, tapeIds, this.historyCapture);
     } else if (!reservation.isNew) {
       addHistoryTapesToScope(this.state, entry, reservation.textTapes);
     }
@@ -4946,8 +4948,7 @@ export class CanonicalWriter {
 
   private cancelHistoryReservation(reservation: HistoryReservation): void {
     if (reservation.isNew || !reservation.managerExisted) {
-      reservation.entry.manager?.destroy();
-      delete reservation.entry.manager;
+      destroyHistoryEntry(reservation.entry, this.historyCapture);
     }
   }
 
@@ -4955,7 +4956,7 @@ export class CanonicalWriter {
     const session = this.getSession(reservation.sessionId);
     for (const redo of session.redo.splice(0)) {
       session.all.delete(redo);
-      destroyHistoryEntry(redo);
+      destroyHistoryEntry(redo, this.historyCapture);
     }
     const entry = reservation.entry;
     if (reservation.isNew) {
@@ -5235,7 +5236,7 @@ export class CanonicalWriter {
       session.undo.splice(session.undo.indexOf(oldest), session.undo.includes(oldest) ? 1 : 0);
       session.redo.splice(session.redo.indexOf(oldest), session.redo.includes(oldest) ? 1 : 0);
       if (session.current === oldest) session.current = undefined;
-      destroyHistoryEntry(oldest);
+      destroyHistoryEntry(oldest, this.historyCapture);
     }
   }
 
