@@ -169,7 +169,7 @@ describe('M6 review browser contracts', () => {
     expect(context.selectionAnchor).toBeUndefined();
     expect(context.selectionFocus).toBeUndefined();
     const redoInline = renderer.getInlineSelection().inline!;
-    const redoFocus = redoInline.node as unknown as CanonicalNode;
+    const redoFocus = redoInline.nodeView as unknown as CanonicalNode;
     expect(redoFocus.sharedId).toBe(first!.sharedId);
     expect(redoFocus.connected).toBe(true);
     expect(redoInline.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
@@ -235,13 +235,13 @@ describe('M6 review browser contracts', () => {
       else await devtools().send('Input.insertText', { text: prefix });
       await settle();
       expect(model.root.children[0]!.type).toBe(rootType);
-      expect(inlines().map((item) => item.node?.content)).toContain('hello');
+      expect(inlines().map((item) => item.nodeView?.content)).toContain('hello');
       await userEvent.keyboard('X');
       await settle();
-      expect(inlines().map((item) => item.node?.content)).toContain('Xhello');
+      expect(inlines().map((item) => item.nodeView?.content)).toContain('Xhello');
       await userEvent.keyboard('{Control>}z{/Control}');
       await settle();
-      expect(inlines().map((item) => item.node?.content)).toContain('hello');
+      expect(inlines().map((item) => item.nodeView?.content)).toContain('hello');
       if (undoCount === 3) {
         await userEvent.keyboard('{Control>}z{/Control}');
         await settle();
@@ -250,12 +250,12 @@ describe('M6 review browser contracts', () => {
       }
       await userEvent.keyboard('{Control>}z{/Control}');
       await settle();
-      expect(inlines().map((item) => item.node?.content)).toContain('hello');
+      expect(inlines().map((item) => item.nodeView?.content)).toContain('hello');
       for (let index = 0; index < undoCount; index++) {
         await userEvent.keyboard('{Control>}y{/Control}');
       }
       await settle();
-      expect(inlines().map((item) => item.node?.content)).toContain('Xhello');
+      expect(inlines().map((item) => item.nodeView?.content)).toContain('Xhello');
     },
   );
 
@@ -331,8 +331,8 @@ describe('M6 review browser contracts', () => {
     );
     await settle();
     expect(model.root.children.map((node) => node.type)).toEqual(['paragraph', 'section']);
-    expect(inlines().map((item) => item.node?.content)).toContain('title');
-    expect(inlines().map((item) => item.node?.content)).toContain('child');
+    expect(inlines().map((item) => item.nodeView?.content)).toContain('title');
+    expect(inlines().map((item) => item.nodeView?.content)).toContain('child');
     expect(model.root.children[1]!.children.map((node) => node.type)).toContain('list');
     await userEvent.keyboard('{Control>}z{/Control}');
     await settle();
@@ -356,7 +356,7 @@ describe('M6 review browser contracts', () => {
     );
     await settle();
     expect(model.validate()).toEqual({ valid: true, errors: [] });
-    expect(inlines().map((item) => item.node?.content)).toContain('Pasted');
+    expect(inlines().map((item) => item.nodeView?.content)).toContain('Pasted');
     await userEvent.keyboard('{Control>}z{/Control}');
     await settle();
     expect(JSON.stringify(model.exportMarkdownTree())).toBe(original);

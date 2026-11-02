@@ -72,6 +72,8 @@ describe('CanonicalEditor in Chromium', () => {
   test('routes browser text, undo and redo through the canonical session coordinator', async () => {
     const mounted = await mount('alpha');
     const node = document!.root.children[0]!;
+    expect(mounted.inline.nodeView).toBe(node);
+    expect(mounted.inline.node).toBeUndefined();
     mounted.inline.focus();
     mounted.inline.setSelectionOffsets(5, 5);
 
@@ -217,7 +219,7 @@ describe('CanonicalEditor in Chromium', () => {
     expect(context.selectionAnchor).toBeUndefined();
     expect(context.selectionFocus).toBeUndefined();
     const redoInline = mounted.renderer.getInlineSelection().inline!;
-    const redoFocus = redoInline.node as unknown as CanonicalNode;
+    const redoFocus = redoInline.nodeView as unknown as CanonicalNode;
     expect(redoFocus.sharedId).toBe(first.sharedId);
     expect(redoFocus.connected).toBe(true);
     expect(redoInline.getTextSelection()).toEqual({ anchor: 1, focus: 1 });
@@ -324,7 +326,7 @@ describe('CanonicalEditor in Chromium', () => {
       ...mounted.renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
     ].find((inline) => inline.matches(':focus'));
     expect(focused).toBeDefined();
-    expect((focused!.node as unknown as CanonicalNode).sharedId).toBe(
+    expect((focused!.nodeView as unknown as CanonicalNode).sharedId).toBe(
       (document!.root.children[1] as CanonicalNode).sharedId,
     );
     expect(focused!.getTextSelection()).toEqual({ anchor: 1, focus: 1 });
@@ -338,7 +340,7 @@ describe('CanonicalEditor in Chromium', () => {
       (inline) => inline.matches(':focus'),
     );
     expect(focused).toBeDefined();
-    expect((focused!.node as unknown as CanonicalNode).sharedId).toBe(first!.sharedId);
+    expect((focused!.nodeView as unknown as CanonicalNode).sharedId).toBe(first!.sharedId);
     expect(focused!.getTextSelection()).toEqual({ anchor: 4, focus: 4 });
 
     await deliverRemote('remote-remove', (replica, draft) => {
@@ -351,7 +353,7 @@ describe('CanonicalEditor in Chromium', () => {
     const visible = new Set(
       document!.root.children.map((node) => (node as CanonicalNode).sharedId),
     );
-    const focusedNode = focused?.node as unknown as CanonicalNode | undefined;
+    const focusedNode = focused?.nodeView as unknown as CanonicalNode | undefined;
     expect(focusedNode?.connected).toBe(true);
     expect(visible.has(focusedNode!.sharedId)).toBe(true);
   });

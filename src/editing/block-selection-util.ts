@@ -13,20 +13,17 @@
 // limitations under the License.
 
 import { HostContext } from '../markdown/host-context.js';
-import type { InlineViewModelNode, ViewModelNode } from '../markdown/view-model-node.js';
+import type { InlineMarkdownNodeView, ReadonlyMarkdownNodeView } from '../markdown/node-view.js';
 import { getContainingTransclusion } from '../markdown/transclusion.js';
 import { assert, cast } from '../asserts.js';
-import { dfs } from '../markdown/view-model-util.js';
-import { isInlineNode } from '../markdown/node.js';
-import { viewModel } from '../markdown/view-model-node.js';
 
 export type BlockSelectionTarget = Element & {
   hostContext?: HostContext;
-  node?: InlineViewModelNode;
+  node?: InlineMarkdownNodeView;
 };
 
 export function getBlockSelectionTarget(
-  element: Element & { hostContext?: HostContext; node?: InlineViewModelNode },
+  element: Element & { hostContext?: HostContext; node?: InlineMarkdownNodeView },
 ): BlockSelectionTarget | undefined {
   if (element.hostContext?.hasSelection) return element;
   // Retarget if there's any containing transclusion that has a selection.
@@ -46,29 +43,39 @@ export function getBlockSelectionTarget(
 // if nothing was added, find their parents, then add all children
 // repeat until something was added or we reached the top.
 export function expandSelection(hostContext: HostContext) {
-  const visited = new Set<ViewModelNode>();
-  const seeds = new Set<ViewModelNode>();
+  const visited = new Set<ReadonlyMarkdownNodeView>();
+  const seeds = new Set<ReadonlyMarkdownNodeView>();
   for (const node of hostContext.selection) {
-    if (node.type === 'section' && node[viewModel].firstChild) {
-      seeds.add(node[viewModel].firstChild);
+    if (node.type === 'section' && node.children?.[0]) {
+      seeds.add(node.children[0]);
     } else {
       seeds.add(node);
     }
   }
-  const newNodes = new Set<InlineViewModelNode>();
+  const newNodes = new Set<InlineMarkdownNodeView>();
   while (!newNodes.size && seeds.size) {
     const iteration = [...seeds];
     seeds.clear();
     for (const node of iteration) {
-      const next = node[viewModel].parent;
-      if (!next || next === hostContext.root?.[viewModel].parent) {
+      const next = node.parent;
+      if (!next || next === hostContext.root?.parent) {
         continue;
       }
       if (!visited.has(next)) {
-        for (const candidate of dfs(next, next, (node) => !visited.has(node))) {
-          if (isInlineNode(candidate) && !hostContext.selection.has(candidate)) {
-            newNodes.add(candidate);
+        const pending = [next];
+        while (pending.length) {
+          const candidate = pending.pop()!;
+          if (visited.has(candidate)) continue;
+          if (
+            (candidate.type === 'paragraph' ||
+              candidate.type === 'section' ||
+              candidate.type === 'code-block') &&
+            typeof candidate.content === 'string' &&
+            !hostContext.selection.has(candidate as InlineMarkdownNodeView)
+          ) {
+            newNodes.add(candidate as InlineMarkdownNodeView);
           }
+          pending.push(...[...(candidate.children ?? [])].reverse());
         }
         seeds.add(next);
         visited.add(next);

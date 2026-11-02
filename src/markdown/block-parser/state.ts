@@ -1,5 +1,6 @@
 import { viewModel } from '../view-model-node.js';
 import { MarkdownTree } from '../view-model.js';
+import { MarkdownTreeDraft } from '../semantic-tree-draft.js';
 import { nodeAtPath, isDefined } from './utils.js';
 import {
   type BlockParseState,
@@ -14,6 +15,7 @@ import {
 export function createInitialState(tree: MarkdownTree): BlockParseState {
   return {
     tree,
+    draft: new MarkdownTreeDraft(tree),
     root: tree.root,
     sawContent: false,
     hasExplicitRootParagraph: false,

@@ -16,6 +16,12 @@ import { appendInlineText, closeParagraph } from './handlers/paragraphs.js';
 import { openCodeBlock, parseFenceStart } from './handlers/code-blocks.js';
 import { closeList, parseInitialListItemContent, parseListItem } from './handlers/lists.js';
 import { parseAtxHeading } from './handlers/sections.js';
+import {
+  createSemanticNode,
+  detachSemanticNode,
+  editSemanticText,
+  placeSemanticNode,
+} from './utils.js';
 
 export function projectPendingResolvedContent(
   state: BlockParseState,
@@ -88,9 +94,9 @@ export function discardProjectedPendingLine(
 
 function discardProjectedParagraph(state: BlockParseState, text: string) {
   if (!state.currentParagraph) return;
-  removeTrailingText(state.currentParagraph, text.length);
+  removeTrailingText(state, state.currentParagraph, text.length);
   if (state.currentParagraph.content === '') {
-    state.currentParagraph[viewModel].remove();
+    detachSemanticNode(state, state.currentParagraph);
     state.currentParagraph = undefined;
   }
   pruneDetachedState(state);
@@ -100,7 +106,7 @@ function discardProjectedSection(state: BlockParseState) {
   const section = state.sectionStack.at(-1);
   if (!section) return;
   if ((section.children?.length ?? 0) > 0) return;
-  section[viewModel].remove();
+  detachSemanticNode(state, section);
   state.sectionStack.pop();
   pruneDetachedState(state);
 }
@@ -110,15 +116,7 @@ function discardProjectedCodeBlock(state: BlockParseState, text: string) {
   if (!node) return;
   if (text.length) {
     const startIndex = node.content.length - text.length;
-    node[viewModel].edit(
-      {
-        startIndex,
-        oldEndIndex: node.content.length,
-        newEndIndex: startIndex,
-        newText: '',
-      },
-      false,
-    );
+    editSemanticText(state, node, startIndex, node.content.length, '');
   }
   pruneDetachedState(state);
 }
@@ -127,11 +125,11 @@ function discardProjectedCodeBlockOpen(state: BlockParseState) {
   const node = state.currentCodeBlock;
   if (node?.content !== '') return;
   const parent = node[viewModel].parent;
-  node[viewModel].remove();
+  detachSemanticNode(state, node);
   state.currentCodeBlock = undefined;
   state.currentCodeFence = undefined;
   state.currentCodeHasLines = undefined;
-  pruneEmptyContainerChain(parent);
+  pruneEmptyContainerChain(state, parent);
   pruneDetachedState(state);
 }
 
@@ -143,8 +141,8 @@ function discardProjectedQuoteOpen(state: BlockParseState) {
     pruneDetachedState(state);
     return;
   }
-  quote[viewModel].remove();
-  pruneEmptyContainerChain(parent);
+  detachSemanticNode(state, quote);
+  pruneEmptyContainerChain(state, parent);
   pruneDetachedState(state);
 }
 
@@ -152,14 +150,14 @@ function discardProjectedListItem(state: BlockParseState) {
   const item = state.currentListPath.at(-1);
   if (!item) return;
   const list = item[viewModel].parent;
-  item[viewModel].remove();
+  detachSemanticNode(state, item);
   state.sourceMarkerWidths.delete(item);
   state.currentParagraph = undefined;
   state.currentListPath.pop();
   if (list?.type === 'list' && !list.children?.length) {
     const parent = list[viewModel].parent;
-    list[viewModel].remove();
-    pruneEmptyContainerChain(parent);
+    detachSemanticNode(state, list);
+    pruneEmptyContainerChain(state, parent);
   }
   pruneDetachedState(state);
 }
@@ -172,18 +170,18 @@ function appendPendingParagraphText(
   ensurePlaceholderRemoved(state);
   let prefix = '';
   if (state.currentParagraph?.[viewModel].parent !== container) {
-    const paragraph = state.tree.add({
+    const paragraph = createSemanticNode(state, {
       type: 'paragraph',
       content: '',
     });
-    paragraph[viewModel].insertBefore(container);
-    state.currentParagraph = paragraph;
+    placeSemanticNode(state, paragraph, container);
+    state.currentParagraph = paragraph as ParagraphViewModelNode;
     state.sawContent = true;
   } else if (state.currentParagraph.content !== '') {
     prefix = '\n';
   }
   const inserted = prefix + line;
-  appendInlineText(state.currentParagraph!, inserted);
+  appendInlineText(state, state.currentParagraph!, inserted);
   return inserted;
 }
 
@@ -194,13 +192,13 @@ function projectPendingSectionText(
   content: string,
 ) {
   ensurePlaceholderRemoved(state);
-  const section = state.tree.add({
+  const section = createSemanticNode(state, {
     type: 'section',
     marker: '#'.repeat(level),
     content,
     children: [],
   }) as SectionViewModelNode;
-  section[viewModel].insertBefore(container);
+  placeSemanticNode(state, section, container);
   state.sectionStack.push(section);
   state.sawContent = true;
 }
@@ -215,13 +213,13 @@ function projectPendingListItem(
   closeParagraph(state);
   ensurePlaceholderRemoved(state);
   const list = ensureListContainer(state, parent);
-  const item = state.tree.add({
+  const item = createSemanticNode(state, {
     type: 'list-item',
     marker,
     checked,
     children: [],
   }) as ListItemViewModelNode;
-  item[viewModel].insertBefore(list);
+  placeSemanticNode(state, item, list);
   state.sourceMarkerWidths.set(item, marker.length);
   state.currentListPath = buildListPath(state, parent, item);
   parseInitialListItemContent(state, item, content);
@@ -239,31 +237,23 @@ function projectPendingCodeBlockOpen(
   openCodeBlock(state, parent, marker, info);
 }
 
-function removeTrailingText(node: ParagraphViewModelNode, count: number) {
+function removeTrailingText(state: BlockParseState, node: ParagraphViewModelNode, count: number) {
   const startIndex = node.content.length - count;
-  node[viewModel].edit(
-    {
-      startIndex,
-      oldEndIndex: node.content.length,
-      newEndIndex: startIndex,
-      newText: '',
-    },
-    false,
-  );
+  editSemanticText(state, node, startIndex, node.content.length, '');
 }
 
 export function canProjectPendingParagraph(line: string): boolean {
   return !parseFenceStart(line);
 }
 
-function pruneEmptyContainerChain(node?: ViewModelNode) {
+function pruneEmptyContainerChain(state: BlockParseState, node?: ViewModelNode) {
   while (
     node?.[viewModel].parent &&
     !node[viewModel].firstChild &&
     ['list-item', 'list', 'block-quote'].includes(node.type)
   ) {
     const parent = node[viewModel].parent;
-    node[viewModel].remove();
+    detachSemanticNode(state, node);
     node = parent;
   }
 }

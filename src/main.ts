@@ -1315,9 +1315,15 @@ class MarkdownDevHarness extends LitElement {
       this.toolbarRedoDisabled = !writer.canRedo('local');
       return;
     }
-    const tree = root[viewModel].tree;
-    this.toolbarUndoDisabled = !tree.canUndo(root);
-    this.toolbarRedoDisabled = !tree.canRedo(root);
+    if (!(viewModel in root)) {
+      this.toolbarUndoDisabled = true;
+      this.toolbarRedoDisabled = true;
+      return;
+    }
+    const legacyRoot = root as ViewModelNode;
+    const tree = legacyRoot[viewModel].tree;
+    this.toolbarUndoDisabled = !tree.canUndo(legacyRoot);
+    this.toolbarRedoDisabled = !tree.canRedo(legacyRoot);
   }
 
   private waitForReadiness(inline: MarkdownInline) {
@@ -1381,7 +1387,7 @@ class MarkdownDevHarness extends LitElement {
 
   private onMobileToolbarAction = (event: MobileToolbarActionEvent) => {
     const inline = this.getActionTarget();
-    if (!inline?.mobileToolbarInputReady || !inline.node) {
+    if (!inline?.mobileToolbarInputReady || !inline.nodeView) {
       this.refreshToolbarReadiness();
       return;
     }

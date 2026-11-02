@@ -7,10 +7,11 @@ import { keyed } from 'lit/directives/keyed.js';
 import { NodeSignalController } from './node-signal-controller.js';
 import { HostContext, hostContext } from './host-context.js';
 import { MarkdownInline, type InlineProjectionRecovery } from './inline-render.js';
-import { isInlineNode } from './node.js';
+import type { CodeBlockNode } from './node.js';
 import type { MarkdownRenderDelegate } from './render-delegate.js';
 import { styles } from './style.js';
-import type { InlineViewModelNode, ViewModelNode } from './view-model-node.js';
+import type { InlineViewModelNode } from './view-model-node.js';
+import { asInlineMarkdownNodeView, type ReadonlyMarkdownNodeView } from './node-view.js';
 import { viewModel } from './view-model-node.js';
 import './transclusion.js';
 import './block-ui.js';
@@ -24,7 +25,7 @@ export class MarkdownBlock extends LitElement {
   @property({ attribute: false })
   accessor hostContext: HostContext | undefined;
 
-  @property({ attribute: false }) accessor node: ViewModelNode | undefined;
+  @property({ attribute: false }) accessor node: ReadonlyMarkdownNodeView | undefined;
 
   private nodeSignal = new NodeSignalController(this, () => this.node);
   private inlineProjectionVersion = 0;
@@ -40,14 +41,14 @@ export class MarkdownBlock extends LitElement {
     event.stopPropagation();
     event.preventDefault();
     this.inlineProjectionVersion++;
-    if (recovery.inline.node && recovery.inline.hostContext) {
-      recovery.inline.hostContext.focusNode = recovery.inline.node;
+    if (recovery.inline.nodeView && recovery.inline.hostContext) {
+      recovery.inline.hostContext.focusNode = recovery.inline.nodeView;
       recovery.inline.hostContext.focusOffset = recovery.selection.focus;
     }
     this.requestUpdate();
     void this.updateComplete.then(async () => {
       const next = this.querySelector(':scope > md-inline');
-      if (next instanceof MarkdownInline && next.node === recovery.inline.node) {
+      if (next instanceof MarkdownInline && next.nodeView === recovery.inline.nodeView) {
         await next.updateComplete;
         await next.maybeSetFocus();
         next.focus();
@@ -68,10 +69,11 @@ export class MarkdownBlock extends LitElement {
     this.type = node.type;
     if (node.type === 'code-block') {
       const hostContext = this.hostContext;
-      const selected = hostContext?.selection.has(node) ?? false;
+      const codeBlock = node as ReadonlyMarkdownNodeView & CodeBlockNode;
+      const selected = hostContext?.selection.has(asInlineMarkdownNodeView(node)) ?? false;
       if (hostContext) {
         const rendered = hostContext.renderDelegate?.renderCodeBlock?.({
-          node,
+          node: codeBlock,
           hostContext,
           selected,
         });
@@ -80,17 +82,24 @@ export class MarkdownBlock extends LitElement {
         }
       }
     }
-    const inline = isInlineNode(node)
-      ? (this.inlineProjectionVersion ?? 0) === 0
-        ? html`<md-inline .node=${node}></md-inline>`
-        : keyed(this.inlineProjectionVersion, html`<md-inline .node=${node}></md-inline>`)
-      : '';
+    const inline =
+      node.type === 'paragraph' || node.type === 'section' || node.type === 'code-block'
+        ? (this.inlineProjectionVersion ?? 0) === 0
+          ? this.renderInline(node)
+          : keyed(this.inlineProjectionVersion, this.renderInline(node))
+        : '';
     return html`${inline}
     ${repeat(
       node.children ?? [],
-      (child) => child[viewModel].id,
+      (child) => child.id,
       (child) => html`<md-block .node=${child}></md-block>`,
     )}`;
+  }
+
+  private renderInline(node: ReadonlyMarkdownNodeView) {
+    const inlineNode = asInlineMarkdownNodeView(node);
+    const legacyNode = viewModel in node ? (node as InlineViewModelNode) : undefined;
+    return html`<md-inline .nodeView=${inlineNode} .node=${legacyNode}></md-inline>`;
   }
 
   #renderShadow() {
@@ -98,14 +107,14 @@ export class MarkdownBlock extends LitElement {
     if (!node) return;
     if (node.type === 'section') {
       return html`
-        <md-section-ui .node=${this.node}>
+        <md-section-ui .node=${this.node as ReadonlyMarkdownNodeView}>
           <slot></slot>
         </md-section-ui>
       `;
     }
     if (node.type === 'list-item') {
       return html`
-        <md-list-item-ui .node=${this.node}>
+        <md-list-item-ui .node=${this.node as ReadonlyMarkdownNodeView}>
           <slot></slot>
         </md-list-item-ui>
       `;
@@ -138,7 +147,7 @@ export class MarkdownRenderer extends LitElement {
   @property({ attribute: false })
   accessor renderDelegate: MarkdownRenderDelegate | undefined;
 
-  @property({ attribute: false }) accessor block!: ViewModelNode;
+  @property({ attribute: false }) accessor block!: ReadonlyMarkdownNodeView;
   @property({ attribute: false }) accessor version = 0;
 
   constructor() {
@@ -182,10 +191,10 @@ export class MarkdownRenderer extends LitElement {
   private onFocusIn = (e: Event) => {
     if (!(e.target instanceof MarkdownInline)) return;
     const target = e.target;
-    if (!target.node) return;
+    if (!target.nodeView) return;
     this.dispatchEvent(
       new CustomEvent('md-block-focus', {
-        detail: target.node,
+        detail: target.nodeView,
         bubbles: true,
         composed: true,
       }),
@@ -200,6 +209,6 @@ declare global {
   }
 
   interface HTMLElementEventMap {
-    'md-block-focus': CustomEvent<InlineViewModelNode>;
+    'md-block-focus': CustomEvent<ReadonlyMarkdownNodeView>;
   }
 }

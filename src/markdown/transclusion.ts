@@ -15,17 +15,16 @@
 import { css, html, LitElement } from 'lit';
 import { property, customElement, query } from 'lit/decorators.js';
 import { MarkdownRenderer } from './block-render.js';
-import type { InlineViewModelNode, ViewModelNode } from './view-model-node.js';
-import { CodeBlockNode } from './node.js';
+import type { CodeBlockNode } from './node.js';
+import type { InlineMarkdownNodeView, ReadonlyMarkdownNodeView } from './node-view.js';
 import './block-render.js';
 import { consume } from '@lit/context';
-import { HostContext, hostContext } from './host-context.js';
-import { findNextEditable, findFinalEditable } from './view-model-util.js';
-import { viewModel } from './view-model-node.js';
+import { HostContext, hostContext, invalidateNodeView } from './host-context.js';
 
 @customElement('md-transclusion')
 export class MarkdownTransclusion extends LitElement {
-  @property({ attribute: false }) accessor node: (InlineViewModelNode & CodeBlockNode) | undefined;
+  @property({ attribute: false })
+  accessor node: (InlineMarkdownNodeView & CodeBlockNode) | undefined;
 
   @property({ type: Boolean, reflect: true })
   accessor selected = false;
@@ -35,7 +34,7 @@ export class MarkdownTransclusion extends LitElement {
   accessor hostContext: HostContext | undefined;
 
   @property({ attribute: false })
-  accessor root: ViewModelNode | undefined;
+  accessor root: ReadonlyMarkdownNodeView | undefined;
 
   @query('md-block-render')
   private accessor markdownRenderer!: MarkdownRenderer;
@@ -74,15 +73,43 @@ export class MarkdownTransclusion extends LitElement {
     if (this.hostContext.focusNode !== this.node) return;
     const offset = this.hostContext.focusOffset ?? -1;
     const node =
-      offset < 0 || Object.is(offset, -0)
-        ? findFinalEditable(this.root, this.root, true)
-        : findNextEditable(this.root, this.root, true);
+      offset < 0 || Object.is(offset, -0) ? finalInlineNode(this.root) : firstInlineNode(this.root);
     this.markdownRenderer.hostContext.focusNode = node ?? undefined;
     this.markdownRenderer.hostContext.focusOffset = this.hostContext.focusOffset;
     this.hostContext.focusNode = undefined;
     this.hostContext.focusOffset = undefined;
-    node && node[viewModel].renderSignal.value++;
+    if (node) invalidateNodeView(node);
   }
+}
+
+function firstInlineNode(root: ReadonlyMarkdownNodeView): InlineMarkdownNodeView | undefined {
+  const pending = [root];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (
+      (node.type === 'paragraph' || node.type === 'section' || node.type === 'code-block') &&
+      typeof node.content === 'string'
+    ) {
+      return node as InlineMarkdownNodeView;
+    }
+    pending.push(...[...(node.children ?? [])].reverse());
+  }
+}
+
+function finalInlineNode(root: ReadonlyMarkdownNodeView): InlineMarkdownNodeView | undefined {
+  let result: InlineMarkdownNodeView | undefined;
+  const pending = [root];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (
+      (node.type === 'paragraph' || node.type === 'section' || node.type === 'code-block') &&
+      typeof node.content === 'string'
+    ) {
+      result = node as InlineMarkdownNodeView;
+    }
+    pending.push(...[...(node.children ?? [])].reverse());
+  }
+  return result;
 }
 
 export function getContainingTransclusion(element: Element) {

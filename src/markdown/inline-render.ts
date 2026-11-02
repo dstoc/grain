@@ -9,7 +9,12 @@ import { cast } from '../asserts.js';
 import { NodeSignalController } from './node-signal-controller.js';
 import { HostContext, hostContext } from './host-context.js';
 import type { InlineTreeNode } from './inline-parser.js';
-import { type InlineViewModelNode, viewModel } from './view-model-node.js';
+import type { InlineViewModelNode } from './view-model-node.js';
+import {
+  asInlineMarkdownNodeView,
+  type InlineMarkdownNodeView,
+  type ReadonlyMarkdownNodeView,
+} from './node-view.js';
 
 export interface InlineInputPoint {
   span?: MarkdownSpan;
@@ -18,7 +23,7 @@ export interface InlineInputPoint {
 
 export interface InlineInput {
   inline: MarkdownInline;
-  node: InlineViewModelNode;
+  node: ReadonlyMarkdownNodeView;
   content: string;
   inputEvent: InputEvent;
   inputStart: InlineInputPoint;
@@ -27,7 +32,7 @@ export interface InlineInput {
 
 export interface InlineKeyDown {
   inline: MarkdownInline;
-  node: InlineViewModelNode;
+  node: ReadonlyMarkdownNodeView;
   keyboardEvent: KeyboardEvent;
 }
 
@@ -76,9 +81,15 @@ export class MarkdownInline extends LitElement {
 
   @query('md-span') accessor span!: MarkdownSpan;
 
+  /** Legacy editing adapter. Canonical rendering leaves this unset. */
   @property({ attribute: false }) accessor node: InlineViewModelNode | undefined;
+  @property({ attribute: false }) accessor nodeView: InlineMarkdownNodeView | undefined;
 
-  private nodeSignal = new NodeSignalController(this, () => this.node);
+  private nodeSignal = new NodeSignalController(this, () => {
+    if (this.node) return asInlineMarkdownNodeView(this.node);
+    return this.legacyNodeView ? undefined : this.nodeView;
+  });
+  private legacyNodeView = false;
   private projectionVersion = 0;
   private recovery?: Promise<void>;
   private recoveringProjection = false;
@@ -89,7 +100,7 @@ export class MarkdownInline extends LitElement {
   get mobileToolbarInputReady() {
     return (
       this.isConnected &&
-      !!this.node?.[viewModel].connected &&
+      !!this.nodeView?.connected &&
       !this.composing &&
       !this.recoveringProjection &&
       !this.recovery &&
@@ -106,8 +117,8 @@ export class MarkdownInline extends LitElement {
 
   reconcileComposition(offset?: number) {
     this.projectionVersion++;
-    if (offset !== undefined && this.node && this.hostContext) {
-      this.hostContext.focusNode = this.node;
+    if (offset !== undefined && this.nodeView && this.hostContext) {
+      this.hostContext.focusNode = this.nodeView;
       this.hostContext.focusOffset = offset;
     }
     this.requestUpdate();
@@ -232,22 +243,32 @@ export class MarkdownInline extends LitElement {
     super.disconnectedCallback();
   }
 
-  protected override willUpdate() {
+  protected override willUpdate(changed: Map<PropertyKey, unknown>) {
     if (this.composing) this.dispatchEvent(new Event('composition-invalidated'));
+    if (changed.has('nodeView')) this.legacyNodeView = false;
+    if (changed.has('node')) {
+      if (this.node) {
+        this.nodeView = asInlineMarkdownNodeView(this.node);
+        this.legacyNodeView = true;
+      } else if (this.legacyNodeView) {
+        this.nodeView = undefined;
+        this.legacyNodeView = false;
+      }
+    }
   }
 
   override render() {
-    if (!this.node) return;
-    if (!this.node[viewModel].connected) return;
-    this.selected = this.hostContext?.selection.has(this.node) ?? false;
+    const node = this.nodeView;
+    if (!node || !node.connected) return;
+    this.selected = this.hostContext?.selection.has(node) ?? false;
     return keyed(
       this.projectionVersion,
-      html`<md-span .node=${this.node[viewModel].inlineTree.rootNode}></md-span>`,
+      html`<md-span .node=${node.inlineTree?.rootNode}></md-span>`,
     );
   }
 
   override updated() {
-    if (!this.node) return;
+    if (!this.nodeView) return;
     noAwait(this.maybeSetFocus());
   }
 
@@ -288,19 +309,20 @@ export class MarkdownInline extends LitElement {
   }
 
   async maybeSetFocus() {
-    if (!this.node || !this.node[viewModel].connected) return;
-    if (this.hostContext?.focusNode !== this.node) return;
+    const node = this.nodeView;
+    if (!node || !node.connected) return;
+    if (this.hostContext?.focusNode !== node) return;
     const span = this.querySelector<MarkdownSpan>('md-span');
     if (!span) return;
     await span.updateComplete;
-    if (this.hostContext?.focusNode !== this.node) return;
+    if (this.hostContext?.focusNode !== node) return;
     if (!this.isConnected) return;
     const focusOffset = this.hostContext?.focusOffset;
     if (focusOffset !== undefined) {
       if (focusOffset === Infinity || focusOffset === -Infinity) {
-        this.setFocus(this.node.content.length);
+        this.setFocus(node.content.length);
       } else if (focusOffset < 0 || Object.is(focusOffset, -0)) {
-        this.setFocus(this.node.content.length);
+        this.setFocus(node.content.length);
         const selection = this.nativeSelection()!;
         selection.modify('move', 'backward', 'lineboundary');
         if (focusOffset < 0) {
@@ -444,12 +466,13 @@ export class MarkdownInline extends LitElement {
       return;
     }
     if (this.composing || e.isComposing) return;
-    if (!this.node) return;
+    const node = this.nodeView;
+    if (!node) return;
     this.dispatchEvent(
       new CustomEvent('inline-keydown', {
         detail: {
           inline: this,
-          node: this.node,
+          node,
           keyboardEvent: e,
         },
         bubbles: true,
@@ -464,7 +487,8 @@ export class MarkdownInline extends LitElement {
       this.queueRecoveryInput(e);
       return;
     }
-    if (!this.node) return;
+    const node = this.nodeView;
+    if (!node) return;
     if (this.composing || e.isComposing) return;
     e.preventDefault();
     const selection = this.nativeSelection()!;
@@ -473,11 +497,11 @@ export class MarkdownInline extends LitElement {
       new CustomEvent('inline-input', {
         detail: {
           inline: this,
-          node: this.node,
+          node,
           inputEvent: e,
           inputStart,
           inputEnd,
-          content: this.node.content,
+          content: node.content,
         },
         bubbles: true,
         composed: true,

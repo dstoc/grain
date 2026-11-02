@@ -4,7 +4,6 @@ import { CanonicalDocument } from '../markdown/canonical-model.js';
 import { CanonicalWriter, type TreeDraft } from '../markdown/canonical-actions.js';
 import { MarkdownTree } from '../markdown/view-model.js';
 import { parseBlocks } from '../markdown/block-parser/api.js';
-import { type InlineViewModelNode } from '../markdown/view-model-node.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
 import { CanonicalEditor } from './canonical-editor.js';
 import { insertParagraph } from './canonical-edits.js';
@@ -88,14 +87,12 @@ for (const mode of ['legacy', 'canonical']) {
   ])(`${mode} copy %s excludes unselected structure`, async (_label, source, content, expected) => {
     const renderer = await mount(mode, source);
     const inline = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
-      (i) => i.node?.content === content,
+      (i) => i.nodeView?.content === content,
     )!;
     inline.focus();
     inline.setSelectionOffsets(0, 0);
-    renderer.hostContext.setSelection(
-      inline.node as InlineViewModelNode,
-      inline.node as InlineViewModelNode,
-    );
+    const node = inline.nodeView!;
+    renderer.hostContext.setSelection(node, node);
     await nextTask();
     const destination = window.document.createElement('textarea');
     window.document.body.append(destination);
@@ -207,7 +204,7 @@ test('composition recovery follows its text anchor through a remote split', asyn
 
   const original = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
     (candidate) =>
-      (candidate.node as unknown as CanonicalDocument['root'] | undefined)?.sharedId ===
+      (candidate.nodeView as unknown as CanonicalDocument['root'] | undefined)?.sharedId ===
       node.sharedId,
   )!;
   original.focus();
@@ -262,7 +259,7 @@ test('typing in the original paragraph after a remote split works without compos
 
   const original = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
     (candidate) =>
-      (candidate.node as unknown as CanonicalDocument['root'] | undefined)?.sharedId ===
+      (candidate.nodeView as unknown as CanonicalDocument['root'] | undefined)?.sharedId ===
       node.sharedId,
   )!;
   original.focus();

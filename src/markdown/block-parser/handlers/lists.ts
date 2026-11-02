@@ -4,6 +4,7 @@ import {
   type BlockParseState,
   type MappedText,
   type ListItemViewModelNode,
+  type ParagraphViewModelNode,
   type SectionViewModelNode,
 } from '../types.js';
 import {
@@ -13,6 +14,7 @@ import {
   syncSectionStack,
 } from '../container-management.js';
 import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
+import { createSemanticNode, placeSemanticNode } from '../utils.js';
 import { parseAtxHeading } from './sections.js';
 import { parseFenceStart, openCodeBlock } from './code-blocks.js';
 import { parseQuotePrefixMatch } from '../prefix-resolution.js';
@@ -43,13 +45,13 @@ export function appendListItem(
   ensurePlaceholderRemoved(state);
   const list = ensureListContainer(state, parent);
 
-  const item = state.tree.add({
+  const item = createSemanticNode(state, {
     type: 'list-item',
     marker,
     checked,
     children: [],
   }) as ListItemViewModelNode;
-  item[viewModel].insertBefore(list);
+  placeSemanticNode(state, item, list);
   state.sourceMarkerWidths.set(item, marker.length);
   state.currentListPath = buildListPath(state, parent, item);
   parseInitialListItemContent(state, item, content, mapped);
@@ -72,22 +74,22 @@ export function parseInitialContainerContent(
   mapped?: MappedText,
 ) {
   if (content.trim() === '<!-- -->') {
-    const paragraph = state.tree.add({
+    const paragraph = createSemanticNode(state, {
       type: 'paragraph',
       content: '',
-    });
-    paragraph[viewModel].insertBefore(parent);
+    }) as ParagraphViewModelNode;
+    placeSemanticNode(state, paragraph, parent);
     state.currentParagraph = paragraph;
     if (mapped) state.inlinePieces.set(paragraph, []);
     return;
   }
 
   if (content === '') {
-    const paragraph = state.tree.add({
+    const paragraph = createSemanticNode(state, {
       type: 'paragraph',
       content: '',
-    });
-    paragraph[viewModel].insertBefore(parent);
+    }) as ParagraphViewModelNode;
+    placeSemanticNode(state, paragraph, parent);
     state.currentParagraph = paragraph;
     if (mapped) state.inlinePieces.set(paragraph, []);
     return;
@@ -95,13 +97,13 @@ export function parseInitialContainerContent(
 
   const atxHeading = parseAtxHeading(content);
   if (atxHeading) {
-    const section = state.tree.add({
+    const section = createSemanticNode(state, {
       type: 'section',
       marker: '#'.repeat(atxHeading.level),
       content: atxHeading.content,
       children: [],
     }) as SectionViewModelNode;
-    section[viewModel].insertBefore(parent);
+    placeSemanticNode(state, section, parent);
     if (mapped) {
       state.inlinePieces.set(
         section,
@@ -146,11 +148,11 @@ export function parseInitialContainerContent(
     return;
   }
 
-  const paragraph = state.tree.add({
+  const paragraph = createSemanticNode(state, {
     type: 'paragraph',
     content,
-  });
-  paragraph[viewModel].insertBefore(parent);
+  }) as ParagraphViewModelNode;
+  placeSemanticNode(state, paragraph, parent);
   state.currentParagraph = paragraph;
   if (mapped) state.inlinePieces.set(paragraph, mapped.pieces);
 }

@@ -7,6 +7,7 @@ import { ListItemNode } from './node.js';
 import { NodeSignalController } from './node-signal-controller.js';
 import type { ViewModelNode } from './view-model-node.js';
 import { viewModel } from './view-model-node.js';
+import type { ReadonlyMarkdownNodeView } from './node-view.js';
 import { consume } from '@lit/context';
 import { hostContext, type HostContext } from './host-context.js';
 import { CanonicalNode } from './canonical-model.js';
@@ -41,7 +42,11 @@ export class Section extends LitElement {
   `;
 
   @property({ attribute: false })
-  accessor node!: ViewModelNode;
+  accessor node!: ReadonlyMarkdownNodeView & {
+    readonly type: 'section';
+    readonly marker: string;
+    readonly content: string;
+  };
 
   private nodeSignal = new NodeSignalController(this, () => this.node);
 
@@ -49,7 +54,7 @@ export class Section extends LitElement {
     const node = this.node;
     let marker: unknown = '';
     if (node.type === 'section') {
-      if (node[viewModel].parent?.type !== 'section') {
+      if (node.parent?.type !== 'section') {
         marker = templateContent(starIcon);
       } else {
         const idx = Math.min(node.marker.length - 1, 9);
@@ -110,7 +115,7 @@ export class ListItem extends LitElement {
   `;
 
   @property({ attribute: false })
-  accessor node!: ListItemNode & ViewModelNode;
+  accessor node!: ReadonlyMarkdownNodeView & ListItemNode;
 
   @consume({ context: hostContext, subscribe: true })
   @property({ attribute: false })
@@ -175,8 +180,10 @@ export class ListItem extends LitElement {
       });
       return;
     }
-    this.node[viewModel].tree.edit(() => {
-      this.node[viewModel].updateChecked(newValue);
+    if (!(viewModel in this.node)) return;
+    const legacyNode = this.node as unknown as ViewModelNode;
+    legacyNode[viewModel].tree.edit(() => {
+      legacyNode[viewModel].updateChecked(newValue);
       return {};
     });
   };

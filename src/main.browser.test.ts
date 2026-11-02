@@ -762,7 +762,7 @@ test.each([
 
     const current = currentEditorInlines(harness).find((candidate) => candidate.matches(':focus'));
     expect(emitted).toEqual([direction, direction, direction]);
-    expect(current?.node?.content).toBe(expectedContent);
+    expect(current?.nodeView?.content).toBe(expectedContent);
     expect(current?.getSelection()?.start.index).toBe(expectedOffset);
     expect(toolbar.visible).toBe(true);
     harness.remove();

@@ -22,6 +22,7 @@ import {
   viewModel,
 } from './view-model-node.js';
 import type { MarkdownNode } from './node.js';
+import type { ReadonlyMarkdownNodeView } from './node-view.js';
 
 export function swapNodes(node1: ViewModelNode, node2: ViewModelNode) {
   if (node1[viewModel].nextSibling === node2) {
@@ -38,11 +39,11 @@ export function swapNodes(node1: ViewModelNode, node2: ViewModelNode) {
   node2[viewModel].insertBefore(node1Parent, node1NextSibling);
 }
 
-export function isAncestorOf(ancestor: ViewModelNode, node: ViewModelNode) {
-  let parent = node[viewModel].parent;
+export function isAncestorOf(ancestor: ReadonlyMarkdownNodeView, node: ReadonlyMarkdownNodeView) {
+  let parent = node.parent;
   while (parent) {
     if (parent === ancestor) return true;
-    parent = parent[viewModel].parent;
+    parent = parent.parent;
   }
   return false;
 }
@@ -242,10 +243,18 @@ export function cloneNode(
   return result;
 }
 
-export function compareDocumentOrder(node1: ViewModelNode, node2: ViewModelNode) {
+export function compareDocumentOrder(
+  node1: ReadonlyMarkdownNodeView,
+  node2: ReadonlyMarkdownNodeView,
+) {
   if (node1 === node2) return 0;
-  const node1Chain = [node1, ...ancestors(node1)];
-  const node2Chain = [node2, ...ancestors(node2)];
+  const ancestorsOf = (node: ReadonlyMarkdownNodeView) => {
+    const chain: ReadonlyMarkdownNodeView[] = [];
+    for (let parent = node.parent; parent; parent = parent.parent) chain.push(parent);
+    return chain;
+  };
+  const node1Chain = [node1, ...ancestorsOf(node1)];
+  const node2Chain = [node2, ...ancestorsOf(node2)];
   assert(node1Chain.at(-1) === node2Chain.at(-1));
   while (node1Chain.at(-1) === node2Chain.at(-1)) {
     node1Chain.pop();
@@ -253,16 +262,8 @@ export function compareDocumentOrder(node1: ViewModelNode, node2: ViewModelNode)
   }
   const node1Ancestor = node1Chain.at(-1);
   const node2Ancestor = node2Chain.at(-1);
-  for (
-    let node: ViewModelNode | undefined = node1Ancestor;
-    node;
-    node = node[viewModel].nextSibling
-  ) {
-    if (node2Ancestor === node) {
-      return -1;
-    }
-  }
-  return 1;
+  const siblings = node1Ancestor?.parent?.children ?? [];
+  return siblings.indexOf(node1Ancestor!) < siblings.indexOf(node2Ancestor!) ? -1 : 1;
 }
 
 export function nextLogicalInsertionPoint(node: ViewModelNode) {

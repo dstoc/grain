@@ -25,7 +25,16 @@ import { parseBlocks } from './block-parser/api.js';
 import { assert, cast } from '../asserts.js';
 import { type NormalizeTreeOptions, normalizeTree } from './normalize.js';
 import { dfs } from './view-model-util.js';
-import { Focus, Op, OpBatch, canCoalesce, classify, doOp, undoOp } from './view-model-ops.js';
+import {
+  Focus,
+  InlineConversion,
+  Op,
+  OpBatch,
+  canCoalesce,
+  classify,
+  doOp,
+  undoOp,
+} from './view-model-ops.js';
 import { viewModel } from './view-model-node.js';
 import { batch, signal } from '../signals.js';
 import { TypedCustomEvent } from '../event-utils.js';
@@ -227,6 +236,15 @@ export class ViewModel {
       }
     }
   }
+
+  updateInfo(info: string | null) {
+    assert(this.tree.state === 'editing');
+    if (this.self.type !== 'code-block') return;
+    const oldInfo = this.self.info;
+    if (oldInfo === info) return;
+    (this.self as { info: string | null }).info = info;
+    this.signalMutation({ type: 'info', node: this.self, info, oldInfo });
+  }
 }
 
 export function* traverseInlineNodes(node: InlineTreeNode) {
@@ -252,7 +270,6 @@ export class InlineViewModel extends ViewModel {
     childIndex?: number,
   ) {
     super(self, tree, parent, childIndex);
-    this.self = self;
   }
   private inlineTree_?: InlineTree;
   private inlineTreeContent?: string;
@@ -288,6 +305,27 @@ export class InlineViewModel extends ViewModel {
     if (newNodes) return newNodes;
     return null;
   }
+  convertInline(after: InlineConversion) {
+    assert(this.tree.state === 'editing');
+    const before: InlineConversion = {
+      type: this.self.type,
+      content: this.self.content,
+      marker: this.self.type === 'section' ? this.self.marker : null,
+      info: this.self.type === 'code-block' ? this.self.info : null,
+    };
+    if (
+      before.type === after.type &&
+      before.content === after.content &&
+      before.marker === after.marker &&
+      before.info === after.info
+    )
+      return;
+
+    applyInlineConversion(this.self, after);
+    this.inlineTree_ = undefined;
+    this.inlineTreeContent = undefined;
+    this.signalMutation({ type: 'convert', node: this.self, before, after });
+  }
   private maybeReplaceWithBlocks() {
     const blocks = this.parseAsBlocks();
     if (!blocks) return false;
@@ -315,34 +353,34 @@ export class InlineViewModel extends ViewModel {
   }
 }
 
-export interface MarkdownTreeDelegate {
-  postEditUpdate(node: ViewModelNode, change: 'connected' | 'disconnected' | 'changed'): void;
+function applyInlineConversion(node: InlineViewModelNode, state: InlineConversion) {
+  const mutable = node as unknown as {
+    type: InlineConversion['type'];
+    content: string;
+    marker?: string;
+    info?: string | null;
+  };
+  mutable.type = state.type;
+  mutable.content = state.content;
+  if (state.type === 'section') mutable.marker = state.marker ?? '#';
+  else delete mutable.marker;
+  if (state.type === 'code-block') mutable.info = state.info;
+  else delete mutable.info;
 }
 
-/** Construction mutations can be backed by a TreeDraft while this tree serves as its read view. */
-export interface MarkdownTreeConstructionDraft {
-  bindRoot(root: ViewModelNode): void;
-  addNode(node: ViewModelNode): void;
-  apply(operation: Op): void;
-  checkpoint(): void;
-  finish(root: ViewModelNode): void;
-  close(): void;
+export interface MarkdownTreeDelegate {
+  postEditUpdate(node: ViewModelNode, change: 'connected' | 'disconnected' | 'changed'): void;
 }
 
 export type TreeChange = 'edit' | 'cache';
 
 export class MarkdownTree extends EventTarget {
-  private constructionDraft?: MarkdownTreeConstructionDraft;
-  private constructionDraftBound = false;
-
   constructor(
     root: DocumentNode | undefined,
     caches?: Map<MarkdownNode, Caches>,
     private readonly delegate?: MarkdownTreeDelegate,
-    constructionDraft?: MarkdownTreeConstructionDraft,
   ) {
     super();
-    this.constructionDraft = constructionDraft;
     if (!root) {
       this.#disconnected = true;
       if (caches) console.warn('disconnected but caches present');
@@ -352,10 +390,6 @@ export class MarkdownTree extends EventTarget {
       this.#disconnected = false;
     }
     this.root = this.addDom(root);
-    if (this.constructionDraft) {
-      this.constructionDraft.bindRoot(this.root);
-      this.constructionDraftBound = true;
-    }
     this.caches = caches ?? new Map<MarkdownNode, Caches>();
     this.setRoot(this.root);
   }
@@ -517,7 +551,6 @@ export class MarkdownTree extends EventTarget {
         recordEmptyIsolatedHistory,
       );
     });
-    this.constructionDraft?.checkpoint();
     return result;
   }
 
@@ -573,20 +606,7 @@ export class MarkdownTree extends EventTarget {
   record(op: Op) {
     assert(this.state === 'editing');
     assert(!this.#disconnected);
-    this.constructionDraft?.apply(op);
     this.editOperations.push(op);
-  }
-
-  finishConstructionDraft(): void {
-    const constructionDraft = this.constructionDraft;
-    this.constructionDraft = undefined;
-    this.constructionDraftBound = false;
-    if (!constructionDraft) return;
-    try {
-      constructionDraft.finish(this.root);
-    } finally {
-      constructionDraft.close();
-    }
   }
 
   private finishEdit(
@@ -704,14 +724,27 @@ export class MarkdownTree extends EventTarget {
 
   private addDom<T extends MarkdownNode>(node: T, parent?: ViewModelNode, childIndex?: number) {
     const result = node as T & ViewModelNode;
+    let model: ViewModel;
     if (isInlineNode(result)) {
       assert(!result[viewModel]);
-      result[viewModel] = new InlineViewModel(result, this, parent, childIndex);
+      model = new InlineViewModel(result, this, parent, childIndex);
     } else {
       assert(!result[viewModel]);
-      result[viewModel] = new ViewModel(result, this, parent, childIndex);
+      model = new ViewModel(result, this, parent, childIndex);
     }
-    if (this.constructionDraftBound) this.constructionDraft?.addNode(result);
+    result[viewModel] = model;
+    Object.defineProperties(result, {
+      id: { get: () => model.id },
+      connected: { get: () => model.connected },
+      version: { get: () => model.version },
+      parent: { get: () => model.parent },
+      previousSibling: { get: () => model.previousSibling },
+      nextSibling: { get: () => model.nextSibling },
+      renderSignal: { get: () => model.renderSignal },
+      inlineTree: {
+        get: () => (model instanceof InlineViewModel ? model.inlineTree : undefined),
+      },
+    });
     if (result.children) {
       for (let i = 0; i < result.children.length; i++) {
         this.addDom(result.children[i], result, i);

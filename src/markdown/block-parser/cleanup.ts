@@ -3,13 +3,14 @@ import type { ViewModelNode } from '../view-model-node.js';
 import { isAttached, hasContainerAncestor } from './utils.js';
 import { type BlockParseState } from './types.js';
 import { resetQuoteStack } from './container-management.js';
+import { detachSemanticNode } from './utils.js';
 
 export function removeEmptyRootParagraph(state: BlockParseState) {
   if (state.hasExplicitRootParagraph) return;
   if (state.root.children?.length !== 1) return;
   const onlyChild = state.root.children[0];
   if (onlyChild.type !== 'paragraph' || onlyChild.content !== '') return;
-  onlyChild[viewModel].remove();
+  detachSemanticNode(state, onlyChild);
 }
 
 export function pruneDetachedState(state: BlockParseState) {
@@ -58,7 +59,7 @@ export function cleanupInactiveEmptyBlocks(state: BlockParseState) {
 
   for (const node of collectEmptyBlocks(state.root)) {
     if (!preserved.has(node)) {
-      node[viewModel].remove();
+      detachSemanticNode(state, node);
     }
   }
   pruneDetachedState(state);

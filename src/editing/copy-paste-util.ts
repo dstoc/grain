@@ -47,7 +47,7 @@ export function serializeSelection(hostContext: HostContext) {
     if (node[viewModel].previousSibling) {
       return result;
     }
-    for (const ancestor of ancestors(node, cast(hostContext.root))) {
+    for (const ancestor of ancestors(node, cast(hostContext.root) as ViewModelNode)) {
       if (ancestor.type === 'section') {
         break;
       }
@@ -68,7 +68,9 @@ export function serializeSelection(hostContext: HostContext) {
         return true;
     }
   };
-  const roots = removeDescendantNodes([...hostContext.selection.values()].map(expand))
+  const roots = removeDescendantNodes(
+    [...hostContext.selection.values()].map((node) => expand(node as unknown as ViewModelNode)),
+  )
     .toSorted(compareDocumentOrder)
     .map((node) => cloneNode(node, predicate));
   const tree = new MarkdownTree({

@@ -1,10 +1,10 @@
 import type { CodeBlockNode } from './node.js';
+import type { ReadonlyMarkdownNodeView } from './node-view.js';
 import type { HostContext } from './host-context.js';
-import type { ViewModelNode } from './view-model-node.js';
 
 export interface MarkdownRenderDelegate {
   renderCodeBlock?: (args: {
-    node: ViewModelNode & CodeBlockNode;
+    node: ReadonlyMarkdownNodeView & CodeBlockNode;
     hostContext: HostContext;
     selected: boolean;
   }) => unknown;

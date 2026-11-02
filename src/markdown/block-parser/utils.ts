@@ -1,9 +1,53 @@
 import { viewModel } from '../view-model-node.js';
 import type { ViewModelNode } from '../view-model-node.js';
 import type { BlockParseState, ListItemViewModelNode, BlockQuoteViewModelNode } from './types.js';
+import type { NodeSpec } from '../canonical-actions.js';
 
 export function isBlankLine(line: string): boolean {
   return /^\s*$/.test(line);
+}
+
+export function createSemanticNode(state: BlockParseState, spec: NodeSpec): ViewModelNode {
+  return state.draft.createNode(spec);
+}
+
+export function placeSemanticNode(
+  state: BlockParseState,
+  node: ViewModelNode,
+  parent: ViewModelNode,
+  before?: ViewModelNode,
+): void {
+  state.draft.placeNodes(node, parent, before);
+}
+
+export function detachSemanticNode(state: BlockParseState, node: ViewModelNode): void {
+  state.draft.detachNode(node);
+}
+
+export function editSemanticText(
+  state: BlockParseState,
+  node: ViewModelNode,
+  from: number,
+  to: number,
+  insert: string,
+): void {
+  state.draft.editNode(node, from, to, insert);
+}
+
+export function setSemanticMarker(
+  state: BlockParseState,
+  node: ViewModelNode,
+  marker: string,
+): void {
+  state.draft.setMarker(state.draft.idOf(node), marker);
+}
+
+export function setSemanticChecked(
+  state: BlockParseState,
+  node: ViewModelNode,
+  checked: boolean | null,
+): void {
+  state.draft.setChecked(state.draft.idOf(node), checked);
 }
 
 export function isInsideListPath(node: ViewModelNode, ancestor?: ListItemViewModelNode): boolean {
