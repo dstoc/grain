@@ -904,8 +904,7 @@ export class CanonicalEditor extends LitElement {
     await session.inline.recoverComposition(selection, sameInline);
     if (this.document !== document || sameInline) return;
     await this.restoreAnchors(session.selectionAnchor, session.selectionFocus);
-    const target = this.findInline(focus.nodeId);
-    target?.replayRecoveryEvents();
+    await this.replayCompositionInputs(session.node.sharedId);
   }
 
   private onCompositionEnd = (
