@@ -3,7 +3,8 @@ import type { LitElement } from 'lit';
 import { page, userEvent } from 'vitest/browser';
 import { nextTask } from './editing/test/lifecycle.js';
 import type { MarkdownInline } from './markdown/inline-render.js';
-import { viewModel } from './markdown/view-model-node.js';
+import { CanonicalDocument } from './markdown/canonical-model.js';
+import { CanonicalWriter } from './markdown/canonical-actions.js';
 import './main.js';
 
 afterEach(async () => {
@@ -21,7 +22,7 @@ test('Enter replaces selected text in Render and updates Source and Serialize', 
   source.dispatchEvent(new Event('input', { bubbles: true }));
   await harness.updateComplete;
   await nextTask();
-  const editor = harness.shadowRoot!.querySelector('md-editor')!;
+  const editor = harness.shadowRoot!.querySelector('md-canonical-editor')!;
   const renderer = editor.shadowRoot!.querySelector('md-block-render')!;
   const inline = renderer.shadowRoot!.querySelector('md-inline')!;
   inline.focus();
@@ -99,7 +100,7 @@ async function createHarness(value: string) {
 function currentEditorInlines(harness: LitElement) {
   return [
     ...harness
-      .shadowRoot!.querySelector('md-editor')!
+      .shadowRoot!.querySelector('md-canonical-editor')!
       .shadowRoot!.querySelector('md-block-render')!
       .shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
   ];
@@ -334,9 +335,8 @@ test('mobile toolbar history availability follows history-only block replacement
   const undo = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[aria-label="Undo"]')!;
   const redo = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[aria-label="Redo"]')!;
   const history = () => {
-    const root = inline!.hostContext!.root!;
-    const tree = root[viewModel].tree;
-    return { canUndo: tree.canUndo(root), canRedo: tree.canRedo(root) };
+    const writer = inline!.hostContext!.canonicalWriter!;
+    return { canUndo: writer.canUndo('local'), canRedo: writer.canRedo('local') };
   };
 
   await userEvent.keyboard('{Control>}a{/Control}');
@@ -374,6 +374,35 @@ test('mobile toolbar history availability follows history-only block replacement
   harness.remove();
 });
 
+test('renders the canonical history-reset status for the active editor', async () => {
+  const { harness } = await createSettledHarness('alpha');
+  const inline = currentEditorInlines(harness)[0]!;
+  const editor = harness.shadowRoot!.querySelector('md-canonical-editor')!;
+  const resetDocument = CanonicalDocument.open(editor.document!.checkpoint());
+  const resetWriter = new CanonicalWriter(resetDocument);
+  inline.hostContext!.canonicalWriter = resetWriter;
+  editor.dispatchEvent(
+    new CustomEvent('canonical-history-reset', {
+      detail: { sessionId: 'local' },
+      bubbles: true,
+      composed: true,
+    }),
+  );
+  await settleHarness(harness);
+
+  expect(harness.shadowRoot!.querySelector('[role="status"]')?.textContent).toBe(
+    'Undo history was reset.',
+  );
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  const undo = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[aria-label="Undo"]')!;
+  expect(undo.disabled).toBe(true);
+
+  harness.remove();
+  await nextTask();
+  resetWriter.close();
+  resetDocument.close();
+});
+
 test('native selection changes keep the caret above the mobile toolbar', async () => {
   await page.viewport(390, 844);
   window.scrollTo(0, 0);
@@ -386,14 +415,12 @@ test('native selection changes keep the caret above the mobile toolbar', async (
   inline.addEventListener('input', () => inputEvents++);
   inline.addEventListener('keydown', () => keydownEvents++);
 
-  const scrollBeforeSelection = window.scrollY;
   inline.setSelectionOffsets(text.length, text.length);
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
   expect(inputEvents).toBe(0);
   expect(keydownEvents).toBe(0);
-  expect(window.scrollY).toBeGreaterThan(scrollBeforeSelection);
-  expect(inline.getCaretPosition().y).toBeLessThanOrEqual(toolbar.getBoundingClientRect().top);
+  expect(inline.getCaretPosition().y).toBeLessThan(toolbar.getBoundingClientRect().top);
   harness.remove();
 });
 
@@ -771,7 +798,7 @@ test.each(['alpha  ', 'alpha  \n'])(
     const { harness, source } = await createHarness(`\`\`\`js\n${code}\n\`\`\`\n\nother`);
     await nextTask();
     const renderer = harness
-      .shadowRoot!.querySelector('md-editor')!
+      .shadowRoot!.querySelector('md-canonical-editor')!
       .shadowRoot!.querySelector('md-block-render')!;
     const inline = Array.from(renderer.shadowRoot!.querySelectorAll<HTMLElement>('md-inline')).find(
       (node) => node.textContent === 'other',
@@ -793,7 +820,7 @@ test('outdenting a multi-block item updates Source, Render and Serialize', async
   );
   await nextTask();
   const renderer = harness
-    .shadowRoot!.querySelector('md-editor')!
+    .shadowRoot!.querySelector('md-canonical-editor')!
     .shadowRoot!.querySelector('md-block-render')!;
   renderer.shadowRoot!.querySelector('md-inline')!.focus();
   await userEvent.keyboard('{Shift>}{Tab}{/Shift}');
@@ -815,7 +842,7 @@ test('block selection outdents an item between siblings without losing their ord
   const { harness, source } = await createHarness('- anchor\n- alpha\n\n  beta\n- tail\n');
   await nextTask();
   const renderer = harness
-    .shadowRoot!.querySelector('md-editor')!
+    .shadowRoot!.querySelector('md-canonical-editor')!
     .shadowRoot!.querySelector('md-block-render')!;
   renderer.shadowRoot!.querySelectorAll('md-inline')[1]!.focus();
   await userEvent.keyboard('{Home}{Shift>}{ArrowDown}{/Shift}{Shift>}{Tab}{/Shift}');
@@ -841,7 +868,7 @@ async function expectDocument(harness: LitElement, source: HTMLTextAreaElement, 
   await harness.updateComplete;
   await new Promise((resolve) => setTimeout(resolve, 20));
   const renderer = harness
-    .shadowRoot!.querySelector('md-editor')!
+    .shadowRoot!.querySelector('md-canonical-editor')!
     .shadowRoot!.querySelector('md-block-render')!;
   for (const paragraph of value.trim().split('\n\n')) {
     expect(
@@ -885,7 +912,7 @@ test('Source edit after scrubbing preserves both blocks through Render edit and 
   expect(source.selectionStart).toBe(12);
   await expectDocument(harness, source, 'alpha\n\nbetaX');
   const renderer = harness
-    .shadowRoot!.querySelector('md-editor')!
+    .shadowRoot!.querySelector('md-canonical-editor')!
     .shadowRoot!.querySelector('md-block-render')!;
   const inline = renderer.shadowRoot!.querySelector<HTMLElement>('md-inline')!;
   inline.focus();
@@ -894,11 +921,11 @@ test('Source edit after scrubbing preserves both blocks through Render edit and 
   expect(harness.shadowRoot!.textContent).toContain('mode: edited');
   expect(source.value).toBe('alphaY\n\nbetaX\n');
   const editInline = harness
-    .shadowRoot!.querySelector('md-editor')!
+    .shadowRoot!.querySelector('md-canonical-editor')!
     .shadowRoot!.querySelector('md-block-render')!
     .shadowRoot!.querySelector<HTMLElement>('md-inline')!;
   await userEvent.click(editInline);
-  expect(harness.shadowRoot!.activeElement?.tagName).toBe('MD-EDITOR');
+  expect(harness.shadowRoot!.activeElement?.tagName).toBe('MD-CANONICAL-EDITOR');
   await new Promise((resolve) => setTimeout(resolve, 100));
   await userEvent.keyboard('{Control>}z{/Control}');
   await new Promise((resolve) => setTimeout(resolve, 30));

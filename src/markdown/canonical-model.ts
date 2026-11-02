@@ -3,8 +3,8 @@ import * as Y from 'yjs';
 import type { DocumentNode, MarkdownNode } from './node.js';
 import { parser as inlineParser, type InlineTree, type InlineTreeNode } from './inline-parser.js';
 import { createSyntaxNode, createTree } from './parser-tree.js';
-import type { Caches } from './view-model-node.js';
-import { MarkdownTree } from './view-model.js';
+import { viewModel, type Caches } from './view-model-node.js';
+import { MarkdownTree, type ViewModel } from './view-model.js';
 import { parseBlocks } from './block-parser/api.js';
 import { batch, signal } from '../signals.js';
 
@@ -121,7 +121,7 @@ export interface CanonicalWriterAccess {
   readonly state: Y.Doc;
   historyWasReset(): boolean;
   beginPending(): void;
-  publish(): readonly unknown[];
+  publish(affectedNodeIds: readonly NodeId[]): readonly unknown[];
   poison(): void;
 }
 
@@ -162,6 +162,7 @@ interface InlineProjectionCache {
 }
 
 const inlineProjectionCaches = new WeakMap<CanonicalNode, InlineProjectionCache>();
+let canonicalProjectionId = 0;
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -461,6 +462,65 @@ function readChildren(record: RecordMap): readonly NodeId[] {
   return value as readonly NodeId[];
 }
 
+function addChildIds(target: Set<NodeId>, value: unknown): void {
+  if (Array.isArray(value)) {
+    for (const id of value) if (typeof id === 'string') target.add(id);
+  }
+}
+
+function changedProjectionResources(before: Y.Doc, after: Y.Doc) {
+  const affectedNodeIds = new Set<NodeId>();
+  const beforeNodes = ymap<RecordMap>(before, NODES);
+  const afterNodes = ymap<RecordMap>(after, NODES);
+  for (const id of new Set([...beforeNodes.keys(), ...afterNodes.keys()])) {
+    const oldRecord = beforeNodes.get(id);
+    const newRecord = afterNodes.get(id);
+    if (!oldRecord || !newRecord) {
+      affectedNodeIds.add(id);
+      addChildIds(affectedNodeIds, oldRecord && nodeCell(oldRecord, 'children'));
+      addChildIds(affectedNodeIds, newRecord && nodeCell(newRecord, 'children'));
+      continue;
+    }
+    for (const field of NODE_FIELDS) {
+      const oldCell = cellValue(oldRecord, field);
+      const newCell = cellValue(newRecord, field);
+      if (oldCell.token === newCell.token) continue;
+      affectedNodeIds.add(id);
+      if (field === 'children') {
+        addChildIds(affectedNodeIds, oldCell.value);
+        addChildIds(affectedNodeIds, newCell.value);
+      }
+    }
+  }
+
+  const touchedTapeIds = new Set<TapeId>();
+  const beforeRevisions = ymap<number>(before, TAPE_REVISIONS);
+  const afterRevisions = ymap<number>(after, TAPE_REVISIONS);
+  for (const id of new Set([...beforeRevisions.keys(), ...afterRevisions.keys()])) {
+    if (beforeRevisions.get(id) !== afterRevisions.get(id)) touchedTapeIds.add(id);
+  }
+  if (touchedTapeIds.size) {
+    const rootId = metaValue<string>(ymap<unknown>(after, META), 'rootId');
+    const pending = [rootId];
+    const visited = new Set<NodeId>();
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const record = afterNodes.get(id);
+      if (!record) continue;
+      if (
+        INLINE_KINDS.has(nodeKind(record)) &&
+        readSpans(record).some((span) => touchedTapeIds.has(span.tapeId))
+      ) {
+        affectedNodeIds.add(id);
+      }
+      pending.push(...readChildren(record));
+    }
+  }
+  return [...affectedNodeIds];
+}
+
 function readSpans(record: RecordMap): readonly Span[] {
   const value = nodeCell(record, 'spans');
   assert(Array.isArray(value), 'spans cell must contain an array');
@@ -554,11 +614,40 @@ function orderedChildren(node: MutableSemanticNode): MutableSemanticNode[] {
  */
 export class CanonicalNode {
   readonly renderSignal = signal(0);
+  readonly [viewModel]: ViewModel;
+  private readonly projectionId = canonicalProjectionId++;
 
   constructor(
     readonly sharedId: NodeId,
     private readonly owner: CanonicalDocument,
   ) {
+    // Rendering and selection use the same stable local projection seam as the
+    // legacy view model. Mutating methods deliberately fail: canonical edits
+    // must go through CanonicalWriter and an explicit TreeDraft.
+    this[viewModel] = Object.defineProperties(
+      {},
+      {
+        self: { get: () => this },
+        id: { get: () => this.projectionId },
+        connected: { get: () => this.connected },
+        version: { get: () => this.version },
+        parent: { get: () => this.parent as unknown as ViewModel['parent'] },
+        previousSibling: {
+          get: () => this.previousSibling as unknown as ViewModel['previousSibling'],
+        },
+        nextSibling: { get: () => this.nextSibling as unknown as ViewModel['nextSibling'] },
+        firstChild: { get: () => this.children[0] as unknown as ViewModel['firstChild'] },
+        lastChild: { get: () => this.children.at(-1) as unknown as ViewModel['lastChild'] },
+        renderSignal: { get: () => this.renderSignal },
+        inlineTree: { get: () => this.inlineTree },
+        caches: { get: () => this.caches },
+        tree: {
+          get: () => {
+            throw new Error('CanonicalNode edits must use CanonicalWriter');
+          },
+        },
+      },
+    ) as unknown as ViewModel;
     Object.freeze(this);
   }
 
@@ -588,7 +677,7 @@ export class CanonicalNode {
   }
 
   get version(): number {
-    return this.owner.projectionVersion;
+    return this.owner.nodeVersion(this.sharedId);
   }
 
   get caches(): Readonly<Caches> | undefined {
@@ -638,6 +727,8 @@ export class CanonicalNode {
 export class CanonicalDocument {
   private readonly facades = new Map<NodeId, CanonicalNode>();
   private readonly localCaches = new Map<NodeId, Caches>();
+  private readonly nodeVersions = new Map<NodeId, number>();
+  private readonly projectionListeners = new Set<(version: number) => void>();
   private disposed = false;
   private publicationPending = false;
   private revisionVersion = 0;
@@ -655,10 +746,10 @@ export class CanonicalDocument {
         assert(!this.publicationPending, 'canonical document already has a pending commit');
         this.publicationPending = true;
       },
-      publish: () => {
+      publish: (affectedNodeIds) => {
         assert(this.publicationPending, 'canonical document has no pending commit');
         this.publicationPending = false;
-        return this.advanceProjection();
+        return this.advanceProjection(affectedNodeIds);
       },
       poison: () => {
         this.publicationPending = true;
@@ -895,6 +986,13 @@ export class CanonicalDocument {
     return this.revisionVersion;
   }
 
+  /** Subscribe to coherent local or accepted-remote projection changes. */
+  subscribeProjection(listener: (version: number) => void): () => void {
+    this.assertLive();
+    this.projectionListeners.add(listener);
+    return () => this.projectionListeners.delete(listener);
+  }
+
   /** @internal Read-only scalar projection for CanonicalNode. */
   nodeKind(id: NodeId): NodeKind {
     this.assertLive();
@@ -1033,8 +1131,9 @@ export class CanonicalDocument {
         `accepted update failed validation: ${validation.errors.join('; ')}`,
       );
       assertTapeRevisions(this.document, candidate, envelope.revision);
+      const changed = changedProjectionResources(this.document, candidate);
       Y.applyUpdate(this.document, Uint8Array.from(envelope.update));
-      return this.advanceProjection();
+      return this.advanceProjection(changed);
     } finally {
       candidate.destroy();
     }
@@ -1052,6 +1151,11 @@ export class CanonicalDocument {
   nodeCaches(id: NodeId): Readonly<Caches> | undefined {
     this.assertLive();
     return this.localCaches.get(id);
+  }
+
+  nodeVersion(id: NodeId): number {
+    this.assertLive();
+    return this.nodeVersions.get(id) ?? 0;
   }
 
   /** Snapshot the canonical fields for reconstruction comparison and diagnostics. */
@@ -1133,6 +1237,7 @@ export class CanonicalDocument {
     if (this.disposed) return;
     this.disposed = true;
     closedDocuments.add(this);
+    this.projectionListeners.clear();
     this.revisionVersion++;
     for (const facade of this.facades.values()) facade.renderSignal.value++;
   }
@@ -1180,17 +1285,29 @@ export class CanonicalDocument {
     this.assertLive();
   }
 
-  private advanceProjection(): readonly unknown[] {
+  private advanceProjection(affectedNodeIds: readonly NodeId[]): readonly unknown[] {
     this.revisionVersion++;
-    this.localCaches.clear();
+    const errors: unknown[] = [];
     try {
       batch(() => {
-        for (const facade of this.facades.values()) facade.renderSignal.value++;
+        for (const id of new Set(affectedNodeIds)) {
+          this.nodeVersions.set(id, (this.nodeVersions.get(id) ?? 0) + 1);
+          this.localCaches.delete(id);
+          const facade = this.facades.get(id);
+          if (facade) facade.renderSignal.value++;
+        }
       });
-      return Object.freeze([]);
     } catch (error) {
-      return Object.freeze([error]);
+      errors.push(error);
     }
+    for (const listener of this.projectionListeners) {
+      try {
+        listener(this.revisionVersion);
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    return Object.freeze(errors);
   }
 
   private requireRecord(id: NodeId): RecordMap {
