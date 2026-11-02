@@ -16,9 +16,15 @@ import type {
   Span,
   TapeId,
 } from './canonical-model.js';
+import { isInlineNode } from './node.js';
+import type { DocumentNode } from './node.js';
+import type { ViewModelNode } from './view-model-node.js';
+import type { MarkdownTreeConstructionDraft } from './view-model.js';
 import { mapTextEdit } from './canonical-text.js';
 import type { NativeTextRun, TextAffinity, TextEdit } from './canonical-text.js';
 import { normalizeCanonicalDraft } from './canonical-normalize.js';
+import { parseBlocks } from './block-parser/api.js';
+import { applyParserConversion } from './canonical-promotion.js';
 
 const META = 'meta';
 const NODES = 'nodes';
@@ -102,6 +108,18 @@ export interface TreeDraft {
   setChecked(id: NodeId, checked: boolean | null): void;
   setInfo(id: NodeId, info: string | null): void;
   bookmark(id: NodeId, offset: number, affinity: TextAffinity, spanIndex?: number): Bookmark;
+}
+
+export interface DraftTextPiece {
+  /** Half-open UTF-16 coordinates in the current draft string. */
+  readonly from: number;
+  readonly to: number;
+  readonly kind: 'retained' | 'inserted' | 'transferred';
+}
+
+/** Parser conversion reads the draft's own source mapping before changing ownership. */
+export interface ParserTreeDraft extends TreeDraft {
+  sourcePieces(id: NodeId): readonly DraftTextPiece[];
 }
 
 export type ReadPrecondition =
@@ -313,6 +331,8 @@ interface PlanBoundary {
   readonly tapeId: TapeId;
   readonly index: number;
   readonly boundaryId: string;
+  /** Position inside action-local text inserted at this native index. */
+  readonly insertionOffset: number;
 }
 
 interface PlanTextInsert {
@@ -619,7 +639,7 @@ function actionKey(actionId: string): string {
   return actionId;
 }
 
-class MutableTreeDraft implements TreeDraft {
+class MutableTreeDraft implements ParserTreeDraft {
   private active = true;
   private readonly nodes = new Map<NodeId, DraftNodeState>();
   private readonly preconditions = new Map<string, ReadPrecondition>();
@@ -644,6 +664,15 @@ class MutableTreeDraft implements TreeDraft {
 
   close(): void {
     this.active = false;
+  }
+
+  checkpointConstruction(): void {
+    this.assertActive();
+    assert(!this.compiledPlan, 'cannot checkpoint a compiled construction draft');
+    this.operations_.length = 0;
+    this.preconditions.clear();
+    this.transferBoundaries.length = 0;
+    this.transferredNodes.clear();
   }
 
   get operationList(): readonly SemanticOperation[] {
@@ -690,19 +719,22 @@ class MutableTreeDraft implements TreeDraft {
           cells,
         });
         touchedNodes.add(node.id);
-        for (const draftSpan of node.spans) {
-          const span = draftSpan.span;
-          if (draftSpan.created) {
-            newTapes.push({ id: span.tapeId, span });
-            touchedTapes.add(span.tapeId);
-            const insertedText = draftSpan.pieces
-              .filter((piece): piece is InsertedPiece => piece.kind === 'inserted')
-              .map((piece) => piece.text)
-              .join('');
-            if (insertedText) {
-              insertions.push({ tapeId: span.tapeId, index: 1, text: insertedText });
-              textTapes.add(span.tapeId);
-            }
+        const createdSpan = this.newTapeSpans.get(node.id);
+        if (createdSpan) {
+          newTapes.push({ id: createdSpan.tapeId, span: createdSpan });
+          touchedTapes.add(createdSpan.tapeId);
+          const insertedText = node.spans
+            .filter(
+              (draftSpan) => draftSpan.created && draftSpan.span.tapeId === createdSpan.tapeId,
+            )
+            .flatMap((draftSpan) =>
+              draftSpan.pieces.filter((piece): piece is InsertedPiece => piece.kind === 'inserted'),
+            )
+            .map((piece) => piece.text)
+            .join('');
+          if (insertedText) {
+            insertions.push({ tapeId: createdSpan.tapeId, index: 1, text: insertedText });
+            textTapes.add(createdSpan.tapeId);
           }
         }
       }
@@ -851,13 +883,6 @@ class MutableTreeDraft implements TreeDraft {
     }
 
     for (const boundary of this.transferBoundaries) touchedTapes.add(boundary.tapeId);
-    const boundaryTapes = new Set(this.transferBoundaries.map((boundary) => boundary.tapeId));
-    assert(
-      !insertions.some(
-        (insertion) => insertion.text.length > 0 && boundaryTapes.has(insertion.tapeId),
-      ),
-      'text insertions and boundary transfers cannot change the same tape in one action',
-    );
     const operationNodeIds = this.operations_.flatMap((operation) => {
       switch (operation.type) {
         case 'transferInlineRange':
@@ -1033,6 +1058,23 @@ class MutableTreeDraft implements TreeDraft {
       affinity,
       ...(spanIndex === undefined ? {} : { spanIndex }),
     });
+  }
+
+  sourcePieces(id: NodeId): readonly DraftTextPiece[] {
+    this.assertActive();
+    const node = this.requireNode(id);
+    assert(INLINE_KINDS.has(node.type), `${node.type} nodes do not have inline text`);
+    this.readText(node);
+    let from = 0;
+    const pieces: DraftTextPiece[] = [];
+    for (const span of node.spans) {
+      for (const piece of span.pieces) {
+        const to = from + piece.text.length;
+        if (to > from) pieces.push(Object.freeze({ from, to, kind: piece.kind }));
+        from = to;
+      }
+    }
+    return Object.freeze(pieces);
   }
 
   private apply(operation: SemanticOperation, record: boolean): void {
@@ -1569,6 +1611,7 @@ class MutableTreeDraft implements TreeDraft {
             },
             sourceSpanIndex: current.sourceSpanIndex,
             pieces: slicePieces(current.pieces, from, to),
+            created: current.created,
           },
           from: globalStart + from,
           to: globalStart + to,
@@ -1640,7 +1683,12 @@ class MutableTreeDraft implements TreeDraft {
 
     let mapped: ReturnType<typeof mapTextEdit>['insertion'];
     if (chosen?.piece.kind === 'inserted') {
-      throw new Error('transfer boundaries cannot split newly inserted text');
+      mapped = {
+        tapeId: chosen.piece.anchor.tapeId,
+        index: chosen.piece.anchor.index,
+        spanIndex: chosen.piece.anchor.spanIndex,
+        affinity: resolvedAffinity,
+      };
     } else if (chosen?.piece.kind === 'retained' && current.sourceSpanIndex !== undefined) {
       const sourceSpan = this.baseSpans(node.id)[current.sourceSpanIndex];
       assert(sourceSpan, 'retained transfer source span is missing');
@@ -1673,11 +1721,31 @@ class MutableTreeDraft implements TreeDraft {
         affinity: resolvedAffinity,
       }).insertion;
     }
+    let insertionOffset = 0;
+    let foundBoundaryPiece = false;
+    for (const span of node.spans) {
+      for (const piece of span.pieces) {
+        if (chosen && span === current && piece === chosen.piece) {
+          if (piece.kind === 'inserted') insertionOffset += chosen.local;
+          foundBoundaryPiece = true;
+          break;
+        }
+        if (
+          piece.kind === 'inserted' &&
+          piece.anchor.tapeId === mapped.tapeId &&
+          piece.anchor.index === mapped.index
+        ) {
+          insertionOffset += piece.text.length;
+        }
+      }
+      if (foundBoundaryPiece) break;
+    }
     const boundaryId = this.allocateId('boundary');
     this.transferBoundaries.push({
       tapeId: mapped.tapeId,
       index: mapped.index,
       boundaryId,
+      insertionOffset,
     });
     return boundaryId;
   }
@@ -1720,12 +1788,14 @@ class MutableTreeDraft implements TreeDraft {
             span: leftSpan,
             sourceSpanIndex: current.sourceSpanIndex,
             pieces: slicePieces(current.pieces, 0, local),
+            created: current.created,
           },
           ...moved,
           {
             span: rightSpan,
             sourceSpanIndex: current.sourceSpanIndex,
             pieces: slicePieces(current.pieces, local, content.length),
+            created: current.created,
           },
         );
       }
@@ -1897,6 +1967,118 @@ class MutableTreeDraft implements TreeDraft {
   }
 }
 
+/** A parser-only TreeDraft bridge. It never compiles or publishes construction operations. */
+export function createMarkdownTreeConstructionDraft(
+  root: DocumentNode,
+): MarkdownTreeConstructionDraft {
+  const document = CanonicalDocument.fromParsed(root);
+  const draft = new MutableTreeDraft(canonicalWriterAccess(document).state, 'parser-construction');
+  const nodeIds = new WeakMap<object, NodeId>();
+  let closed = false;
+
+  const requireId = (node: ViewModelNode): NodeId => {
+    const id = nodeIds.get(node);
+    assert(id, 'parser construction node has no TreeDraft identity');
+    return id;
+  };
+
+  return {
+    bindRoot(rootNode) {
+      const bind = (node: ViewModelNode, id: NodeId): void => {
+        nodeIds.set(node, id);
+        const draftNode = draft.node(id);
+        assert(node.type === draftNode.type, 'parser projection kind differs from its TreeDraft');
+        const children = (node.children ?? []) as ViewModelNode[];
+        assert(
+          children.length === draftNode.children.length,
+          'parser projection children differ from its TreeDraft',
+        );
+        children.forEach((child, index) => bind(child, draftNode.children[index]!));
+      };
+      bind(rootNode, document.root.sharedId);
+    },
+    addNode(node) {
+      assert(!node.children?.length, 'parser construction adds nodes before their children');
+      const spec: NodeSpec = {
+        type: node.type,
+        ...(isInlineNode(node) ? { content: node.content } : {}),
+        ...('marker' in node ? { marker: node.marker } : {}),
+        ...(node.type === 'list-item' ? { checked: node.checked ?? null } : {}),
+        ...(node.type === 'code-block' ? { info: node.info ?? null } : {}),
+      };
+      nodeIds.set(node, draft.create(spec));
+    },
+    apply(operation) {
+      switch (operation.type) {
+        case 'insert':
+          draft.place(
+            requireId(operation.node),
+            requireId(operation.parent),
+            operation.nextSibling ? requireId(operation.nextSibling) : null,
+          );
+          break;
+        case 'remove':
+          draft.detach(requireId(operation.node));
+          break;
+        case 'edit':
+          draft.spliceText(requireId(operation.node), {
+            from: operation.edit.startIndex,
+            to: operation.edit.oldEndIndex,
+            insert: operation.edit.newText,
+          });
+          break;
+        case 'marker':
+          draft.setMarker(requireId(operation.node), operation.marker);
+          break;
+        case 'check':
+          draft.setChecked(requireId(operation.node), operation.checked ?? null);
+          break;
+      }
+    },
+    checkpoint() {
+      draft.checkpointConstruction();
+    },
+    finish(rootNode) {
+      const verify = (node: ViewModelNode): void => {
+        const draftNode = draft.node(requireId(node));
+        assert(node.type === draftNode.type, 'parser projection kind differs from its TreeDraft');
+        const children = (node.children ?? []) as ViewModelNode[];
+        assert(children.length === draftNode.children.length, 'parser draft child count diverged');
+        children.forEach((child, index) => {
+          assert(
+            requireId(child) === draftNode.children[index],
+            'parser draft child order diverged',
+          );
+          verify(child);
+        });
+        if (isInlineNode(node)) {
+          assert(draftNode.content === node.content, 'parser draft inline content diverged');
+        }
+        assert(
+          draftNode.marker === ('marker' in node ? (node.marker ?? null) : null),
+          'parser draft marker diverged',
+        );
+        assert(
+          draftNode.checked === (node.type === 'list-item' ? (node.checked ?? null) : null),
+          'parser draft task state diverged',
+        );
+        assert(
+          draftNode.info === (node.type === 'code-block' ? (node.info ?? null) : null),
+          'parser draft code info diverged',
+        );
+      };
+      verify(rootNode);
+      draft.checkpointConstruction();
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      draft.close();
+      document.close();
+    },
+  };
+}
+
 interface TapeStateSummary {
   readonly signatures: ReadonlyMap<TapeId, string>;
   readonly revisions: ReadonlyMap<TapeId, number>;
@@ -2054,25 +2236,6 @@ function applyPlan(
     }, textOrigin);
   }
 
-  if (plan.boundaries.length) {
-    state.transact(() => {
-      const sorted = plan.boundaries
-        .map((boundary) => ({
-          ...boundary,
-          index: indexAfterDeletes(boundary.index, deletions, boundary.tapeId),
-        }))
-        .sort((a, b) => a.tapeId.localeCompare(b.tapeId) || b.index - a.index);
-      for (const boundary of sorted) {
-        const tape = tapeMap(state).get(boundary.tapeId);
-        assert(tape, `missing boundary tape ${boundary.tapeId}`);
-        tape.insertEmbed(
-          boundary.index,
-          Object.freeze({ grainBoundary: boundary.boundaryId }) satisfies BoundaryEmbed,
-        );
-      }
-    }, 'grain:allocate-boundaries');
-  }
-
   if (plan.insertions.length) {
     state.transact(() => {
       const sorted = plan.insertions
@@ -2088,6 +2251,36 @@ function applyPlan(
         if (insertion.text) tape.insert(insertion.index, insertion.text);
       }
     }, textOrigin);
+  }
+
+  if (plan.boundaries.length) {
+    state.transact(() => {
+      const sorted = plan.boundaries
+        .map((boundary) => {
+          const index = indexAfterDeletes(boundary.index, deletions, boundary.tapeId);
+          const priorInsertions = plan.insertions
+            .filter((insertion) => insertion.tapeId === boundary.tapeId)
+            .map((insertion) => ({ index: insertion.index, length: insertion.text.length }));
+          // Deleted ranges can collapse distinct native gaps to the same index.
+          // Compare their original positions to keep insertion-before-boundary order.
+          const before = priorInsertions
+            .filter((insertion) => insertion.index < boundary.index)
+            .reduce((total, insertion) => total + insertion.length, 0);
+          return {
+            ...boundary,
+            index: index + before + boundary.insertionOffset,
+          };
+        })
+        .sort((a, b) => a.tapeId.localeCompare(b.tapeId) || b.index - a.index);
+      for (const boundary of sorted) {
+        const tape = tapeMap(state).get(boundary.tapeId);
+        assert(tape, `missing boundary tape ${boundary.tapeId}`);
+        tape.insertEmbed(
+          boundary.index,
+          Object.freeze({ grainBoundary: boundary.boundaryId }) satisfies BoundaryEmbed,
+        );
+      }
+    }, 'grain:allocate-boundaries');
   }
 
   if (plan.writes.length) {
@@ -2785,6 +2978,31 @@ export class CanonicalWriter {
     let plan: LowLevelPlan;
     try {
       draft = new MutableTreeDraft(candidate, request.actionId, request.operations);
+      const promotion = request.promotionTarget;
+      if (
+        request.mode === 'text-input' &&
+        request.textUpdate?.length &&
+        promotion &&
+        currentActive(this.state, promotion.nodeId) &&
+        nodeCell(this.state, promotion.nodeId, 'kind').token === promotion.kindToken &&
+        nodeCell(this.state, promotion.nodeId, 'spans').token === promotion.spansToken
+      ) {
+        const sourceNode = draft.node(promotion.nodeId);
+        if (sourceNode.type === 'paragraph' && sourceNode.content !== undefined) {
+          const parsed = parseBlocks(sourceNode.content, { provenance: true });
+          if (
+            applyParserConversion(
+              draft,
+              metaMap(candidate).get('rootId') as NodeId,
+              promotion.nodeId,
+              sourceNode.content,
+              parsed.provenance,
+            )
+          ) {
+            normalizeCanonicalDraft(draft, metaMap(candidate).get('rootId') as NodeId);
+          }
+        }
+      }
       plan = draft.compilePlan();
       applyPlan(
         candidate,

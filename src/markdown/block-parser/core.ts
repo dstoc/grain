@@ -1,12 +1,17 @@
 import { viewModel } from '../view-model-node.js';
 import type { ViewModelNode } from '../view-model-node.js';
-import type { BlockParseState, ProjectedPendingState, LinePrefixResult } from './types.js';
+import type {
+  BlockParseState,
+  MappedText,
+  ProjectedPendingState,
+  LinePrefixResult,
+} from './types.js';
 import {
   parseQuotedListContinuation,
   parseBlankLinePrefix,
   shouldPreserveListPathOnQuotedBlankLine,
   parseLinePrefix,
-  parseQuotePrefix,
+  parseQuotePrefixMatch,
   resolvePrefixContainers,
 } from './prefix-resolution.js';
 import { syncQuoteStack } from './container-management.js';
@@ -25,14 +30,20 @@ import { projectPendingQuoteOpen, closeQuote } from './handlers/quotes.js';
 import { projectPendingResolvedContent } from './projected-state.js';
 import { tryPromoteSetextHeading, parseAtxHeading, openSection } from './handlers/sections.js';
 import { parseListItem, appendListItem, closeList } from './handlers/lists.js';
+import { sliceMappedText } from './source-text.js';
 
-export function parseLine(state: BlockParseState, line: string) {
+export function parseLine(state: BlockParseState, line: string, mapped?: MappedText) {
   if (state.currentCodeBlock && state.currentCodeFence) {
-    const codeLine = stripActiveCodeBlockContinuation(state, line);
-    if (isClosingFence(codeLine, state.currentCodeFence)) {
+    const stripped = stripActiveCodeBlockContinuation(state, line);
+    if (isClosingFence(stripped.content, state.currentCodeFence)) {
       closeCodeBlock(state);
     } else {
-      appendCodeBlockLine(state, codeLine);
+      appendCodeBlockLine(
+        state,
+        stripped.content,
+        true,
+        mapped ? sliceMappedText(mapped, stripped.contentFrom, mapped.text.length) : undefined,
+      );
     }
     return;
   }
@@ -55,6 +66,9 @@ export function parseLine(state: BlockParseState, line: string) {
       state,
       quotedListContinuation.container,
       quotedListContinuation.content,
+      mapped
+        ? sliceMappedText(mapped, quotedListContinuation.contentFrom, mapped.text.length)
+        : undefined,
     );
     return;
   }
@@ -96,7 +110,12 @@ export function parseLine(state: BlockParseState, line: string) {
     }
   }
   const container = resolvePrefixContainers(state, prefix);
-  parseResolvedContainerContent(state, container, prefix.content);
+  parseResolvedContainerContent(
+    state,
+    container,
+    prefix.content,
+    mapped ? sliceMappedText(mapped, prefix.contentFrom, mapped.text.length) : undefined,
+  );
 }
 
 export function projectPendingLine(
@@ -108,13 +127,13 @@ export function projectPendingLine(
   }
 
   if (state.currentCodeBlock && state.currentCodeFence) {
-    const codeLine = stripActiveCodeBlockContinuation(state, line);
-    if (isClosingFence(codeLine, state.currentCodeFence)) {
+    const stripped = stripActiveCodeBlockContinuation(state, line);
+    if (isClosingFence(stripped.content, state.currentCodeFence)) {
       return;
     }
     return {
       kind: 'code-block',
-      text: appendCodeBlockLine(state, codeLine, false),
+      text: appendCodeBlockLine(state, stripped.content, false),
     };
   }
 
@@ -219,20 +238,31 @@ function parseResolvedContainerContent(
   state: BlockParseState,
   container: ViewModelNode,
   content: string,
+  mapped?: MappedText,
 ) {
   if (content.trim() === '<!-- -->') {
     closeLeafBlocks(state);
-    appendParagraphLine(state, container, '');
+    appendParagraphLine(
+      state,
+      container,
+      '',
+      mapped ? sliceMappedText(mapped, mapped.text.length, mapped.text.length) : undefined,
+    );
     if (container === state.root) state.hasExplicitRootParagraph = true;
     return;
   }
 
   if (state.currentCodeBlock && state.currentCodeFence) {
-    const codeLine = stripActiveCodeBlockContinuation(state, content);
-    if (isClosingFence(codeLine, state.currentCodeFence)) {
+    const stripped = stripActiveCodeBlockContinuation(state, content);
+    if (isClosingFence(stripped.content, state.currentCodeFence)) {
       closeCodeBlock(state);
     } else {
-      appendCodeBlockLine(state, codeLine);
+      appendCodeBlockLine(
+        state,
+        stripped.content,
+        true,
+        mapped ? sliceMappedText(mapped, stripped.contentFrom, mapped.text.length) : undefined,
+      );
     }
     return;
   }
@@ -244,22 +274,39 @@ function parseResolvedContainerContent(
   const atxHeading = parseAtxHeading(content);
   if (atxHeading) {
     closeLeafBlocks(state);
-    openSection(state, atxHeading.level, atxHeading.content);
+    openSection(
+      state,
+      atxHeading.level,
+      atxHeading.content,
+      mapped ? sliceMappedText(mapped, atxHeading.contentFrom, mapped.text.length) : undefined,
+    );
     return;
   }
 
-  const quoteContent = parseQuotePrefix(content);
-  if (quoteContent !== undefined) {
+  const quotePrefix = parseQuotePrefixMatch(content);
+  if (quotePrefix !== undefined) {
     closeParagraph(state);
     const quote = syncQuoteStack(state, container, 1);
-    parseResolvedContainerContent(state, quote, quoteContent);
+    parseResolvedContainerContent(
+      state,
+      quote,
+      quotePrefix.content,
+      mapped ? sliceMappedText(mapped, quotePrefix.contentFrom, mapped.text.length) : undefined,
+    );
     return;
   }
 
   const listItem = parseListItem(content);
   if (listItem) {
     closeParagraph(state);
-    appendListItem(state, container, listItem.marker, listItem.checked, listItem.content);
+    appendListItem(
+      state,
+      container,
+      listItem.marker,
+      listItem.checked,
+      listItem.content,
+      mapped ? sliceMappedText(mapped, listItem.contentFrom, mapped.text.length) : undefined,
+    );
     return;
   }
 
@@ -272,11 +319,11 @@ function parseResolvedContainerContent(
   }
 
   if (canContinueListParagraph(state, container, content)) {
-    appendParagraphLine(state, container, content);
+    appendParagraphLine(state, container, content, mapped);
     return;
   }
   closeList(state);
-  appendParagraphLine(state, container, content);
+  appendParagraphLine(state, container, content, mapped);
 }
 
 function canContinueListParagraph(

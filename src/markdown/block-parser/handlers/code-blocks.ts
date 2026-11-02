@@ -1,6 +1,6 @@
 import { viewModel } from '../../view-model-node.js';
 import type { ViewModelNode } from '../../view-model-node.js';
-import { type BlockParseState } from '../types.js';
+import { type BlockParseState, type MappedText, type OutputPiece } from '../types.js';
 import { listContinuationPrefix } from '../utils.js';
 import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
 
@@ -27,24 +27,50 @@ export function openCodeBlock(
     content: '',
   });
   node[viewModel].insertBefore(parent);
+  if (state.sourceTracking) state.inlinePieces.set(node, []);
   state.currentCodeBlock = node;
   state.currentCodeFence = marker;
   state.currentCodeHasLines = false;
   state.sawContent = true;
 }
 
-export function appendCodeBlockLine(state: BlockParseState, line: string, settled = true): string {
+export function appendCodeBlockLine(
+  state: BlockParseState,
+  line: string,
+  settled = true,
+  mapped?: MappedText,
+): string {
   const node = state.currentCodeBlock;
   if (!node) return '';
-  const inserted = state.currentCodeHasLines ? `\n${line}` : line;
+  const hadLines = Boolean(state.currentCodeHasLines);
+  const inserted = hadLines ? `\n${line}` : line;
   if (settled) state.currentCodeHasLines = true;
-  const newContent = `${node.content}${inserted}`;
-  (node as { content: string }).content = newContent;
-  node[viewModel].renderSignal.value++;
+  const startIndex = node.content.length;
+  node[viewModel].edit(
+    {
+      startIndex,
+      oldEndIndex: startIndex,
+      newEndIndex: startIndex + inserted.length,
+      newText: inserted,
+    },
+    false,
+  );
+  if (settled && mapped) {
+    const previous: readonly OutputPiece[] = state.inlinePieces.get(node) ?? [];
+    state.inlinePieces.set(node, [
+      ...previous,
+      ...(hadLines && state.sourceBreakBefore ? [state.sourceBreakBefore] : []),
+      ...mapped.pieces,
+    ]);
+  }
   return inserted;
 }
 
-export function stripActiveCodeBlockContinuation(state: BlockParseState, line: string): string {
+export function stripActiveCodeBlockContinuation(
+  state: BlockParseState,
+  line: string,
+): { readonly content: string; readonly contentFrom: number } {
+  const originalLength = line.length;
   const ancestors: ViewModelNode[] = [];
   let parent = state.currentCodeBlock?.[viewModel].parent;
   while (parent) {
@@ -62,7 +88,7 @@ export function stripActiveCodeBlockContinuation(state: BlockParseState, line: s
       line = line.slice(prefix.length);
     }
   }
-  return line;
+  return { content: line, contentFrom: originalLength - line.length };
 }
 
 export function isClosingFence(line: string, marker: string): boolean {

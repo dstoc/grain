@@ -2,6 +2,7 @@ import { viewModel } from '../../view-model-node.js';
 import type { ViewModelNode } from '../../view-model-node.js';
 import {
   type BlockParseState,
+  type MappedText,
   type ListItemViewModelNode,
   type SectionViewModelNode,
 } from '../types.js';
@@ -14,11 +15,12 @@ import {
 import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
 import { parseAtxHeading } from './sections.js';
 import { parseFenceStart, openCodeBlock } from './code-blocks.js';
-import { parseQuotePrefix } from '../prefix-resolution.js';
+import { parseQuotePrefixMatch } from '../prefix-resolution.js';
+import { sliceMappedText } from '../source-text.js';
 
 export function parseListItem(
   line: string,
-): { marker: string; checked?: boolean; content: string } | undefined {
+): { marker: string; checked?: boolean; content: string; contentFrom: number } | undefined {
   const match = /^((?:[-+*]|\d+[.)]) )(\[(x| )\] )?(.*)$/.exec(line);
   if (!match) return;
   const checked = match[3] === 'x' ? true : match[2] ? false : undefined;
@@ -26,6 +28,7 @@ export function parseListItem(
     marker: match[1],
     checked,
     content: match[4],
+    contentFrom: match[1].length + (match[2]?.length ?? 0),
   };
 }
 
@@ -35,6 +38,7 @@ export function appendListItem(
   marker: string,
   checked: boolean | undefined,
   content: string,
+  mapped?: MappedText,
 ) {
   ensurePlaceholderRemoved(state);
   const list = ensureListContainer(state, parent);
@@ -48,7 +52,7 @@ export function appendListItem(
   item[viewModel].insertBefore(list);
   state.sourceMarkerWidths.set(item, marker.length);
   state.currentListPath = buildListPath(state, parent, item);
-  parseInitialListItemContent(state, item, content);
+  parseInitialListItemContent(state, item, content, mapped);
   state.sawContent = true;
 }
 
@@ -56,14 +60,16 @@ export function parseInitialListItemContent(
   state: BlockParseState,
   item: ListItemViewModelNode,
   content: string,
+  mapped?: MappedText,
 ) {
-  parseInitialContainerContent(state, item, content);
+  parseInitialContainerContent(state, item, content, mapped);
 }
 
 export function parseInitialContainerContent(
   state: BlockParseState,
   parent: ViewModelNode,
   content: string,
+  mapped?: MappedText,
 ) {
   if (content.trim() === '<!-- -->') {
     const paragraph = state.tree.add({
@@ -72,6 +78,7 @@ export function parseInitialContainerContent(
     });
     paragraph[viewModel].insertBefore(parent);
     state.currentParagraph = paragraph;
+    if (mapped) state.inlinePieces.set(paragraph, []);
     return;
   }
 
@@ -82,6 +89,7 @@ export function parseInitialContainerContent(
     });
     paragraph[viewModel].insertBefore(parent);
     state.currentParagraph = paragraph;
+    if (mapped) state.inlinePieces.set(paragraph, []);
     return;
   }
 
@@ -94,16 +102,27 @@ export function parseInitialContainerContent(
       children: [],
     }) as SectionViewModelNode;
     section[viewModel].insertBefore(parent);
+    if (mapped) {
+      state.inlinePieces.set(
+        section,
+        sliceMappedText(mapped, atxHeading.contentFrom, mapped.text.length).pieces,
+      );
+    }
     syncSectionStack(state, parent);
     state.sectionStack.push(section);
     state.currentParagraph = undefined;
     return;
   }
 
-  const quoteContent = parseQuotePrefix(content);
-  if (quoteContent !== undefined) {
+  const quotePrefix = parseQuotePrefixMatch(content);
+  if (quotePrefix !== undefined) {
     const quote = syncQuoteStack(state, parent, 1);
-    parseInitialContainerContent(state, quote, quoteContent);
+    parseInitialContainerContent(
+      state,
+      quote,
+      quotePrefix.content,
+      mapped ? sliceMappedText(mapped, quotePrefix.contentFrom, mapped.text.length) : undefined,
+    );
     return;
   }
 
@@ -115,6 +134,7 @@ export function parseInitialContainerContent(
       nestedListItem.marker,
       nestedListItem.checked,
       nestedListItem.content,
+      mapped ? sliceMappedText(mapped, nestedListItem.contentFrom, mapped.text.length) : undefined,
     );
     return;
   }
@@ -132,6 +152,7 @@ export function parseInitialContainerContent(
   });
   paragraph[viewModel].insertBefore(parent);
   state.currentParagraph = paragraph;
+  if (mapped) state.inlinePieces.set(paragraph, mapped.pieces);
 }
 
 export function closeList(state: BlockParseState) {

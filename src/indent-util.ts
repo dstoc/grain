@@ -74,7 +74,11 @@ export function indent(node: ViewModelNode, root: ViewModelNode) {
     if (lastChild?.type === 'list') {
       listItem[viewModel].insertBefore(lastChild);
     } else {
-      listItem[viewModel].insertBefore(listItemPreviousSibling);
+      const nestedList = listItem[viewModel].tree.add({
+        type: 'list',
+      });
+      nestedList[viewModel].insertBefore(listItemPreviousSibling);
+      listItem[viewModel].insertBefore(nestedList);
     }
   } else if (listItemPreviousSibling?.type === 'list') {
     listItem[viewModel].insertBefore(listItemPreviousSibling);

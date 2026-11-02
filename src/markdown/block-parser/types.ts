@@ -34,10 +34,38 @@ export interface BlockParseState {
   currentCodeFence?: string;
   currentCodeHasLines?: boolean;
   sectionStack: SectionViewModelNode[];
+  sourceTracking: boolean;
+  sourceOffset: number;
+  receivedSourceLength: number;
+  sourceBreakBefore?: Extract<OutputPiece, { kind: 'retain' }>;
+  inlinePieces: Map<ViewModelNode, readonly OutputPiece[]>;
+}
+
+export type SourceRange = { readonly from: number; readonly to: number };
+
+/** Ranges are half-open UTF-16 offsets into the exact source passed to the parser. */
+export type OutputPiece =
+  | { readonly kind: 'retain'; readonly sourceFrom: number; readonly sourceTo: number }
+  | { readonly kind: 'synthesize'; readonly text: string };
+
+export interface MappedText {
+  readonly text: string;
+  readonly pieces: readonly OutputPiece[];
+}
+
+/** Dot-separated child indexes in the output tree; `root` denotes an inline root. */
+export type ParsedNodeKey = string;
+
+export interface ParserConversionPlan {
+  readonly output: DocumentNode;
+  /** Exact source/synthesized pieces for each emitted inline node. */
+  readonly inlinePieces: Readonly<Record<ParsedNodeKey, readonly OutputPiece[]>>;
+  readonly consumed: readonly SourceRange[];
 }
 
 export interface LinePrefixResult {
   content: string;
+  contentFrom: number;
   prefixes: ('list' | 'quote')[];
   listDepth: number;
   continuedListIndent: boolean;
@@ -61,7 +89,12 @@ export interface BlockParser {
   finish(): MarkdownTree;
   getTree(): MarkdownTree;
   getPendingText(): string;
+  getConversionPlan(source: string): ParserConversionPlan;
   snapshot(): BlockParserSnapshot;
+}
+
+export interface BlockParserOptions {
+  readonly provenance?: boolean;
 }
 
 export interface BlockParserSnapshot {
@@ -80,4 +113,8 @@ export interface BlockParserSnapshot {
   currentCodeFence?: string;
   currentCodeHasLines?: boolean;
   sectionStackPaths: number[][];
+  sourceTracking?: boolean;
+  sourceOffset?: number;
+  receivedSourceLength?: number;
+  inlinePieces?: { path: number[]; pieces: OutputPiece[] }[];
 }

@@ -108,8 +108,18 @@ function discardProjectedSection(state: BlockParseState) {
 function discardProjectedCodeBlock(state: BlockParseState, text: string) {
   const node = state.currentCodeBlock;
   if (!node) return;
-  if (text.length) (node as { content: string }).content = node.content.slice(0, -text.length);
-  node[viewModel].renderSignal.value++;
+  if (text.length) {
+    const startIndex = node.content.length - text.length;
+    node[viewModel].edit(
+      {
+        startIndex,
+        oldEndIndex: node.content.length,
+        newEndIndex: startIndex,
+        newText: '',
+      },
+      false,
+    );
+  }
   pruneDetachedState(state);
 }
 
