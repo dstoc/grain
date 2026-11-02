@@ -352,7 +352,11 @@ interface InsertionSlot {
   readonly order: number;
 }
 
-type InsertionSlotTarget = Omit<InsertionSlot, 'order'>;
+type InsertionSlotTarget = Omit<InsertionSlot, 'order'> & {
+  /** Preserve the source buffer gap when an edit follows a transfer. */
+  readonly parentBufferId?: string;
+  readonly parentBufferOffset?: number;
+};
 
 interface ExistingPiece {
   readonly kind: 'existing';
@@ -373,6 +377,13 @@ interface InsertedPiece {
   readonly text: string;
 }
 
+interface DraftTextBuffer {
+  readonly text: string;
+  readonly anchor: InsertionSlot;
+  readonly parentBufferId?: string;
+  readonly parentBufferOffset?: number;
+}
+
 type DraftPiece = ExistingPiece | InsertedPiece;
 
 interface DraftSpan {
@@ -380,6 +391,8 @@ interface DraftSpan {
   pieces: DraftPiece[];
   readonly sourceSpanIndex?: number;
   readonly created?: boolean;
+  /** Insertion target retained when a cut leaves this span empty. */
+  readonly insertionSlot?: InsertionSlotTarget;
 }
 
 interface DraftNodeState {
@@ -410,8 +423,10 @@ interface PlanBoundary {
   readonly insertionOffset: number;
   readonly side: 'start' | 'end';
   readonly order: number;
-  /** Immutable action-local text whose final span edge owns this boundary. */
+  /** Action-local buffer that defines this transfer boundary's slot. */
   readonly sourceBufferId?: string;
+  /** UTF-16 offset in the immutable action-local buffer. */
+  readonly sourceBufferOffset?: number;
 }
 
 interface PlanTextInsert {
@@ -419,6 +434,11 @@ interface PlanTextInsert {
   readonly index: number;
   readonly slotOrder: number;
   readonly text: string;
+}
+
+interface BufferLanePositions {
+  /** Positions between left-affinity and right-affinity insertions at each buffer offset. */
+  readonly seam: readonly number[];
 }
 
 interface PlanNodeAllocation {
@@ -1054,7 +1074,8 @@ class MutableTreeDraft implements ParserTreeDraft {
   private readonly generatedIds = new Set<string>();
   private readonly newTapeSpans = new Map<NodeId, Span>();
   private readonly transferBoundaries: PlanBoundary[] = [];
-  private readonly textBuffers = new Map<string, string>();
+  private readonly transferBoundarySlots = new Map<string, InsertionSlotTarget>();
+  private readonly textBuffers = new Map<string, DraftTextBuffer>();
   private readonly fragments = new Map<string, DraftFragment>();
   private readonly consumedFragments = new Set<string>();
   private idOrdinal = 0;
@@ -1096,7 +1117,6 @@ class MutableTreeDraft implements ParserTreeDraft {
     const allocations: PlanNodeAllocation[] = [];
     const newTapes: { id: TapeId; span: Span }[] = [];
     const deletions: NativeTextRun[] = [];
-    const insertions: PlanTextInsert[] = [];
     const writes: { nodeId: NodeId; field: CellField; value: unknown; token: string }[] = [];
     const touchedNodes = new Set<NodeId>();
     const touchedTapes = new Set<TapeId>();
@@ -1234,36 +1254,16 @@ class MutableTreeDraft implements ParserTreeDraft {
 
     for (const node of this.nodes.values()) {
       for (const span of node.spans) {
-        let priorInsertion: PlanTextInsert | undefined;
         for (const piece of span.pieces) {
-          if (piece.kind !== 'inserted' || !piece.text) {
-            priorInsertion = undefined;
-            continue;
-          }
+          if (piece.kind !== 'inserted' || !piece.text) continue;
           touchedTapes.add(piece.anchor.tapeId);
           textTapes.add(piece.anchor.tapeId);
-          if (
-            priorInsertion &&
-            priorInsertion.tapeId === piece.anchor.tapeId &&
-            priorInsertion.index === piece.anchor.index
-          ) {
-            const index = insertions.indexOf(priorInsertion);
-            const combined = { ...priorInsertion, text: priorInsertion.text + piece.text };
-            insertions[index] = combined;
-            priorInsertion = combined;
-          } else {
-            priorInsertion = {
-              tapeId: piece.anchor.tapeId,
-              index: piece.anchor.index,
-              slotOrder: insertions.length,
-              text: piece.text,
-            };
-            insertions.push(priorInsertion);
-          }
         }
       }
     }
 
+    const textProjection = this.compileTextProjection();
+    const insertions = textProjection.insertions;
     for (const boundary of this.transferBoundaries) touchedTapes.add(boundary.tapeId);
     const operationNodeIds = this.operations_.flatMap((operation) => {
       switch (operation.type) {
@@ -1279,7 +1279,9 @@ class MutableTreeDraft implements ParserTreeDraft {
     this.compiledPlan = Object.freeze({
       allocations: Object.freeze(allocations),
       newTapes: Object.freeze(newTapes),
-      boundaries: Object.freeze(this.finalTransferBoundaries().map((item) => Object.freeze(item))),
+      boundaries: Object.freeze(
+        this.finalTransferBoundaries(textProjection.positions).map((item) => Object.freeze(item)),
+      ),
       deletions: Object.freeze(deletions.map((item) => Object.freeze({ ...item }))),
       insertions: Object.freeze(insertions.map((item) => Object.freeze({ ...item }))),
       writes: Object.freeze(writes.map((item) => Object.freeze({ ...item }))),
@@ -1620,6 +1622,12 @@ class MutableTreeDraft implements ParserTreeDraft {
             {
               span,
               created: true,
+              insertionSlot: {
+                tapeId: span.tapeId,
+                index: 1,
+                spanIndex: 0,
+                affinity: 'right',
+              },
               pieces: content
                 ? [
                     this.makeInsertedPiece(
@@ -1648,14 +1656,35 @@ class MutableTreeDraft implements ParserTreeDraft {
   }
 
   private makeInsertedPiece(anchor: InsertionSlotTarget, text: string): InsertedPiece {
+    const { parentBufferId, parentBufferOffset, ...slot } = anchor;
     const bufferId = this.allocateId('buffer');
-    this.textBuffers.set(bufferId, text);
+    const insertionAnchor: InsertionSlot = { ...slot, order: this.insertionSlotOrder++ };
+    assert(
+      (parentBufferId === undefined) === (parentBufferOffset === undefined),
+      'buffer insertion requires a complete parent slot',
+    );
+    if (parentBufferId !== undefined && parentBufferOffset !== undefined) {
+      const parent = this.textBuffers.get(parentBufferId);
+      assert(parent, `missing parent action-local text buffer ${parentBufferId}`);
+      assert(
+        Number.isInteger(parentBufferOffset) &&
+          parentBufferOffset >= 0 &&
+          parentBufferOffset <= parent.text.length,
+        `insertion is outside parent action-local text buffer ${parentBufferId}`,
+      );
+    }
+    this.textBuffers.set(bufferId, {
+      text,
+      anchor: insertionAnchor,
+      ...(parentBufferId === undefined ? {} : { parentBufferId }),
+      ...(parentBufferOffset === undefined ? {} : { parentBufferOffset }),
+    });
     return {
       kind: 'inserted',
       bufferId,
       from: 0,
       to: text.length,
-      anchor: { ...anchor, order: this.insertionSlotOrder++ },
+      anchor: insertionAnchor,
       text,
     };
   }
@@ -1669,11 +1698,11 @@ class MutableTreeDraft implements ParserTreeDraft {
           Number.isInteger(piece.to) &&
           piece.from >= 0 &&
           piece.to >= piece.from &&
-          piece.to <= buffer.length,
+          piece.to <= buffer.text.length,
         `action-local text slice is outside ${piece.bufferId}`,
       );
       assert(
-        piece.text === buffer.slice(piece.from, piece.to),
+        piece.text === buffer.text.slice(piece.from, piece.to),
         `action-local text slice diverged from ${piece.bufferId}`,
       );
       return;
@@ -1847,23 +1876,27 @@ class MutableTreeDraft implements ParserTreeDraft {
     assert(touching.length > 0, 'no insertion span contains the offset');
     const target = affinity === 'left' ? touching[0]! : touching.at(-1)!;
     const localOffset = offset - target.start;
-    if (target.span.created) {
-      const inserted = target.span.pieces.find(
-        (piece): piece is InsertedPiece => piece.kind === 'inserted',
-      );
-      if (inserted) {
-        return { spanIndex: target.index, localOffset, anchor: inserted.anchor };
-      }
-      return {
-        spanIndex: target.index,
-        localOffset,
-        anchor: {
-          tapeId: target.span.span.tapeId,
-          index: 1,
+    if (!target.span.pieces.length) {
+      const insertionSlot = target.span.insertionSlot;
+      if (insertionSlot) {
+        return {
           spanIndex: target.index,
-          affinity,
-        },
-      };
+          localOffset,
+          anchor: { ...insertionSlot, affinity },
+        };
+      }
+      if (target.span.created) {
+        return {
+          spanIndex: target.index,
+          localOffset,
+          anchor: {
+            tapeId: target.span.span.tapeId,
+            index: 1,
+            spanIndex: target.index,
+            affinity,
+          },
+        };
+      }
     }
 
     let pieceStart = 0;
@@ -1891,7 +1924,16 @@ class MutableTreeDraft implements ParserTreeDraft {
       }
     }
     if (chosen?.piece.kind === 'inserted') {
-      return { spanIndex: target.index, localOffset, anchor: chosen.piece.anchor };
+      return {
+        spanIndex: target.index,
+        localOffset,
+        anchor: {
+          ...chosen.piece.anchor,
+          affinity,
+          parentBufferId: chosen.piece.bufferId,
+          parentBufferOffset: chosen.piece.from + chosen.local,
+        },
+      };
     }
     const source = chosen?.piece;
     if (source?.kind === 'existing') {
@@ -2028,24 +2070,34 @@ class MutableTreeDraft implements ParserTreeDraft {
           : this.cutBoundary(node, current, localTo, 'end');
       if (localFrom > 0 || fullSpan) {
         const left = { ...span, endBoundaryId: startBoundary };
+        const insertionSlot =
+          this.transferBoundarySlots.get(startBoundary) ?? current.insertionSlot;
         remaining.push({
           span: left,
           sourceSpanIndex: current.sourceSpanIndex,
           pieces: slicePieces(current.pieces, 0, localFrom),
+          created: current.created,
+          ...(insertionSlot ? { insertionSlot } : {}),
         });
       }
+      const insertionSlot = this.transferBoundarySlots.get(startBoundary) ?? current.insertionSlot;
       moved.push({
         span: { ...span, startBoundaryId: startBoundary, endBoundaryId: endBoundary },
         sourceSpanIndex: current.sourceSpanIndex,
         pieces: slicePieces(current.pieces, localFrom, localTo),
         created: current.created,
+        ...(insertionSlot ? { insertionSlot } : {}),
       });
       if (localTo < text.length || fullSpan) {
         const right = { ...span, startBoundaryId: endBoundary };
+        const rightInsertionSlot =
+          this.transferBoundarySlots.get(endBoundary) ?? current.insertionSlot;
         remaining.push({
           span: right,
           sourceSpanIndex: current.sourceSpanIndex,
           pieces: slicePieces(current.pieces, localTo, text.length),
+          created: current.created,
+          ...(rightInsertionSlot ? { insertionSlot: rightInsertionSlot } : {}),
         });
       }
     }
@@ -2119,6 +2171,8 @@ class MutableTreeDraft implements ParserTreeDraft {
       for (let index = 0; index < positions.length - 1; index++) {
         const from = positions[index]!;
         const to = positions[index + 1]!;
+        const insertionSlot =
+          this.transferBoundarySlots.get(boundaries.get(from)!) ?? current.insertionSlot;
         segments.push({
           draft: {
             span: {
@@ -2129,6 +2183,7 @@ class MutableTreeDraft implements ParserTreeDraft {
             sourceSpanIndex: current.sourceSpanIndex,
             pieces: slicePieces(current.pieces, from, to),
             created: current.created,
+            ...(insertionSlot ? { insertionSlot } : {}),
           },
           from: globalStart + from,
           to: globalStart + to,
@@ -2241,6 +2296,19 @@ class MutableTreeDraft implements ParserTreeDraft {
       if (foundBoundaryPiece) break;
     }
     const boundaryId = this.allocateId('boundary');
+    const insertionSlot: InsertionSlotTarget = {
+      tapeId: mapped.tapeId,
+      index: mapped.index,
+      spanIndex: mapped.spanIndex,
+      affinity: resolvedAffinity,
+      ...(chosen?.piece.kind === 'inserted'
+        ? {
+            parentBufferId: chosen.piece.bufferId,
+            parentBufferOffset: chosen.piece.from + chosen.local,
+          }
+        : {}),
+    };
+    this.transferBoundarySlots.set(boundaryId, insertionSlot);
     this.transferBoundaries.push({
       tapeId: mapped.tapeId,
       index: mapped.index,
@@ -2248,12 +2316,145 @@ class MutableTreeDraft implements ParserTreeDraft {
       insertionOffset,
       side: role,
       order: this.transferBoundaries.length,
-      ...(chosen?.piece.kind === 'inserted' ? { sourceBufferId: chosen.piece.bufferId } : {}),
+      ...(chosen?.piece.kind === 'inserted'
+        ? {
+            sourceBufferId: chosen.piece.bufferId,
+            sourceBufferOffset: chosen.piece.from + chosen.local,
+          }
+        : {}),
     });
     return boundaryId;
   }
 
-  private finalTransferBoundaries(): PlanBoundary[] {
+  private compileTextProjection(): {
+    readonly insertions: readonly PlanTextInsert[];
+    readonly positions: ReadonlyMap<string, BufferLanePositions>;
+  } {
+    const liveRanges = new Map<string, [number, number][]>();
+    for (const node of this.nodes.values()) {
+      for (const span of node.spans) {
+        for (const piece of span.pieces) {
+          if (piece.kind !== 'inserted' || !piece.text) continue;
+          const ranges = liveRanges.get(piece.bufferId) ?? [];
+          ranges.push([piece.from, piece.to]);
+          liveRanges.set(piece.bufferId, ranges);
+        }
+      }
+    }
+
+    const roots = new Map<
+      string,
+      { readonly tapeId: TapeId; readonly index: number; ids: string[] }
+    >();
+    const children = new Map<string, Map<number, string[]>>();
+    for (const [id, buffer] of this.textBuffers) {
+      if (buffer.parentBufferId !== undefined) {
+        const parent = this.textBuffers.get(buffer.parentBufferId);
+        assert(parent, `missing parent action-local text buffer ${buffer.parentBufferId}`);
+        assert(
+          buffer.parentBufferOffset !== undefined &&
+            Number.isInteger(buffer.parentBufferOffset) &&
+            buffer.parentBufferOffset >= 0 &&
+            buffer.parentBufferOffset <= parent.text.length,
+          `invalid parent offset for action-local text buffer ${id}`,
+        );
+        const byOffset = children.get(buffer.parentBufferId) ?? new Map<number, string[]>();
+        const siblings = byOffset.get(buffer.parentBufferOffset) ?? [];
+        siblings.push(id);
+        byOffset.set(buffer.parentBufferOffset, siblings);
+        children.set(buffer.parentBufferId, byOffset);
+        continue;
+      }
+
+      const key = JSON.stringify([buffer.anchor.tapeId, buffer.anchor.index]);
+      const group = roots.get(key) ?? {
+        tapeId: buffer.anchor.tapeId,
+        index: buffer.anchor.index,
+        ids: [],
+      };
+      group.ids.push(id);
+      roots.set(key, group);
+    }
+
+    const orderByAffinity = (leftId: string, rightId: string): number => {
+      const left = this.textBuffers.get(leftId)!;
+      const right = this.textBuffers.get(rightId)!;
+      const affinityOrder =
+        Number(left.anchor.affinity === 'right') - Number(right.anchor.affinity === 'right');
+      return affinityOrder || left.anchor.order - right.anchor.order;
+    };
+    for (const byOffset of children.values()) {
+      for (const siblings of byOffset.values()) siblings.sort(orderByAffinity);
+    }
+
+    const positions = new Map<string, BufferLanePositions>();
+    const insertions: PlanTextInsert[] = [];
+    for (const group of roots.values()) {
+      group.ids.sort(orderByAffinity);
+      const chunks: string[] = [];
+      let laneLength = 0;
+      const emit = (id: string): void => {
+        const buffer = this.textBuffers.get(id);
+        assert(buffer, `missing action-local text buffer ${id}`);
+        const ranges = (liveRanges.get(id) ?? []).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+        const mergedRanges: [number, number][] = [];
+        for (const [from, to] of ranges) {
+          const previous = mergedRanges.at(-1);
+          assert(
+            !previous || from >= previous[1],
+            `action-local text buffer ${id} has overlapping final ownership`,
+          );
+          if (previous && from === previous[1]) previous[1] = to;
+          else mergedRanges.push([from, to]);
+        }
+
+        // Insertions at the same buffer offset stay on their requested side of a transfer seam.
+        const seam: number[] = [];
+        let rangeIndex = 0;
+        const childOffsets = children.get(id);
+        for (let offset = 0; offset <= buffer.text.length; offset++) {
+          const siblings = childOffsets?.get(offset) ?? [];
+          for (const childId of siblings) {
+            if (this.textBuffers.get(childId)!.anchor.affinity === 'left') emit(childId);
+          }
+          seam[offset] = laneLength;
+          for (const childId of siblings) {
+            if (this.textBuffers.get(childId)!.anchor.affinity === 'right') emit(childId);
+          }
+
+          if (offset < buffer.text.length) {
+            while (mergedRanges[rangeIndex] && mergedRanges[rangeIndex]![1] <= offset) {
+              rangeIndex++;
+            }
+            const range = mergedRanges[rangeIndex];
+            if (range && range[0] <= offset && offset < range[1]) {
+              chunks.push(buffer.text[offset]!);
+              laneLength++;
+            }
+          }
+        }
+        positions.set(id, Object.freeze({ seam: Object.freeze(seam) }));
+      };
+
+      for (const id of group.ids) emit(id);
+      const text = chunks.join('');
+      if (text) {
+        const first = this.textBuffers.get(group.ids[0]!)!;
+        insertions.push({
+          tapeId: group.tapeId,
+          index: group.index,
+          slotOrder: first.anchor.order,
+          text,
+        });
+      }
+    }
+
+    return { insertions, positions };
+  }
+
+  private finalTransferBoundaries(
+    positions: ReadonlyMap<string, BufferLanePositions>,
+  ): PlanBoundary[] {
     const referenced = new Set<string>();
     for (const node of this.nodes.values()) {
       for (const span of node.spans) {
@@ -2265,40 +2466,18 @@ class MutableTreeDraft implements ParserTreeDraft {
     return this.transferBoundaries.flatMap((boundary) => {
       if (!boundary.sourceBufferId) return [{ ...boundary }];
       if (!referenced.has(boundary.boundaryId)) return [];
-      let owner: DraftNodeState | undefined;
-      let edge: DraftSpan | undefined;
-      for (const node of this.nodes.values()) {
-        edge = node.spans.find((span) =>
-          boundary.side === 'start'
-            ? span.span.startBoundaryId === boundary.boundaryId
-            : span.span.endBoundaryId === boundary.boundaryId,
-        );
-        if (edge) {
-          owner = node;
-          break;
-        }
-      }
-      if (!owner || !edge) return [{ ...boundary }];
-
-      let insertionOffset = 0;
-      const addMatchingText = (span: DraftSpan) => {
-        for (const piece of span.pieces) {
-          if (
-            piece.kind === 'inserted' &&
-            piece.anchor.tapeId === boundary.tapeId &&
-            piece.anchor.index === boundary.index
-          ) {
-            insertionOffset += piece.text.length;
-          }
-        }
-      };
-      for (const span of owner.spans) {
-        if (span === edge) {
-          if (boundary.side === 'end') addMatchingText(span);
-          break;
-        }
-        addMatchingText(span);
-      }
+      const offset = boundary.sourceBufferOffset;
+      assert(offset !== undefined, `transfer boundary ${boundary.boundaryId} has no buffer offset`);
+      const bufferPositions = positions.get(boundary.sourceBufferId);
+      assert(
+        bufferPositions,
+        `missing final position for action-local buffer ${boundary.sourceBufferId}`,
+      );
+      const insertionOffset = bufferPositions.seam[offset];
+      assert(
+        insertionOffset !== undefined,
+        `transfer boundary ${boundary.boundaryId} is outside its source buffer`,
+      );
       return [{ ...boundary, insertionOffset }];
     });
   }
@@ -2336,12 +2515,14 @@ class MutableTreeDraft implements ParserTreeDraft {
         const cutId = this.cutBoundary(node, current, local, affinity === 'left' ? 'end' : 'start');
         const leftSpan = { ...current.span, endBoundaryId: cutId };
         const rightSpan = { ...current.span, startBoundaryId: cutId };
+        const insertionSlot = this.transferBoundarySlots.get(cutId) ?? current.insertionSlot;
         result.push(
           {
             span: leftSpan,
             sourceSpanIndex: current.sourceSpanIndex,
             pieces: slicePieces(current.pieces, 0, local),
             created: current.created,
+            ...(insertionSlot ? { insertionSlot } : {}),
           },
           ...moved,
           {
@@ -2349,6 +2530,7 @@ class MutableTreeDraft implements ParserTreeDraft {
             sourceSpanIndex: current.sourceSpanIndex,
             pieces: slicePieces(current.pieces, local, content.length),
             created: current.created,
+            ...(insertionSlot ? { insertionSlot } : {}),
           },
         );
       }

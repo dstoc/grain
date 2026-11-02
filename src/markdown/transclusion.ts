@@ -107,7 +107,7 @@ function finalInlineNode(root: ReadonlyMarkdownNodeView): InlineMarkdownNodeView
     ) {
       result = node as InlineMarkdownNodeView;
     }
-    pending.push(...(node.children ?? []));
+    pending.push(...[...(node.children ?? [])].reverse());
   }
   return result;
 }
