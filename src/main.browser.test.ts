@@ -163,6 +163,51 @@ test('rebases a non-overlapping Source edit received before deferred export', as
   ).toBe('Xalpha!');
 });
 
+test.each([
+  {
+    name: 'a long local prefix before a canonical suffix',
+    remote: { from: 5, to: 5, insert: 'X' },
+    local: { from: 0, to: 0, insert: '1234567890' },
+    expectedSource: '1234567890alphaX\n',
+    expectedCaret: 10,
+    expectedAfterTyping: '1234567890!alphaX\n',
+    expectedContent: '1234567890!alphaX',
+  },
+  {
+    name: 'a local range beginning at a canonical insertion gap',
+    remote: { from: 0, to: 0, insert: 'X' },
+    local: { from: 0, to: 5, insert: '' },
+    expectedSource: 'X\n',
+    expectedCaret: 1,
+    expectedAfterTyping: 'X!\n',
+    expectedContent: 'X!',
+  },
+])('keeps the Source caret after rebasing $name', async (fixture) => {
+  const { harness, source } = await createSettledHarness('alpha');
+  const internals = harness as unknown as HarnessInternals;
+  const document = internals.canonicalDocument!;
+  const writer = internals.canonicalWriter!;
+  const node = document.root.children[0]!;
+  source.focus();
+  source.setSelectionRange(fixture.local.from, fixture.local.to);
+
+  writer.edit({ actionId: `source-caret-${fixture.name}` }, (draft) => {
+    draft.spliceText(node.sharedId, fixture.remote);
+  });
+  source.setRangeText(fixture.local.insert, fixture.local.from, fixture.local.to, 'end');
+  source.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  await settleHarness(harness);
+
+  expect(source.value).toBe(fixture.expectedSource);
+  expect(source.selectionStart).toBe(fixture.expectedCaret);
+  expect(source.selectionEnd).toBe(fixture.expectedCaret);
+
+  await userEvent.keyboard('!');
+  await settleHarness(harness);
+  expect(source.value).toBe(fixture.expectedAfterTyping);
+  expect(internals.canonicalDocument!.root.children[0]!.content).toBe(fixture.expectedContent);
+});
+
 test('refreshes Source when its pending edit overlaps a newer canonical change', async () => {
   const { harness, source } = await createSettledHarness('alpha');
   const internals = harness as unknown as HarnessInternals;

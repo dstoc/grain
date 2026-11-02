@@ -114,6 +114,29 @@ function mapOffsetThroughReplacement(
   return from + insertLength;
 }
 
+function mapSelectionThroughRebasedReplacement(
+  offset: number,
+  replacement: { readonly from: number; readonly to: number; readonly insert: string },
+  rebasedFrom: number,
+  canonicalChange: { readonly from: number; readonly to: number; readonly insert: string },
+) {
+  const insertedEnd = replacement.from + replacement.insert.length;
+  if (offset >= replacement.from && offset <= insertedEnd) {
+    return rebasedFrom + offset - replacement.from;
+  }
+
+  const originalOffset =
+    offset < replacement.from
+      ? offset
+      : offset + replacement.to - replacement.from - replacement.insert.length;
+  return mapOffsetThroughReplacement(
+    originalOffset,
+    canonicalChange.from,
+    canonicalChange.to,
+    canonicalChange.insert.length,
+  );
+}
+
 function replacementsOverlap(
   first: { readonly from: number; readonly to: number },
   second: { readonly from: number; readonly to: number },
@@ -774,17 +797,17 @@ class MarkdownDevHarness extends LitElement {
           canonicalChange.trailingNewline;
         field.value = value;
         field.setSelectionRange(
-          mapOffsetThroughReplacement(
+          mapSelectionThroughRebasedReplacement(
             selectionStart,
-            canonicalChange.from,
-            canonicalChange.to,
-            canonicalChange.insert.length,
+            replacement,
+            rebasedFrom,
+            canonicalChange,
           ),
-          mapOffsetThroughReplacement(
+          mapSelectionThroughRebasedReplacement(
             selectionEnd,
-            canonicalChange.from,
-            canonicalChange.to,
-            canonicalChange.insert.length,
+            replacement,
+            rebasedFrom,
+            canonicalChange,
           ),
           selectionDirection,
         );
