@@ -214,6 +214,7 @@ function historyMeasurements(markdown: string) {
       [1, 0],
       [1, 16],
       [1, 64],
+      [1, 501],
       [4, 16],
       [4, 64],
     ]) {
@@ -390,5 +391,5 @@ it.skipIf(!enabled)(
     };
     console.log(`CANONICAL_HISTORY_BENCHMARK=${JSON.stringify(report)}`);
   },
-  60_000,
+  180_000,
 );
