@@ -1119,8 +1119,27 @@ export class CanonicalDocument {
       authorityEpoch !== checkpoint.authorityEpoch,
       'restored authority epoch must differ from the checkpoint epoch',
     );
-    const replacement = CanonicalDocument.rebuild(checkpoint, authorityEpoch);
-    return CanonicalDocument.open(replacement.checkpoint);
+    const restored = CanonicalDocument.open(checkpoint);
+    try {
+      const meta = ymap<unknown>(restored.document, META);
+      const revisions = ymap<number>(restored.document, TAPE_REVISIONS);
+      const sessionWatermarks = ymap<number>(restored.document, 'sessionWatermarks');
+      restored.document.transact(() => {
+        meta.set('authorityEpoch', authorityEpoch);
+        meta.set('acceptedRevision', 0);
+        for (const tapeId of revisions.keys()) revisions.set(tapeId, 0);
+        for (const sessionId of sessionWatermarks.keys()) sessionWatermarks.delete(sessionId);
+      }, 'grain:epoch-restore');
+      const validation = restored.validate();
+      assert(
+        validation.valid,
+        `restored checkpoint failed validation: ${validation.errors.join('; ')}`,
+      );
+      return restored;
+    } catch (error) {
+      restored.close();
+      throw error;
+    }
   }
 
   private static importTree(

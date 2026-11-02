@@ -1213,6 +1213,10 @@ class MutableTreeDraft implements ParserTreeDraft {
     const touchedNodes = new Set<NodeId>();
     const touchedTapes = new Set<TapeId>();
     const textTapes = new Set<TapeId>();
+    const finalTapeIds = new Set<TapeId>();
+    for (const candidate of this.nodes.values()) {
+      for (const span of candidate.spans) finalTapeIds.add(span.span.tapeId);
+    }
     for (const node of this.nodes.values()) {
       for (const span of node.spans) {
         for (const piece of span.pieces) this.assertPieceSource(piece);
@@ -1238,7 +1242,7 @@ class MutableTreeDraft implements ParserTreeDraft {
         });
         touchedNodes.add(node.id);
         const createdSpan = this.newTapeSpans.get(node.id);
-        if (createdSpan && node.spans.some((span) => span.span.tapeId === createdSpan.tapeId)) {
+        if (createdSpan && finalTapeIds.has(createdSpan.tapeId)) {
           newTapes.push({ id: createdSpan.tapeId, span: createdSpan });
           touchedTapes.add(createdSpan.tapeId);
         }
