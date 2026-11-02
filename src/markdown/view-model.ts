@@ -25,7 +25,16 @@ import { parseBlocks } from './block-parser/api.js';
 import { assert, cast } from '../asserts.js';
 import { type NormalizeTreeOptions, normalizeTree } from './normalize.js';
 import { dfs } from './view-model-util.js';
-import { Focus, Op, OpBatch, canCoalesce, classify, doOp, undoOp } from './view-model-ops.js';
+import {
+  Focus,
+  InlineConversion,
+  Op,
+  OpBatch,
+  canCoalesce,
+  classify,
+  doOp,
+  undoOp,
+} from './view-model-ops.js';
 import { viewModel } from './view-model-node.js';
 import { batch, signal } from '../signals.js';
 import { TypedCustomEvent } from '../event-utils.js';
@@ -227,6 +236,15 @@ export class ViewModel {
       }
     }
   }
+
+  updateInfo(info: string | null) {
+    assert(this.tree.state === 'editing');
+    if (this.self.type !== 'code-block') return;
+    const oldInfo = this.self.info;
+    if (oldInfo === info) return;
+    (this.self as { info: string | null }).info = info;
+    this.signalMutation({ type: 'info', node: this.self, info, oldInfo });
+  }
 }
 
 export function* traverseInlineNodes(node: InlineTreeNode) {
@@ -287,6 +305,27 @@ export class InlineViewModel extends ViewModel {
     if (newNodes) return newNodes;
     return null;
   }
+  convertInline(after: InlineConversion) {
+    assert(this.tree.state === 'editing');
+    const before: InlineConversion = {
+      type: this.self.type,
+      content: this.self.content,
+      marker: this.self.type === 'section' ? this.self.marker : null,
+      info: this.self.type === 'code-block' ? this.self.info : null,
+    };
+    if (
+      before.type === after.type &&
+      before.content === after.content &&
+      before.marker === after.marker &&
+      before.info === after.info
+    )
+      return;
+
+    applyInlineConversion(this.self, after);
+    this.inlineTree_ = undefined;
+    this.inlineTreeContent = undefined;
+    this.signalMutation({ type: 'convert', node: this.self, before, after });
+  }
   private maybeReplaceWithBlocks() {
     const blocks = this.parseAsBlocks();
     if (!blocks) return false;
@@ -312,6 +351,21 @@ export class InlineViewModel extends ViewModel {
     assert(node.type === 'document' && node.children);
     return node.children;
   }
+}
+
+function applyInlineConversion(node: InlineViewModelNode, state: InlineConversion) {
+  const mutable = node as unknown as {
+    type: InlineConversion['type'];
+    content: string;
+    marker?: string;
+    info?: string | null;
+  };
+  mutable.type = state.type;
+  mutable.content = state.content;
+  if (state.type === 'section') mutable.marker = state.marker ?? '#';
+  else delete mutable.marker;
+  if (state.type === 'code-block') mutable.info = state.info;
+  else delete mutable.info;
 }
 
 export interface MarkdownTreeDelegate {

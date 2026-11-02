@@ -29,16 +29,20 @@ function expectScheduledAppendMatchesFullParse(source: string, schedules: string
 
 describe('parseBlocks', () => {
   it('constructs and resumes parser trees without importing canonical storage', () => {
-    const importCanonical = vi.spyOn(CanonicalDocument, 'fromParsed');
+    const importFromParsed = vi.spyOn(CanonicalDocument, 'fromParsed');
+    const importFromTree = vi.spyOn(CanonicalDocument, 'fromTree');
     try {
+      createBlockParser().finish();
       const parser = createBlockParser();
       parser.push('# heading\n');
       const resumed = createBlockParser(parser.snapshot());
       resumed.push('body\n');
       expect(resumed.finish().serialize()).toEqual(parseBlocks('# heading\nbody\n').node);
-      expect(importCanonical).not.toHaveBeenCalled();
+      expect(importFromParsed).not.toHaveBeenCalled();
+      expect(importFromTree).not.toHaveBeenCalled();
     } finally {
-      importCanonical.mockRestore();
+      importFromParsed.mockRestore();
+      importFromTree.mockRestore();
     }
   });
 

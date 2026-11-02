@@ -3,7 +3,21 @@ import { viewModel } from './view-model-node.js';
 import type { InlineViewModelNode, ViewModelNode } from './view-model-node.js';
 import { isAncestorOf } from './view-model-util.js';
 
-export type Op = RemoveOp | InsertOp | EditOp | UpdateMarkerOp | UpdateCheckOp;
+export type Op =
+  | RemoveOp
+  | InsertOp
+  | EditOp
+  | UpdateMarkerOp
+  | UpdateCheckOp
+  | UpdateInfoOp
+  | ConvertInlineOp;
+
+export interface InlineConversion {
+  readonly type: 'paragraph' | 'section' | 'code-block';
+  readonly content: string;
+  readonly marker: string | null;
+  readonly info: string | null;
+}
 
 export interface Focus {
   node: InlineViewModelNode;
@@ -55,10 +69,30 @@ interface UpdateCheckOp {
   oldChecked?: boolean;
 }
 
+interface UpdateInfoOp {
+  type: 'info';
+  node: ViewModelNode;
+  info: string | null;
+  oldInfo: string | null;
+}
+
+interface ConvertInlineOp {
+  type: 'convert';
+  node: InlineViewModelNode;
+  before: InlineConversion;
+  after: InlineConversion;
+}
+
 export function doOp(op: Op) {
   switch (op.type) {
     case 'check':
       op.node[viewModel].updateChecked(op.checked);
+      break;
+    case 'convert':
+      op.node[viewModel].convertInline(op.after);
+      break;
+    case 'info':
+      op.node[viewModel].updateInfo(op.info);
       break;
     case 'edit':
       op.node[viewModel].edit(op.edit, false);
@@ -79,6 +113,12 @@ export function undoOp(op: Op) {
   switch (op.type) {
     case 'check':
       op.node[viewModel].updateChecked(op.oldChecked);
+      break;
+    case 'convert':
+      op.node[viewModel].convertInline(op.before);
+      break;
+    case 'info':
+      op.node[viewModel].updateInfo(op.oldInfo);
       break;
     case 'edit':
       op.node[viewModel].edit(
@@ -140,6 +180,8 @@ export function classify(root: ViewModelNode, batch: OpBatch): Classification {
       case 'check':
       case 'edit':
       case 'marker':
+      case 'convert':
+      case 'info':
         merge(op.node);
         break;
       case 'insert':

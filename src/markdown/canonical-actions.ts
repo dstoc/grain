@@ -410,6 +410,8 @@ interface PlanBoundary {
   readonly insertionOffset: number;
   readonly side: 'start' | 'end';
   readonly order: number;
+  /** Immutable action-local text whose final span edge owns this boundary. */
+  readonly sourceBufferId?: string;
 }
 
 interface PlanTextInsert {
@@ -1277,7 +1279,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     this.compiledPlan = Object.freeze({
       allocations: Object.freeze(allocations),
       newTapes: Object.freeze(newTapes),
-      boundaries: Object.freeze(this.transferBoundaries.map((item) => Object.freeze({ ...item }))),
+      boundaries: Object.freeze(this.finalTransferBoundaries().map((item) => Object.freeze(item))),
       deletions: Object.freeze(deletions.map((item) => Object.freeze({ ...item }))),
       insertions: Object.freeze(insertions.map((item) => Object.freeze({ ...item }))),
       writes: Object.freeze(writes.map((item) => Object.freeze({ ...item }))),
@@ -1319,7 +1321,9 @@ class MutableTreeDraft implements ParserTreeDraft {
         const actualText = actualSpans.map((span) => spanText(state, span)).join('');
         assert(
           actualText === inlineContent(expected),
-          `compiled action text differs from draft intent for ${id}`,
+          `compiled action text differs from draft intent for ${id}: expected ${JSON.stringify(
+            inlineContent(expected),
+          )}, got ${JSON.stringify(actualText)}`,
         );
       }
     }
@@ -2244,8 +2248,59 @@ class MutableTreeDraft implements ParserTreeDraft {
       insertionOffset,
       side: role,
       order: this.transferBoundaries.length,
+      ...(chosen?.piece.kind === 'inserted' ? { sourceBufferId: chosen.piece.bufferId } : {}),
     });
     return boundaryId;
+  }
+
+  private finalTransferBoundaries(): PlanBoundary[] {
+    const referenced = new Set<string>();
+    for (const node of this.nodes.values()) {
+      for (const span of node.spans) {
+        referenced.add(span.span.startBoundaryId);
+        referenced.add(span.span.endBoundaryId);
+      }
+    }
+
+    return this.transferBoundaries.flatMap((boundary) => {
+      if (!boundary.sourceBufferId) return [{ ...boundary }];
+      if (!referenced.has(boundary.boundaryId)) return [];
+      let owner: DraftNodeState | undefined;
+      let edge: DraftSpan | undefined;
+      for (const node of this.nodes.values()) {
+        edge = node.spans.find((span) =>
+          boundary.side === 'start'
+            ? span.span.startBoundaryId === boundary.boundaryId
+            : span.span.endBoundaryId === boundary.boundaryId,
+        );
+        if (edge) {
+          owner = node;
+          break;
+        }
+      }
+      if (!owner || !edge) return [{ ...boundary }];
+
+      let insertionOffset = 0;
+      const addMatchingText = (span: DraftSpan) => {
+        for (const piece of span.pieces) {
+          if (
+            piece.kind === 'inserted' &&
+            piece.anchor.tapeId === boundary.tapeId &&
+            piece.anchor.index === boundary.index
+          ) {
+            insertionOffset += piece.text.length;
+          }
+        }
+      };
+      for (const span of owner.spans) {
+        if (span === edge) {
+          if (boundary.side === 'end') addMatchingText(span);
+          break;
+        }
+        addMatchingText(span);
+      }
+      return [{ ...boundary, insertionOffset }];
+    });
   }
 
   private insertTransferAt(

@@ -6,7 +6,12 @@ import {
   type SectionViewModelNode,
   type ParagraphViewModelNode,
 } from '../types.js';
-import { currentSectionContainer } from '../utils.js';
+import {
+  createSemanticNode,
+  currentSectionContainer,
+  detachSemanticNode,
+  placeSemanticNode,
+} from '../utils.js';
 import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
 import { syncSectionStack, popSectionsToLevel } from '../container-management.js';
 import { closeParagraph } from './paragraphs.js';
@@ -49,16 +54,16 @@ export function promoteParagraphToSection(
 
   const container = currentSectionContainer(state);
   const nextSibling = paragraph[viewModel].nextSibling;
-  const section = state.tree.add({
+  const section = createSemanticNode(state, {
     type: 'section',
     marker: '#'.repeat(level),
     content: paragraph.content,
     children: [],
   }) as SectionViewModelNode;
-  section[viewModel].insertBefore(container, nextSibling);
+  placeSemanticNode(state, section, container, nextSibling);
   const pieces = state.inlinePieces.get(paragraph);
   if (pieces) state.inlinePieces.set(section, pieces);
-  paragraph[viewModel].remove();
+  detachSemanticNode(state, paragraph);
   state.inlinePieces.delete(paragraph);
   state.sectionStack.push(section);
   state.sawContent = true;
@@ -85,13 +90,13 @@ export function openSection(
   popSectionsToLevel(state, level);
   const parent = currentSectionContainer(state);
   ensurePlaceholderRemoved(state);
-  const section = state.tree.add({
+  const section = createSemanticNode(state, {
     type: 'section',
     marker: '#'.repeat(level),
     content,
     children: [],
   }) as SectionViewModelNode;
-  section[viewModel].insertBefore(parent);
+  placeSemanticNode(state, section, parent);
   if (mapped) state.inlinePieces.set(section, mapped.pieces);
   state.sectionStack.push(section);
   state.sawContent = true;

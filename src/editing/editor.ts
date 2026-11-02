@@ -33,7 +33,12 @@ import {
   findPreviousEditable,
   isAncestorOf,
 } from '../markdown/view-model-util.js';
-import { ViewModelNode, InlineViewModelNode, viewModel } from '../markdown/view-model-node.js';
+import {
+  ViewModelNode,
+  InlineViewModelNode,
+  isInlineViewModelNode,
+  viewModel,
+} from '../markdown/view-model-node.js';
 import { getContainingTransclusion } from '../markdown/transclusion.js';
 import { expandSelection, getBlockSelectionTarget } from './block-selection-util.js';
 import type { BlockSelectionTarget } from './block-selection-util.js';
@@ -52,8 +57,25 @@ import {
   replaceSelectedBlocks,
   selectedBlocksInDocumentOrder,
 } from './edits/replace-selected-blocks.js';
+import type { InlineMarkdownNodeView, ReadonlyMarkdownNodeView } from '../markdown/node-view.js';
 
 type ExcludeFirst<T extends Parameters<any>> = T extends [any, ...infer Rest] ? Rest : never;
+
+function legacyNode(node: ReadonlyMarkdownNodeView | undefined): ViewModelNode {
+  if (!node || !(viewModel in node))
+    throw new Error('legacy editor received a read-only node view');
+  return node as ViewModelNode;
+}
+
+function legacyInlineNode(node: InlineMarkdownNodeView | undefined): InlineViewModelNode {
+  const mutable = legacyNode(node);
+  assert(isInlineViewModelNode(mutable));
+  return mutable;
+}
+
+function legacySelection(nodes: Iterable<InlineMarkdownNodeView>): InlineViewModelNode[] {
+  return [...nodes].map(legacyInlineNode);
+}
 
 // Native selections can cover the inline while shadow-root offsets omit a final newline.
 // Only use composed ranges when the rendered text and ownership can be established.
@@ -277,7 +299,7 @@ export class Editor extends LitElement {
       ? {
           target: selectionTarget!,
           hostContext: selectionHostContext,
-          nodes: [...selectionHostContext.selection],
+          nodes: legacySelection(selectionHostContext.selection),
         }
       : undefined;
     const start = Math.min(selection.anchor, selection.focus);
@@ -328,7 +350,10 @@ export class Editor extends LitElement {
     const blockSelection = session.blockSelection;
     const selectedNow =
       blockSelection && blockSelection.hostContext.root
-        ? selectedBlocksInDocumentOrder(blockSelection.hostContext.root, blockSelection.nodes)
+        ? selectedBlocksInDocumentOrder(
+            legacyNode(blockSelection.hostContext.root),
+            blockSelection.nodes,
+          )
         : undefined;
     const selectionUnchanged =
       !blockSelection ||
@@ -372,7 +397,10 @@ export class Editor extends LitElement {
     const end = session.replacementEnd;
     const newText = session.replacementText;
     this.compositionFocus = blockSelection
-      ? { node: blockSelection.hostContext.selectionFocus ?? selectedNow![0]!, offset: 0 }
+      ? {
+          node: legacyInlineNode(blockSelection.hostContext.selectionFocus ?? selectedNow![0]!),
+          offset: 0,
+        }
       : { node, offset: start };
     let recoveredInline: MarkdownInline | undefined;
     let recoveryInputOwner: MarkdownInline | undefined;
@@ -587,7 +615,7 @@ export class Editor extends LitElement {
   runEditAction<
     T extends (state: EditContext, ...args: ExcludeFirst<Parameters<T>>) => ReturnType<T>,
   >(
-    element: Element & { hostContext?: HostContext; node?: ViewModelNode },
+    element: Element & { hostContext?: HostContext; node?: ReadonlyMarkdownNodeView },
     action: T,
     ...args: ExcludeFirst<Parameters<T>>
   ): ReturnType<T> {
@@ -597,7 +625,7 @@ export class Editor extends LitElement {
   private runIsolatedEditAction<
     T extends (state: EditContext, ...args: ExcludeFirst<Parameters<T>>) => ReturnType<T>,
   >(
-    element: Element & { hostContext?: HostContext; node?: ViewModelNode },
+    element: Element & { hostContext?: HostContext; node?: ReadonlyMarkdownNodeView },
     action: T,
     ...args: ExcludeFirst<Parameters<T>>
   ): ReturnType<T> {
@@ -607,7 +635,7 @@ export class Editor extends LitElement {
   private runEditActionWithHistory<
     T extends (state: EditContext, ...args: ExcludeFirst<Parameters<T>>) => ReturnType<T>,
   >(
-    element: Element & { hostContext?: HostContext; node?: ViewModelNode },
+    element: Element & { hostContext?: HostContext; node?: ReadonlyMarkdownNodeView },
     action: T,
     history: 'record' | 'isolated',
     recordEmptyIsolatedHistory: boolean,
@@ -620,10 +648,10 @@ export class Editor extends LitElement {
     const compositionFocus = this.compositionFocus;
     const context: EditContext = {
       get root() {
-        return cast(hostContext.root);
+        return legacyNode(hostContext.root);
       },
       get node() {
-        return cast(element.node);
+        return legacyNode(element.node);
       },
       focus(node: InlineViewModelNode, offset: number) {
         endFocus = { node, offset };
@@ -639,21 +667,21 @@ export class Editor extends LitElement {
         }
         if (!startFocus) {
           const { inline, startIndex } = renderer.getInlineSelection();
-          if (inline?.node) {
-            startFocus = { node: inline.node, offset: startIndex! };
+          if (inline?.nodeView) {
+            startFocus = { node: legacyInlineNode(inline.nodeView), offset: startIndex! };
           }
         }
         if (hostContext.hasSelection) {
           startFocus ??= {
-            node: hostContext.selectionFocus!,
+            node: legacyInlineNode(hostContext.selectionFocus),
             offset: 0,
           };
-          startFocus.selection = [...hostContext.selection];
+          startFocus.selection = legacySelection(hostContext.selection);
         }
       },
       keepFocus() {
         if (hostContext.selectionFocus) {
-          this.focus(hostContext.selectionFocus, 0);
+          this.focus(legacyInlineNode(hostContext.selectionFocus), 0);
         } else if (element instanceof MarkdownInline) {
           const selection = element.getSelection();
           const offset = selection?.start.index ?? 0;
@@ -673,7 +701,7 @@ export class Editor extends LitElement {
         hostContext.clearSelection();
       },
       get selection() {
-        return hostContext.selection;
+        return legacySelection(hostContext.selection);
       },
     };
     let actionResult: ReturnType<T>;
@@ -681,7 +709,7 @@ export class Editor extends LitElement {
       () => {
         actionResult = action(context, ...args);
         if (endFocus && hostContext.hasSelection) {
-          endFocus.selection = [...hostContext.selection];
+          endFocus.selection = legacySelection(hostContext.selection);
         }
         return { startFocus, endFocus };
       },
@@ -750,14 +778,14 @@ export class Editor extends LitElement {
           // Retarget if there's any containing transclusion that has a selection.
           const target = getBlockSelectionTarget(element);
           if (target) {
-            node = cast(target.node);
+            node = legacyInlineNode(target.node);
             element = target;
           }
           if (alter !== 'extend') {
             cast(element.hostContext).clearSelection();
           }
           while (true) {
-            const root = cast(cast(element.hostContext).root);
+            const root = legacyNode(cast(element.hostContext).root);
             const next =
               direction === 'backward'
                 ? findPreviousEditable(node, root)
@@ -775,7 +803,7 @@ export class Editor extends LitElement {
               const transclusion = getContainingTransclusion(element);
               if (!transclusion || alter === 'extend') return {};
               element = transclusion;
-              node = cast(transclusion.node);
+              node = legacyInlineNode(transclusion.node);
             }
           }
         }
@@ -799,7 +827,7 @@ export class Editor extends LitElement {
         this.runEditAction(inline, editInlineIndent, mode);
       }
     } else if ((keyDown.key === 'z' || keyDown.key === 'y') && keyDown.ctrlKey) {
-      const root = hostContext.root;
+      const root = legacyNode(hostContext.root);
       if (!root) return;
       keyboardEvent.preventDefault();
       const tree = root[viewModel].tree;

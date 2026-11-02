@@ -488,6 +488,48 @@ describe('CanonicalWriter', () => {
     document.close();
   });
 
+  it.each([
+    ['grow', 'LONGER'],
+    ['shrink', 'Q'],
+    ['delete', ''],
+  ] as const)('edits a transferred action-local fragment after %s', (label, replacement) => {
+    const document = CanonicalDocument.fromMarkdown('ab\n\nXY', {
+      documentId: `new-fragment-edit-${label}`,
+      actionId: `new-fragment-edit-import-${label}`,
+      authorityEpoch: 'action-epoch',
+    });
+    const writer = new CanonicalWriter(document);
+    const [source, destination] = document.root.children;
+    if (!source || !destination) throw new Error('missing fragment nodes');
+
+    const result = writer.edit({ actionId: `new-fragment-edit-${label}` }, (draft) => {
+      draft.spliceText(source.sharedId, { from: 1, to: 1, insert: 'NEW' });
+      const fragment = draft.cutInline(source.sharedId, 1, 4);
+      draft.insertFragment(destination.sharedId, 1, 'right', fragment);
+      draft.spliceText(destination.sharedId, { from: 1, to: 4, insert: replacement });
+    });
+
+    expect(result, JSON.stringify(result)).toHaveProperty('receipt');
+    expect(source.content).toBe('ab');
+    expect(destination.content).toBe(`X${replacement}Y`);
+    expect(document.validate()).toEqual({ valid: true, errors: [] });
+
+    expect(writer.undo().status).toBe('applied');
+    expect(source.content).toBe('ab');
+    expect(destination.content).toBe('XY');
+    expect(writer.redo().status).toBe('applied');
+    expect(source.content).toBe('ab');
+    expect(destination.content).toBe(`X${replacement}Y`);
+    expect(document.validate()).toEqual({ valid: true, errors: [] });
+
+    const reopened = CanonicalDocument.open(document.checkpoint());
+    expect(reopened.root.children.map((node) => node.content)).toEqual(['ab', `X${replacement}Y`]);
+    expect(reopened.validate()).toEqual({ valid: true, errors: [] });
+    reopened.close();
+    writer.close();
+    document.close();
+  });
+
   it('keeps insertion seam affinity when a fragment is cut and inserted again', () => {
     const run = (affinity: 'left' | 'right') => {
       const document = CanonicalDocument.fromMarkdown('source\n\ntarget\n\nend', {

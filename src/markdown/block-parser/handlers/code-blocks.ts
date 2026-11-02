@@ -1,7 +1,17 @@
 import { viewModel } from '../../view-model-node.js';
 import type { ViewModelNode } from '../../view-model-node.js';
-import { type BlockParseState, type MappedText, type OutputPiece } from '../types.js';
-import { listContinuationPrefix } from '../utils.js';
+import {
+  type BlockParseState,
+  type CodeBlockViewModelNode,
+  type MappedText,
+  type OutputPiece,
+} from '../types.js';
+import {
+  createSemanticNode,
+  editSemanticText,
+  listContinuationPrefix,
+  placeSemanticNode,
+} from '../utils.js';
 import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
 
 export function parseFenceStart(line: string): { marker: string; info: string | null } | undefined {
@@ -21,12 +31,12 @@ export function openCodeBlock(
   info: string | null,
 ) {
   ensurePlaceholderRemoved(state);
-  const node = state.tree.add({
+  const node = createSemanticNode(state, {
     type: 'code-block',
     info,
     content: '',
-  });
-  node[viewModel].insertBefore(parent);
+  }) as CodeBlockViewModelNode;
+  placeSemanticNode(state, node, parent);
   if (state.sourceTracking) state.inlinePieces.set(node, []);
   state.currentCodeBlock = node;
   state.currentCodeFence = marker;
@@ -46,15 +56,7 @@ export function appendCodeBlockLine(
   const inserted = hadLines ? `\n${line}` : line;
   if (settled) state.currentCodeHasLines = true;
   const startIndex = node.content.length;
-  node[viewModel].edit(
-    {
-      startIndex,
-      oldEndIndex: startIndex,
-      newEndIndex: startIndex + inserted.length,
-      newText: inserted,
-    },
-    false,
-  );
+  editSemanticText(state, node, startIndex, startIndex, inserted);
   if (settled && mapped) {
     const previous: readonly OutputPiece[] = state.inlinePieces.get(node) ?? [];
     state.inlinePieces.set(node, [

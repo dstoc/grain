@@ -20,3 +20,23 @@ export interface ReadonlyMarkdownNodeView {
   readonly renderSignal: ReadonlySignal<number>;
   readonly inlineTree?: InlineTree;
 }
+
+/** A checked inline projection accepted by the renderer and browser adapters. */
+export type InlineMarkdownNodeView = ReadonlyMarkdownNodeView &
+  (
+    | { readonly type: 'paragraph'; readonly content: string }
+    | { readonly type: 'section'; readonly content: string; readonly marker: string }
+    | { readonly type: 'code-block'; readonly content: string; readonly info: string | null }
+  );
+
+export function asInlineMarkdownNodeView(node: ReadonlyMarkdownNodeView): InlineMarkdownNodeView {
+  if (
+    (node.type !== 'paragraph' && node.type !== 'section' && node.type !== 'code-block') ||
+    typeof node.content !== 'string' ||
+    (node.type === 'section' && typeof node.marker !== 'string') ||
+    (node.type === 'code-block' && typeof node.info !== 'string' && node.info !== null)
+  ) {
+    throw new Error(`invalid inline renderer node: ${node.type}`);
+  }
+  return node as InlineMarkdownNodeView;
+}

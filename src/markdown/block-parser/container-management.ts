@@ -6,7 +6,7 @@ import {
   type ListViewModelNode,
   type ListItemViewModelNode,
 } from './types.js';
-import { isInsideListPath } from './utils.js';
+import { createSemanticNode, isInsideListPath, placeSemanticNode } from './utils.js';
 import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from './cleanup.js';
 
 export function resetQuoteStack(state: BlockParseState) {
@@ -36,12 +36,12 @@ export function syncQuoteStack(
   while (state.currentQuoteStack.length < depth) {
     ensurePlaceholderRemoved(state);
     const parent = state.currentQuoteStack.at(-1) ?? base;
-    const quote = state.tree.add({
+    const quote = createSemanticNode(state, {
       type: 'block-quote',
       marker: '> ',
       children: [],
     }) as BlockQuoteViewModelNode;
-    quote[viewModel].insertBefore(parent);
+    placeSemanticNode(state, quote, parent);
     state.currentQuoteStack.push(quote);
     state.sawContent = true;
   }
@@ -64,11 +64,11 @@ export function ensureListContainer(
     return list;
   }
 
-  const list = state.tree.add({
+  const list = createSemanticNode(state, {
     type: 'list',
     children: [],
   }) as ListViewModelNode;
-  list[viewModel].insertBefore(parent);
+  placeSemanticNode(state, list, parent);
   state.currentList = list;
   return list;
 }

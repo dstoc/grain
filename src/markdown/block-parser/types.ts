@@ -9,6 +9,7 @@ import type {
 } from '../node.js';
 import { MarkdownTree } from '../view-model.js';
 import type { ViewModelNode } from '../view-model-node.js';
+import type { MarkdownTreeDraft } from '../semantic-tree-draft.js';
 
 export type ParagraphViewModelNode = ParagraphNode & ViewModelNode;
 export type SectionViewModelNode = SectionNode & ViewModelNode;
@@ -19,6 +20,7 @@ export type CodeBlockViewModelNode = CodeBlockNode & ViewModelNode;
 
 export interface BlockParseState {
   tree: MarkdownTree;
+  draft: MarkdownTreeDraft;
   root: DocumentNode & ViewModelNode;
   sawContent: boolean;
   // A parsed root sentinel must not be mistaken for the synthetic empty document.

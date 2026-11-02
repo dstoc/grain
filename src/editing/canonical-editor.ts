@@ -32,7 +32,7 @@ import { MarkdownInline, type InlineInput, type InlineKeyDown } from '../markdow
 import { MarkdownRenderer } from '../markdown/block-render.js';
 import { HostContext } from '../markdown/host-context.js';
 import type { MarkdownRenderDelegate } from '../markdown/render-delegate.js';
-import type { ViewModelNode } from '../markdown/view-model-node.js';
+import { asInlineMarkdownNodeView } from '../markdown/node-view.js';
 import './mobile-keyboard-toolbar.js';
 
 interface CompositionDraft {
@@ -115,7 +115,7 @@ export class CanonicalEditor extends LitElement {
     }
     const context = this.renderer?.hostContext;
     if (context) {
-      context.root = this.document?.root as unknown as ViewModelNode | undefined;
+      context.root = this.document?.root;
       context.canonicalWriter = this.writer;
     }
   }
@@ -161,7 +161,7 @@ export class CanonicalEditor extends LitElement {
   }
 
   private activeInline(inline: MarkdownInline): CanonicalNode | undefined {
-    const node = inline.node as unknown;
+    const node = inline.nodeView;
     return node instanceof CanonicalNode ? node : undefined;
   }
 
@@ -182,9 +182,10 @@ export class CanonicalEditor extends LitElement {
 
   private currentBlockSelection(): CanonicalNode[] {
     const selection = this.hostContext?.selection ?? [];
-    const selected = new Set(
-      [...selection].map((node) => (node as unknown as CanonicalNode).sharedId),
-    );
+    const selected = new Set<NodeId>();
+    for (const node of selection) {
+      if (node instanceof CanonicalNode) selected.add(node.sharedId);
+    }
     return this.visibleInlineNodes().filter((node) => selected.has(node.sharedId));
   }
 
@@ -318,8 +319,7 @@ export class CanonicalEditor extends LitElement {
     } else if (!preserveBlockSelection) {
       context.clearSelection();
     }
-    context.focusNode =
-      target as unknown as import('../markdown/view-model-node.js').InlineViewModelNode;
+    context.focusNode = asInlineMarkdownNodeView(target);
     context.focusOffset = end.offset;
     this.restoringSelection = true;
     this.requestUpdate();
@@ -328,7 +328,7 @@ export class CanonicalEditor extends LitElement {
       await renderer.updateComplete;
       if (!this.isConnected || this.document !== document) return;
       const inline = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
-        (candidate) => candidate.node === (target as unknown as ViewModelNode),
+        (candidate) => candidate.nodeView === target,
       );
       if (!inline || !inline.isConnected) return;
       await inline.updateComplete;
@@ -554,8 +554,8 @@ export class CanonicalEditor extends LitElement {
     if (!first || !last) return;
     const hostContext = this.hostContext;
     const reverse =
-      !!hostContext?.selectionAnchor &&
-      (hostContext.selectionAnchor as unknown as CanonicalNode).sharedId === last.sharedId;
+      hostContext?.selectionAnchor instanceof CanonicalNode &&
+      hostContext.selectionAnchor.sharedId === last.sharedId;
     this.runDraft((draft) => {
       const start = draft.bookmark(
         reverse ? last.sharedId : first.sharedId,
@@ -719,8 +719,8 @@ export class CanonicalEditor extends LitElement {
         const first = selected[0]!;
         const last = selected.at(-1)!;
         const reverse =
-          !!context?.selectionAnchor &&
-          (context.selectionAnchor as unknown as CanonicalNode).sharedId === last.sharedId;
+          context?.selectionAnchor instanceof CanonicalNode &&
+          context.selectionAnchor.sharedId === last.sharedId;
         const anchorNode = reverse ? last : first;
         const focusNode = reverse ? first : last;
         const anchor = draft.bookmark(
@@ -785,10 +785,7 @@ export class CanonicalEditor extends LitElement {
     if (!next) return;
     const offset = direction === 'backward' ? (next.content ?? '').length : 0;
     if (event.shiftKey) {
-      context.extendSelection(
-        node as unknown as import('../markdown/view-model-node.js').InlineViewModelNode,
-        next as unknown as import('../markdown/view-model-node.js').InlineViewModelNode,
-      );
+      context.extendSelection(asInlineMarkdownNodeView(node), asInlineMarkdownNodeView(next));
     } else {
       context.clearSelection();
     }
@@ -809,17 +806,11 @@ export class CanonicalEditor extends LitElement {
     if (!context) return;
     context.clearSelection();
     for (const node of nodes) {
-      context.selection.add(
-        node as unknown as import('../markdown/view-model-node.js').InlineViewModelNode,
-      );
+      context.selection.add(asInlineMarkdownNodeView(node));
       node.renderSignal.value++;
     }
-    context.selectionAnchor = anchor as unknown as
-      | import('../markdown/view-model-node.js').InlineViewModelNode
-      | undefined;
-    context.selectionFocus = focus as unknown as
-      | import('../markdown/view-model-node.js').InlineViewModelNode
-      | undefined;
+    context.selectionAnchor = anchor ? asInlineMarkdownNodeView(anchor) : undefined;
+    context.selectionFocus = focus ? asInlineMarkdownNodeView(focus) : undefined;
   }
 
   private restoreHistoryFocus(result: HistoryResult) {
@@ -1000,7 +991,8 @@ export class CanonicalEditor extends LitElement {
     return [
       ...(this.renderer?.shadowRoot?.querySelectorAll<MarkdownInline>('md-inline') ?? []),
     ].find(
-      (candidate) => (candidate.node as unknown as CanonicalNode | undefined)?.sharedId === nodeId,
+      (candidate) =>
+        candidate.nodeView instanceof CanonicalNode && candidate.nodeView.sharedId === nodeId,
     );
   }
 
