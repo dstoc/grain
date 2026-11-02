@@ -92,6 +92,17 @@ function singleTextReplacement(before: string, after: string) {
   return { from, to: oldEnd, insert: after.slice(from, newEnd) };
 }
 
+function sourceChange(before: string, after: string) {
+  // Canonical serialization may add one terminal newline that has no source-edit coordinate yet.
+  const trailingNewline = !before.endsWith('\n') && after.endsWith('\n') ? '\n' : '';
+  const editableAfter = trailingNewline ? after.slice(0, -1) : after;
+  return {
+    ...singleTextReplacement(before, editableAfter),
+    editableAfter,
+    trailingNewline,
+  };
+}
+
 function mapOffsetThroughReplacement(
   offset: number,
   from: number,
@@ -101,6 +112,15 @@ function mapOffsetThroughReplacement(
   if (offset <= from) return offset;
   if (offset >= to) return offset + insertLength - (to - from);
   return from + insertLength;
+}
+
+function replacementsOverlap(
+  first: { readonly from: number; readonly to: number },
+  second: { readonly from: number; readonly to: number },
+) {
+  if (first.from === first.to) return second.from < first.from && first.from < second.to;
+  if (second.from === second.to) return first.from < second.from && second.from < first.to;
+  return first.from < second.to && second.from < first.to;
 }
 
 class MarkdownDevHarness extends LitElement {
@@ -564,6 +584,7 @@ class MarkdownDevHarness extends LitElement {
           <textarea
             id="source"
             .value=${this.source}
+            @focus=${this.onSourceFocus}
             @input=${this.onInput}
             @copy=${this.onSourceCopy}
             spellcheck="false"
@@ -706,23 +727,64 @@ class MarkdownDevHarness extends LitElement {
     ) {
       this.flushCanonicalExports(currentDocument, false);
       if (this.source !== previousSource) {
+        const canonicalChange = sourceChange(previousSource, this.source);
+        if (replacementsOverlap(replacement, canonicalChange)) {
+          // The accepted canonical edit wins when the stale Source edit touches the same text.
+          field.value = this.source;
+          field.setSelectionRange(
+            mapOffsetThroughReplacement(
+              selectionStart,
+              canonicalChange.from,
+              canonicalChange.to,
+              canonicalChange.insert.length,
+            ),
+            mapOffsetThroughReplacement(
+              selectionEnd,
+              canonicalChange.from,
+              canonicalChange.to,
+              canonicalChange.insert.length,
+            ),
+            selectionDirection,
+          );
+          return;
+        }
+
+        const rebasedFrom =
+          replacement.from === canonicalChange.from &&
+          replacement.to > replacement.from &&
+          canonicalChange.from === canonicalChange.to
+            ? // A range starting at a canonical insertion gap targets the old text after it.
+              canonicalChange.from + canonicalChange.insert.length
+            : mapOffsetThroughReplacement(
+                replacement.from,
+                canonicalChange.from,
+                canonicalChange.to,
+                canonicalChange.insert.length,
+              );
+        const rebasedTo = mapOffsetThroughReplacement(
+          replacement.to,
+          canonicalChange.from,
+          canonicalChange.to,
+          canonicalChange.insert.length,
+        );
         value =
-          this.source.slice(0, replacement.from) +
+          canonicalChange.editableAfter.slice(0, rebasedFrom) +
           replacement.insert +
-          this.source.slice(replacement.to);
+          canonicalChange.editableAfter.slice(rebasedTo) +
+          canonicalChange.trailingNewline;
         field.value = value;
         field.setSelectionRange(
           mapOffsetThroughReplacement(
             selectionStart,
-            replacement.from,
-            replacement.to,
-            replacement.insert.length,
+            canonicalChange.from,
+            canonicalChange.to,
+            canonicalChange.insert.length,
           ),
           mapOffsetThroughReplacement(
             selectionEnd,
-            replacement.from,
-            replacement.to,
-            replacement.insert.length,
+            canonicalChange.from,
+            canonicalChange.to,
+            canonicalChange.insert.length,
           ),
           selectionDirection,
         );
@@ -730,6 +792,37 @@ class MarkdownDevHarness extends LitElement {
     }
     this.stopPlayback();
     this.reparse(value);
+  };
+
+  private onSourceFocus = (event: FocusEvent) => {
+    const field = event.currentTarget as HTMLTextAreaElement;
+    const previousSource = this.source;
+    const selectionStart = field.selectionStart;
+    const selectionEnd = field.selectionEnd;
+    const selectionDirection = field.selectionDirection ?? 'none';
+    this.flushCanonicalExports(this.canonicalDocument, false);
+    if (this.source === previousSource) return;
+
+    const change = sourceChange(previousSource, this.source);
+    const start = mapOffsetThroughReplacement(
+      selectionStart,
+      change.from,
+      change.to,
+      change.insert.length,
+    );
+    const end = mapOffsetThroughReplacement(
+      selectionEnd,
+      change.from,
+      change.to,
+      change.insert.length,
+    );
+    field.value = this.source;
+    const restoreSelection = () => {
+      if (field.isConnected && field.value === this.source)
+        field.setSelectionRange(start, end, selectionDirection);
+    };
+    restoreSelection();
+    void this.updateComplete.then(restoreSelection);
   };
 
   private onSourceCopy = (event: ClipboardEvent) => {

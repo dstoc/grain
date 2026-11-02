@@ -113,6 +113,78 @@ test('coalesces canonical exports and flushes the latest source before copy', as
   expect(internals.parser).toBe(originalParser);
 });
 
+test('entering Source flushes the latest canonical Markdown and keeps the caret', async () => {
+  const { harness, source } = await createSettledHarness('alpha');
+  const internals = harness as unknown as HarnessInternals;
+  const document = internals.canonicalDocument!;
+  const writer = internals.canonicalWriter!;
+  const node = document.root.children[0]!;
+
+  source.setSelectionRange(5, 5);
+  writer.edit({ actionId: 'source-focus-prepend' }, (draft) => {
+    draft.spliceText(node.sharedId, { from: 0, to: 0, insert: 'X' });
+  });
+  expect(source.value).toBe('alpha');
+
+  source.focus();
+  await harness.updateComplete;
+  expect(source.value).toBe('Xalpha\n');
+  expect(source.selectionStart).toBe(6);
+  await userEvent.keyboard('!');
+  await settleHarness(harness);
+
+  expect(source.value).toBe('Xalpha!\n');
+  expect(source.selectionStart).toBe(7);
+  expect(
+    (harness as unknown as HarnessInternals).canonicalDocument!.root.children[0]!.content,
+  ).toBe('Xalpha!');
+});
+
+test('rebases a non-overlapping Source edit received before deferred export', async () => {
+  const { harness, source } = await createSettledHarness('alpha');
+  const internals = harness as unknown as HarnessInternals;
+  const document = internals.canonicalDocument!;
+  const writer = internals.canonicalWriter!;
+  const node = document.root.children[0]!;
+  source.focus();
+  source.setSelectionRange(5, 5);
+
+  writer.edit({ actionId: 'source-input-prepend' }, (draft) => {
+    draft.spliceText(node.sharedId, { from: 0, to: 0, insert: 'X' });
+  });
+  source.setRangeText('!', 5, 5, 'end');
+  source.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  await settleHarness(harness);
+
+  expect(source.value).toBe('Xalpha!\n');
+  expect(source.selectionStart).toBe(7);
+  expect(
+    (harness as unknown as HarnessInternals).canonicalDocument!.root.children[0]!.content,
+  ).toBe('Xalpha!');
+});
+
+test('refreshes Source when its pending edit overlaps a newer canonical change', async () => {
+  const { harness, source } = await createSettledHarness('alpha');
+  const internals = harness as unknown as HarnessInternals;
+  const document = internals.canonicalDocument!;
+  const writer = internals.canonicalWriter!;
+  const node = document.root.children[0]!;
+  source.focus();
+  source.setSelectionRange(1, 2);
+
+  writer.edit({ actionId: 'source-overlap-change' }, (draft) => {
+    draft.spliceText(node.sharedId, { from: 1, to: 2, insert: 'X' });
+  });
+  source.setRangeText('!', 1, 2, 'end');
+  source.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+  await settleHarness(harness);
+
+  expect(source.value).toBe('aXpha\n');
+  expect(
+    (harness as unknown as HarnessInternals).canonicalDocument!.root.children[0]!.content,
+  ).toBe('aXpha');
+});
+
 test('host save and playback use the latest canonical revision', async () => {
   const { harness, source } = await createSettledHarness('alpha');
   const internals = harness as unknown as HarnessInternals;

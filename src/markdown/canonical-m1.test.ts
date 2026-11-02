@@ -109,6 +109,32 @@ describe('Yjs M1 amplification controls', () => {
     }
   });
 
+  it.each([
+    ['empty', ''],
+    ['populated', 'new'],
+  ])('assigns a new %s tape its accepted revision once', (_name, content) => {
+    const document = makeDocument();
+    const writer = new CanonicalWriter(document);
+    try {
+      const revisions = canonicalWriterAccess(document).state.getMap<number>('tapeRevisions');
+      const setRevision = vi.spyOn(revisions, 'set');
+      const result = writer.edit({ actionId: `m1-new-tape-${_name}` }, (draft) => {
+        const id = draft.create({ type: 'paragraph', content });
+        draft.place(id, document.root.sharedId, null);
+      });
+      if (!('receipt' in result)) throw new Error(`action was not accepted: ${result.status}`);
+
+      const tapeId = result.receipt.structuralPatch.bornTapes[0]!.tapeId;
+      expect(
+        setRevision.mock.calls.filter(([id]) => id === tapeId).map(([, value]) => value),
+      ).toEqual([0, result.revision]);
+      expect(document.tapeRevision(tapeId)).toBe(result.revision);
+    } finally {
+      writer.close();
+      document.close();
+    }
+  });
+
   it('captures only the authored update events, excluding an earlier unrelated delete set', () => {
     const document = makeDocument();
     const writer = new CanonicalWriter(document);

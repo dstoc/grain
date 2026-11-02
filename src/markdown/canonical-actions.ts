@@ -2658,8 +2658,11 @@ function applyPlan(
 
   state.transact(() => {
     const revisions = revisionMap(state);
-    for (const id of mutations.changedTapeIds) revisions.set(id, nextRevision);
-    for (const { id } of plan.newTapes) revisions.set(id, nextRevision);
+    const changedTapeIds = new Set([
+      ...mutations.changedTapeIds,
+      ...plan.newTapes.map(({ id }) => id),
+    ]);
+    for (const id of changedTapeIds) revisions.set(id, nextRevision);
     metaMap(state).set('acceptedRevision', nextRevision);
   }, 'grain:revision');
 }
