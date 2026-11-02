@@ -214,7 +214,11 @@ function visibleInlineNodeIds(state: Y.Doc): NodeId[] {
     if (!record) continue;
     const kind = (record.get('kind') as { readonly value?: unknown } | undefined)?.value;
     if (kind === 'paragraph' || kind === 'section' || kind === 'code-block') result.push(id);
-    const children = (record.get('children') as { readonly value?: unknown } | undefined)?.value;
+    const childrenValue = record.get('children');
+    const children =
+      childrenValue instanceof Y.Array
+        ? childrenValue.toArray()
+        : (childrenValue as { readonly value?: unknown } | undefined)?.value;
     if (Array.isArray(children)) pending.push(...[...children].reverse());
   }
   return result;
