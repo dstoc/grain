@@ -49,7 +49,7 @@ export class Section extends LitElement {
     const node = this.node;
     let marker: unknown = '';
     if (node.type === 'section') {
-      if (node[viewModel].parent?.type !== 'section') {
+      if (node.parent?.type !== 'section') {
         marker = templateContent(starIcon);
       } else {
         const idx = Math.min(node.marker.length - 1, 9);

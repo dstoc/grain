@@ -252,7 +252,6 @@ export class InlineViewModel extends ViewModel {
     childIndex?: number,
   ) {
     super(self, tree, parent, childIndex);
-    this.self = self;
   }
   private inlineTree_?: InlineTree;
   private inlineTreeContent?: string;
@@ -319,30 +318,15 @@ export interface MarkdownTreeDelegate {
   postEditUpdate(node: ViewModelNode, change: 'connected' | 'disconnected' | 'changed'): void;
 }
 
-/** Construction mutations can be backed by a TreeDraft while this tree serves as its read view. */
-export interface MarkdownTreeConstructionDraft {
-  bindRoot(root: ViewModelNode): void;
-  addNode(node: ViewModelNode): void;
-  apply(operation: Op): void;
-  checkpoint(): void;
-  finish(root: ViewModelNode): void;
-  close(): void;
-}
-
 export type TreeChange = 'edit' | 'cache';
 
 export class MarkdownTree extends EventTarget {
-  private constructionDraft?: MarkdownTreeConstructionDraft;
-  private constructionDraftBound = false;
-
   constructor(
     root: DocumentNode | undefined,
     caches?: Map<MarkdownNode, Caches>,
     private readonly delegate?: MarkdownTreeDelegate,
-    constructionDraft?: MarkdownTreeConstructionDraft,
   ) {
     super();
-    this.constructionDraft = constructionDraft;
     if (!root) {
       this.#disconnected = true;
       if (caches) console.warn('disconnected but caches present');
@@ -352,10 +336,6 @@ export class MarkdownTree extends EventTarget {
       this.#disconnected = false;
     }
     this.root = this.addDom(root);
-    if (this.constructionDraft) {
-      this.constructionDraft.bindRoot(this.root);
-      this.constructionDraftBound = true;
-    }
     this.caches = caches ?? new Map<MarkdownNode, Caches>();
     this.setRoot(this.root);
   }
@@ -517,7 +497,6 @@ export class MarkdownTree extends EventTarget {
         recordEmptyIsolatedHistory,
       );
     });
-    this.constructionDraft?.checkpoint();
     return result;
   }
 
@@ -573,20 +552,7 @@ export class MarkdownTree extends EventTarget {
   record(op: Op) {
     assert(this.state === 'editing');
     assert(!this.#disconnected);
-    this.constructionDraft?.apply(op);
     this.editOperations.push(op);
-  }
-
-  finishConstructionDraft(): void {
-    const constructionDraft = this.constructionDraft;
-    this.constructionDraft = undefined;
-    this.constructionDraftBound = false;
-    if (!constructionDraft) return;
-    try {
-      constructionDraft.finish(this.root);
-    } finally {
-      constructionDraft.close();
-    }
   }
 
   private finishEdit(
@@ -704,14 +670,27 @@ export class MarkdownTree extends EventTarget {
 
   private addDom<T extends MarkdownNode>(node: T, parent?: ViewModelNode, childIndex?: number) {
     const result = node as T & ViewModelNode;
+    let model: ViewModel;
     if (isInlineNode(result)) {
       assert(!result[viewModel]);
-      result[viewModel] = new InlineViewModel(result, this, parent, childIndex);
+      model = new InlineViewModel(result, this, parent, childIndex);
     } else {
       assert(!result[viewModel]);
-      result[viewModel] = new ViewModel(result, this, parent, childIndex);
+      model = new ViewModel(result, this, parent, childIndex);
     }
-    if (this.constructionDraftBound) this.constructionDraft?.addNode(result);
+    result[viewModel] = model;
+    Object.defineProperties(result, {
+      id: { get: () => model.id },
+      connected: { get: () => model.connected },
+      version: { get: () => model.version },
+      parent: { get: () => model.parent },
+      previousSibling: { get: () => model.previousSibling },
+      nextSibling: { get: () => model.nextSibling },
+      renderSignal: { get: () => model.renderSignal },
+      inlineTree: {
+        get: () => (model instanceof InlineViewModel ? model.inlineTree : undefined),
+      },
+    });
     if (result.children) {
       for (let i = 0; i < result.children.length; i++) {
         this.addDom(result.children[i], result, i);

@@ -9,7 +9,8 @@ import { cast } from '../asserts.js';
 import { NodeSignalController } from './node-signal-controller.js';
 import { HostContext, hostContext } from './host-context.js';
 import type { InlineTreeNode } from './inline-parser.js';
-import { type InlineViewModelNode, viewModel } from './view-model-node.js';
+import type { InlineViewModelNode } from './view-model-node.js';
+import type { ReadonlyMarkdownNodeView } from './node-view.js';
 
 export interface InlineInputPoint {
   span?: MarkdownSpan;
@@ -18,7 +19,7 @@ export interface InlineInputPoint {
 
 export interface InlineInput {
   inline: MarkdownInline;
-  node: InlineViewModelNode;
+  node: ReadonlyMarkdownNodeView;
   content: string;
   inputEvent: InputEvent;
   inputStart: InlineInputPoint;
@@ -27,7 +28,7 @@ export interface InlineInput {
 
 export interface InlineKeyDown {
   inline: MarkdownInline;
-  node: InlineViewModelNode;
+  node: ReadonlyMarkdownNodeView;
   keyboardEvent: KeyboardEvent;
 }
 
@@ -89,7 +90,7 @@ export class MarkdownInline extends LitElement {
   get mobileToolbarInputReady() {
     return (
       this.isConnected &&
-      !!this.node?.[viewModel].connected &&
+      !!this.node?.connected &&
       !this.composing &&
       !this.recoveringProjection &&
       !this.recovery &&
@@ -238,11 +239,11 @@ export class MarkdownInline extends LitElement {
 
   override render() {
     if (!this.node) return;
-    if (!this.node[viewModel].connected) return;
+    if (!this.node.connected) return;
     this.selected = this.hostContext?.selection.has(this.node) ?? false;
     return keyed(
       this.projectionVersion,
-      html`<md-span .node=${this.node[viewModel].inlineTree.rootNode}></md-span>`,
+      html`<md-span .node=${this.node.inlineTree.rootNode}></md-span>`,
     );
   }
 
@@ -288,7 +289,7 @@ export class MarkdownInline extends LitElement {
   }
 
   async maybeSetFocus() {
-    if (!this.node || !this.node[viewModel].connected) return;
+    if (!this.node || !this.node.connected) return;
     if (this.hostContext?.focusNode !== this.node) return;
     const span = this.querySelector<MarkdownSpan>('md-span');
     if (!span) return;

@@ -80,7 +80,7 @@ export class CanonicalEditor extends LitElement {
     const root = this.document?.root;
     if (!root) return html``;
     return html`<md-block-render
-      .block=${root as unknown as ViewModelNode}
+      .block=${root}
       .renderDelegate=${this.renderDelegate}
       @inline-input=${this.onInlineInput}
       @inline-keydown=${this.onInlineKeyDown}

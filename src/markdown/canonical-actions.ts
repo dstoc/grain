@@ -19,10 +19,6 @@ import type {
   Span,
   TapeId,
 } from './canonical-model.js';
-import { isInlineNode } from './node.js';
-import type { DocumentNode } from './node.js';
-import type { ViewModelNode } from './view-model-node.js';
-import type { MarkdownTreeConstructionDraft } from './view-model.js';
 import {
   indexNativeTape,
   indexProjectedSpans,
@@ -39,6 +35,7 @@ import type {
   TextEdit,
 } from './canonical-text.js';
 import { normalizeCanonicalDraft } from './canonical-normalize.js';
+import type { SemanticNormalizationDraft } from './semantic-normalize.js';
 import { classifyInlineInput, parseBlocks } from './block-parser/api.js';
 import type { ParserConversionPlan } from './block-parser/api.js';
 import { applyParserConversion } from './canonical-promotion.js';
@@ -97,6 +94,11 @@ export interface Transfer {
   readonly affinity: TextAffinity;
 }
 
+/** A move-only handle to text and insertion gaps removed from a draft inline. */
+export interface InlineFragment {
+  readonly text: string;
+}
+
 export interface ConversionPlan {
   readonly type: 'paragraph' | 'section' | 'code-block';
   readonly marker?: string;
@@ -126,12 +128,22 @@ export interface ActionFocus {
 
 export type DraftCommand = (draft: TreeDraft) => void | ActionFocus;
 
-export interface TreeDraft {
+export interface TreeDraft extends SemanticNormalizationDraft {
   node(id: NodeId): DraftNode;
+  parentOf(id: NodeId): NodeId | undefined;
+  previousSiblingOf(id: NodeId): NodeId | undefined;
+  nextSiblingOf(id: NodeId): NodeId | undefined;
   create(spec: NodeSpec): NodeId;
   place(id: NodeId, parent: NodeId, before: NodeId | null): void;
   detach(id: NodeId): void;
   spliceText(id: NodeId, edit: TextEdit): void;
+  cutInline(id: NodeId, from: number, to: number): InlineFragment;
+  insertFragment(
+    destination: NodeId,
+    at: number,
+    affinity: TextAffinity,
+    fragment: InlineFragment,
+  ): void;
   transferInlineRange(transfer: Transfer): void;
   convertInline(id: NodeId, plan: ConversionPlan): void;
   setMarker(id: NodeId, marker: string | null): void;
@@ -144,7 +156,7 @@ export interface DraftTextPiece {
   /** Half-open UTF-16 coordinates in the current draft string. */
   readonly from: number;
   readonly to: number;
-  readonly kind: 'retained' | 'inserted' | 'transferred';
+  readonly kind: 'existing' | 'inserted';
 }
 
 /** Parser conversion reads the draft's own source mapping before changing ownership. */
@@ -171,6 +183,20 @@ export type SemanticOperation =
     }
   | { readonly type: 'detach'; readonly id: NodeId }
   | { readonly type: 'spliceText'; readonly id: NodeId; readonly edit: TextEdit }
+  | {
+      readonly type: 'cutInline';
+      readonly id: NodeId;
+      readonly from: number;
+      readonly to: number;
+      readonly fragmentId: string;
+    }
+  | {
+      readonly type: 'insertFragment';
+      readonly destination: NodeId;
+      readonly at: number;
+      readonly affinity: TextAffinity;
+      readonly fragmentId: string;
+    }
   | { readonly type: 'transferInlineRange'; readonly transfer: Transfer }
   | { readonly type: 'convertInline'; readonly id: NodeId; readonly plan: ConversionPlan }
   | { readonly type: 'setMarker'; readonly id: NodeId; readonly marker: string | null }
@@ -318,37 +344,36 @@ interface InternalCell {
   readonly value: unknown;
 }
 
-interface DraftAnchor {
+interface InsertionSlot {
   readonly tapeId: TapeId;
   readonly index: number;
   readonly spanIndex: number;
   readonly affinity: TextAffinity;
+  readonly order: number;
 }
 
-interface RetainedPiece {
-  readonly kind: 'retained';
-  readonly sourceFrom: number;
-  readonly sourceTo: number;
+type InsertionSlotTarget = Omit<InsertionSlot, 'order'>;
+
+interface ExistingPiece {
+  readonly kind: 'existing';
+  readonly source: NodeId;
+  readonly tapeId: TapeId;
+  readonly sourceSpanIndex: number;
+  readonly from: number;
+  readonly to: number;
   readonly text: string;
 }
 
 interface InsertedPiece {
   readonly kind: 'inserted';
-  readonly anchor: DraftAnchor;
+  readonly bufferId: string;
+  readonly from: number;
+  readonly to: number;
+  readonly anchor: InsertionSlot;
   readonly text: string;
 }
 
-interface TransferredPiece {
-  readonly kind: 'transferred';
-  readonly text: string;
-  readonly source: NodeId;
-  readonly tapeId: TapeId;
-  readonly sourceSpanIndex?: number;
-  readonly sourceFrom?: number;
-  readonly sourceTo?: number;
-}
-
-type DraftPiece = RetainedPiece | InsertedPiece | TransferredPiece;
+type DraftPiece = ExistingPiece | InsertedPiece;
 
 interface DraftSpan {
   span: Span;
@@ -368,8 +393,14 @@ interface DraftNodeState {
   readonly baseCells: Map<CellField, InternalCell>;
   readonly created: boolean;
   textEdited: boolean;
-  transferred: boolean;
 }
+
+interface DraftFragment {
+  readonly spans: readonly DraftSpan[];
+  readonly text: string;
+}
+
+const fragmentIds = new WeakMap<object, string>();
 
 interface PlanBoundary {
   readonly tapeId: TapeId;
@@ -377,11 +408,14 @@ interface PlanBoundary {
   readonly boundaryId: string;
   /** Position inside action-local text inserted at this native index. */
   readonly insertionOffset: number;
+  readonly side: 'start' | 'end';
+  readonly order: number;
 }
 
 interface PlanTextInsert {
   readonly tapeId: TapeId;
   readonly index: number;
+  readonly slotOrder: number;
   readonly text: string;
 }
 
@@ -880,11 +914,28 @@ function inlineContent(node: DraftNodeState): string {
   return node.spans.flatMap((span) => span.pieces.map((piece) => piece.text)).join('');
 }
 
-function draftSpanCopy(span: Span, text: string, sourceSpanIndex: number): DraftSpan {
+function draftSpanCopy(
+  owner: NodeId,
+  span: Span,
+  text: string,
+  sourceSpanIndex: number,
+): DraftSpan {
   return {
     span: Object.freeze({ ...span }),
     sourceSpanIndex,
-    pieces: text ? [{ kind: 'retained', sourceFrom: 0, sourceTo: text.length, text }] : [],
+    pieces: text
+      ? [
+          {
+            kind: 'existing',
+            source: owner,
+            tapeId: span.tapeId,
+            sourceSpanIndex,
+            from: 0,
+            to: text.length,
+            text,
+          },
+        ]
+      : [],
   };
 }
 
@@ -902,7 +953,9 @@ function nodeStateFromRecord(state: Y.Doc, id: NodeId, indexes: CanonicalIndexes
     type: kind.value,
     children: [...children.value],
     spans: INLINE_KINDS.has(kind.value)
-      ? spans.value.map((span, index) => draftSpanCopy(span, spanText(state, span, indexes), index))
+      ? spans.value.map((span, index) =>
+          draftSpanCopy(id, span, spanText(state, span, indexes), index),
+        )
       : [],
     marker: marker.value,
     checked: checked.value,
@@ -917,7 +970,6 @@ function nodeStateFromRecord(state: Y.Doc, id: NodeId, indexes: CanonicalIndexes
     ]),
     created: false,
     textEdited: false,
-    transferred: false,
   };
 }
 
@@ -932,15 +984,23 @@ function sameValue(left: unknown, right: unknown): boolean {
 
 function slicePiece(piece: DraftPiece, from: number, to: number): DraftPiece | undefined {
   if (from >= to) return undefined;
-  if (piece.kind === 'retained') {
+  if (piece.kind === 'existing') {
     return {
       ...piece,
-      sourceFrom: piece.sourceFrom + from,
-      sourceTo: piece.sourceFrom + to,
+      from: piece.from + from,
+      to: piece.from + to,
       text: piece.text.slice(from, to),
     };
   }
-  return { ...piece, text: piece.text.slice(from, to) };
+  if (piece.kind === 'inserted') {
+    return {
+      ...piece,
+      from: piece.from + from,
+      to: piece.from + to,
+      text: piece.text.slice(from, to),
+    };
+  }
+  return undefined;
 }
 
 function slicePieces(pieces: readonly DraftPiece[], from: number, to: number): DraftPiece[] {
@@ -985,14 +1045,18 @@ function stableJson(value: unknown): string {
 class MutableTreeDraft implements ParserTreeDraft {
   private active = true;
   private readonly nodes = new Map<NodeId, DraftNodeState>();
-  private readonly parentByChild: Map<NodeId, NodeId>;
+  /** Only changed edges are copied; untouched parent lookups stay on the accepted index. */
+  private readonly parentOverlay = new Map<NodeId, NodeId | null>();
   private readonly preconditions = new Map<string, ReadPrecondition>();
   private readonly operations_: SemanticOperation[] = [];
   private readonly generatedIds = new Set<string>();
   private readonly newTapeSpans = new Map<NodeId, Span>();
   private readonly transferBoundaries: PlanBoundary[] = [];
-  private readonly transferredNodes = new Set<NodeId>();
+  private readonly textBuffers = new Map<string, string>();
+  private readonly fragments = new Map<string, DraftFragment>();
+  private readonly consumedFragments = new Set<string>();
   private idOrdinal = 0;
+  private insertionSlotOrder = 0;
   private compiledPlan?: LowLevelPlan;
 
   constructor(
@@ -1001,7 +1065,6 @@ class MutableTreeDraft implements ParserTreeDraft {
     private readonly indexes: CanonicalIndexes,
     operations?: readonly SemanticOperation[],
   ) {
-    this.parentByChild = new Map(indexes.parentByChild);
     if (operations) {
       for (const operation of operations) this.apply(operation, false);
     }
@@ -1009,15 +1072,6 @@ class MutableTreeDraft implements ParserTreeDraft {
 
   close(): void {
     this.active = false;
-  }
-
-  checkpointConstruction(): void {
-    this.assertActive();
-    assert(!this.compiledPlan, 'cannot checkpoint a compiled construction draft');
-    this.operations_.length = 0;
-    this.preconditions.clear();
-    this.transferBoundaries.length = 0;
-    this.transferredNodes.clear();
   }
 
   get operationList(): readonly SemanticOperation[] {
@@ -1033,6 +1087,10 @@ class MutableTreeDraft implements ParserTreeDraft {
   compilePlan(): LowLevelPlan {
     this.assertActive();
     if (this.compiledPlan) return this.compiledPlan;
+    assert(
+      [...this.fragments.keys()].every((id) => this.consumedFragments.has(id)),
+      'every cut fragment must be inserted before the action is compiled',
+    );
     const allocations: PlanNodeAllocation[] = [];
     const newTapes: { id: TapeId; span: Span }[] = [];
     const deletions: NativeTextRun[] = [];
@@ -1042,6 +1100,9 @@ class MutableTreeDraft implements ParserTreeDraft {
     const touchedTapes = new Set<TapeId>();
     const textTapes = new Set<TapeId>();
     for (const node of this.nodes.values()) {
+      for (const span of node.spans) {
+        for (const piece of span.pieces) this.assertPieceSource(piece);
+      }
       if (node.created) {
         const spans = node.spans.map((span) => deepFreeze(deepCopy(span.span)));
         const cells: Record<CellField, CellValue<unknown>> = {
@@ -1066,19 +1127,6 @@ class MutableTreeDraft implements ParserTreeDraft {
         if (createdSpan) {
           newTapes.push({ id: createdSpan.tapeId, span: createdSpan });
           touchedTapes.add(createdSpan.tapeId);
-          const insertedText = node.spans
-            .filter(
-              (draftSpan) => draftSpan.created && draftSpan.span.tapeId === createdSpan.tapeId,
-            )
-            .flatMap((draftSpan) =>
-              draftSpan.pieces.filter((piece): piece is InsertedPiece => piece.kind === 'inserted'),
-            )
-            .map((piece) => piece.text)
-            .join('');
-          if (insertedText) {
-            insertions.push({ tapeId: createdSpan.tapeId, index: 1, text: insertedText });
-            textTapes.add(createdSpan.tapeId);
-          }
         }
       }
 
@@ -1090,19 +1138,9 @@ class MutableTreeDraft implements ParserTreeDraft {
           baseStarts.push(baseLength);
           baseLength += spanText(this.state, span, this.indexes).length;
         }
-        const bySource = new Map<number, DraftSpan[]>();
-        for (const span of node.spans) {
-          if (span.sourceSpanIndex !== undefined) {
-            const spans = bySource.get(span.sourceSpanIndex) ?? [];
-            spans.push(span);
-            bySource.set(span.sourceSpanIndex, spans);
-          }
-        }
         for (let spanIndex = 0; spanIndex < baseSpans.length; spanIndex++) {
           const baseSpan = baseSpans[spanIndex]!;
           const baseText = spanText(this.state, baseSpan, this.indexes);
-          const currentSpans = bySource.get(spanIndex);
-          assert(currentSpans?.length, `text span ${spanIndex} disappeared during a splice`);
           for (const ownerId of this.indexes.tapeOwners.get(baseSpan.tapeId) ?? []) {
             this.requireNode(ownerId);
           }
@@ -1111,21 +1149,13 @@ class MutableTreeDraft implements ParserTreeDraft {
               candidate.spans.flatMap((span) =>
                 span.pieces.filter(
                   (piece) =>
-                    (candidate.id === node.id &&
-                      span.sourceSpanIndex === spanIndex &&
-                      piece.kind === 'retained') ||
-                    (piece.kind === 'transferred' &&
-                      piece.source === node.id &&
-                      piece.sourceSpanIndex === spanIndex),
+                    piece.kind === 'existing' &&
+                    piece.source === node.id &&
+                    piece.sourceSpanIndex === spanIndex,
                 ),
               ),
             )
-            .filter((piece) => piece.kind === 'retained' || piece.kind === 'transferred')
-            .map((piece) =>
-              piece.kind === 'retained'
-                ? ([piece.sourceFrom, piece.sourceTo] as const)
-                : ([piece.sourceFrom!, piece.sourceTo!] as const),
-            )
+            .map((piece) => [piece.from, piece.to] as const)
             .sort((a, b) => a[0] - b[0]);
           const merged: [number, number][] = [];
           for (const [from, to] of retained) {
@@ -1159,34 +1189,6 @@ class MutableTreeDraft implements ParserTreeDraft {
             for (const deletion of mapped.deletions) {
               touchedTapes.add(deletion.tapeId);
               textTapes.add(deletion.tapeId);
-            }
-          }
-          for (const currentSpan of currentSpans) {
-            let priorInsertion: PlanTextInsert | undefined;
-            for (const piece of currentSpan.pieces) {
-              if (piece.kind !== 'inserted' || !piece.text) {
-                priorInsertion = undefined;
-                continue;
-              }
-              touchedTapes.add(piece.anchor.tapeId);
-              textTapes.add(piece.anchor.tapeId);
-              if (
-                priorInsertion &&
-                priorInsertion.tapeId === piece.anchor.tapeId &&
-                priorInsertion.index === piece.anchor.index
-              ) {
-                const index = insertions.indexOf(priorInsertion);
-                const combined = { ...priorInsertion, text: priorInsertion.text + piece.text };
-                insertions[index] = combined;
-                priorInsertion = combined;
-              } else {
-                priorInsertion = {
-                  tapeId: piece.anchor.tapeId,
-                  index: piece.anchor.index,
-                  text: piece.text,
-                };
-                insertions.push(priorInsertion);
-              }
             }
           }
         }
@@ -1228,11 +1230,45 @@ class MutableTreeDraft implements ParserTreeDraft {
       }
     }
 
+    for (const node of this.nodes.values()) {
+      for (const span of node.spans) {
+        let priorInsertion: PlanTextInsert | undefined;
+        for (const piece of span.pieces) {
+          if (piece.kind !== 'inserted' || !piece.text) {
+            priorInsertion = undefined;
+            continue;
+          }
+          touchedTapes.add(piece.anchor.tapeId);
+          textTapes.add(piece.anchor.tapeId);
+          if (
+            priorInsertion &&
+            priorInsertion.tapeId === piece.anchor.tapeId &&
+            priorInsertion.index === piece.anchor.index
+          ) {
+            const index = insertions.indexOf(priorInsertion);
+            const combined = { ...priorInsertion, text: priorInsertion.text + piece.text };
+            insertions[index] = combined;
+            priorInsertion = combined;
+          } else {
+            priorInsertion = {
+              tapeId: piece.anchor.tapeId,
+              index: piece.anchor.index,
+              slotOrder: insertions.length,
+              text: piece.text,
+            };
+            insertions.push(priorInsertion);
+          }
+        }
+      }
+    }
+
     for (const boundary of this.transferBoundaries) touchedTapes.add(boundary.tapeId);
     const operationNodeIds = this.operations_.flatMap((operation) => {
       switch (operation.type) {
         case 'transferInlineRange':
           return [operation.transfer.source, operation.transfer.destination];
+        case 'insertFragment':
+          return [operation.destination];
         default:
           return 'id' in operation ? [operation.id] : [];
       }
@@ -1340,6 +1376,35 @@ class MutableTreeDraft implements ParserTreeDraft {
     return Object.freeze(draft);
   }
 
+  parentOf(id: NodeId): NodeId | undefined {
+    this.assertActive();
+    const node = this.requireNode(id);
+    const parentId = this.parentId(node.id);
+    if (!parentId) return undefined;
+    const parent = this.requireNode(parentId);
+    this.readField(parent, 'children');
+    assert(parent.children.includes(id), `parent index disagrees about ${id}`);
+    return parentId;
+  }
+
+  previousSiblingOf(id: NodeId): NodeId | undefined {
+    const parentId = this.parentOf(id);
+    if (!parentId) return undefined;
+    const children = this.node(parentId).children;
+    const index = children.indexOf(id);
+    assert(index >= 0, `parent index disagrees about ${id}`);
+    return index > 0 ? children[index - 1] : undefined;
+  }
+
+  nextSiblingOf(id: NodeId): NodeId | undefined {
+    const parentId = this.parentOf(id);
+    if (!parentId) return undefined;
+    const children = this.node(parentId).children;
+    const index = children.indexOf(id);
+    assert(index >= 0, `parent index disagrees about ${id}`);
+    return children[index + 1];
+  }
+
   create(spec: NodeSpec): NodeId {
     this.assertActive();
     const id = this.allocateId('node');
@@ -1360,8 +1425,36 @@ class MutableTreeDraft implements ParserTreeDraft {
     this.apply({ type: 'spliceText', id, edit: deepFreeze(deepCopy(edit)) }, true);
   }
 
+  cutInline(id: NodeId, from: number, to: number): InlineFragment {
+    const fragmentId = this.allocateId('fragment');
+    this.apply({ type: 'cutInline', id, from, to, fragmentId }, true);
+    const fragment = this.fragments.get(fragmentId);
+    assert(fragment, 'cut did not create a fragment');
+    const handle = Object.freeze({ text: fragment.text });
+    fragmentIds.set(handle, fragmentId);
+    return handle;
+  }
+
+  insertFragment(
+    destination: NodeId,
+    at: number,
+    affinity: TextAffinity,
+    fragment: InlineFragment,
+  ): void {
+    const fragmentId = fragmentIds.get(fragment);
+    assert(fragmentId, 'fragment was not created by this draft');
+    assert(this.fragments.has(fragmentId), 'fragment does not belong to this draft');
+    assert(!this.consumedFragments.has(fragmentId), 'fragment has already been inserted');
+    this.apply({ type: 'insertFragment', destination, at, affinity, fragmentId }, true);
+  }
+
   transferInlineRange(transfer: Transfer): void {
-    this.apply({ type: 'transferInlineRange', transfer: deepFreeze(deepCopy(transfer)) }, true);
+    if (transfer.source === transfer.destination) {
+      this.apply({ type: 'transferInlineRange', transfer: deepFreeze(deepCopy(transfer)) }, true);
+      return;
+    }
+    const fragment = this.cutInline(transfer.source, transfer.from, transfer.to);
+    this.insertFragment(transfer.destination, transfer.at, transfer.affinity, fragment);
   }
 
   convertInline(id: NodeId, plan: ConversionPlan): void {
@@ -1436,6 +1529,17 @@ class MutableTreeDraft implements ParserTreeDraft {
         break;
       case 'spliceText':
         this.spliceInternal(operation.id, operation.edit);
+        break;
+      case 'cutInline':
+        this.cutFragmentInternal(operation.id, operation.from, operation.to, operation.fragmentId);
+        break;
+      case 'insertFragment':
+        this.insertFragmentInternal(
+          operation.destination,
+          operation.at,
+          operation.affinity,
+          operation.fragmentId,
+        );
         break;
       case 'transferInlineRange':
         this.transferInternal(operation.transfer);
@@ -1514,11 +1618,15 @@ class MutableTreeDraft implements ParserTreeDraft {
               created: true,
               pieces: content
                 ? [
-                    {
-                      kind: 'inserted',
-                      anchor: { tapeId: span.tapeId, index: 1, spanIndex: 0, affinity: 'right' },
-                      text: content,
-                    },
+                    this.makeInsertedPiece(
+                      {
+                        tapeId: span.tapeId,
+                        index: 1,
+                        spanIndex: 0,
+                        affinity: 'right',
+                      },
+                      content,
+                    ),
                   ]
                 : [],
             },
@@ -1530,10 +1638,59 @@ class MutableTreeDraft implements ParserTreeDraft {
       baseCells: new Map(),
       created: true,
       textEdited: false,
-      transferred: false,
     };
     this.validateDraftEdit('', { from: 0, to: 0, insert: content });
     this.nodes.set(id, state);
+  }
+
+  private makeInsertedPiece(anchor: InsertionSlotTarget, text: string): InsertedPiece {
+    const bufferId = this.allocateId('buffer');
+    this.textBuffers.set(bufferId, text);
+    return {
+      kind: 'inserted',
+      bufferId,
+      from: 0,
+      to: text.length,
+      anchor: { ...anchor, order: this.insertionSlotOrder++ },
+      text,
+    };
+  }
+
+  private assertPieceSource(piece: DraftPiece): void {
+    if (piece.kind === 'inserted') {
+      const buffer = this.textBuffers.get(piece.bufferId);
+      assert(buffer !== undefined, `missing action-local text buffer ${piece.bufferId}`);
+      assert(
+        Number.isInteger(piece.from) &&
+          Number.isInteger(piece.to) &&
+          piece.from >= 0 &&
+          piece.to >= piece.from &&
+          piece.to <= buffer.length,
+        `action-local text slice is outside ${piece.bufferId}`,
+      );
+      assert(
+        piece.text === buffer.slice(piece.from, piece.to),
+        `action-local text slice diverged from ${piece.bufferId}`,
+      );
+      return;
+    }
+
+    const sourceSpan = this.baseSpans(piece.source)[piece.sourceSpanIndex];
+    assert(sourceSpan, `missing source span ${piece.sourceSpanIndex} on ${piece.source}`);
+    assert(sourceSpan.tapeId === piece.tapeId, `source tape changed for ${piece.source}`);
+    const sourceText = spanText(this.state, sourceSpan, this.indexes);
+    assert(
+      Number.isInteger(piece.from) &&
+        Number.isInteger(piece.to) &&
+        piece.from >= 0 &&
+        piece.to >= piece.from &&
+        piece.to <= sourceText.length,
+      `existing text slice is outside ${piece.source}`,
+    );
+    assert(
+      piece.text === sourceText.slice(piece.from, piece.to),
+      `existing text slice diverged from ${piece.source}`,
+    );
   }
 
   private placeInternal(id: NodeId, parentId: NodeId, before: NodeId | null): void {
@@ -1549,7 +1706,7 @@ class MutableTreeDraft implements ParserTreeDraft {
       allowedChild(parent.type, node.type),
       `${node.type} cannot be a child of ${parent.type}`,
     );
-    const oldParentId = this.parentByChild.get(id);
+    const oldParentId = this.parentId(id);
     if (oldParentId) this.readField(this.requireNode(oldParentId), 'children');
     if (before !== null) {
       if (before === id) {
@@ -1571,33 +1728,25 @@ class MutableTreeDraft implements ParserTreeDraft {
     const index = before === null ? target.children.length : target.children.indexOf(before);
     assert(index >= 0, `before node ${before} is not a child of ${parentId}`);
     target.children.splice(index, 0, id);
-    this.parentByChild.set(id, parentId);
+    this.parentOverlay.set(id, parentId);
   }
 
   private detachInternal(id: NodeId): void {
     assert(id !== this.rootId(), 'the document root cannot be detached');
     const node = this.requireNode(id);
-    const parentId = this.parentByChild.get(id);
+    const parentId = this.parentId(id);
     assert(parentId, `node ${id} is already detached`);
-    this.ensureVisibleOrCreated(this.requireNode(id));
+    this.ensureVisibleOrCreated(node);
     const parent = this.requireNode(parentId);
     this.readField(parent, 'children');
     parent.children = parent.children.filter((child) => child !== id);
-    this.parentByChild.delete(id);
-    if (INLINE_KINDS.has(node.type) && node.transferred && inlineContent(node).length === 0) {
-      this.readField(node, 'spans');
-      node.spans = [];
-    }
+    this.parentOverlay.set(id, null);
   }
 
   private spliceInternal(id: NodeId, edit: TextEdit): void {
     const node = this.requireNode(id);
     this.ensureVisibleOrCreated(node);
     assert(INLINE_KINDS.has(node.type), `${node.type} nodes do not have inline text`);
-    assert(
-      !node.transferred,
-      'text edits after an ownership transfer are not supported in this milestone',
-    );
     this.readText(node);
     const content = inlineContent(node);
     this.validateDraftEdit(content, edit);
@@ -1612,6 +1761,13 @@ class MutableTreeDraft implements ParserTreeDraft {
       const removeFrom = Math.max(0, edit.from - start);
       const removeTo = Math.min(length, edit.to - start);
       if (removeFrom < removeTo) {
+        for (const piece of slicePieces(span.pieces, removeFrom, removeTo)) {
+          if (piece.kind === 'existing') {
+            const source = this.requireNode(piece.source);
+            this.readText(source);
+            source.textEdited = true;
+          }
+        }
         span.pieces = [
           ...slicePieces(span.pieces, 0, removeFrom),
           ...slicePieces(span.pieces, removeTo, length),
@@ -1629,9 +1785,7 @@ class MutableTreeDraft implements ParserTreeDraft {
       );
       const pieces = targetSpan.pieces;
       const inserted: InsertedPiece = {
-        kind: 'inserted',
-        anchor: target.anchor,
-        text: edit.insert,
+        ...this.makeInsertedPiece(target.anchor, edit.insert),
       };
       targetSpan.pieces = [
         ...slicePieces(pieces, 0, local),
@@ -1677,7 +1831,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     node: DraftNodeState,
     offset: number,
     affinity: TextAffinity,
-  ): { spanIndex: number; localOffset: number; anchor: DraftAnchor } {
+  ): { spanIndex: number; localOffset: number; anchor: InsertionSlotTarget } {
     let global = 0;
     const spans = node.spans.map((span, index) => {
       const length = span.pieces.reduce((total, piece) => total + piece.text.length, 0);
@@ -1736,23 +1890,23 @@ class MutableTreeDraft implements ParserTreeDraft {
       return { spanIndex: target.index, localOffset, anchor: chosen.piece.anchor };
     }
     const source = chosen?.piece;
-    assert(!source || source.kind === 'retained', 'cannot edit at a transferred source seam');
-    const retainedSource = source?.kind === 'retained' ? source : undefined;
-    const sourceOffset = retainedSource
-      ? retainedSource.sourceFrom + chosen!.local
-      : affinity === 'left'
-        ? 0
-        : 0;
-    const baseSpans = this.baseSpans(node.id);
-    const baseStart = baseSpans
-      .slice(0, target.index)
-      .reduce((total, span) => total + spanText(this.state, span, this.indexes).length, 0);
-    const map = mapTextEdit(baseSpans, this.tapesFor(baseSpans), {
-      from: baseStart + sourceOffset,
-      to: baseStart + sourceOffset,
+    if (source?.kind === 'existing') {
+      const sourceSpan = this.baseSpans(source.source)[source.sourceSpanIndex];
+      assert(sourceSpan, 'existing source span is missing');
+      const sourceOffset = source.from + chosen!.local;
+      const map = mapTextEdit([sourceSpan], this.tapesFor([sourceSpan]), {
+        from: sourceOffset,
+        to: sourceOffset,
+        insert: '',
+        affinity,
+      });
+      return { spanIndex: target.index, localOffset, anchor: map.insertion };
+    }
+    const map = mapTextEdit([target.span.span], this.tapesFor([target.span.span]), {
+      from: localOffset,
+      to: localOffset,
       insert: '',
       affinity,
-      spanIndex: target.index,
     });
     return { spanIndex: target.index, localOffset, anchor: map.insertion };
   }
@@ -1766,28 +1920,13 @@ class MutableTreeDraft implements ParserTreeDraft {
       INLINE_KINDS.has(source.type) && INLINE_KINDS.has(destination.type),
       'transfers require inline nodes',
     );
-    assert(!source.created, 'a draft-created node cannot source a retained text transfer');
     this.readText(source);
     if (source.id === destination.id) {
       this.reorderInlineRange(source, transfer);
       return;
     }
     this.readText(destination);
-    const sourceContent = inlineContent(source);
     const destinationContent = inlineContent(destination);
-    assert(
-      Number.isInteger(transfer.from) && Number.isInteger(transfer.to),
-      'transfer offsets must be integers',
-    );
-    assert(
-      transfer.from >= 0 && transfer.to > transfer.from && transfer.to <= sourceContent.length,
-      'transfer range is out of bounds',
-    );
-    assert(
-      !splitSurrogateBoundary(sourceContent, transfer.from) &&
-        !splitSurrogateBoundary(sourceContent, transfer.to),
-      'transfer splits a surrogate pair',
-    );
     assert(
       Number.isInteger(transfer.at) && transfer.at >= 0 && transfer.at <= destinationContent.length,
       'transfer destination is out of bounds',
@@ -1796,19 +1935,53 @@ class MutableTreeDraft implements ParserTreeDraft {
       !splitSurrogateBoundary(destinationContent, transfer.at),
       'transfer destination splits a surrogate pair',
     );
-    const sourceParts = this.cutSourceRange(source, transfer.from, transfer.to);
-    const destinationSpans = this.insertTransferAt(
-      destination,
-      transfer.at,
-      transfer.affinity,
-      sourceParts.moved,
+    const fragmentId = this.allocateId('fragment');
+    this.cutFragmentInternal(source.id, transfer.from, transfer.to, fragmentId);
+    this.insertFragmentInternal(destination.id, transfer.at, transfer.affinity, fragmentId);
+  }
+
+  private cutFragmentInternal(id: NodeId, from: number, to: number, fragmentId: string): void {
+    assert(!this.fragments.has(fragmentId), `fragment ${fragmentId} already exists`);
+    const node = this.requireNode(id);
+    this.ensureVisibleOrCreated(node);
+    assert(INLINE_KINDS.has(node.type), `${node.type} nodes do not have inline text`);
+    this.readText(node);
+    const content = inlineContent(node);
+    assert(Number.isInteger(from) && Number.isInteger(to), 'cut offsets must be integers');
+    assert(from >= 0 && to > from && to <= content.length, 'cut range is out of bounds');
+    assert(
+      !splitSurrogateBoundary(content, from) && !splitSurrogateBoundary(content, to),
+      'cut range splits a surrogate pair',
     );
-    source.spans = sourceParts.remaining;
-    destination.spans = destinationSpans;
-    source.transferred = true;
-    destination.transferred = true;
-    this.transferredNodes.add(source.id);
-    this.transferredNodes.add(destination.id);
+    const cut = this.cutSourceRange(node, from, to);
+    node.spans = cut.remaining;
+    this.fragments.set(fragmentId, {
+      spans: cut.moved,
+      text: cut.moved.flatMap((span) => span.pieces.map((piece) => piece.text)).join(''),
+    });
+  }
+
+  private insertFragmentInternal(
+    destinationId: NodeId,
+    at: number,
+    affinity: TextAffinity,
+    fragmentId: string,
+  ): void {
+    const fragment = this.fragments.get(fragmentId);
+    assert(fragment, `unknown fragment ${fragmentId}`);
+    assert(!this.consumedFragments.has(fragmentId), `fragment ${fragmentId} was already used`);
+    const destination = this.requireNode(destinationId);
+    this.ensureVisibleOrCreated(destination);
+    assert(INLINE_KINDS.has(destination.type), 'fragments require an inline destination');
+    this.readText(destination);
+    const content = inlineContent(destination);
+    assert(
+      Number.isInteger(at) && at >= 0 && at <= content.length,
+      'fragment target is out of bounds',
+    );
+    assert(!splitSurrogateBoundary(content, at), 'fragment target splits a surrogate pair');
+    destination.spans = this.insertTransferAt(destination, at, affinity, fragment.spans);
+    this.consumedFragments.add(fragmentId);
   }
 
   private cutSourceRange(
@@ -1833,6 +2006,14 @@ class MutableTreeDraft implements ParserTreeDraft {
       }
       const span = current.span;
       const fullSpan = localFrom === 0 && localTo === text.length;
+      if (
+        fullSpan &&
+        node.spans.length > 1 &&
+        current.pieces.every((piece) => piece.kind === 'inserted')
+      ) {
+        moved.push(current);
+        continue;
+      }
       const startBoundary =
         localFrom === 0 && !fullSpan
           ? span.startBoundaryId
@@ -1851,24 +2032,9 @@ class MutableTreeDraft implements ParserTreeDraft {
       }
       moved.push({
         span: { ...span, startBoundaryId: startBoundary, endBoundaryId: endBoundary },
-        pieces: slicePieces(current.pieces, localFrom, localTo).map((piece) => {
-          if (piece.kind === 'retained') {
-            return {
-              kind: 'transferred',
-              text: piece.text,
-              source: node.id,
-              tapeId: span.tapeId,
-              sourceSpanIndex: current.sourceSpanIndex,
-              sourceFrom: piece.sourceFrom,
-              sourceTo: piece.sourceTo,
-            } satisfies TransferredPiece;
-          }
-          assert(
-            piece.kind === 'transferred',
-            'a new text insertion cannot be ownership-transferred',
-          );
-          return piece;
-        }),
+        sourceSpanIndex: current.sourceSpanIndex,
+        pieces: slicePieces(current.pieces, localFrom, localTo),
+        created: current.created,
       });
       if (localTo < text.length || fullSpan) {
         const right = { ...span, startBoundaryId: endBoundary };
@@ -1879,7 +2045,7 @@ class MutableTreeDraft implements ParserTreeDraft {
         });
       }
     }
-    assert(moved.length > 0, 'transfer range has no source span');
+    assert(moved.length > 0, 'cut range has no source span');
     return { remaining, moved };
   }
 
@@ -1996,8 +2162,6 @@ class MutableTreeDraft implements ParserTreeDraft {
       ...moved.map((segment) => segment.draft),
       ...remaining.slice(insertionIndex).map((segment) => segment.draft),
     ];
-    node.transferred = true;
-    this.transferredNodes.add(node.id);
   }
 
   private cutBoundary(
@@ -2036,26 +2200,12 @@ class MutableTreeDraft implements ParserTreeDraft {
         spanIndex: chosen.piece.anchor.spanIndex,
         affinity: resolvedAffinity,
       };
-    } else if (chosen?.piece.kind === 'retained' && current.sourceSpanIndex !== undefined) {
-      const sourceSpan = this.baseSpans(node.id)[current.sourceSpanIndex];
-      assert(sourceSpan, 'retained transfer source span is missing');
+    } else if (chosen?.piece.kind === 'existing') {
+      const sourceSpan = this.baseSpans(chosen.piece.source)[chosen.piece.sourceSpanIndex];
+      assert(sourceSpan, 'existing transfer source span is missing');
       mapped = mapTextEdit([sourceSpan], this.tapesFor([sourceSpan]), {
-        from: chosen.piece.sourceFrom + chosen.local,
-        to: chosen.piece.sourceFrom + chosen.local,
-        insert: '',
-        affinity: resolvedAffinity,
-      }).insertion;
-    } else if (
-      chosen?.piece.kind === 'transferred' &&
-      chosen.piece.sourceSpanIndex !== undefined &&
-      chosen.piece.sourceFrom !== undefined
-    ) {
-      const original = this.requireNode(chosen.piece.source);
-      const sourceSpan = this.baseSpans(original.id)[chosen.piece.sourceSpanIndex];
-      assert(sourceSpan, 'transferred source span is missing');
-      mapped = mapTextEdit([sourceSpan], this.tapesFor([sourceSpan]), {
-        from: chosen.piece.sourceFrom + chosen.local,
-        to: chosen.piece.sourceFrom + chosen.local,
+        from: chosen.piece.from + chosen.local,
+        to: chosen.piece.from + chosen.local,
         insert: '',
         affinity: resolvedAffinity,
       }).insertion;
@@ -2092,6 +2242,8 @@ class MutableTreeDraft implements ParserTreeDraft {
       index: mapped.index,
       boundaryId,
       insertionOffset,
+      side: role,
+      order: this.transferBoundaries.length,
     });
     return boundaryId;
   }
@@ -2254,6 +2406,12 @@ class MutableTreeDraft implements ParserTreeDraft {
     return metaMap(this.state).get('rootId') as string;
   }
 
+  private parentId(id: NodeId): NodeId | undefined {
+    return this.parentOverlay.has(id)
+      ? (this.parentOverlay.get(id) ?? undefined)
+      : this.indexes.parentByChild.get(id);
+  }
+
   private ensureVisibleOrCreated(node: DraftNodeState): void {
     if (node.created) return;
     let current = node.id;
@@ -2262,7 +2420,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     while (current !== root) {
       if (visited.has(current)) break;
       visited.add(current);
-      const parentId = this.parentByChild.get(current);
+      const parentId = this.parentId(current);
       if (!parentId) break;
       this.readField(this.requireNode(parentId), 'children');
       current = parentId;
@@ -2319,119 +2477,6 @@ class MutableTreeDraft implements ParserTreeDraft {
   private assertActive(): void {
     assert(this.active, 'draft is no longer active');
   }
-}
-
-/** A parser-only TreeDraft bridge. It never compiles or publishes construction operations. */
-export function createMarkdownTreeConstructionDraft(
-  root: DocumentNode,
-): MarkdownTreeConstructionDraft {
-  const document = CanonicalDocument.fromParsed(root);
-  const state = canonicalWriterAccess(document).state;
-  const draft = new MutableTreeDraft(state, 'parser-construction', new CanonicalIndexes(state));
-  const nodeIds = new WeakMap<object, NodeId>();
-  let closed = false;
-
-  const requireId = (node: ViewModelNode): NodeId => {
-    const id = nodeIds.get(node);
-    assert(id, 'parser construction node has no TreeDraft identity');
-    return id;
-  };
-
-  return {
-    bindRoot(rootNode) {
-      const bind = (node: ViewModelNode, id: NodeId): void => {
-        nodeIds.set(node, id);
-        const draftNode = draft.node(id);
-        assert(node.type === draftNode.type, 'parser projection kind differs from its TreeDraft');
-        const children = (node.children ?? []) as ViewModelNode[];
-        assert(
-          children.length === draftNode.children.length,
-          'parser projection children differ from its TreeDraft',
-        );
-        children.forEach((child, index) => bind(child, draftNode.children[index]!));
-      };
-      bind(rootNode, document.root.sharedId);
-    },
-    addNode(node) {
-      assert(!node.children?.length, 'parser construction adds nodes before their children');
-      const spec: NodeSpec = {
-        type: node.type,
-        ...(isInlineNode(node) ? { content: node.content } : {}),
-        ...('marker' in node ? { marker: node.marker } : {}),
-        ...(node.type === 'list-item' ? { checked: node.checked ?? null } : {}),
-        ...(node.type === 'code-block' ? { info: node.info ?? null } : {}),
-      };
-      nodeIds.set(node, draft.create(spec));
-    },
-    apply(operation) {
-      switch (operation.type) {
-        case 'insert':
-          draft.place(
-            requireId(operation.node),
-            requireId(operation.parent),
-            operation.nextSibling ? requireId(operation.nextSibling) : null,
-          );
-          break;
-        case 'remove':
-          draft.detach(requireId(operation.node));
-          break;
-        case 'edit':
-          draft.spliceText(requireId(operation.node), {
-            from: operation.edit.startIndex,
-            to: operation.edit.oldEndIndex,
-            insert: operation.edit.newText,
-          });
-          break;
-        case 'marker':
-          draft.setMarker(requireId(operation.node), operation.marker);
-          break;
-        case 'check':
-          draft.setChecked(requireId(operation.node), operation.checked ?? null);
-          break;
-      }
-    },
-    checkpoint() {
-      draft.checkpointConstruction();
-    },
-    finish(rootNode) {
-      const verify = (node: ViewModelNode): void => {
-        const draftNode = draft.node(requireId(node));
-        assert(node.type === draftNode.type, 'parser projection kind differs from its TreeDraft');
-        const children = (node.children ?? []) as ViewModelNode[];
-        assert(children.length === draftNode.children.length, 'parser draft child count diverged');
-        children.forEach((child, index) => {
-          assert(
-            requireId(child) === draftNode.children[index],
-            'parser draft child order diverged',
-          );
-          verify(child);
-        });
-        if (isInlineNode(node)) {
-          assert(draftNode.content === node.content, 'parser draft inline content diverged');
-        }
-        assert(
-          draftNode.marker === ('marker' in node ? (node.marker ?? null) : null),
-          'parser draft marker diverged',
-        );
-        assert(
-          draftNode.checked === (node.type === 'list-item' ? (node.checked ?? null) : null),
-          'parser draft task state diverged',
-        );
-        assert(
-          draftNode.info === (node.type === 'code-block' ? (node.info ?? null) : null),
-          'parser draft code info diverged',
-        );
-      };
-      verify(rootNode);
-      draft.checkpointConstruction();
-    },
-    close() {
-      if (closed) return;
-      closed = true;
-      draft.close();
-      document.close();
-    },
-  };
 }
 
 interface NativeMutationEvidence {
@@ -2992,12 +3037,14 @@ function applyPlan(
   if (plan.insertions.length) {
     state.transact(() => {
       const sorted = plan.insertions
-        .map((insertion, order) => ({
+        .map((insertion) => ({
           ...insertion,
-          order,
           index: indexAfterDeletes(insertion.index, deletions, insertion.tapeId),
         }))
-        .sort((a, b) => a.tapeId.localeCompare(b.tapeId) || b.index - a.index || b.order - a.order);
+        .sort(
+          (a, b) =>
+            a.tapeId.localeCompare(b.tapeId) || b.index - a.index || b.slotOrder - a.slotOrder,
+        );
       for (const insertion of sorted) {
         const tape = tapeMap(state).get(insertion.tapeId);
         assert(tape, `missing text tape ${insertion.tapeId}`);
@@ -3024,7 +3071,14 @@ function applyPlan(
             index: index + before + boundary.insertionOffset,
           };
         })
-        .sort((a, b) => a.tapeId.localeCompare(b.tapeId) || b.index - a.index);
+        .sort((a, b) => {
+          const tapeOrder = a.tapeId.localeCompare(b.tapeId);
+          if (tapeOrder) return tapeOrder;
+          const indexOrder = b.index - a.index;
+          if (indexOrder) return indexOrder;
+          if (a.side !== b.side) return a.side === 'end' ? -1 : 1;
+          return a.side === 'start' ? b.order - a.order : a.order - b.order;
+        });
       for (const boundary of sorted) {
         const tape = tapeMap(state).get(boundary.tapeId);
         assert(tape, `missing boundary tape ${boundary.tapeId}`);
@@ -3894,6 +3948,8 @@ export class CanonicalWriter {
             operation.type === 'create' ||
             operation.type === 'place' ||
             operation.type === 'detach' ||
+            operation.type === 'cutInline' ||
+            operation.type === 'insertFragment' ||
             operation.type === 'transferInlineRange' ||
             operation.type === 'convertInline' ||
             operation.type === 'setMarker' ||

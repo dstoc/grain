@@ -1,16 +1,16 @@
 import { effect } from '@preact/signals-core';
 import type { ReactiveController, ReactiveControllerHost } from 'lit';
-import { viewModel, type ViewModelNode } from './view-model-node.js';
+import type { ReadonlyMarkdownNodeView } from './node-view.js';
 
 /** Observe only the current node while its host is connected. */
 export class NodeSignalController implements ReactiveController {
-  private node: ViewModelNode | undefined;
+  private node: ReadonlyMarkdownNodeView | undefined;
   private dispose: (() => void) | undefined;
   private connected = false;
 
   constructor(
     private host: ReactiveControllerHost,
-    private currentNode: () => ViewModelNode | undefined,
+    private currentNode: () => ReadonlyMarkdownNodeView | undefined,
   ) {
     host.addController(this);
   }
@@ -40,7 +40,7 @@ export class NodeSignalController implements ReactiveController {
     const node = this.node;
     let initial = true;
     this.dispose = effect(() => {
-      node[viewModel].renderSignal.value;
+      node.renderSignal.value;
       if (initial) initial = false;
       else if (this.currentNode() === node) this.host.requestUpdate();
     });

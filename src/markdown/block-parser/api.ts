@@ -16,7 +16,6 @@ import { createInitialState, restoreState } from './state.js';
 import { parseLine, projectPendingLine, closeLeafBlocks } from './core.js';
 import { discardProjectedPendingLine } from './projected-state.js';
 import { sourceText } from './source-text.js';
-import { createMarkdownTreeConstructionDraft } from '../canonical-actions.js';
 import type {
   BlockParserOptions,
   MappedText,
@@ -51,12 +50,7 @@ export function createBlockParser(
   const root =
     snapshot?.root ??
     ({ type: 'document', children: [{ type: 'paragraph', content: '' }] } as DocumentNode);
-  const tree = new MarkdownTree(
-    root,
-    undefined,
-    undefined,
-    createMarkdownTreeConstructionDraft(root),
-  );
+  const tree = new MarkdownTree(root);
   const state = snapshot ? restoreState(tree, snapshot) : createInitialState(tree);
   state.sourceTracking = sourceTracking;
   state.sourceOffset = snapshot?.sourceOffset ?? 0;
@@ -81,8 +75,6 @@ export function createBlockParser(
   let pendingText = snapshot?.pendingText ?? '';
   let finished = snapshot?.finished ?? false;
   let projectedPending = snapshot?.projectedPending;
-  if (finished) tree.finishConstructionDraft();
-
   return {
     push(text: string) {
       if (finished) {
@@ -142,7 +134,6 @@ export function createBlockParser(
         'construction',
       );
       finished = true;
-      tree.finishConstructionDraft();
       return tree;
     },
     getTree() {

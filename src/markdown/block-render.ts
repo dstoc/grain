@@ -7,11 +7,11 @@ import { keyed } from 'lit/directives/keyed.js';
 import { NodeSignalController } from './node-signal-controller.js';
 import { HostContext, hostContext } from './host-context.js';
 import { MarkdownInline, type InlineProjectionRecovery } from './inline-render.js';
-import { isInlineNode } from './node.js';
+import type { CodeBlockNode } from './node.js';
 import type { MarkdownRenderDelegate } from './render-delegate.js';
 import { styles } from './style.js';
 import type { InlineViewModelNode, ViewModelNode } from './view-model-node.js';
-import { viewModel } from './view-model-node.js';
+import type { ReadonlyMarkdownNodeView } from './node-view.js';
 import './transclusion.js';
 import './block-ui.js';
 
@@ -24,7 +24,7 @@ export class MarkdownBlock extends LitElement {
   @property({ attribute: false })
   accessor hostContext: HostContext | undefined;
 
-  @property({ attribute: false }) accessor node: ViewModelNode | undefined;
+  @property({ attribute: false }) accessor node: ReadonlyMarkdownNodeView | undefined;
 
   private nodeSignal = new NodeSignalController(this, () => this.node);
   private inlineProjectionVersion = 0;
@@ -68,10 +68,11 @@ export class MarkdownBlock extends LitElement {
     this.type = node.type;
     if (node.type === 'code-block') {
       const hostContext = this.hostContext;
-      const selected = hostContext?.selection.has(node) ?? false;
+      const codeBlock = node as ReadonlyMarkdownNodeView & CodeBlockNode;
+      const selected = hostContext?.selection.has(node as unknown as InlineViewModelNode) ?? false;
       if (hostContext) {
         const rendered = hostContext.renderDelegate?.renderCodeBlock?.({
-          node,
+          node: codeBlock,
           hostContext,
           selected,
         });
@@ -80,15 +81,19 @@ export class MarkdownBlock extends LitElement {
         }
       }
     }
-    const inline = isInlineNode(node)
-      ? (this.inlineProjectionVersion ?? 0) === 0
-        ? html`<md-inline .node=${node}></md-inline>`
-        : keyed(this.inlineProjectionVersion, html`<md-inline .node=${node}></md-inline>`)
-      : '';
+    const inline =
+      node.type === 'paragraph' || node.type === 'section' || node.type === 'code-block'
+        ? (this.inlineProjectionVersion ?? 0) === 0
+          ? html`<md-inline .node=${node as unknown as InlineViewModelNode}></md-inline>`
+          : keyed(
+              this.inlineProjectionVersion,
+              html`<md-inline .node=${node as unknown as InlineViewModelNode}></md-inline>`,
+            )
+        : '';
     return html`${inline}
     ${repeat(
       node.children ?? [],
-      (child) => child[viewModel].id,
+      (child) => child.id,
       (child) => html`<md-block .node=${child}></md-block>`,
     )}`;
   }
@@ -98,14 +103,14 @@ export class MarkdownBlock extends LitElement {
     if (!node) return;
     if (node.type === 'section') {
       return html`
-        <md-section-ui .node=${this.node}>
+        <md-section-ui .node=${this.node as unknown as ViewModelNode}>
           <slot></slot>
         </md-section-ui>
       `;
     }
     if (node.type === 'list-item') {
       return html`
-        <md-list-item-ui .node=${this.node}>
+        <md-list-item-ui .node=${this.node as unknown as ViewModelNode}>
           <slot></slot>
         </md-list-item-ui>
       `;
@@ -138,7 +143,7 @@ export class MarkdownRenderer extends LitElement {
   @property({ attribute: false })
   accessor renderDelegate: MarkdownRenderDelegate | undefined;
 
-  @property({ attribute: false }) accessor block!: ViewModelNode;
+  @property({ attribute: false }) accessor block!: ReadonlyMarkdownNodeView;
   @property({ attribute: false }) accessor version = 0;
 
   constructor() {
@@ -153,7 +158,7 @@ export class MarkdownRenderer extends LitElement {
   }
 
   override render() {
-    this.hostContext.root = this.block;
+    this.hostContext.root = this.block as unknown as ViewModelNode;
     this.hostContext.renderDelegate = this.renderDelegate;
     if (!this.block) return html``;
     return html`<md-block .node=${this.block} ?root=${true}></md-block>`;
@@ -200,6 +205,6 @@ declare global {
   }
 
   interface HTMLElementEventMap {
-    'md-block-focus': CustomEvent<InlineViewModelNode>;
+    'md-block-focus': CustomEvent<ReadonlyMarkdownNodeView>;
   }
 }

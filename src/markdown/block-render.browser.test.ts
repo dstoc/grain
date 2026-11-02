@@ -7,6 +7,7 @@ import { MarkdownBlock } from './block-render.js';
 import { MarkdownTree } from './view-model.js';
 import type { CodeBlockNode } from './node.js';
 import type { ViewModelNode } from './view-model-node.js';
+import type { ReadonlyMarkdownNodeView } from './node-view.js';
 
 function makeCodeBlock(): ViewModelNode & CodeBlockNode {
   const tree = new MarkdownTree({
@@ -64,7 +65,13 @@ describe('MarkdownBlock', () => {
     const node = makeCodeBlock();
     const hostContext = new HostContext();
     const renderCodeBlock = vi.fn(
-      ({ node, selected }: { node: ViewModelNode & CodeBlockNode; selected: boolean }) => {
+      ({
+        node,
+        selected,
+      }: {
+        node: ReadonlyMarkdownNodeView & CodeBlockNode;
+        selected: boolean;
+      }) => {
         if (node.info !== 'md') return undefined;
         // oxfmt-ignore
         return html`<md-transclusion .node=${node} .root=${parseMarkdownTree(node.content).root} ?selected=${selected}></md-transclusion>`;

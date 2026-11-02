@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { CanonicalDocument } from './canonical-model.js';
 import type { CanonicalCheckpoint } from './canonical-model.js';
 import type { DocumentNode } from './node.js';
+import { viewModel } from './view-model-node.js';
 
 function applyToAuthority(
   checkpoint: CanonicalCheckpoint,
@@ -203,7 +204,7 @@ describe('CanonicalDocument', () => {
     expect(Object.hasOwn(checkedItem, 'spans')).toBe(false);
   });
 
-  it('keeps the same facade through accepted detach and reattach updates', () => {
+  it('keeps a stable read-only node view through accepted detach and reattach updates', () => {
     const document = CanonicalDocument.fromParsed(
       { type: 'document', children: [{ type: 'paragraph', content: 'kept' }] },
       { documentId: 'facade-doc', actionId: 'facade', authorityEpoch: 'facade-epoch' },
@@ -211,6 +212,9 @@ describe('CanonicalDocument', () => {
     const root = document.root;
     const paragraph = root.children[0]!;
     const paragraphId = paragraph.sharedId;
+    expect(paragraph.id).toBeTypeOf('number');
+    expect(paragraph.inlineTree).toBeDefined();
+    expect(viewModel in paragraph).toBe(false);
     const checkpoint = document.checkpoint();
     const detached = applyToAuthority(checkpoint, 1, (authority) => {
       const rootRecord = nodeRecord(authority, root.sharedId);

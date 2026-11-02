@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createBlockParser, parseBlocks } from './block-parser/api.js';
 import { serializeToString } from './block-serializer.js';
+import { CanonicalDocument } from './canonical-model.js';
 import type { DocumentNode, MarkdownNode } from './node.js';
+import type { ViewModelNode } from './view-model-node.js';
 
 function expectCharByCharAppendMatchesFullParse(source: string) {
   const full = parseBlocks(source).node;
@@ -26,6 +28,33 @@ function expectScheduledAppendMatchesFullParse(source: string, schedules: string
 }
 
 describe('parseBlocks', () => {
+  it('constructs and resumes parser trees without importing canonical storage', () => {
+    const importCanonical = vi.spyOn(CanonicalDocument, 'fromParsed');
+    try {
+      const parser = createBlockParser();
+      parser.push('# heading\n');
+      const resumed = createBlockParser(parser.snapshot());
+      resumed.push('body\n');
+      expect(resumed.finish().serialize()).toEqual(parseBlocks('# heading\nbody\n').node);
+      expect(importCanonical).not.toHaveBeenCalled();
+    } finally {
+      importCanonical.mockRestore();
+    }
+  });
+
+  it('exposes parser nodes as read-only render views without serializing projection fields', () => {
+    const parser = createBlockParser();
+    parser.push('plain text');
+    const tree = parser.finish();
+    const paragraph = tree.root.children![0] as ViewModelNode;
+
+    expect(paragraph.id).toBeTypeOf('number');
+    expect(paragraph.connected).toBe(true);
+    expect(paragraph.inlineTree).toBeDefined();
+    expect(Object.getOwnPropertyDescriptor(paragraph, 'renderSignal')?.enumerable).toBe(false);
+    expect(tree.serialize().children?.[0]).toEqual({ type: 'paragraph', content: 'plain text' });
+  });
+
   it.each([
     ['```js\n\nalpha\n```', '\nalpha'],
     ['```js\n\n\nalpha\n```', '\n\nalpha'],

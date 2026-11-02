@@ -405,6 +405,149 @@ describe('CanonicalWriter', () => {
     document.close();
   });
 
+  it('composes edit, transfer and edit in one serializable action', () => {
+    const document = CanonicalDocument.fromMarkdown('abcd\n\nXY', {
+      documentId: 'composed-fragment-document',
+      actionId: 'composed-fragment-import',
+      authorityEpoch: 'action-epoch',
+    });
+    const writer = new CanonicalWriter(document);
+    const [source, destination] = document.root.children;
+    if (!source || !destination) throw new Error('missing fragment nodes');
+
+    const request = writer.prepareCommand({ actionId: 'edit-transfer-edit' }, (draft) => {
+      draft.spliceText(source.sharedId, { from: 2, to: 2, insert: 'NEW' });
+      const fragment = draft.cutInline(source.sharedId, 1, 6);
+      draft.insertFragment(destination.sharedId, 1, 'right', fragment);
+      draft.spliceText(destination.sharedId, { from: 2, to: 5, insert: 'EDIT' });
+      expect(() => draft.insertFragment(destination.sharedId, 1, 'right', fragment)).toThrow(
+        'fragment has already been inserted',
+      );
+    });
+
+    expect(request.operations.map((operation) => operation.type)).toEqual([
+      'spliceText',
+      'cutInline',
+      'insertFragment',
+      'spliceText',
+    ]);
+    expect(accept(writer, request).receipt.noEffect).toBe(false);
+    expect(source.content).toBe('ad');
+    expect(destination.content).toBe('XbEDITcY');
+    expect(document.validate()).toEqual({ valid: true, errors: [] });
+    expect(writer.undo().status).toBe('applied');
+    expect(source.content).toBe('abcd');
+    expect(destination.content).toBe('XY');
+    expect(writer.redo().status).toBe('applied');
+    expect(source.content).toBe('ad');
+    expect(destination.content).toBe('XbEDITcY');
+    writer.close();
+    document.close();
+  });
+
+  it('moves action-local text through repeated cuts without copying it into the source', () => {
+    const document = CanonicalDocument.fromMarkdown('ab\n\nXY\n\nend', {
+      documentId: 'new-text-fragment-document',
+      actionId: 'new-text-fragment-import',
+      authorityEpoch: 'action-epoch',
+    });
+    const writer = new CanonicalWriter(document);
+    const [source, middle, destination] = document.root.children;
+    if (!source || !middle || !destination) throw new Error('missing fragment nodes');
+
+    const result = writer.edit({ actionId: 'new-text-repeated-transfer' }, (draft) => {
+      draft.spliceText(source.sharedId, { from: 1, to: 1, insert: 'NEW' });
+      draft.transferInlineRange({
+        source: source.sharedId,
+        from: 1,
+        to: 4,
+        destination: middle.sharedId,
+        at: 1,
+        affinity: 'right',
+      });
+      draft.transferInlineRange({
+        source: middle.sharedId,
+        from: 1,
+        to: 4,
+        destination: destination.sharedId,
+        at: 1,
+        affinity: 'right',
+      });
+    });
+
+    expect(result).toHaveProperty('receipt');
+    expect(source.content).toBe('ab');
+    expect(middle.content).toBe('XY');
+    expect(destination.content).toBe('eNEWnd');
+    expect(document.validate()).toEqual({ valid: true, errors: [] });
+    expect(writer.undo().status).toBe('applied');
+    expect(source.content).toBe('ab');
+    expect(middle.content).toBe('XY');
+    expect(destination.content).toBe('end');
+    writer.close();
+    document.close();
+  });
+
+  it('keeps insertion seam affinity when a fragment is cut and inserted again', () => {
+    const run = (affinity: 'left' | 'right') => {
+      const document = CanonicalDocument.fromMarkdown('source\n\ntarget\n\nend', {
+        documentId: `fragment-seam-${affinity}`,
+        actionId: `fragment-seam-import-${affinity}`,
+        authorityEpoch: 'action-epoch',
+      });
+      const writer = new CanonicalWriter(document);
+      const [source, target, end] = document.root.children;
+      if (!source || !target || !end) throw new Error('missing fragment seam nodes');
+      const initial = document.canonicalSnapshot();
+      const tapeFor = (id: string) => {
+        const node = initial.nodes.find((candidate) => candidate.id === id);
+        if (!node) throw new Error(`missing node ${id}`);
+        return node.spans[0]!.tapeId;
+      };
+      const sourceTape = tapeFor(source.sharedId);
+      const targetTape = tapeFor(target.sharedId);
+
+      writer.edit({ actionId: `seed-seam-${affinity}` }, (draft) => {
+        draft.transferInlineRange({
+          source: source.sharedId,
+          from: 0,
+          to: source.content!.length,
+          destination: target.sharedId,
+          at: 2,
+          affinity: 'right',
+        });
+      });
+      writer.edit({ actionId: `insert-at-seam-${affinity}` }, (draft) => {
+        draft.spliceText(target.sharedId, { from: 2, to: 2, insert: 'X', affinity });
+      });
+      writer.edit({ actionId: `move-seam-character-${affinity}` }, (draft) => {
+        draft.transferInlineRange({
+          source: target.sharedId,
+          from: 2,
+          to: 3,
+          destination: end.sharedId,
+          at: 0,
+          affinity: 'right',
+        });
+      });
+
+      const snapshot = document.canonicalSnapshot();
+      const endNode = snapshot.nodes.find((candidate) => candidate.id === end.sharedId)!;
+      expect(endNode.content).toBe('Xend');
+      expect(document.validate()).toEqual({ valid: true, errors: [] });
+      const xTape = endNode.spans[0]!.tapeId;
+      writer.close();
+      document.close();
+      return { xTape, sourceTape, targetTape };
+    };
+
+    const left = run('left');
+    const right = run('right');
+    expect(left.xTape).toBe(left.targetTape);
+    expect(right.xTape).toBe(right.sourceTape);
+    expect(left.xTape).not.toBe(right.xTape);
+  });
+
   it('moves same-node ranges against pre-transfer offsets and keeps boundary moves as no-ops', () => {
     for (const [from, to, at, expected] of [
       [1, 3, 5, 'adebcf'],

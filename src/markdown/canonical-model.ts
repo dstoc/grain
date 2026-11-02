@@ -3,8 +3,8 @@ import * as Y from 'yjs';
 import type { DocumentNode, MarkdownNode } from './node.js';
 import { parser as inlineParser, type InlineTree, type InlineTreeNode } from './inline-parser.js';
 import { createSyntaxNode, createTree } from './parser-tree.js';
-import { viewModel, type Caches } from './view-model-node.js';
-import { MarkdownTree, type ViewModel } from './view-model.js';
+import type { Caches } from './view-model-node.js';
+import { MarkdownTree } from './view-model.js';
 import { parseBlocks } from './block-parser/api.js';
 import { batch, signal } from '../signals.js';
 
@@ -659,40 +659,12 @@ function orderedChildren(node: MutableSemanticNode): MutableSemanticNode[] {
  */
 export class CanonicalNode {
   readonly renderSignal = signal(0);
-  readonly [viewModel]: ViewModel;
-  private readonly projectionId = canonicalProjectionId++;
+  readonly id = canonicalProjectionId++;
 
   constructor(
     readonly sharedId: NodeId,
     private readonly owner: CanonicalDocument,
   ) {
-    // Rendering and selection use the same stable local projection seam as the
-    // legacy view model. Mutating methods deliberately fail: canonical edits
-    // must go through CanonicalWriter and an explicit TreeDraft.
-    this[viewModel] = Object.defineProperties(
-      {},
-      {
-        self: { get: () => this },
-        id: { get: () => this.projectionId },
-        connected: { get: () => this.connected },
-        version: { get: () => this.version },
-        parent: { get: () => this.parent as unknown as ViewModel['parent'] },
-        previousSibling: {
-          get: () => this.previousSibling as unknown as ViewModel['previousSibling'],
-        },
-        nextSibling: { get: () => this.nextSibling as unknown as ViewModel['nextSibling'] },
-        firstChild: { get: () => this.children[0] as unknown as ViewModel['firstChild'] },
-        lastChild: { get: () => this.children.at(-1) as unknown as ViewModel['lastChild'] },
-        renderSignal: { get: () => this.renderSignal },
-        inlineTree: { get: () => this.inlineTree },
-        caches: { get: () => this.caches },
-        tree: {
-          get: () => {
-            throw new Error('CanonicalNode edits must use CanonicalWriter');
-          },
-        },
-      },
-    ) as unknown as ViewModel;
     Object.freeze(this);
   }
 

@@ -722,8 +722,9 @@ export class Editor extends LitElement {
     // This function must only handle key events that do not generate text.
     // So as not to confuse handling here with insertText in onInlineInput.
     const {
-      detail: { inline, node, keyboardEvent },
+      detail: { inline, node: projectedNode, keyboardEvent },
     } = event;
+    const node = projectedNode as unknown as InlineViewModelNode;
     const keyDown = normalizeKeys(keyboardEvent);
     const hostContext = cast(inline.hostContext);
 

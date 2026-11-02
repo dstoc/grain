@@ -21,7 +21,6 @@ import './block-render.js';
 import { consume } from '@lit/context';
 import { HostContext, hostContext } from './host-context.js';
 import { findNextEditable, findFinalEditable } from './view-model-util.js';
-import { viewModel } from './view-model-node.js';
 
 @customElement('md-transclusion')
 export class MarkdownTransclusion extends LitElement {
@@ -81,7 +80,7 @@ export class MarkdownTransclusion extends LitElement {
     this.markdownRenderer.hostContext.focusOffset = this.hostContext.focusOffset;
     this.hostContext.focusNode = undefined;
     this.hostContext.focusOffset = undefined;
-    node && node[viewModel].renderSignal.value++;
+    node && node.renderSignal.value++;
   }
 }
 

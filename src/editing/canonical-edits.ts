@@ -21,18 +21,18 @@ function walk(draft: TreeDraft, root: NodeId): NodeId[] {
 }
 
 function parentOf(draft: TreeDraft, root: NodeId, child: NodeId): NodeId | undefined {
-  return walk(draft, root).find((id) => draft.node(id).children.includes(child));
+  void root;
+  return draft.parentOf(child);
 }
 
 function siblings(draft: TreeDraft, root: NodeId, id: NodeId) {
-  const parent = parentOf(draft, root, id);
+  void root;
+  const parent = draft.parentOf(id);
   if (!parent) return { parent: undefined, previous: undefined, next: undefined };
-  const children = draft.node(parent).children;
-  const index = children.indexOf(id);
   return {
     parent,
-    previous: index > 0 ? children[index - 1] : undefined,
-    next: children[index + 1],
+    previous: draft.previousSiblingOf(id),
+    next: draft.nextSiblingOf(id),
   };
 }
 
