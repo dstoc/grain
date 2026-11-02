@@ -239,6 +239,53 @@ export function parseBlocks(
   return { node: blockTree.serialize() as DocumentNode };
 }
 
+/**
+ * Conservatively says whether inline source is still exactly one literal
+ * paragraph under Grain's block parser. Any consumed syntax or structural
+ * output takes the conversion path.
+ */
+export function isLiteralParagraphInput(markdown: string): boolean {
+  return classifyInlineInput(markdown).kind === 'literal';
+}
+
+export type InlineInputClassification =
+  | { readonly kind: 'literal' }
+  | { readonly kind: 'conversion'; readonly plan: ParserConversionPlan };
+
+export function classifyInlineInput(markdown: string): InlineInputClassification {
+  if (isDefinitelyLiteralSingleLine(markdown)) return { kind: 'literal' };
+  const result = parseBlocks(markdown, { provenance: true });
+  const children = result.provenance.output.children ?? [];
+  return children.length === 1 &&
+    children[0]?.type === 'paragraph' &&
+    children[0].content === markdown
+    ? { kind: 'literal' }
+    : { kind: 'conversion', plan: result.provenance };
+}
+
+/**
+ * Recognizes the uncomplicated single-line case without constructing the
+ * parser's semantic tree. Anything that could begin block syntax stays on the
+ * full parser path, which remains the authority for uncertain input.
+ */
+function isDefinitelyLiteralSingleLine(markdown: string): boolean {
+  if (!markdown || /[\r\n]/.test(markdown) || markdown !== markdown.trim()) return false;
+
+  // A block opener must be considered after up to three spaces, but keeping
+  // leading whitespace on the conservative path also avoids changing source.
+  if (
+    /^ {0,3}(?:#{1,6}(?:\s|$)|>|[-+*](?:[ \t]|$)|\d+[.)](?:[ \t]|$)|`{3,}|~{3,}|<|\[)/.test(
+      markdown,
+    )
+  ) {
+    return false;
+  }
+  if (/^(?:\*(?:[ \t]*\*){2,}|-(?:[ \t]*-){2,}|_(?:[ \t]*_){2,})[ \t]*$/.test(markdown)) {
+    return false;
+  }
+  return true;
+}
+
 export function parseMarkdownTree(markdown: string): MarkdownTree {
   const parser = createBlockParser();
   parser.push(markdown);

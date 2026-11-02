@@ -19,13 +19,27 @@ import { isInlineNode } from './node.js';
 import type { DocumentNode } from './node.js';
 import type { ViewModelNode } from './view-model-node.js';
 import type { MarkdownTreeConstructionDraft } from './view-model.js';
-import { mapTextEdit } from './canonical-text.js';
-import type { NativeTextRun, TextAffinity, TextEdit } from './canonical-text.js';
+import {
+  indexNativeTape,
+  indexProjectedSpans,
+  mapProjectedTextEdit,
+  mapTextEdit,
+  mapTextEditIndexed,
+  spanTextFromIndex,
+} from './canonical-text.js';
+import type {
+  NativeTapeIndex,
+  NativeTextRun,
+  ProjectedTextIndex,
+  TextAffinity,
+  TextEdit,
+} from './canonical-text.js';
 import { normalizeCanonicalDraft } from './canonical-normalize.js';
-import { parseBlocks } from './block-parser/api.js';
+import { classifyInlineInput, parseBlocks } from './block-parser/api.js';
+import type { ParserConversionPlan } from './block-parser/api.js';
 import { applyParserConversion } from './canonical-promotion.js';
 import {
-  createCanonicalTextAnchorFromState,
+  createCanonicalTextAnchorFromIndexes,
   type CanonicalTextAnchor,
 } from './canonical-selection.js';
 
@@ -288,6 +302,13 @@ export interface WriterOptions {
   readonly verifyWithFullClone?: boolean;
 }
 
+export interface WriterOperationCounts {
+  readonly fullStateClones: number;
+  readonly authorReplicaCreations: number;
+  readonly validationReplicaCreations: number;
+  readonly literalTextInputs: number;
+}
+
 interface InternalCell {
   readonly token: string;
   readonly value: unknown;
@@ -386,6 +407,56 @@ interface LowLevelPlan {
   readonly touchedTapes: readonly TapeId[];
   readonly textTapes: readonly TapeId[];
 }
+
+const EMPTY_PLAN: LowLevelPlan = Object.freeze({
+  allocations: Object.freeze([]),
+  newTapes: Object.freeze([]),
+  boundaries: Object.freeze([]),
+  deletions: Object.freeze([]),
+  insertions: Object.freeze([]),
+  writes: Object.freeze([]),
+  touchedNodes: Object.freeze([]),
+  touchedTapes: Object.freeze([]),
+  textTapes: Object.freeze([]),
+});
+
+const EMPTY_STRUCTURAL_PATCH: StructuralPatch = Object.freeze({
+  cells: Object.freeze([]),
+  births: Object.freeze([]),
+  visibility: Object.freeze([]),
+  bornTapes: Object.freeze([]),
+  bornMarkers: Object.freeze([]),
+});
+
+interface PreparedActionBase {
+  readonly request: ActionRequest;
+  readonly context: AdmittedContext;
+  readonly requestHash: string;
+  readonly revision: number;
+  readonly nextRevision: number;
+  readonly plan: LowLevelPlan;
+  readonly structuralPatch: StructuralPatch;
+  readonly changedTapeIds: ReadonlySet<TapeId>;
+  readonly historyTapeIds: readonly TapeId[];
+  readonly structuralEffect: boolean;
+  readonly receipt: ActionReceipt;
+  readonly reservation: HistoryReservation;
+}
+
+type PreparedAction = PreparedActionBase &
+  (
+    | {
+        readonly kind: 'literal';
+        readonly boundarySnapshots: ReadonlyMap<TapeId, string>;
+        readonly snapshot: TouchedResourceSnapshot;
+      }
+    | {
+        readonly kind: 'candidate';
+        readonly candidate: Y.Doc;
+        readonly candidateMutations: NativeMutationEvidence;
+        readonly snapshot: TouchedResourceSnapshot;
+      }
+  );
 
 interface NativeItem {
   readonly id: { readonly client: number; readonly clock: number };
@@ -568,7 +639,8 @@ function nodeCell(state: Y.Doc, id: NodeId, field: CellField): CellValue<unknown
   return readCell(record, field);
 }
 
-function spanText(state: Y.Doc, span: Span): string {
+function spanText(state: Y.Doc, span: Span, indexes?: CanonicalIndexes): string {
+  if (indexes) return spanTextFromIndex(span, indexes.tape(span.tapeId));
   const tape = tapeMap(state).get(span.tapeId);
   assert(tape, `missing tape ${span.tapeId}`);
   let inSpan = false;
@@ -585,6 +657,221 @@ function spanText(state: Y.Doc, span: Span): string {
   return result;
 }
 
+/** Reconstructible lookups over canonical resources; text indexes are revision scoped. */
+class CanonicalIndexes {
+  readonly nodeIds = new Set<NodeId>();
+  readonly tapeIds = new Set<TapeId>();
+  readonly boundaryIds = new Set<string>();
+  readonly parentByChild = new Map<NodeId, NodeId>();
+  readonly activeNodes = new Set<NodeId>();
+  readonly visibleInlineNodeIds: NodeId[] = [];
+  private readonly visibleInlinePosition = new Map<NodeId, number>();
+  readonly activeTapeOwners = new Map<TapeId, Set<NodeId>>();
+  readonly tapeOwners = new Map<TapeId, Set<NodeId>>();
+  readonly boundaryLocations = new Map<
+    string,
+    { readonly tapeId: TapeId; readonly index: number }
+  >();
+  readonly boundaryIdsByTape = new Map<TapeId, Set<string>>();
+  readonly textIndexes = new Map<TapeId, NativeTapeIndex>();
+  private readonly projectedByNode = new Map<
+    NodeId,
+    { readonly signature: string; readonly index: ProjectedTextIndex }
+  >();
+
+  constructor(private readonly state: Y.Doc) {
+    this.rebuild();
+  }
+
+  rebuild(): void {
+    this.nodeIds.clear();
+    this.tapeIds.clear();
+    this.boundaryIds.clear();
+    this.parentByChild.clear();
+    this.activeNodes.clear();
+    this.visibleInlineNodeIds.length = 0;
+    this.visibleInlinePosition.clear();
+    this.activeTapeOwners.clear();
+    this.tapeOwners.clear();
+    this.boundaryLocations.clear();
+    this.boundaryIdsByTape.clear();
+    this.textIndexes.clear();
+    this.projectedByNode.clear();
+
+    const nodes = nodeMap(this.state);
+    for (const [id, record] of nodes) {
+      this.nodeIds.add(id);
+      for (const child of readCell<readonly NodeId[]>(record, 'children').value) {
+        this.parentByChild.set(child, id);
+      }
+    }
+    const rootId = metaMap(this.state).get('rootId') as NodeId;
+    const pending = [rootId];
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (this.activeNodes.has(id)) continue;
+      this.activeNodes.add(id);
+      const record = nodes.get(id);
+      if (record) {
+        if (INLINE_KINDS.has(readCell<NodeKind>(record, 'kind').value)) {
+          this.visibleInlinePosition.set(id, this.visibleInlineNodeIds.length);
+          this.visibleInlineNodeIds.push(id);
+        }
+        const children = readCell<readonly NodeId[]>(record, 'children').value;
+        for (let index = children.length - 1; index >= 0; index--) {
+          pending.push(children[index]!);
+        }
+      }
+    }
+
+    for (const [id, record] of nodes) {
+      const ownerActive = this.activeNodes.has(id);
+      for (const span of readCell<readonly Span[]>(record, 'spans').value) {
+        const owners = this.tapeOwners.get(span.tapeId) ?? new Set<NodeId>();
+        owners.add(id);
+        this.tapeOwners.set(span.tapeId, owners);
+        if (ownerActive) {
+          const activeOwners = this.activeTapeOwners.get(span.tapeId) ?? new Set<NodeId>();
+          activeOwners.add(id);
+          this.activeTapeOwners.set(span.tapeId, activeOwners);
+        }
+      }
+    }
+
+    for (const [tapeId, tape] of tapeMap(this.state)) {
+      this.tapeIds.add(tapeId);
+      const index = indexNativeTape(tapeId, tape);
+      this.textIndexes.set(tapeId, index);
+      for (const [boundaryId, indexPosition] of index.boundaries) {
+        this.boundaryIds.add(boundaryId);
+        this.boundaryLocations.set(boundaryId, { tapeId, index: indexPosition });
+        const ids = this.boundaryIdsByTape.get(tapeId) ?? new Set<string>();
+        ids.add(boundaryId);
+        this.boundaryIdsByTape.set(tapeId, ids);
+      }
+    }
+  }
+
+  isActive(id: NodeId): boolean {
+    return this.activeNodes.has(id);
+  }
+
+  parent(id: NodeId): NodeId | undefined {
+    return this.parentByChild.get(id);
+  }
+
+  tape(tapeId: TapeId): NativeTapeIndex {
+    const index = this.textIndexes.get(tapeId);
+    assert(index, `missing tape index ${tapeId}`);
+    return index;
+  }
+
+  content(nodeId: NodeId): string {
+    return this.projected(nodeId).index.text;
+  }
+
+  projectedText(nodeId: NodeId): ProjectedTextIndex {
+    return this.projected(nodeId).index;
+  }
+
+  visibleInlineNeighbors(nodeId: NodeId): {
+    readonly previousNodeId?: NodeId;
+    readonly nextNodeId?: NodeId;
+  } {
+    const index = this.visibleInlinePosition.get(nodeId);
+    if (index === undefined) return {};
+    return {
+      ...(index > 0 ? { previousNodeId: this.visibleInlineNodeIds[index - 1]! } : {}),
+      ...(index + 1 < this.visibleInlineNodeIds.length
+        ? { nextNodeId: this.visibleInlineNodeIds[index + 1]! }
+        : {}),
+    };
+  }
+
+  mapTextEdit(nodeId: NodeId, spans: readonly Span[], edit: TextEdit) {
+    const indexed = this.projected(nodeId, spans);
+    return mapProjectedTextEdit(indexed.index, edit);
+  }
+
+  private projected(nodeId: NodeId, knownSpans?: readonly Span[]) {
+    const record = nodeMap(this.state).get(nodeId);
+    assert(record, `unknown node ${nodeId}`);
+    const spansCell = readCell<readonly Span[]>(record, 'spans');
+    const spans = knownSpans ?? spansCell.value;
+    const signature = stableJson([
+      spansCell.token,
+      ...spans.map((span) => [span.tapeId, revisionMap(this.state).get(span.tapeId)]),
+    ]);
+    const cached = this.projectedByNode.get(nodeId);
+    if (cached?.signature === signature) return cached;
+    const index = indexProjectedSpans(spans, this.textIndexes);
+    const result = { signature, index };
+    this.projectedByNode.set(nodeId, result);
+    return result;
+  }
+
+  refreshText(tapeIds: Iterable<TapeId>): void {
+    const tapes = tapeMap(this.state);
+    for (const tapeId of tapeIds) {
+      const tape = tapes.get(tapeId);
+      if (!tape) continue;
+      const index = indexNativeTape(tapeId, tape);
+      this.textIndexes.set(tapeId, index);
+      for (const boundaryId of this.boundaryIdsByTape.get(tapeId) ?? []) {
+        this.boundaryLocations.delete(boundaryId);
+        this.boundaryIds.delete(boundaryId);
+      }
+      const boundaryIds = new Set<string>();
+      for (const [boundaryId, indexPosition] of index.boundaries) {
+        this.boundaryIds.add(boundaryId);
+        boundaryIds.add(boundaryId);
+        this.boundaryLocations.set(boundaryId, { tapeId, index: indexPosition });
+      }
+      this.boundaryIdsByTape.set(tapeId, boundaryIds);
+      for (const ownerId of this.tapeOwners.get(tapeId) ?? []) this.projectedByNode.delete(ownerId);
+    }
+  }
+}
+
+function assertTextMutationOnly(
+  evidence: NativeMutationEvidence,
+  state: Y.Doc,
+  changedTapeIds: ReadonlySet<TapeId>,
+  boundarySnapshots: ReadonlyMap<TapeId, string>,
+  indexes: CanonicalIndexes,
+): void {
+  assert(evidence.changedOtherTypes.size === 0, 'text update changed an unsupported shared type');
+  assert(evidence.changedNodeCells.size === 0, 'text update changed node metadata');
+  assert(evidence.changedNodeIds.size === 0, 'text update changed the node registry');
+  assert(evidence.changedTapeRegistryIds.size === 0, 'text update changed the tape registry');
+  assert(evidence.changedRevisionIds.size === 0, 'text update changed tape revisions');
+  assert(evidence.changedMetaKeys.size === 0, 'text update changed canonical metadata');
+  assert(evidence.changedWatermarkKeys.size === 0, 'text update changed session watermarks');
+  assert(
+    evidence.changedTapeIds.size === changedTapeIds.size &&
+      [...evidence.changedTapeIds].every((id) => changedTapeIds.has(id)),
+    'text update changed an unexpected tape',
+  );
+  const tapes = tapeMap(state);
+  for (const tapeId of changedTapeIds) {
+    const tape = tapes.get(tapeId);
+    assert(tape, `text update references missing tape ${tapeId}`);
+    const index = indexes.tape(tapeId);
+    assertCanonicalTapeShape(index);
+    assert(
+      boundarySnapshots.get(tapeId) === markerIdentitySignature(index),
+      `text update changed permanent marker identity or order on ${tapeId}`,
+    );
+    for (const part of index.parts) {
+      assert(
+        typeof part.insert === 'string' || boundaryIdFromInsert(part.insert) !== undefined,
+        `text update added an unsupported embed to tape ${tapeId}`,
+      );
+    }
+    assert(!index.hasFormatting, `text update added formatting to tape ${tapeId}`);
+  }
+}
+
 function inlineContent(node: DraftNodeState): string {
   return node.spans.flatMap((span) => span.pieces.map((piece) => piece.text)).join('');
 }
@@ -597,7 +884,7 @@ function draftSpanCopy(span: Span, text: string, sourceSpanIndex: number): Draft
   };
 }
 
-function nodeStateFromRecord(state: Y.Doc, id: NodeId): DraftNodeState {
+function nodeStateFromRecord(state: Y.Doc, id: NodeId, indexes: CanonicalIndexes): DraftNodeState {
   const record = nodeMap(state).get(id);
   assert(record, `unknown node ${id}`);
   const kind = readCell<NodeKind>(record, 'kind');
@@ -611,7 +898,7 @@ function nodeStateFromRecord(state: Y.Doc, id: NodeId): DraftNodeState {
     type: kind.value,
     children: [...children.value],
     spans: INLINE_KINDS.has(kind.value)
-      ? spans.value.map((span, index) => draftSpanCopy(span, spanText(state, span), index))
+      ? spans.value.map((span, index) => draftSpanCopy(span, spanText(state, span, indexes), index))
       : [],
     marker: marker.value,
     checked: checked.value,
@@ -633,12 +920,6 @@ function nodeStateFromRecord(state: Y.Doc, id: NodeId): DraftNodeState {
 function allowedChild(parent: NodeKind, child: NodeKind): boolean {
   if (parent === 'list') return child === 'list-item';
   return CONTAINER_KINDS.has(parent) && BLOCK_KINDS.has(child);
-}
-
-function parentOf(nodes: ReadonlyMap<NodeId, DraftNodeState>, childId: NodeId): NodeId | undefined {
-  for (const candidate of nodes.values())
-    if (candidate.children.includes(childId)) return candidate.id;
-  return undefined;
 }
 
 function sameValue(left: unknown, right: unknown): boolean {
@@ -700,6 +981,7 @@ function stableJson(value: unknown): string {
 class MutableTreeDraft implements ParserTreeDraft {
   private active = true;
   private readonly nodes = new Map<NodeId, DraftNodeState>();
+  private readonly parentByChild: Map<NodeId, NodeId>;
   private readonly preconditions = new Map<string, ReadPrecondition>();
   private readonly operations_: SemanticOperation[] = [];
   private readonly generatedIds = new Set<string>();
@@ -712,9 +994,10 @@ class MutableTreeDraft implements ParserTreeDraft {
   constructor(
     private readonly state: Y.Doc,
     private readonly actionId: string,
+    private readonly indexes: CanonicalIndexes,
     operations?: readonly SemanticOperation[],
   ) {
-    for (const [id] of nodeMap(state).entries()) this.nodes.set(id, nodeStateFromRecord(state, id));
+    this.parentByChild = new Map(indexes.parentByChild);
     if (operations) {
       for (const operation of operations) this.apply(operation, false);
     }
@@ -754,8 +1037,6 @@ class MutableTreeDraft implements ParserTreeDraft {
     const touchedNodes = new Set<NodeId>();
     const touchedTapes = new Set<TapeId>();
     const textTapes = new Set<TapeId>();
-    const tapes = new Map<TapeId, Y.Text>(tapeMap(this.state).entries());
-
     for (const node of this.nodes.values()) {
       if (node.created) {
         const spans = node.spans.map((span) => deepFreeze(deepCopy(span.span)));
@@ -803,7 +1084,7 @@ class MutableTreeDraft implements ParserTreeDraft {
         let baseLength = 0;
         for (const span of baseSpans) {
           baseStarts.push(baseLength);
-          baseLength += spanText(this.state, span).length;
+          baseLength += spanText(this.state, span, this.indexes).length;
         }
         const bySource = new Map<number, DraftSpan[]>();
         for (const span of node.spans) {
@@ -815,9 +1096,12 @@ class MutableTreeDraft implements ParserTreeDraft {
         }
         for (let spanIndex = 0; spanIndex < baseSpans.length; spanIndex++) {
           const baseSpan = baseSpans[spanIndex]!;
-          const baseText = spanText(this.state, baseSpan);
+          const baseText = spanText(this.state, baseSpan, this.indexes);
           const currentSpans = bySource.get(spanIndex);
           assert(currentSpans?.length, `text span ${spanIndex} disappeared during a splice`);
+          for (const ownerId of this.indexes.tapeOwners.get(baseSpan.tapeId) ?? []) {
+            this.requireNode(ownerId);
+          }
           const retained = [...this.nodes.values()]
             .flatMap((candidate) =>
               candidate.spans.flatMap((span) =>
@@ -848,7 +1132,7 @@ class MutableTreeDraft implements ParserTreeDraft {
           let cursor = 0;
           for (const [from, to] of merged) {
             if (cursor < from) {
-              const mapped = mapTextEdit(baseSpans, tapes, {
+              const mapped = mapTextEditIndexed(baseSpans, this.indexes.textIndexes, {
                 from: baseStarts[spanIndex]! + cursor,
                 to: baseStarts[spanIndex]! + from,
                 insert: '',
@@ -862,7 +1146,7 @@ class MutableTreeDraft implements ParserTreeDraft {
             cursor = Math.max(cursor, to);
           }
           if (cursor < baseText.length) {
-            const mapped = mapTextEdit(baseSpans, tapes, {
+            const mapped = mapTextEditIndexed(baseSpans, this.indexes.textIndexes, {
               from: baseStarts[spanIndex]! + cursor,
               to: baseStarts[spanIndex]! + baseText.length,
               insert: '',
@@ -967,7 +1251,6 @@ class MutableTreeDraft implements ParserTreeDraft {
   assertMatches(state: Y.Doc): void {
     this.assertActive();
     const records = nodeMap(state);
-    assert(records.size === this.nodes.size, 'compiled action changed the node registry');
     for (const [id, expected] of this.nodes) {
       const record = records.get(id);
       assert(record, `compiled action omitted draft node ${id}`);
@@ -1183,7 +1466,7 @@ class MutableTreeDraft implements ParserTreeDraft {
 
   private createWithId(operation: Extract<SemanticOperation, { type: 'create' }>): void {
     const { id, spec, span } = operation;
-    assert(!this.nodes.has(id), `node ID ${id} already exists`);
+    assert(!this.indexes.nodeIds.has(id) && !this.nodes.has(id), `node ID ${id} already exists`);
     this.reserveId(id);
     this.generatedIds.add(id);
     assert(spec.type !== 'document', 'a draft cannot create another document root');
@@ -1200,7 +1483,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     );
     assert(typeof content === 'string', 'inline content must be text');
     if (span) {
-      assert(!this.nodes.has(span.tapeId), `tape ID ${span.tapeId} already exists`);
+      assert(!this.indexes.tapeIds.has(span.tapeId), `tape ID ${span.tapeId} already exists`);
       this.reserveId(span.tapeId);
       this.reserveId(span.startBoundaryId);
       this.reserveId(span.endBoundaryId);
@@ -1262,7 +1545,7 @@ class MutableTreeDraft implements ParserTreeDraft {
       allowedChild(parent.type, node.type),
       `${node.type} cannot be a child of ${parent.type}`,
     );
-    const oldParentId = parentOf(this.nodes, id);
+    const oldParentId = this.parentByChild.get(id);
     if (oldParentId) this.readField(this.requireNode(oldParentId), 'children');
     if (before !== null) {
       if (before === id) {
@@ -1284,17 +1567,19 @@ class MutableTreeDraft implements ParserTreeDraft {
     const index = before === null ? target.children.length : target.children.indexOf(before);
     assert(index >= 0, `before node ${before} is not a child of ${parentId}`);
     target.children.splice(index, 0, id);
+    this.parentByChild.set(id, parentId);
   }
 
   private detachInternal(id: NodeId): void {
     assert(id !== this.rootId(), 'the document root cannot be detached');
     const node = this.requireNode(id);
-    const parentId = parentOf(this.nodes, id);
+    const parentId = this.parentByChild.get(id);
     assert(parentId, `node ${id} is already detached`);
     this.ensureVisibleOrCreated(this.requireNode(id));
     const parent = this.requireNode(parentId);
     this.readField(parent, 'children');
     parent.children = parent.children.filter((child) => child !== id);
+    this.parentByChild.delete(id);
     if (INLINE_KINDS.has(node.type) && node.transferred && inlineContent(node).length === 0) {
       this.readField(node, 'spans');
       node.spans = [];
@@ -1457,8 +1742,8 @@ class MutableTreeDraft implements ParserTreeDraft {
     const baseSpans = this.baseSpans(node.id);
     const baseStart = baseSpans
       .slice(0, target.index)
-      .reduce((total, span) => total + spanText(this.state, span).length, 0);
-    const map = mapTextEdit(baseSpans, this.allTapes(), {
+      .reduce((total, span) => total + spanText(this.state, span, this.indexes).length, 0);
+    const map = mapTextEdit(baseSpans, this.tapesFor(baseSpans), {
       from: baseStart + sourceOffset,
       to: baseStart + sourceOffset,
       insert: '',
@@ -1750,7 +2035,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     } else if (chosen?.piece.kind === 'retained' && current.sourceSpanIndex !== undefined) {
       const sourceSpan = this.baseSpans(node.id)[current.sourceSpanIndex];
       assert(sourceSpan, 'retained transfer source span is missing');
-      mapped = mapTextEdit([sourceSpan], this.allTapes(), {
+      mapped = mapTextEdit([sourceSpan], this.tapesFor([sourceSpan]), {
         from: chosen.piece.sourceFrom + chosen.local,
         to: chosen.piece.sourceFrom + chosen.local,
         insert: '',
@@ -1761,18 +2046,17 @@ class MutableTreeDraft implements ParserTreeDraft {
       chosen.piece.sourceSpanIndex !== undefined &&
       chosen.piece.sourceFrom !== undefined
     ) {
-      const original = this.nodes.get(chosen.piece.source);
-      assert(original, `transferred source node ${chosen.piece.source} is missing`);
+      const original = this.requireNode(chosen.piece.source);
       const sourceSpan = this.baseSpans(original.id)[chosen.piece.sourceSpanIndex];
       assert(sourceSpan, 'transferred source span is missing');
-      mapped = mapTextEdit([sourceSpan], this.allTapes(), {
+      mapped = mapTextEdit([sourceSpan], this.tapesFor([sourceSpan]), {
         from: chosen.piece.sourceFrom + chosen.local,
         to: chosen.piece.sourceFrom + chosen.local,
         insert: '',
         affinity: resolvedAffinity,
       }).insertion;
     } else {
-      mapped = mapTextEdit([current.span], this.allTapes(), {
+      mapped = mapTextEdit([current.span], this.tapesFor([current.span]), {
         from: offset,
         to: offset,
         insert: '',
@@ -1950,7 +2234,14 @@ class MutableTreeDraft implements ParserTreeDraft {
 
   private requireNode(id: NodeId): DraftNodeState {
     this.assertActive();
-    const node = this.nodes.get(id);
+    let node = this.nodes.get(id);
+    if (!node) {
+      const record = nodeMap(this.state).get(id);
+      if (record) {
+        node = nodeStateFromRecord(this.state, id, this.indexes);
+        this.nodes.set(id, node);
+      }
+    }
     assert(node, `unknown node ${id}`);
     return node;
   }
@@ -1961,15 +2252,18 @@ class MutableTreeDraft implements ParserTreeDraft {
 
   private ensureVisibleOrCreated(node: DraftNodeState): void {
     if (node.created) return;
-    const pending = [this.rootId()];
+    let current = node.id;
     const visited = new Set<NodeId>();
-    while (pending.length) {
-      const id = pending.pop()!;
-      if (id === node.id) return;
-      if (visited.has(id)) continue;
-      visited.add(id);
-      pending.push(...(this.nodes.get(id)?.children ?? []));
+    const root = this.rootId();
+    while (current !== root) {
+      if (visited.has(current)) break;
+      visited.add(current);
+      const parentId = this.parentByChild.get(current);
+      if (!parentId) break;
+      this.readField(this.requireNode(parentId), 'children');
+      current = parentId;
     }
+    if (current === root) return;
     throw new Error(`hidden target ${node.id}`);
   }
 
@@ -1979,36 +2273,34 @@ class MutableTreeDraft implements ParserTreeDraft {
     return node.baseCells.get('spans')!.value as readonly Span[];
   }
 
-  private currentTapes(node: DraftNodeState): ReadonlyMap<TapeId, Y.Text> {
-    const result = this.allTapes();
-    for (const span of node.spans) {
-      if (!result.has(span.span.tapeId)) {
-        const created = this.newTapeSpans.get(node.id);
-        if (created?.tapeId === span.span.tapeId) result.set(span.span.tapeId, new Y.Text());
+  private tapesFor(spans: readonly Span[]): Map<TapeId, Y.Text> {
+    const result = new Map<TapeId, Y.Text>();
+    const source = tapeMap(this.state);
+    for (const span of spans) {
+      if (result.has(span.tapeId)) continue;
+      let tape = source.get(span.tapeId);
+      if (!tape) {
+        const created = [...this.newTapeSpans.values()].find(
+          (candidate) => candidate.tapeId === span.tapeId,
+        );
+        if (!created) throw new Error(`missing tape ${span.tapeId}`);
+        tape = new Y.Text();
+        tape.insertEmbed(0, Object.freeze({ grainBoundary: created.startBoundaryId }));
+        tape.insertEmbed(1, Object.freeze({ grainBoundary: created.endBoundaryId }));
       }
+      result.set(span.tapeId, tape);
     }
     return result;
-  }
-
-  private allTapes(): Map<TapeId, Y.Text> {
-    return new Map(tapeMap(this.state).entries());
   }
 
   private allocateId(role: string): string {
     this.assertActive();
     const id = `${role}:${this.actionId}:${this.idOrdinal++}`;
     const permanent = new Set<string>([
-      ...nodeMap(this.state).keys(),
-      ...tapeMap(this.state).keys(),
+      ...this.indexes.nodeIds,
+      ...this.indexes.tapeIds,
+      ...this.indexes.boundaryIds,
     ]);
-    for (const tape of tapeMap(this.state).values()) {
-      for (const part of tape.toDelta()) {
-        if (typeof part.insert !== 'string') {
-          const boundary = (part.insert as Partial<BoundaryEmbed>)?.grainBoundary;
-          if (typeof boundary === 'string') permanent.add(boundary);
-        }
-      }
-    }
     assert(!permanent.has(id) && !this.generatedIds.has(id), `generated ID ${id} already exists`);
     this.generatedIds.add(id);
     return id;
@@ -2030,7 +2322,8 @@ export function createMarkdownTreeConstructionDraft(
   root: DocumentNode,
 ): MarkdownTreeConstructionDraft {
   const document = CanonicalDocument.fromParsed(root);
-  const draft = new MutableTreeDraft(canonicalWriterAccess(document).state, 'parser-construction');
+  const state = canonicalWriterAccess(document).state;
+  const draft = new MutableTreeDraft(state, 'parser-construction', new CanonicalIndexes(state));
   const nodeIds = new WeakMap<object, NodeId>();
   let closed = false;
 
@@ -2139,6 +2432,7 @@ export function createMarkdownTreeConstructionDraft(
 
 interface NativeMutationEvidence {
   readonly changedTapeIds: Set<TapeId>;
+  readonly changedOtherTypes: Set<unknown>;
   readonly changedNodeCells: Map<NodeId, Set<CellField>>;
   readonly changedNodeIds: Set<NodeId>;
   readonly changedTapeRegistryIds: Set<TapeId>;
@@ -2151,7 +2445,13 @@ interface NativeMutationEvidence {
 }
 
 /** Collect native Yjs mutation evidence without scanning tapes after each action. */
-function trackNativeMutations(state: Y.Doc): NativeMutationEvidence {
+function trackNativeMutations(
+  state: Y.Doc,
+  knownResources?: {
+    readonly tapeIds?: ReadonlySet<TapeId>;
+    readonly nodeIds?: ReadonlySet<NodeId>;
+  },
+): NativeMutationEvidence {
   const nodes = nodeMap(state);
   const tapes = tapeMap(state);
   const revisions = revisionMap(state);
@@ -2160,32 +2460,61 @@ function trackNativeMutations(state: Y.Doc): NativeMutationEvidence {
   const nodeIds = new WeakMap<Y.Map<unknown>, NodeId>();
   const tapeIds = new WeakMap<Y.Text, TapeId>();
   const changedTapeIds = new Set<TapeId>();
+  const changedOtherTypes = new Set<unknown>();
   const changedNodeCells = new Map<NodeId, Set<CellField>>();
   const changedNodeIds = new Set<NodeId>();
   const changedTapeRegistryIds = new Set<TapeId>();
   const changedRevisionIds = new Set<TapeId>();
   const changedMetaKeys = new Set<string>();
   const changedWatermarkKeys = new Set<string>();
-  for (const [id, record] of nodes.entries()) nodeIds.set(record, id);
-  for (const [id, tape] of tapes.entries()) tapeIds.set(tape, id);
+  if (!knownResources) {
+    for (const [id, record] of nodes.entries()) nodeIds.set(record, id);
+    for (const [id, tape] of tapes.entries()) tapeIds.set(tape, id);
+  } else {
+    for (const id of knownResources.nodeIds ?? []) {
+      const record = nodes.get(id);
+      if (record) nodeIds.set(record, id);
+    }
+    for (const id of knownResources.tapeIds ?? []) {
+      const tape = tapes.get(id);
+      if (tape) tapeIds.set(tape, id);
+    }
+  }
 
   const onAfterTransaction = (transaction: Y.Transaction) => {
     for (const [type, keys] of transaction.changed) {
       const sharedType: unknown = type;
+      let known = false;
       if (type instanceof Y.Text) {
         const id = tapeIds.get(type);
-        if (id) changedTapeIds.add(id);
+        if (id) {
+          changedTapeIds.add(id);
+          known = true;
+        }
       }
-      if (sharedType === nodes) for (const key of keys) if (key !== null) changedNodeIds.add(key);
-      if (sharedType === tapes)
+      if (sharedType === nodes) {
+        known = true;
+        for (const key of keys) if (key !== null) changedNodeIds.add(key);
+      }
+      if (sharedType === tapes) {
+        known = true;
         for (const key of keys) if (key !== null) changedTapeRegistryIds.add(key);
-      if (sharedType === revisions)
+      }
+      if (sharedType === revisions) {
+        known = true;
         for (const key of keys) if (key !== null) changedRevisionIds.add(key);
-      if (sharedType === meta) for (const key of keys) if (key !== null) changedMetaKeys.add(key);
-      if (sharedType === watermarks)
+      }
+      if (sharedType === meta) {
+        known = true;
+        for (const key of keys) if (key !== null) changedMetaKeys.add(key);
+      }
+      if (sharedType === watermarks) {
+        known = true;
         for (const key of keys) if (key !== null) changedWatermarkKeys.add(key);
+      }
       const nodeId = nodeIds.get(sharedType as Y.Map<unknown>);
       if (nodeId) {
+        known = true;
         const fields = changedNodeCells.get(nodeId) ?? new Set<CellField>();
         for (const key of keys) {
           if (
@@ -2201,11 +2530,13 @@ function trackNativeMutations(state: Y.Doc): NativeMutationEvidence {
         }
         changedNodeCells.set(nodeId, fields);
       }
+      if (!known) changedOtherTypes.add(type);
     }
   };
   state.on('afterTransaction', onAfterTransaction);
   return {
     changedTapeIds,
+    changedOtherTypes,
     changedNodeCells,
     changedNodeIds,
     changedTapeRegistryIds,
@@ -2471,6 +2802,54 @@ function boundarySignature(tape: Y.Text): string {
   );
 }
 
+function boundaryIdFromInsert(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object' || !('grainBoundary' in value)) return undefined;
+  const boundaryId = (value as { readonly grainBoundary: unknown }).grainBoundary;
+  return typeof boundaryId === 'string' ? boundaryId : undefined;
+}
+
+function markerIdentitySignature(index: NativeTapeIndex): string {
+  return stableJson(index.boundaryItems.map(({ boundaryId, itemId }) => ({ boundaryId, itemId })));
+}
+
+function assertCanonicalTapeShape(index: NativeTapeIndex): void {
+  const first = index.parts[0];
+  const last = index.parts.at(-1);
+  assert(
+    first && boundaryIdFromInsert(first.insert),
+    `tape ${index.tapeId} lacks a leading boundary`,
+  );
+  assert(
+    last && boundaryIdFromInsert(last.insert),
+    `tape ${index.tapeId} lacks a trailing boundary`,
+  );
+  assert(first.nativeFrom === 0, `tape ${index.tapeId} has text before its first boundary`);
+  assert(last.nativeTo === index.length, `tape ${index.tapeId} has text after its last boundary`);
+  const markerParts = index.parts.flatMap((part) => {
+    const boundaryId = boundaryIdFromInsert(part.insert);
+    return boundaryId === undefined ? [] : [{ boundaryId, index: part.nativeFrom }];
+  });
+  assert(
+    stableJson(markerParts) ===
+      stableJson(
+        index.boundaryItems.map(({ boundaryId, index: position }) => ({
+          boundaryId,
+          index: position,
+        })),
+      ),
+    `tape ${index.tapeId} has unresolved native boundary identities`,
+  );
+  assert(
+    new Set(index.boundaryItems.map(({ boundaryId }) => boundaryId)).size ===
+      index.boundaryItems.length,
+    `tape ${index.tapeId} has duplicate boundary IDs`,
+  );
+  assert(
+    new Set(index.boundaryItems.map(({ itemId }) => itemId)).size === index.boundaryItems.length,
+    `tape ${index.tapeId} has duplicate native boundary items`,
+  );
+}
+
 function assertTextOnlyUpdate(previous: Y.Doc, candidate: Y.Doc): void {
   assertRetainedResources(previous, candidate);
   assert(
@@ -2509,16 +2888,21 @@ function assertTextOnlyUpdate(previous: Y.Doc, candidate: Y.Doc): void {
   for (const [id, tape] of previousTapes.entries()) {
     const next = candidateTapes.get(id);
     assert(next, `text update removed tape ${id}`);
+    const previousIndex = indexNativeTape(id, tape);
+    const nextIndex = indexNativeTape(id, next);
+    assertCanonicalTapeShape(previousIndex);
+    assertCanonicalTapeShape(nextIndex);
     assert(
-      boundarySignature(tape) === boundarySignature(next),
-      `text update changed boundary markers on ${id}`,
+      markerIdentitySignature(previousIndex) === markerIdentitySignature(nextIndex),
+      `text update changed boundary marker identity or order on ${id}`,
     );
-    for (const part of next.toDelta()) {
+    for (const part of nextIndex.parts) {
       assert(
-        !part.attributes || Object.keys(part.attributes).length === 0,
-        `text update added formatting to tape ${id}`,
+        typeof part.insert === 'string' || boundaryIdFromInsert(part.insert) !== undefined,
+        `text update added an unsupported embed to tape ${id}`,
       );
     }
+    assert(!nextIndex.hasFormatting, `text update added formatting to tape ${id}`);
   }
 }
 
@@ -2558,6 +2942,7 @@ function applyPlan(
   textOrigin: object,
   nextRevision: number,
   mutations: NativeMutationEvidence,
+  afterAllocations?: () => void,
 ): void {
   if (plan.allocations.length || plan.newTapes.length) {
     state.transact(() => {
@@ -2585,6 +2970,7 @@ function applyPlan(
       }
     }, 'grain:allocate');
   }
+  afterAllocations?.();
 
   const deletions = mergeRuns(plan.deletions);
   if (deletions.length) {
@@ -2794,7 +3180,7 @@ function structuralPatchBetween(before: Y.Doc, after: Y.Doc, plan: LowLevelPlan)
 }
 
 function structuralPatchWithLiveIdentities(patch: StructuralPatch, state: Y.Doc): StructuralPatch {
-  const markers = markerItems(state);
+  const markers = patch.bornMarkers.length ? markerItems(state) : undefined;
   return Object.freeze({
     ...patch,
     bornTapes: Object.freeze(
@@ -2806,7 +3192,7 @@ function structuralPatchWithLiveIdentities(patch: StructuralPatch, state: Y.Doc)
     ),
     bornMarkers: Object.freeze(
       patch.bornMarkers.map(({ boundaryId }) => {
-        const marker = markers.get(boundaryId);
+        const marker = markers?.get(boundaryId);
         assert(marker, `missing born marker ${boundaryId} after live apply`);
         return Object.freeze({ ...marker, boundaryId });
       }),
@@ -3025,7 +3411,7 @@ interface HistoryEntry {
   focus?: ActionFocus;
   focusAnchors?: ActionFocusAnchors;
   selectionAnchors?: { readonly anchor: CanonicalTextAnchor; readonly focus: CanonicalTextAnchor };
-  readonly manager?: Y.UndoManager;
+  manager?: Y.UndoManager;
   sealed: boolean;
   noEffect: boolean;
   structuralEffect: boolean;
@@ -3104,11 +3490,18 @@ interface HistoryReservation {
   readonly sessionId: string;
   readonly entry: HistoryEntry;
   readonly isNew: boolean;
+  readonly managerExisted: boolean;
   readonly nextCurrent: boolean;
   readonly noEffect: boolean;
   readonly structuralEffect: boolean;
   readonly textTapes: readonly TapeId[];
   readonly structuralPatch: StructuralPatch;
+  readonly focus?: ActionFocus;
+  readonly focusAnchors?: ActionFocusAnchors;
+  readonly selectionAnchors?: {
+    readonly anchor: CanonicalTextAnchor;
+    readonly focus: CanonicalTextAnchor;
+  };
 }
 
 interface PendingRecord {
@@ -3137,27 +3530,14 @@ interface PendingHistoryRecord {
 }
 
 function projectionNodeIds(
-  state: Y.Doc,
+  indexes: CanonicalIndexes,
   touchedNodeIds: readonly NodeId[],
   touchedTapeIds: readonly TapeId[],
   patch: StructuralPatch,
 ): NodeId[] {
   const affected = new Set(touchedNodeIds);
-  const touchedTapes = new Set(touchedTapeIds);
-  if (touchedTapes.size) {
-    const nodes = nodeMap(state);
-    const pending = [metaMap(state).get('rootId') as NodeId];
-    const visited = new Set<NodeId>();
-    while (pending.length) {
-      const id = pending.pop()!;
-      if (visited.has(id)) continue;
-      visited.add(id);
-      const record = nodes.get(id);
-      if (!record) continue;
-      const spans = readCell<readonly Span[]>(record, 'spans').value;
-      if (spans.some((span) => touchedTapes.has(span.tapeId))) affected.add(id);
-      pending.push(...readCell<readonly NodeId[]>(record, 'children').value);
-    }
+  for (const tapeId of touchedTapeIds) {
+    for (const nodeId of indexes.activeTapeOwners.get(tapeId) ?? []) affected.add(nodeId);
   }
   const addChildren = (value: unknown) => {
     if (Array.isArray(value)) {
@@ -3182,16 +3562,39 @@ interface QueuedLocalEdit {
   readonly callback: DraftCommand;
 }
 
-function makeTextHistoryManager(state: Y.Doc, entry: HistoryEntry): Y.UndoManager {
+function makeTextHistoryManager(
+  state: Y.Doc,
+  entry: HistoryEntry,
+  tapeIds: readonly TapeId[],
+): Y.UndoManager {
   const tapes = tapeMap(state);
+  const scope = tapeIds.flatMap((id) => {
+    const tape = tapes.get(id);
+    return tape ? [tape] : [];
+  });
   let manager: Y.UndoManager;
-  manager = new Y.UndoManager(tapes, {
+  manager = new Y.UndoManager(scope, {
+    doc: state,
     captureTimeout: Number.POSITIVE_INFINITY,
     trackedOrigins: new Set([entry.origin]),
     captureTransaction: (transaction) =>
       transaction.origin === entry.origin || transaction.origin === manager,
   });
   return manager;
+}
+
+function addHistoryTapesToScope(
+  state: Y.Doc,
+  entry: HistoryEntry,
+  tapeIds: readonly TapeId[],
+): void {
+  if (!entry.manager) return;
+  const tapes = tapeMap(state);
+  const scope = tapeIds.flatMap((id) => {
+    const tape = tapes.get(id);
+    return tape ? [tape] : [];
+  });
+  if (scope.length) entry.manager.addToScope(scope);
 }
 
 function closeHistoryEntry(entry: HistoryEntry): void {
@@ -3231,12 +3634,22 @@ function markerSummary(state: Y.Doc): Map<TapeId, string> {
 export class CanonicalWriter {
   private readonly state: Y.Doc;
   private readonly access: ReturnType<typeof canonicalWriterAccess>;
+  private readonly unsubscribeAcceptedUpdates: () => void;
+  private readonly indexes: CanonicalIndexes;
+  private validationReplica?: Y.Doc;
+  private validationIndexes?: CanonicalIndexes;
+  private readonly authorReplicas = new Map<string, Y.Doc>();
+  private readonly authorPending = new Map<string, string>();
   private readonly sessions = new Map<string, SessionHistory>();
   private readonly acceptedRequests = new Map<string, CachedActionResponse>();
   private readonly listeners = new Set<WriterListener>();
   private readonly localQueue: QueuedLocalEdit[] = [];
   private readonly maxHistoryGroups: number;
   private readonly verifyWithFullClone: boolean;
+  private fullStateCloneCount = 0;
+  private authorReplicaCreationCount = 0;
+  private validationReplicaCreationCount = 0;
+  private literalTextInputCount = 0;
   private acceptedResponseBytes = 0;
   private historyResetPending: boolean;
   private preparing = false;
@@ -3255,6 +3668,10 @@ export class CanonicalWriter {
     this.historyResetPending = this.access.historyWasReset();
     assert(!activeWriters.has(document), 'canonical document already has an active writer');
     this.state = this.access.state;
+    this.indexes = new CanonicalIndexes(this.state);
+    this.validationReplica = this.cloneState();
+    this.validationIndexes = new CanonicalIndexes(this.validationReplica);
+    this.validationReplicaCreationCount++;
     this.maxHistoryGroups = options.maxHistoryGroups ?? 500;
     this.verifyWithFullClone = options.verifyWithFullClone ?? false;
     assert(
@@ -3262,11 +3679,128 @@ export class CanonicalWriter {
       'history limit must be a positive integer',
     );
     activeWriters.set(document, this);
+    this.unsubscribeAcceptedUpdates = this.access.observeAcceptedUpdates(
+      (update, changedTapeIds, structuralEffect) =>
+        this.onExternallyAcceptedUpdate(update, changedTapeIds, structuralEffect),
+    );
     this.admitSession('local');
   }
 
   get poisonedWriter(): boolean {
     return this.poisoned;
+  }
+
+  /** @internal Operation counts used by deterministic M2 locality controls. */
+  get operationCounts(): WriterOperationCounts {
+    return Object.freeze({
+      fullStateClones: this.fullStateCloneCount,
+      authorReplicaCreations: this.authorReplicaCreationCount,
+      validationReplicaCreations: this.validationReplicaCreationCount,
+      literalTextInputs: this.literalTextInputCount,
+    });
+  }
+
+  private cloneState(): Y.Doc {
+    this.fullStateCloneCount++;
+    return cloneDocument(this.state);
+  }
+
+  private authorReplica(sessionId: string): Y.Doc {
+    let replica = this.authorReplicas.get(sessionId);
+    if (!replica) {
+      replica = this.cloneState();
+      this.authorReplicaCreationCount++;
+      this.authorReplicas.set(sessionId, replica);
+    }
+    return replica;
+  }
+
+  private discardAuthorReplica(sessionId: string): void {
+    this.authorReplicas.get(sessionId)?.destroy();
+    this.authorReplicas.delete(sessionId);
+    this.authorPending.delete(sessionId);
+  }
+
+  private rejectPreparedAuthor(value: unknown): void {
+    if (!value || typeof value !== 'object') return;
+    const request = value as Partial<ActionRequest>;
+    if (
+      typeof request.sessionId === 'string' &&
+      typeof request.actionId === 'string' &&
+      this.authorPending.get(request.sessionId) === request.actionId
+    ) {
+      this.discardAuthorReplica(request.sessionId);
+    }
+  }
+
+  private discardValidationReplica(): void {
+    this.validationReplica?.destroy();
+    this.validationReplica = undefined;
+    this.validationIndexes = undefined;
+  }
+
+  private ensureValidationReplica(): { readonly state: Y.Doc; readonly indexes: CanonicalIndexes } {
+    if (!this.validationReplica) {
+      this.validationReplica = this.cloneState();
+      this.validationIndexes = new CanonicalIndexes(this.validationReplica);
+      this.validationReplicaCreationCount++;
+    }
+    assert(this.validationIndexes, 'validation replica is missing its indexes');
+    return { state: this.validationReplica, indexes: this.validationIndexes };
+  }
+
+  private syncAcceptedValidation(
+    update: Uint8Array,
+    changedTapeIds: ReadonlySet<TapeId>,
+    structuralEffect: boolean,
+    revision: number,
+    textIndexFresh = false,
+  ): void {
+    const validation = this.ensureValidationReplica();
+    Y.applyUpdate(validation.state, Uint8Array.from(update));
+    assertResolvedUpdate(validation.state);
+    assert(
+      metaMap(validation.state).get('documentId') === metaMap(this.state).get('documentId') &&
+        metaMap(validation.state).get('authorityEpoch') ===
+          metaMap(this.state).get('authorityEpoch') &&
+        metaMap(validation.state).get('acceptedRevision') === revision,
+      'validation replica did not receive the accepted document prefix',
+    );
+    if (structuralEffect) validation.indexes.rebuild();
+    else if (!textIndexFresh) validation.indexes.refreshText(changedTapeIds);
+  }
+
+  private onExternallyAcceptedUpdate(
+    update: Uint8Array,
+    changedTapeIds: readonly TapeId[],
+    structuralEffect: boolean,
+  ): void {
+    try {
+      const revision = metaMap(this.state).get('acceptedRevision') as number;
+      const changed = new Set(changedTapeIds);
+      this.syncAcceptedValidation(update, changed, structuralEffect, revision);
+      for (const [sessionId, replica] of this.authorReplicas) {
+        try {
+          Y.applyUpdate(replica, Uint8Array.from(update));
+          assertResolvedUpdate(replica);
+          assert(
+            metaMap(replica).get('documentId') === metaMap(this.state).get('documentId') &&
+              metaMap(replica).get('authorityEpoch') ===
+                metaMap(this.state).get('authorityEpoch') &&
+              metaMap(replica).get('acceptedRevision') === revision,
+            'author replica did not receive the accepted document prefix',
+          );
+        } catch {
+          this.discardAuthorReplica(sessionId);
+        }
+      }
+      if (structuralEffect) this.indexes.rebuild();
+      else this.indexes.refreshText(changed);
+    } catch (error) {
+      this.poisoned = true;
+      this.access.poison();
+      throw error;
+    }
   }
 
   close(): void {
@@ -3275,6 +3809,7 @@ export class CanonicalWriter {
       'cannot close a writer with an unpublished commit',
     );
     if (this.closed) return;
+    this.unsubscribeAcceptedUpdates();
     for (const session of this.sessions.values()) {
       for (const entry of session.all) destroyHistoryEntry(entry);
       session.all.clear();
@@ -3283,6 +3818,12 @@ export class CanonicalWriter {
       session.current = undefined;
     }
     this.sessions.clear();
+    for (const replica of this.authorReplicas.values()) replica.destroy();
+    this.authorReplicas.clear();
+    this.authorPending.clear();
+    this.validationReplica?.destroy();
+    this.validationReplica = undefined;
+    this.validationIndexes = undefined;
     this.acceptedRequests.clear();
     this.acceptedResponseBytes = 0;
     this.listeners.clear();
@@ -3315,6 +3856,10 @@ export class CanonicalWriter {
     this.assertCanPrepare();
     assert(options.actionId.length > 0, 'action ID cannot be empty');
     const sessionId = options.sessionId ?? 'local';
+    assert(
+      !this.authorPending.has(sessionId),
+      `session ${sessionId} already has an outstanding action`,
+    );
     const historyGroupId = options.historyGroupId ?? options.actionId;
     assert(
       sessionId.length > 0 && historyGroupId.length > 0,
@@ -3327,7 +3872,7 @@ export class CanonicalWriter {
       sessionId,
       sessionSequence,
     );
-    const draft = new MutableTreeDraft(this.state, identity);
+    const draft = new MutableTreeDraft(this.state, identity, this.indexes);
     this.preparing = true;
     try {
       const result = callback(draft);
@@ -3383,6 +3928,10 @@ export class CanonicalWriter {
       'action, session and history group IDs cannot be empty',
     );
     const sessionSequence = options.sessionSequence ?? this.nextSequence(sessionId);
+    assert(
+      !this.authorPending.has(sessionId),
+      `session ${sessionId} already has an outstanding action`,
+    );
     const documentId = metaMap(this.state).get('documentId') as string;
     const authorityEpoch = metaMap(this.state).get('authorityEpoch') as string;
     const identity = actionIdentity(documentId, authorityEpoch, sessionId, sessionSequence);
@@ -3390,11 +3939,10 @@ export class CanonicalWriter {
     assert(record, `unknown node ${nodeId}`);
     const kind = readCell<NodeKind>(record, 'kind');
     assert(INLINE_KINDS.has(kind.value), `${kind.value} nodes do not accept text input`);
-    assert(currentActive(this.state, nodeId), `hidden target ${nodeId}`);
+    assert(this.indexes.isActive(nodeId), `hidden target ${nodeId}`);
     const spans = readCell<readonly Span[]>(record, 'spans');
-    const tapes = new Map(tapeMap(this.state).entries());
-    const mapped = mapTextEdit(spans.value, tapes, edit);
-    const branch = cloneDocument(this.state);
+    const mapped = this.indexes.mapTextEdit(nodeId, spans.value, edit);
+    const branch = this.authorReplica(sessionId);
     const authoredUpdates: Uint8Array[] = [];
     const captureAuthoredUpdate = (update: Uint8Array) =>
       authoredUpdates.push(Uint8Array.from(update));
@@ -3419,16 +3967,385 @@ export class CanonicalWriter {
         ...(options.focus ? { focus: copyActionFocus(options.focus) } : {}),
         promotionTarget: Object.freeze({ nodeId, kindToken: kind.token, spansToken: spans.token }),
       } as ActionRequest;
+      this.authorPending.set(sessionId, options.actionId);
       return copyRequest(request);
+    } catch (error) {
+      this.discardAuthorReplica(sessionId);
+      throw error;
     } finally {
       branch.off('update', captureAuthoredUpdate);
-      branch.destroy();
     }
   }
 
+  private stageTextInput(request: ActionRequest):
+    | { readonly kind: 'invalid' }
+    | {
+        readonly kind: 'literal';
+        readonly changedTapeIds: ReadonlySet<TapeId>;
+        readonly boundarySnapshots: ReadonlyMap<TapeId, string>;
+      }
+    | { readonly kind: 'conversion'; readonly plan: ParserConversionPlan }
+    | { readonly kind: 'slow' } {
+    const validation = this.ensureValidationReplica();
+    const target = request.promotionTarget;
+    const targetRecord = target ? nodeMap(this.state).get(target.nodeId) : undefined;
+    const kindCell = targetRecord ? readCell<NodeKind>(targetRecord, 'kind') : undefined;
+    const spansCell = targetRecord ? readCell<readonly Span[]>(targetRecord, 'spans') : undefined;
+    const targetMatches =
+      !!target &&
+      !!kindCell &&
+      !!spansCell &&
+      kindCell.token === target.kindToken &&
+      spansCell.token === target.spansToken;
+    const allowedTapeIds = new Set((spansCell?.value ?? []).map((span) => span.tapeId));
+    const boundarySnapshots = new Map<TapeId, string>();
+    for (const tapeId of allowedTapeIds) {
+      const liveIndex = this.indexes.tape(tapeId);
+      const stagedIndex = validation.indexes.tape(tapeId);
+      assertCanonicalTapeShape(liveIndex);
+      assertCanonicalTapeShape(stagedIndex);
+      const snapshot = markerIdentitySignature(liveIndex);
+      assert(
+        snapshot === markerIdentitySignature(stagedIndex),
+        `validation replica has different boundary identities on ${tapeId}`,
+      );
+      boundarySnapshots.set(tapeId, snapshot);
+    }
+
+    const evidence = trackNativeMutations(
+      validation.state,
+      targetMatches ? { tapeIds: allowedTapeIds } : undefined,
+    );
+    try {
+      if (request.textUpdate?.length) {
+        Y.applyUpdate(validation.state, Uint8Array.from(request.textUpdate));
+      }
+      assertResolvedUpdate(validation.state);
+      const changedTapeIds = new Set(evidence.changedTapeIds);
+      if (targetMatches) {
+        assert(
+          [...changedTapeIds].every((tapeId) => allowedTapeIds.has(tapeId)),
+          'text input updated a tape outside its target spans',
+        );
+        validation.indexes.refreshText(changedTapeIds);
+        assertTextMutationOnly(
+          evidence,
+          validation.state,
+          changedTapeIds,
+          boundarySnapshots,
+          validation.indexes,
+        );
+        if (
+          request.textUpdate?.length &&
+          this.indexes.isActive(target!.nodeId) &&
+          kindCell!.value === 'paragraph'
+        ) {
+          const classification = classifyInlineInput(validation.indexes.content(target!.nodeId));
+          if (classification.kind === 'conversion') {
+            evidence.close();
+            return { kind: 'conversion', plan: classification.plan };
+          }
+        }
+        evidence.close();
+        return { kind: 'literal', changedTapeIds, boundarySnapshots };
+      }
+      evidence.close();
+      return { kind: 'slow' };
+    } catch {
+      evidence.close();
+      this.discardValidationReplica();
+      return { kind: 'invalid' };
+    }
+  }
+
+  /** Commit a fully admitted and prepared action through one publication boundary. */
+  private commitPreparedAction(prepared: PreparedAction): ApplyResult {
+    const {
+      request,
+      context,
+      requestHash,
+      nextRevision,
+      plan,
+      structuralPatch,
+      changedTapeIds,
+      structuralEffect,
+      receipt,
+      reservation,
+    } = prepared;
+    const literal = prepared.kind === 'literal';
+    const liveBefore = this.verifyWithFullClone ? this.cloneState() : undefined;
+    const liveMutations = trackNativeMutations(
+      this.state,
+      literal ? { tapeIds: changedTapeIds } : undefined,
+    );
+    const updates: Uint8Array[] = [];
+    const collect = (update: Uint8Array) => updates.push(Uint8Array.from(update));
+    this.activateHistoryReservation(reservation);
+    this.access.beginPending();
+    this.state.on('update', collect);
+    try {
+      if (request.textUpdate?.length) {
+        Y.applyUpdate(this.state, Uint8Array.from(request.textUpdate), reservation.entry.origin);
+      }
+      applyPlan(this.state, plan, reservation.entry.origin, nextRevision, liveMutations, () =>
+        addHistoryTapesToScope(this.state, reservation.entry, prepared.historyTapeIds),
+      );
+      this.state.transact(
+        () =>
+          sessionWatermarkMap(this.state).set(
+            sessionWatermarkKey(request.authorityEpoch, request.sessionId),
+            request.sessionSequence,
+          ),
+        'grain:session-watermark',
+      );
+
+      if (literal) {
+        const validation = this.ensureValidationReplica();
+        this.indexes.refreshText(changedTapeIds);
+        assert(
+          liveMutations.changedOtherTypes.size === 0,
+          'literal input changed an unsupported shared type',
+        );
+        assert(liveMutations.changedNodeCells.size === 0, 'literal input changed node metadata');
+        assert(liveMutations.changedNodeIds.size === 0, 'literal input changed the node registry');
+        assert(
+          liveMutations.changedTapeRegistryIds.size === 0,
+          'literal input changed the tape registry',
+        );
+        assert(
+          liveMutations.changedTapeIds.size === changedTapeIds.size &&
+            [...liveMutations.changedTapeIds].every((tapeId) => changedTapeIds.has(tapeId)),
+          'literal input changed an unexpected tape',
+        );
+        assert(
+          liveMutations.changedRevisionIds.size === changedTapeIds.size &&
+            [...liveMutations.changedRevisionIds].every((tapeId) => changedTapeIds.has(tapeId)),
+          'literal input revised tapes outside its native text changes',
+        );
+        assert(
+          liveMutations.changedMetaKeys.size === 1 &&
+            liveMutations.changedMetaKeys.has('acceptedRevision'),
+          'literal input changed unexpected canonical metadata',
+        );
+        assert(
+          liveMutations.changedWatermarkKeys.size === 1 &&
+            liveMutations.changedWatermarkKeys.has(
+              sessionWatermarkKey(request.authorityEpoch, request.sessionId),
+            ),
+          'literal input changed unexpected session watermarks',
+        );
+        const liveTapes = tapeMap(this.state);
+        const validationTapes = tapeMap(validation.state);
+        for (const [tapeId, prior] of prepared.snapshot.tapeRecords) {
+          const live = liveTapes.get(tapeId);
+          const staged = validationTapes.get(tapeId);
+          assert(live && staged, `literal input is missing tape ${tapeId}`);
+          assert(live === prior, `literal input replaced tape resource ${tapeId}`);
+          const liveIndex = this.indexes.tape(tapeId);
+          const stagedIndex = validation.indexes.tape(tapeId);
+          assertCanonicalTapeShape(liveIndex);
+          assertCanonicalTapeShape(stagedIndex);
+          assert(
+            prepared.boundarySnapshots.get(tapeId) === markerIdentitySignature(liveIndex) &&
+              prepared.boundarySnapshots.get(tapeId) === markerIdentitySignature(stagedIndex),
+            `literal input changed permanent marker identity or order on tape ${tapeId}`,
+          );
+          assert(
+            stableJson(liveIndex.parts) === stableJson(stagedIndex.parts),
+            `literal input differs from its staged text on tape ${tapeId}: ` +
+              `${stableJson(liveIndex.parts)} !== ${stableJson(stagedIndex.parts)}`,
+          );
+          assert(
+            revisionMap(this.state).get(tapeId) ===
+              (changedTapeIds.has(tapeId)
+                ? nextRevision
+                : revisionMap(validation.state).get(tapeId)),
+            `literal input has an unexpected tape revision for ${tapeId}`,
+          );
+        }
+        assert(
+          metaMap(this.state).get('acceptedRevision') === nextRevision &&
+            sessionWatermarkMap(this.state).get(
+              sessionWatermarkKey(request.authorityEpoch, request.sessionId),
+            ) === request.sessionSequence,
+          'literal input did not commit its accepted revision and watermark',
+        );
+      } else {
+        assertTouchedResourcesMatch(
+          prepared.candidate,
+          this.state,
+          plan,
+          changedTapeIds,
+          prepared.candidateMutations,
+          liveMutations,
+          prepared.snapshot,
+          request.authorityEpoch,
+          request.sessionId,
+          request.sessionSequence,
+        );
+        const liveValidation = validateCanonicalState(this.state);
+        assert(
+          liveValidation.valid,
+          `live action failed canonical validation: ${liveValidation.errors.join('; ')}`,
+        );
+      }
+      if (liveBefore) validateCandidate(liveBefore, this.state, nextRevision);
+
+      const livePatch = structuralPatchWithLiveIdentities(structuralPatch, this.state);
+      reservation.entry.structuralPatch = livePatch;
+      const acceptedReceipt: ActionReceipt = Object.freeze({
+        ...receipt,
+        structuralPatch: livePatch,
+      });
+      this.state.off('update', collect);
+      liveMutations.close();
+      if (!literal) prepared.candidateMutations.close();
+      liveBefore?.destroy();
+      const update = Y.mergeUpdates(updates);
+      this.syncAcceptedValidation(update, changedTapeIds, structuralEffect, nextRevision, literal);
+      if (structuralEffect) this.indexes.rebuild();
+      else if (!literal) this.indexes.refreshText(changedTapeIds);
+      const pending: PendingCommit = Object.freeze({
+        actionId: request.actionId,
+        revision: nextRevision,
+        update,
+        receipt: acceptedReceipt,
+      });
+      this.pending = { publicValue: pending, context, request, requestHash, reservation };
+      if (!literal) prepared.candidate.destroy();
+      return { status: 'pending', pending };
+    } catch (error) {
+      this.state.off('update', collect);
+      liveMutations.close();
+      if (!literal) {
+        prepared.candidateMutations.close();
+        prepared.candidate.destroy();
+      }
+      liveBefore?.destroy();
+      this.discardValidationReplica();
+      this.discardAuthorReplica(request.sessionId);
+      this.cancelHistoryReservation(reservation);
+      this.poisoned = true;
+      this.access.poison();
+      throw new Error(
+        `unexpected failure after canonical writes; writer is poisoned: ${String(error)}`,
+      );
+    } finally {
+      this.state.off('update', collect);
+    }
+  }
+
+  private prepareLiteralTextInput(
+    request: ActionRequest,
+    admittedContext: AdmittedContext,
+    hash: string,
+    changedTapeIds: ReadonlySet<TapeId>,
+    boundarySnapshots: ReadonlyMap<TapeId, string>,
+  ): PreparedAction {
+    this.literalTextInputCount++;
+    const revision = metaMap(this.state).get('acceptedRevision') as number;
+    const nextRevision = revision + 1;
+    const target = request.promotionTarget;
+    const promotionSkipped =
+      target &&
+      (!this.indexes.isActive(target.nodeId) ||
+        nodeCell(this.state, target.nodeId, 'kind').token !== target.kindToken ||
+        nodeCell(this.state, target.nodeId, 'spans').token !== target.spansToken)
+        ? 'ownershipChanged'
+        : undefined;
+    const noEffect = changedTapeIds.size === 0;
+    const receipt: ActionReceipt = Object.freeze({
+      requestId: actionIdentity(
+        request.documentId,
+        request.authorityEpoch,
+        request.sessionId,
+        request.sessionSequence,
+      ),
+      historyGroupId: request.historyGroupId,
+      touchedNodeIds: Object.freeze(target ? [target.nodeId] : []),
+      touchedTapeIds: Object.freeze([...changedTapeIds]),
+      structuralPatch: EMPTY_STRUCTURAL_PATCH,
+      ...(request.focus ? { focus: request.focus } : {}),
+      noEffect,
+      ...(promotionSkipped ? { promotionSkipped } : {}),
+    });
+    const validation = this.ensureValidationReplica();
+    const focusAnchors: ActionFocusAnchors | undefined = receipt.focus
+      ? Object.freeze({
+          ...(receipt.focus.start
+            ? {
+                start: createCanonicalTextAnchorFromIndexes(
+                  this.state,
+                  receipt.focus.start,
+                  this.indexes,
+                ),
+              }
+            : {}),
+          ...(receipt.focus.end
+            ? {
+                end: createCanonicalTextAnchorFromIndexes(
+                  validation.state,
+                  receipt.focus.end,
+                  validation.indexes,
+                ),
+              }
+            : {}),
+        })
+      : undefined;
+    const selectionAnchors = receipt.focus?.selection
+      ? Object.freeze({
+          anchor: createCanonicalTextAnchorFromIndexes(
+            this.state,
+            receipt.focus.selection.anchor,
+            this.indexes,
+          ),
+          focus: createCanonicalTextAnchorFromIndexes(
+            this.state,
+            receipt.focus.selection.focus,
+            this.indexes,
+          ),
+        })
+      : undefined;
+    const snapshot = captureTouchedResources(this.state, EMPTY_PLAN, changedTapeIds);
+    const reservation = this.reserveHistory(
+      request.sessionId,
+      request.historyGroupId,
+      noEffect,
+      false,
+      [...changedTapeIds],
+      receipt,
+      EMPTY_STRUCTURAL_PATCH,
+      focusAnchors,
+      selectionAnchors,
+    );
+    return {
+      kind: 'literal',
+      request,
+      context: Object.freeze({ ...admittedContext }),
+      requestHash: hash,
+      revision,
+      nextRevision,
+      plan: EMPTY_PLAN,
+      structuralPatch: EMPTY_STRUCTURAL_PATCH,
+      changedTapeIds,
+      historyTapeIds: [...changedTapeIds],
+      structuralEffect: false,
+      receipt,
+      reservation,
+      boundarySnapshots,
+      snapshot,
+    };
+  }
+
   apply(requestInput: ActionRequest, admittedContext: AdmittedContext): ApplyResult {
-    if (this.closed) return { status: 'rejected', reason: 'closed-writer' };
-    if (this.poisoned) return { status: 'rejected', reason: 'poisoned-writer' };
+    if (this.closed) {
+      this.rejectPreparedAuthor(requestInput);
+      return { status: 'rejected', reason: 'closed-writer' };
+    }
+    if (this.poisoned) {
+      this.rejectPreparedAuthor(requestInput);
+      return { status: 'rejected', reason: 'poisoned-writer' };
+    }
     if (this.pending || this.pendingHistory)
       return { status: 'rejected', reason: 'pending-commit' };
     if (this.preparing || this.publishing)
@@ -3438,19 +4355,24 @@ export class CanonicalWriter {
       request = copyRequest(requestInput);
       this.validateRequestShape(request);
     } catch {
+      this.rejectPreparedAuthor(requestInput);
       return { status: 'rejected', reason: 'invalid-request' };
     }
+    const reject = (reason: RejectionReason): ApplyResult => {
+      this.rejectPreparedAuthor(request);
+      return { status: 'rejected', reason };
+    };
     const sessionId = admittedContext.sessionId;
-    if (!sessionId) return { status: 'rejected', reason: 'wrong-session' };
-    if (request.sessionId !== sessionId) return { status: 'rejected', reason: 'wrong-session' };
+    if (!sessionId) return reject('wrong-session');
+    if (request.sessionId !== sessionId) return reject('wrong-session');
     if (admittedContext.sessionSequence !== request.sessionSequence)
-      return { status: 'rejected', reason: 'wrong-sequence' };
+      return reject('wrong-sequence');
     if (request.documentId !== (metaMap(this.state).get('documentId') as string)) {
-      return { status: 'rejected', reason: 'wrong-document' };
+      return reject('wrong-document');
     }
     const epoch = metaMap(this.state).get('authorityEpoch') as string;
     if (request.authorityEpoch !== epoch || admittedContext.authorityEpoch !== epoch) {
-      return { status: 'rejected', reason: 'wrong-authority-epoch' };
+      return reject('wrong-authority-epoch');
     }
     const key = actionIdentity(
       request.documentId,
@@ -3460,255 +4382,266 @@ export class CanonicalWriter {
     );
     const hash = requestHash(request);
     const session = this.sessions.get(sessionId);
-    if (!session) return { status: 'rejected', reason: 'wrong-session' };
+    if (!session) return reject('wrong-session');
     if (request.sessionSequence <= session.sequence) {
       const prior = this.acceptedRequests.get(key);
-      if (!prior) return { status: 'rejected', reason: 'receipt-expired/resync-required' };
+      if (!prior) return reject('receipt-expired/resync-required');
       return prior.hash === hash
         ? { status: 'duplicate', accepted: copyAcceptedAction(prior.accepted) }
-        : { status: 'rejected', reason: 'retry-payload-conflict' };
+        : reject('retry-payload-conflict');
     }
-    if (request.sessionSequence !== session.sequence + 1)
-      return { status: 'rejected', reason: 'wrong-sequence' };
+    if (request.sessionSequence !== session.sequence + 1) return reject('wrong-sequence');
     const revision = metaMap(this.state).get('acceptedRevision') as number;
-    if (request.baseRevision > revision)
-      return { status: 'rejected', reason: 'future-base-revision' };
+    if (request.baseRevision > revision) return reject('future-base-revision');
     if (
       !request.preconditions.every((precondition) => currentPrecondition(this.state, precondition))
     ) {
-      return { status: 'rejected', reason: 'stale-precondition' };
+      return reject('stale-precondition');
     }
 
-    const candidate = cloneDocument(this.state);
-    const candidateMutations = trackNativeMutations(candidate);
-    const inputChanged = candidateMutations.changedTapeIds;
-    const nextRevision = revision + 1;
+    let candidate: Y.Doc | undefined;
+    let candidateMutations: NativeMutationEvidence | undefined;
+    let reservation: HistoryReservation | undefined;
     try {
-      if (request.textUpdate?.length) {
-        Y.applyUpdate(candidate, Uint8Array.from(request.textUpdate));
-        assertResolvedUpdate(candidate);
-        assertTextOnlyUpdate(this.state, candidate);
+      let stagedPromotion: ParserConversionPlan | undefined;
+      if (request.mode === 'text-input') {
+        const staged = this.stageTextInput(request);
+        if (staged.kind === 'invalid') return reject('invalid-text-update');
+        if (staged.kind === 'literal') {
+          const prepared = this.prepareLiteralTextInput(
+            request,
+            admittedContext,
+            hash,
+            staged.changedTapeIds,
+            staged.boundarySnapshots,
+          );
+          reservation = prepared.reservation;
+          return this.commitPreparedAction(prepared);
+        }
+        if (staged.kind === 'conversion') stagedPromotion = staged.plan;
       }
-    } catch {
-      candidateMutations.close();
-      candidate.destroy();
-      return { status: 'rejected', reason: 'invalid-text-update' };
-    }
 
-    let draft: MutableTreeDraft | undefined;
-    let plan: LowLevelPlan;
-    let receiptFocus = request.focus;
-    try {
-      draft = new MutableTreeDraft(
-        candidate,
-        actionIdentity(
-          request.documentId,
-          request.authorityEpoch,
-          sessionId,
-          request.sessionSequence,
-        ),
-        request.operations,
-      );
-      const promotion = request.promotionTarget;
-      if (
-        request.mode === 'text-input' &&
-        request.textUpdate?.length &&
-        promotion &&
-        currentActive(this.state, promotion.nodeId) &&
-        nodeCell(this.state, promotion.nodeId, 'kind').token === promotion.kindToken &&
-        nodeCell(this.state, promotion.nodeId, 'spans').token === promotion.spansToken
-      ) {
-        const sourceNode = draft.node(promotion.nodeId);
-        if (sourceNode.type === 'paragraph' && sourceNode.content !== undefined) {
-          const parsed = parseBlocks(sourceNode.content, { provenance: true });
-          let mapSourceBookmark: ((bookmark: Bookmark) => Bookmark) | undefined;
-          if (
-            applyParserConversion(
-              draft,
-              metaMap(candidate).get('rootId') as NodeId,
-              promotion.nodeId,
-              sourceNode.content,
-              parsed.provenance,
-              (mapper) => {
-                mapSourceBookmark = mapper;
-              },
-            )
-          ) {
-            const end = receiptFocus?.end;
-            if (end?.nodeId === promotion.nodeId && mapSourceBookmark) {
-              receiptFocus = copyActionFocus({
-                ...receiptFocus,
-                end: mapSourceBookmark(end),
-              });
+      candidate = this.cloneState();
+      const candidateState = candidate;
+      candidateMutations = trackNativeMutations(candidate);
+      const inputChanged = candidateMutations.changedTapeIds;
+      const nextRevision = revision + 1;
+      try {
+        if (request.textUpdate?.length) {
+          Y.applyUpdate(candidate, Uint8Array.from(request.textUpdate));
+          assertResolvedUpdate(candidate);
+          assertTextOnlyUpdate(this.state, candidate);
+        }
+      } catch {
+        candidateMutations.close();
+        candidate.destroy();
+        candidateMutations = undefined;
+        candidate = undefined;
+        this.discardValidationReplica();
+        return reject('invalid-text-update');
+      }
+
+      const candidateIndexes = new CanonicalIndexes(candidate);
+      let draft: MutableTreeDraft | undefined;
+      let plan: LowLevelPlan;
+      let receiptFocus = request.focus;
+      try {
+        draft = new MutableTreeDraft(
+          candidate,
+          actionIdentity(
+            request.documentId,
+            request.authorityEpoch,
+            sessionId,
+            request.sessionSequence,
+          ),
+          candidateIndexes,
+          request.operations,
+        );
+        const promotion = request.promotionTarget;
+        if (
+          request.mode === 'text-input' &&
+          request.textUpdate?.length &&
+          promotion &&
+          this.indexes.isActive(promotion.nodeId) &&
+          nodeCell(this.state, promotion.nodeId, 'kind').token === promotion.kindToken &&
+          nodeCell(this.state, promotion.nodeId, 'spans').token === promotion.spansToken
+        ) {
+          const sourceNode = draft.node(promotion.nodeId);
+          if (sourceNode.type === 'paragraph' && sourceNode.content !== undefined) {
+            const parsed = stagedPromotion
+              ? { provenance: stagedPromotion }
+              : parseBlocks(sourceNode.content, { provenance: true });
+            let mapSourceBookmark: ((bookmark: Bookmark) => Bookmark) | undefined;
+            if (
+              applyParserConversion(
+                draft,
+                metaMap(candidate).get('rootId') as NodeId,
+                promotion.nodeId,
+                sourceNode.content,
+                parsed.provenance,
+                (mapper) => {
+                  mapSourceBookmark = mapper;
+                },
+              )
+            ) {
+              const end = receiptFocus?.end;
+              if (end?.nodeId === promotion.nodeId && mapSourceBookmark) {
+                receiptFocus = copyActionFocus({
+                  ...receiptFocus,
+                  end: mapSourceBookmark(end),
+                });
+              }
+              normalizeCanonicalDraft(draft, metaMap(candidate).get('rootId') as NodeId);
             }
-            normalizeCanonicalDraft(draft, metaMap(candidate).get('rootId') as NodeId);
           }
         }
+        plan = draft.compilePlan();
+        applyPlan(
+          candidate,
+          plan,
+          Object.freeze({ stagedAction: request.actionId }),
+          nextRevision,
+          candidateMutations,
+        );
+        candidate.transact(
+          () =>
+            sessionWatermarkMap(candidateState).set(
+              sessionWatermarkKey(epoch, sessionId),
+              request.sessionSequence,
+            ),
+          'grain:session-watermark',
+        );
+        draft.assertMatches(candidate);
+        draft.close();
+        validateCandidate(this.state, candidate, nextRevision);
+        candidateIndexes.rebuild();
+      } catch (_error) {
+        draft?.close();
+        candidateMutations.close();
+        candidate.destroy();
+        candidateMutations = undefined;
+        candidate = undefined;
+        this.discardValidationReplica();
+        return reject('invalid-operation');
       }
-      plan = draft.compilePlan();
-      applyPlan(
-        candidate,
-        plan,
-        Object.freeze({ stagedAction: request.actionId }),
-        nextRevision,
-        candidateMutations,
-      );
-      candidate.transact(
-        () =>
-          sessionWatermarkMap(candidate).set(
-            sessionWatermarkKey(epoch, sessionId),
-            request.sessionSequence,
-          ),
-        'grain:session-watermark',
-      );
-      draft.assertMatches(candidate);
-      draft.close();
-      validateCandidate(this.state, candidate, nextRevision);
-    } catch (_error) {
-      draft?.close();
-      candidateMutations.close();
-      candidate.destroy();
-      return { status: 'rejected', reason: 'invalid-operation' };
-    }
 
-    const structuralPatch = structuralPatchBetween(this.state, candidate, plan);
-    const finalChangedTapes = new Set([
-      ...candidateMutations.changedTapeIds,
-      ...plan.newTapes.map(({ id }) => id),
-    ]);
-    const textTapes = new Set([...inputChanged, ...plan.textTapes]);
-    const structuralEffect = structuralPatch.cells.length > 0 || structuralPatch.births.length > 0;
-    const noEffect =
-      !finalChangedTapes.size &&
-      !structuralEffect &&
-      !plan.deletions.length &&
-      !plan.insertions.length;
-    const target = request.promotionTarget;
-    const promotionSkipped =
-      target &&
-      (!currentActive(this.state, target.nodeId) ||
-        nodeCell(this.state, target.nodeId, 'kind').token !== target.kindToken ||
-        nodeCell(this.state, target.nodeId, 'spans').token !== target.spansToken)
-        ? 'ownershipChanged'
-        : undefined;
-    const receipt: ActionReceipt = Object.freeze({
-      requestId: actionIdentity(
-        request.documentId,
-        request.authorityEpoch,
-        request.sessionId,
-        request.sessionSequence,
-      ),
-      historyGroupId: request.historyGroupId,
-      touchedNodeIds: Object.freeze([
-        ...new Set([
-          ...plan.touchedNodes,
-          ...structuralPatch.visibility.map((item) => item.nodeId),
-          ...(target ? [target.nodeId] : []),
+      const structuralPatch = structuralPatchBetween(this.state, candidate, plan);
+      const finalChangedTapes = new Set([
+        ...candidateMutations.changedTapeIds,
+        ...plan.newTapes.map(({ id }) => id),
+      ]);
+      const textTapes = new Set([...inputChanged, ...plan.textTapes]);
+      const structuralEffect =
+        structuralPatch.cells.length > 0 || structuralPatch.births.length > 0;
+      const noEffect =
+        !finalChangedTapes.size &&
+        !structuralEffect &&
+        !plan.deletions.length &&
+        !plan.insertions.length;
+      const target = request.promotionTarget;
+      const promotionSkipped =
+        target &&
+        (!this.indexes.isActive(target.nodeId) ||
+          nodeCell(this.state, target.nodeId, 'kind').token !== target.kindToken ||
+          nodeCell(this.state, target.nodeId, 'spans').token !== target.spansToken)
+          ? 'ownershipChanged'
+          : undefined;
+      const receipt: ActionReceipt = Object.freeze({
+        requestId: actionIdentity(
+          request.documentId,
+          request.authorityEpoch,
+          request.sessionId,
+          request.sessionSequence,
+        ),
+        historyGroupId: request.historyGroupId,
+        touchedNodeIds: Object.freeze([
+          ...new Set([
+            ...plan.touchedNodes,
+            ...structuralPatch.visibility.map((item) => item.nodeId),
+            ...(target ? [target.nodeId] : []),
+          ]),
         ]),
-      ]),
-      touchedTapeIds: Object.freeze([...new Set([...plan.touchedTapes, ...finalChangedTapes])]),
-      structuralPatch,
-      ...(receiptFocus ? { focus: receiptFocus } : {}),
-      noEffect,
-      ...(promotionSkipped ? { promotionSkipped } : {}),
-    });
-    const focusAnchors: ActionFocusAnchors | undefined = receipt.focus
-      ? Object.freeze({
-          ...(receipt.focus.start
-            ? { start: createCanonicalTextAnchorFromState(this.state, receipt.focus.start) }
-            : {}),
-          ...(receipt.focus.end
-            ? { end: createCanonicalTextAnchorFromState(candidate, receipt.focus.end) }
-            : {}),
-        })
-      : undefined;
-    const selectionAnchors = receipt.focus?.selection
-      ? Object.freeze({
-          anchor: createCanonicalTextAnchorFromState(this.state, receipt.focus.selection.anchor),
-          focus: createCanonicalTextAnchorFromState(this.state, receipt.focus.selection.focus),
-        })
-      : undefined;
-    const reservation = this.reserveHistory(
-      sessionId,
-      request.historyGroupId,
-      noEffect,
-      structuralEffect,
-      [...textTapes],
-      receipt,
-      structuralPatch,
-      focusAnchors,
-      selectionAnchors,
-    );
-    const context = Object.freeze({ ...admittedContext });
-    const touchedSnapshot = captureTouchedResources(this.state, plan, finalChangedTapes);
-    const liveBefore = this.verifyWithFullClone ? cloneDocument(this.state) : undefined;
-    const liveMutations = trackNativeMutations(this.state);
-    const updates: Uint8Array[] = [];
-    const collect = (update: Uint8Array) => updates.push(Uint8Array.from(update));
-    this.access.beginPending();
-    this.state.on('update', collect);
-    try {
-      if (request.textUpdate?.length) {
-        Y.applyUpdate(this.state, Uint8Array.from(request.textUpdate), reservation.entry.origin);
-      }
-      applyPlan(this.state, plan, reservation.entry.origin, nextRevision, liveMutations);
-      this.state.transact(
-        () =>
-          sessionWatermarkMap(this.state).set(
-            sessionWatermarkKey(epoch, sessionId),
-            request.sessionSequence,
-          ),
-        'grain:session-watermark',
-      );
-      assertTouchedResourcesMatch(
-        candidate,
-        this.state,
-        plan,
-        finalChangedTapes,
-        candidateMutations,
-        liveMutations,
-        touchedSnapshot,
-        epoch,
+        touchedTapeIds: Object.freeze([...new Set([...plan.touchedTapes, ...finalChangedTapes])]),
+        structuralPatch,
+        ...(receiptFocus ? { focus: receiptFocus } : {}),
+        noEffect,
+        ...(promotionSkipped ? { promotionSkipped } : {}),
+      });
+      const focusAnchors: ActionFocusAnchors | undefined = receipt.focus
+        ? Object.freeze({
+            ...(receipt.focus.start
+              ? {
+                  start: createCanonicalTextAnchorFromIndexes(
+                    this.state,
+                    receipt.focus.start,
+                    this.indexes,
+                  ),
+                }
+              : {}),
+            ...(receipt.focus.end
+              ? {
+                  end: createCanonicalTextAnchorFromIndexes(
+                    candidate,
+                    receipt.focus.end,
+                    candidateIndexes,
+                  ),
+                }
+              : {}),
+          })
+        : undefined;
+      const selectionAnchors = receipt.focus?.selection
+        ? Object.freeze({
+            anchor: createCanonicalTextAnchorFromIndexes(
+              this.state,
+              receipt.focus.selection.anchor,
+              this.indexes,
+            ),
+            focus: createCanonicalTextAnchorFromIndexes(
+              this.state,
+              receipt.focus.selection.focus,
+              this.indexes,
+            ),
+          })
+        : undefined;
+      const snapshot = captureTouchedResources(this.state, plan, finalChangedTapes);
+      const actionReservation = this.reserveHistory(
         sessionId,
-        request.sessionSequence,
+        request.historyGroupId,
+        noEffect,
+        structuralEffect,
+        [...textTapes],
+        receipt,
+        structuralPatch,
+        focusAnchors,
+        selectionAnchors,
       );
-      const liveValidation = validateCanonicalState(this.state);
-      assert(
-        liveValidation.valid,
-        `live action failed canonical validation: ${liveValidation.errors.join('; ')}`,
-      );
-      if (liveBefore) validateCandidate(liveBefore, this.state, nextRevision);
-      const livePatch = structuralPatchWithLiveIdentities(structuralPatch, this.state);
-      reservation.entry.structuralPatch = livePatch;
-      const acceptedReceipt: ActionReceipt = Object.freeze({
-        ...receipt,
-        structuralPatch: livePatch,
+      reservation = actionReservation;
+      return this.commitPreparedAction({
+        kind: 'candidate',
+        request,
+        context: Object.freeze({ ...admittedContext }),
+        requestHash: hash,
+        revision,
+        nextRevision,
+        plan,
+        structuralPatch,
+        changedTapeIds: finalChangedTapes,
+        historyTapeIds: [...textTapes],
+        structuralEffect,
+        receipt,
+        reservation: actionReservation,
+        candidate,
+        candidateMutations,
+        snapshot,
       });
-      this.state.off('update', collect);
-      liveMutations.close();
-      candidateMutations.close();
-      liveBefore?.destroy();
-      const update = Y.mergeUpdates(updates);
-      const pending: PendingCommit = Object.freeze({
-        actionId: request.actionId,
-        revision: nextRevision,
-        update,
-        receipt: acceptedReceipt,
-      });
-      this.pending = { publicValue: pending, context, request, requestHash: hash, reservation };
-      candidate.destroy();
-      return { status: 'pending', pending };
     } catch (error) {
-      this.state.off('update', collect);
-      liveMutations.close();
-      candidateMutations.close();
-      liveBefore?.destroy();
-      candidate.destroy();
-      this.poisoned = true;
-      this.access.poison();
-      throw new Error(
-        `unexpected failure after canonical writes; writer is poisoned: ${String(error)}`,
-      );
+      if (this.poisoned) throw error;
+      candidateMutations?.close();
+      candidate?.destroy();
+      if (reservation) this.cancelHistoryReservation(reservation);
+      this.discardValidationReplica();
+      this.rejectPreparedAuthor(request);
+      return { status: 'rejected', reason: 'invalid-operation' };
     }
   }
 
@@ -3721,6 +4654,16 @@ export class CanonicalWriter {
     );
     this.finishHistory(record.reservation);
     this.sessions.get(record.context.sessionId)!.sequence = record.context.sessionSequence;
+    for (const [sessionId, replica] of this.authorReplicas) {
+      try {
+        Y.applyUpdate(replica, Uint8Array.from(pending.update));
+      } catch {
+        this.discardAuthorReplica(sessionId);
+      }
+    }
+    if (this.authorPending.get(record.context.sessionId) === record.request.actionId) {
+      this.authorPending.delete(record.context.sessionId);
+    }
     this.pending = undefined;
     this.publishing = true;
     const callbackErrors: unknown[] = [];
@@ -3728,7 +4671,7 @@ export class CanonicalWriter {
       callbackErrors.push(
         ...this.access.publish(
           projectionNodeIds(
-            this.state,
+            this.indexes,
             pending.receipt.touchedNodeIds,
             pending.receipt.touchedTapeIds,
             pending.receipt.structuralPatch,
@@ -3848,13 +4791,20 @@ export class CanonicalWriter {
     source.splice(record.sourceIndex, 1);
     destination.push(record.entry);
     if (session.current === record.entry) session.current = undefined;
+    for (const [authorSession, replica] of this.authorReplicas) {
+      try {
+        Y.applyUpdate(replica, Uint8Array.from(record.publicValue.update));
+      } catch {
+        this.discardAuthorReplica(authorSession);
+      }
+    }
     this.pendingHistory = undefined;
     this.publishing = true;
     try {
       const callbackErrors = [
         ...this.access.publish(
           projectionNodeIds(
-            this.state,
+            this.indexes,
             record.entry.touchedNodeIds,
             record.entry.touchedTapeIds,
             record.entry.structuralPatch,
@@ -3930,40 +4880,20 @@ export class CanonicalWriter {
       sameTextTarget;
     if (canJoin) {
       const entry = session.current!;
-      if (receipt.focus) {
-        entry.focus = Object.freeze({
-          ...((entry.focus?.start ?? receipt.focus.start)
-            ? { start: entry.focus?.start ?? receipt.focus.start }
-            : {}),
-          ...(receipt.focus.end ? { end: receipt.focus.end } : {}),
-        });
-      }
-      if (focusAnchors) {
-        entry.focusAnchors = Object.freeze({
-          ...((entry.focusAnchors?.start ?? focusAnchors.start)
-            ? { start: entry.focusAnchors?.start ?? focusAnchors.start }
-            : {}),
-          ...(focusAnchors.end ? { end: focusAnchors.end } : {}),
-        });
-      }
-      if (selectionAnchors) entry.selectionAnchors = selectionAnchors;
-      if (textTapes.length && !entry.manager) {
-        Object.assign(entry, { manager: makeTextHistoryManager(this.state, entry) });
-      }
       return {
         sessionId,
         entry,
         isNew: false,
+        managerExisted: !!entry.manager,
         nextCurrent: true,
         noEffect,
         structuralEffect,
         textTapes,
         structuralPatch,
+        ...(receipt.focus ? { focus: receipt.focus } : {}),
+        ...(focusAnchors ? { focusAnchors } : {}),
+        ...(selectionAnchors ? { selectionAnchors } : {}),
       };
-    }
-    if (session.current) {
-      closeHistoryEntry(session.current);
-      session.current = undefined;
     }
     const entryId = noEffect
       ? `${groupId}:noop:${receipt.requestId}`
@@ -3972,7 +4902,7 @@ export class CanonicalWriter {
       id: entryId,
       sessionId,
       groupId,
-      createdSequence: this.sequenceOrdinal++,
+      createdSequence: this.sequenceOrdinal,
       origin: Object.freeze({ entryId }),
       textTapes: new Set(textTapes),
       touchedNodeIds: receipt.touchedNodeIds,
@@ -3986,20 +4916,39 @@ export class CanonicalWriter {
       structuralEffect,
       actionCount: 0,
     };
-    const manager = textTapes.length
-      ? makeTextHistoryManager(this.state, base as HistoryEntry)
-      : undefined;
-    const entry: HistoryEntry = { ...base, ...(manager ? { manager } : {}) };
+    const entry: HistoryEntry = { ...base };
     return {
       sessionId,
       entry,
       isNew: true,
+      managerExisted: false,
       nextCurrent: !noEffect && !structuralEffect && textTapes.length > 0,
       noEffect,
       structuralEffect,
       textTapes,
       structuralPatch,
+      ...(receipt.focus ? { focus: receipt.focus } : {}),
+      ...(focusAnchors ? { focusAnchors } : {}),
+      ...(selectionAnchors ? { selectionAnchors } : {}),
     };
+  }
+
+  private activateHistoryReservation(reservation: HistoryReservation): void {
+    const entry = reservation.entry;
+    if (!reservation.textTapes.length) return;
+    if (!entry.manager) {
+      const tapeIds = [...new Set([...entry.textTapes, ...reservation.textTapes])];
+      entry.manager = makeTextHistoryManager(this.state, entry, tapeIds);
+    } else if (!reservation.isNew) {
+      addHistoryTapesToScope(this.state, entry, reservation.textTapes);
+    }
+  }
+
+  private cancelHistoryReservation(reservation: HistoryReservation): void {
+    if (reservation.isNew || !reservation.managerExisted) {
+      reservation.entry.manager?.destroy();
+      delete reservation.entry.manager;
+    }
   }
 
   private finishHistory(reservation: HistoryReservation): void {
@@ -4010,9 +4959,29 @@ export class CanonicalWriter {
     }
     const entry = reservation.entry;
     if (reservation.isNew) {
+      if (session.current && session.current !== entry) closeHistoryEntry(session.current);
+      if (session.current !== entry) session.current = undefined;
+      this.sequenceOrdinal++;
       session.undo.push(entry);
       session.all.add(entry);
     }
+    if (!reservation.isNew && reservation.focus) {
+      entry.focus = Object.freeze({
+        ...((entry.focus?.start ?? reservation.focus.start)
+          ? { start: entry.focus?.start ?? reservation.focus.start }
+          : {}),
+        ...(reservation.focus.end ? { end: reservation.focus.end } : {}),
+      });
+    }
+    if (!reservation.isNew && reservation.focusAnchors) {
+      entry.focusAnchors = Object.freeze({
+        ...((entry.focusAnchors?.start ?? reservation.focusAnchors.start)
+          ? { start: entry.focusAnchors?.start ?? reservation.focusAnchors.start }
+          : {}),
+        ...(reservation.focusAnchors.end ? { end: reservation.focusAnchors.end } : {}),
+      });
+    }
+    if (reservation.selectionAnchors) entry.selectionAnchors = reservation.selectionAnchors;
     for (const tapeId of reservation.textTapes) entry.textTapes.add(tapeId);
     entry.noEffect &&= reservation.noEffect;
     entry.structuralEffect ||= reservation.structuralEffect;
@@ -4073,7 +5042,7 @@ export class CanonicalWriter {
     const patchError = structuralPatchError(this.state, entry.structuralPatch, direction);
     if (patchError) return { status: 'blocked', reason: patchError };
 
-    const candidate = cloneDocument(this.state);
+    const candidate = this.cloneState();
     try {
       applyStructuralPatch(candidate, entry.structuralPatch, direction);
       const validation = validateCanonicalState(candidate);
@@ -4122,7 +5091,7 @@ export class CanonicalWriter {
     const touchedSnapshot = captureHistoryTouchedResources(this.state, entry);
     const updates: Uint8Array[] = [];
     const collect = (update: Uint8Array) => updates.push(Uint8Array.from(update));
-    const liveBefore = this.verifyWithFullClone ? cloneDocument(this.state) : undefined;
+    const liveBefore = this.verifyWithFullClone ? this.cloneState() : undefined;
     const mutations = trackNativeMutations(this.state);
     this.access.beginPending();
     this.state.on('update', collect);
@@ -4185,6 +5154,14 @@ export class CanonicalWriter {
         }
       }
       assert(update, 'changed history did not produce an update');
+      this.syncAcceptedValidation(
+        update,
+        new Set(updated.changed),
+        structuralEffect,
+        updated.revision,
+      );
+      if (structuralEffect) this.indexes.rebuild();
+      else this.indexes.refreshText(updated.changed);
       const updateBytes = Uint8Array.from(update);
       const publicValue: PendingHistoryCommit = Object.freeze({
         sessionId,
@@ -4309,6 +5286,14 @@ export class CanonicalWriter {
       assert(
         request.operations.length === 0 && request.preconditions.length === 0,
         'text input cannot carry commands or read guards',
+      );
+      assert(
+        request.promotionTarget !== undefined &&
+          typeof request.promotionTarget.nodeId === 'string' &&
+          request.promotionTarget.nodeId.length > 0 &&
+          typeof request.promotionTarget.kindToken === 'string' &&
+          typeof request.promotionTarget.spansToken === 'string',
+        'text input requires parser promotion context',
       );
     }
   }
