@@ -116,7 +116,7 @@ export class MobileKeyboardToolbar extends LitElement {
       display: block;
       box-sizing: border-box;
       max-width: 100vw;
-      color: #334432;
+      color: var(--harness-ink, #334432);
       font:
         16px/1.2 system-ui,
         sans-serif;
@@ -139,9 +139,9 @@ export class MobileKeyboardToolbar extends LitElement {
       overscroll-behavior-x: contain;
       scrollbar-width: none;
       touch-action: pan-x;
-      background: #fbfcf9;
-      border-top: 1px solid #d5dbd1;
-      border-bottom: 1px solid #d5dbd1;
+      background: var(--harness-panel, #f8f9f6);
+      border-top: 1px solid var(--harness-line, #dfe5d9);
+      border-bottom: 1px solid var(--harness-line, #dfe5d9);
       box-shadow: 0 -4px 16px rgb(0 0 0 / 8%);
     }
 
@@ -166,16 +166,16 @@ export class MobileKeyboardToolbar extends LitElement {
     }
 
     button:hover:not(:disabled) {
-      background: #e9eee5;
+      background: var(--harness-selected, #e9f0e2);
     }
 
     button:focus-visible {
-      outline: 2px solid #67f;
+      outline: 2px solid var(--harness-accent, #456e3b);
       outline-offset: -2px;
     }
 
     button:disabled {
-      color: #889186;
+      color: color-mix(in srgb, var(--harness-ink, #334432) 42%, var(--harness-surface, #fbfcf9));
       cursor: not-allowed;
     }
 
@@ -198,7 +198,7 @@ export class MobileKeyboardToolbar extends LitElement {
       align-self: center;
       height: 28px;
       margin: 0 6px;
-      background: #dce1d7;
+      background: var(--harness-line, #dfe5d9);
     }
 
     .symbols {

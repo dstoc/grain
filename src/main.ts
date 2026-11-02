@@ -66,6 +66,9 @@ This block is rendered through the transclusion delegate.
 - **formatted** child content
 \`\`\``;
 
+const outputTabs = ['render', 'serialize', 'tree'] as const;
+type OutputTab = (typeof outputTabs)[number];
+
 const transclusionRenderDelegate: MarkdownRenderDelegate = {
   renderCodeBlock({ node, selected }) {
     if (node.info !== 'md') return undefined;
@@ -80,23 +83,22 @@ const transclusionRenderDelegate: MarkdownRenderDelegate = {
 class MarkdownDevHarness extends LitElement {
   static override styles = css`
     :host {
-      display: block;
+      --harness-page-background: #eef0eb;
+      --harness-surface: #fff;
+      --harness-panel: #f8f9f6;
+      --harness-ink: #263229;
+      --harness-muted: #758172;
+      --harness-line: #dfe5d9;
+      --harness-accent: #456e3b;
+      --harness-selected: #e9f0e2;
+      --harness-shadow: rgb(34 52 29 / 5%);
+      display: flow-root;
       box-sizing: border-box;
       min-width: 0;
       max-width: 100%;
       min-height: 100vh;
       color: var(--root-color);
-      background:
-        radial-gradient(
-          circle at top left,
-          color-mix(in srgb, var(--md-accent-color) 14%, transparent),
-          transparent 28%
-        ),
-        linear-gradient(
-          180deg,
-          color-mix(in srgb, var(--root-background-color) 92%, white) 0%,
-          color-mix(in srgb, var(--root-background-color) 96%, black) 100%
-        );
+      background: var(--harness-page-background);
       font:
         15px/1.5 'Iowan Old Style',
         'Palatino Linotype',
@@ -106,108 +108,153 @@ class MarkdownDevHarness extends LitElement {
         serif;
     }
 
-    .shell {
-      display: grid;
-      grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
-      min-width: 0;
-      min-height: 100vh;
-      padding-bottom: var(--mobile-keyboard-reserve, 0px);
+    @media (prefers-color-scheme: dark) {
+      :host {
+        --harness-page-background: #151a17;
+        --harness-surface: #1c231e;
+        --harness-panel: #202822;
+        --harness-ink: #e0e8db;
+        --harness-muted: #9aa995;
+        --harness-line: #354032;
+        --harness-accent: #b1d69b;
+        --harness-selected: #35452f;
+        --harness-shadow: rgb(0 0 0 / 20%);
+      }
     }
 
-    .panel {
-      min-width: 0;
-      padding: 2rem;
-    }
-
-    .editor {
-      border-right: 1px solid color-mix(in srgb, var(--root-color) 10%, transparent);
-      background: color-mix(in srgb, var(--root-background-color) 84%, transparent);
-      backdrop-filter: blur(18px);
-    }
-
-    .preview {
-      background: color-mix(in srgb, var(--root-background-color) 92%, transparent);
-    }
-
-    h1 {
-      margin: 0 0 0.35rem;
-      font-size: clamp(1.8rem, 2vw + 1rem, 3rem);
-      line-height: 1;
-      letter-spacing: -0.03em;
-    }
-
-    .lede {
-      max-width: 40rem;
-      margin: 0 0 1.4rem;
-      color: color-mix(in srgb, var(--root-color) 72%, transparent);
-    }
-
-    .label {
-      display: block;
-      margin-bottom: 0.55rem;
-      color: var(--md-accent-color);
-      font:
-        600 0.78rem/1.2 ui-monospace,
-        SFMono-Regular,
-        Menlo,
-        monospace;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-    }
-
-    textarea {
-      width: 100%;
-      max-width: 100%;
+    .app-frame {
+      --app-header-height: 64px;
+      display: flex;
+      flex-direction: column;
       box-sizing: border-box;
-      min-height: 68vh;
-      resize: vertical;
-      border: 1px solid color-mix(in srgb, var(--root-color) 14%, transparent);
-      border-radius: 18px;
-      background: color-mix(in srgb, var(--root-background-color) 90%, transparent);
-      box-shadow: inset 0 1px 0 color-mix(in srgb, var(--root-background-color) 70%, white);
-      padding: 1rem 1.05rem;
-      color: var(--root-color);
-      font:
-        14px/1.55 ui-monospace,
-        SFMono-Regular,
-        Menlo,
-        monospace;
+      width: calc(100% - 48px);
+      max-width: 1212px;
+      height: calc(100vh - 48px);
+      min-height: 520px;
+      margin: 24px auto;
+      overflow: hidden;
+      border: 1px solid var(--harness-line);
+      border-radius: 12px;
+      background: var(--harness-surface);
+      box-shadow: 0 12px 40px var(--harness-shadow);
     }
 
-    textarea:focus {
-      outline: 2px solid color-mix(in srgb, var(--md-accent-color) 25%, transparent);
+    .app-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex: none;
+      gap: 1rem;
+      box-sizing: border-box;
+      height: 64px;
+      padding: 0 20px;
+      border-bottom: 1px solid var(--harness-line);
+      background: var(--harness-surface);
+      color: var(--harness-ink);
+      font:
+        14px/1.4 system-ui,
+        sans-serif;
+    }
+
+    .brand {
+      margin: 0;
+      color: var(--harness-ink);
+      font:
+        650 1.375rem/1.2 system-ui,
+        sans-serif;
+      letter-spacing: -0.05em;
+      white-space: nowrap;
+    }
+
+    .brand span {
+      margin-left: 0.65rem;
+      color: var(--harness-muted);
+      font-size: 0.8125rem;
+      font-weight: 400;
+      letter-spacing: 0;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+    }
+
+    .source-toggle,
+    .tools-toggle,
+    .simulation-toggle,
+    .play {
+      min-height: 40px;
+      border: 1px solid var(--harness-line);
+      border-radius: 7px;
+      background: var(--harness-surface);
+      color: var(--harness-ink);
+      padding: 0.55rem 0.75rem;
+      font:
+        500 0.75rem/1.1 system-ui,
+        sans-serif;
+      cursor: pointer;
+    }
+
+    .source-toggle:hover,
+    .tools-toggle:hover,
+    .simulation-toggle:hover,
+    .source-toggle[aria-expanded='true'] {
+      background: var(--harness-selected);
+    }
+
+    .source-toggle:focus-visible,
+    .tools-toggle:focus-visible,
+    .simulation-toggle:focus-visible,
+    .play:focus-visible,
+    .tab:focus-visible,
+    input:focus-visible {
+      outline: 2px solid var(--harness-accent);
       outline-offset: 2px;
     }
 
-    .meta {
-      display: flex;
-      gap: 1rem;
-      flex-wrap: wrap;
-      margin-top: 0.85rem;
-      color: color-mix(in srgb, var(--root-color) 60%, transparent);
-      font-size: 0.9rem;
+    .tools-toggle::after {
+      display: inline-block;
+      margin-left: 0.5rem;
+      content: '⌄';
+      transition: transform 120ms ease;
     }
 
-    .controls {
-      display: flex;
+    .tools-toggle[aria-expanded='true']::after {
+      transform: rotate(180deg);
+    }
+
+    .tools-panel {
+      display: grid;
+      gap: 0.85rem;
+      flex: none;
+      box-sizing: border-box;
+      padding: 0.9rem 20px;
+      border-bottom: 1px solid var(--harness-line);
+      background: var(--harness-panel);
+      color: var(--harness-muted);
+      font:
+        0.75rem/1.4 system-ui,
+        sans-serif;
+    }
+
+    .tools-panel[hidden],
+    .source-pane[hidden] {
+      display: none !important;
+    }
+
+    .playback-controls {
+      display: grid;
+      grid-template-columns: auto minmax(10rem, 1fr) auto auto;
       align-items: center;
-      gap: 0.9rem;
-      flex-wrap: wrap;
-      margin-top: 1rem;
+      gap: 0.85rem;
     }
 
     .play {
-      border: 0;
-      border-radius: 999px;
-      background: var(--md-accent-color);
-      color: var(--root-background-color);
-      padding: 0.65rem 1rem;
-      font:
-        600 0.84rem/1 ui-monospace,
-        SFMono-Regular,
-        Menlo,
-        monospace;
-      cursor: pointer;
+      border-color: var(--harness-accent);
+      background: var(--harness-accent);
+      color: var(--harness-surface);
+      font-weight: 650;
     }
 
     .play[disabled] {
@@ -217,68 +264,202 @@ class MarkdownDevHarness extends LitElement {
 
     .slider-wrap {
       display: grid;
-      gap: 0.3rem;
-      min-width: min(100%, 18rem);
+      grid-template-columns: auto minmax(4rem, 1fr);
+      align-items: center;
+      gap: 0.8rem;
+      min-width: 0;
     }
 
-    .slider-label {
-      color: color-mix(in srgb, var(--root-color) 68%, transparent);
-      font:
-        600 0.78rem/1.2 ui-monospace,
-        SFMono-Regular,
-        Menlo,
-        monospace;
-      letter-spacing: 0.02em;
+    .slider-label,
+    .playback-delay,
+    .meta {
+      color: var(--harness-muted);
     }
 
     input[type='range'] {
       width: 100%;
-      accent-color: var(--md-accent-color);
+      accent-color: var(--harness-accent);
     }
 
-    .preview-card {
-      min-width: 0;
-      max-width: 100%;
-      box-sizing: border-box;
-      min-height: 68vh;
-      border: 1px solid color-mix(in srgb, var(--root-color) 8%, transparent);
-      border-radius: 24px;
-      background: color-mix(in srgb, var(--root-background-color) 90%, transparent);
-      box-shadow:
-        0 24px 60px color-mix(in srgb, var(--root-color) 8%, transparent),
-        inset 0 1px 0 color-mix(in srgb, var(--root-background-color) 65%, white);
-      padding: 1.35rem 1.35rem 1.6rem;
+    .meta {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem 1rem;
+      flex-wrap: wrap;
+      margin: 0;
+      font-size: 0.78rem;
     }
 
-    .tabs {
-      display: inline-flex;
-      box-sizing: border-box;
-      max-width: 100%;
-      overflow-x: auto;
-      gap: 0.45rem;
-      margin-bottom: 0.85rem;
-      padding: 0.2rem;
-      border-radius: 999px;
-      background: color-mix(in srgb, var(--root-color) 6%, transparent);
+    .meta span {
+      color: var(--harness-ink);
     }
 
     .simulation-toggle {
-      border: 1px dashed color-mix(in srgb, var(--root-color) 25%, transparent);
-      border-radius: 999px;
-      background: transparent;
-      color: color-mix(in srgb, var(--root-color) 72%, transparent);
-      padding: 0.5rem 0.75rem;
-      font:
-        600 0.75rem/1 ui-monospace,
-        SFMono-Regular,
-        Menlo,
-        monospace;
-      cursor: pointer;
+      justify-self: start;
+      border-style: dashed;
     }
 
     .simulation-toggle[aria-pressed='true'] {
       border-style: solid;
-      color: var(--md-accent-color);
+      color: var(--harness-accent);
+    }
+
+    .panel-stack {
+      display: flex;
+      flex: 1 1 auto;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .panel-stack.keyboard-visible {
+      flex: 1 1 auto;
+      max-height: calc(100% - var(--app-header-height) - var(--mobile-keyboard-reserve, 0px));
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .panel-stack.keyboard-visible .tools-panel {
+      max-height: 112px;
+      overflow-y: auto;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: minmax(250px, 0.36fr) minmax(0, 0.64fr);
+      flex: 1 1 auto;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .shell.source-collapsed {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+    }
+
+    .editor {
+      min-height: 0;
+      border-right: 1px solid var(--harness-line);
+      background: var(--harness-panel);
+    }
+
+    .preview {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+      background: var(--root-background-color);
+      color: var(--root-color);
+    }
+
+    .source-heading {
+      display: flex;
+      flex: none;
+      align-items: center;
+      justify-content: space-between;
+      height: 52px;
+      padding: 0 clamp(14px, 1.6vw, 20px);
+      border-bottom: 1px solid var(--harness-line);
+    }
+
+    .label {
+      display: block;
+      margin: 0;
+      color: var(--harness-muted);
+      font:
+        600 0.625rem/1.2 system-ui,
+        sans-serif;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .badge {
+      border: 1px solid var(--harness-line);
+      border-radius: 4px;
+      padding: 3px 6px;
+      color: var(--harness-muted);
+      font:
+        10px/1.2 system-ui,
+        sans-serif;
+    }
+
+    textarea {
+      flex: 1 1 auto;
+      min-height: 0;
+      width: 100%;
+      max-width: 100%;
+      box-sizing: border-box;
+      resize: none;
+      border: 0;
+      background: var(--harness-panel);
+      padding: 1rem clamp(14px, 1.6vw, 20px);
+      color: var(--harness-ink);
+      font:
+        12px/1.85 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
+    }
+
+    .source-pane {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    .preview .tabs {
+      display: flex;
+      flex: none;
+      align-items: stretch;
+      gap: 1rem;
+      height: 52px;
+      margin: 0;
+      padding: 0 clamp(12px, 1.5vw, 18px);
+      border-bottom: 1px solid var(--harness-line);
+    }
+
+    .tab {
+      border: 0;
+      border-radius: 0;
+      border-bottom: 2px solid transparent;
+      background: transparent;
+      color: var(--harness-muted);
+      padding: 0 2px;
+      font:
+        550 0.75rem/1 system-ui,
+        sans-serif;
+      cursor: pointer;
+    }
+
+    .tab:hover {
+      background: var(--harness-selected);
+    }
+
+    .tab[selected] {
+      border-bottom-color: var(--harness-accent);
+      color: var(--harness-ink);
+      font-weight: 650;
+    }
+
+    .preview-card {
+      flex: 1 1 0;
+      min-width: 0;
+      max-width: 100%;
+      width: min(100%, 760px);
+      box-sizing: border-box;
+      min-height: 0;
+      margin: 0 auto;
+      overflow: auto;
+      padding: clamp(1rem, 2.4vw, 1.5rem);
+      color: var(--root-color);
     }
 
     .simulated-keyboard {
@@ -292,11 +473,11 @@ class MarkdownDevHarness extends LitElement {
       gap: 0.45rem;
       height: 280px;
       padding: 0.65rem 0.5rem 0.8rem;
-      border-top: 1px solid #c9d0c5;
+      border-top: 1px solid var(--harness-line);
       border-radius: 14px 14px 0 0;
-      background: #e5e8e2;
+      background: var(--harness-panel);
       box-shadow: 0 -8px 28px rgb(0 0 0 / 12%);
-      color: #334432;
+      color: var(--harness-ink);
       font:
         12px/1.2 system-ui,
         sans-serif;
@@ -308,7 +489,7 @@ class MarkdownDevHarness extends LitElement {
 
     .keyboard-label {
       text-align: center;
-      color: #596454;
+      color: var(--harness-muted);
       font:
         600 0.65rem/1.2 ui-monospace,
         SFMono-Regular,
@@ -331,40 +512,19 @@ class MarkdownDevHarness extends LitElement {
       min-width: 0;
       place-items: center;
       border-radius: 5px;
-      background: #fafbf7;
+      background: var(--harness-surface);
+      color: var(--harness-ink);
       box-shadow: 0 1px 2px rgb(0 0 0 / 14%);
       font-size: 0.8rem;
     }
 
     .key-row .wide-key {
       max-width: 6rem;
-      background: #d3d9d0;
-    }
-
-    .tab {
-      border: 0;
-      border-radius: 999px;
-      background: transparent;
-      color: color-mix(in srgb, var(--root-color) 70%, transparent);
-      padding: 0.5rem 0.9rem;
-      font:
-        600 0.84rem/1 ui-monospace,
-        SFMono-Regular,
-        Menlo,
-        monospace;
-      letter-spacing: 0.04em;
-      cursor: pointer;
-    }
-
-    .tab[selected] {
-      background: var(--root-background-color);
-      color: var(--md-accent-color);
-      box-shadow: 0 6px 18px color-mix(in srgb, var(--root-color) 8%, transparent);
+      background: var(--harness-selected);
     }
 
     .serialized {
       width: 100%;
-      min-height: 68vh;
       margin: 0;
       white-space: pre-wrap;
       word-break: break-word;
@@ -378,7 +538,6 @@ class MarkdownDevHarness extends LitElement {
 
     .tree {
       width: 100%;
-      min-height: 68vh;
       margin: 0;
       white-space: pre-wrap;
       word-break: break-word;
@@ -390,23 +549,101 @@ class MarkdownDevHarness extends LitElement {
         monospace;
     }
 
-    @media (max-width: 920px) {
-      .shell {
-        grid-template-columns: minmax(0, 1fr);
+    @media (max-width: 700px) {
+      .app-frame {
+        --app-header-height: 56px;
+        width: calc(100% - 20px);
+        height: calc(100dvh - 20px);
+        min-height: 0;
+        margin: 10px auto;
+        border-radius: 9px;
       }
 
-      .panel {
-        padding: clamp(1rem, 4vw, 2rem);
+      .app-header {
+        height: 56px;
+        padding: 0 12px;
+        gap: 0.6rem;
+      }
+
+      .header-actions {
+        gap: 6px;
+      }
+
+      .source-toggle,
+      .tools-toggle {
+        min-height: 40px;
+        padding-right: 0.65rem;
+        padding-left: 0.65rem;
+      }
+
+      .tools-panel {
+        gap: 0.75rem;
+        padding: 12px;
+      }
+
+      .playback-controls {
+        grid-template-columns: auto minmax(0, 1fr);
+        gap: 8px;
+      }
+
+      .playback-delay {
+        grid-column: 2;
+      }
+
+      .slider-wrap {
+        grid-template-columns: 1fr;
+        gap: 0.25rem;
+      }
+
+      .shell {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: minmax(144px, 1fr);
+        min-height: 0;
+      }
+
+      .shell.source-expanded {
+        grid-template-rows: minmax(96px, 0.42fr) minmax(144px, 1fr);
       }
 
       .editor {
         border-right: 0;
-        border-bottom: 1px solid color-mix(in srgb, var(--root-color) 8%, transparent);
+        border-bottom: 1px solid var(--harness-line);
       }
 
-      textarea,
+      .source-heading {
+        height: 44px;
+      }
+
+      textarea {
+        padding-top: 0.5rem;
+        padding-bottom: 0.5rem;
+      }
+
       .preview-card {
-        min-height: 42vh;
+        padding: 1rem;
+      }
+
+      .preview .tabs {
+        gap: 0.9rem;
+      }
+    }
+
+    @media (max-width: 420px) {
+      .app-header {
+        gap: 0.45rem;
+      }
+
+      .brand span {
+        display: none;
+      }
+
+      .playback-delay {
+        font-size: 0.72rem;
+      }
+
+      .tab {
+        padding-right: 0.15rem;
+        padding-left: 0.15rem;
       }
     }
   `;
@@ -419,6 +656,8 @@ class MarkdownDevHarness extends LitElement {
     playing: { state: true },
     renderVersion: { state: true },
     activeTab: { state: true },
+    sourceExpanded: { state: true },
+    testToolsExpanded: { state: true },
     serializedMarkdown: { state: true },
     treeJson: { state: true },
     toolbarVisible: { state: true },
@@ -437,7 +676,9 @@ class MarkdownDevHarness extends LitElement {
   declare private playbackIndex: number;
   declare private playing: boolean;
   declare private renderVersion: number;
-  declare private activeTab: 'render' | 'serialize' | 'tree';
+  declare private activeTab: OutputTab;
+  declare private sourceExpanded: boolean;
+  declare private testToolsExpanded: boolean;
   declare private serializedMarkdown: string;
   declare private treeJson: string;
   declare private toolbarVisible: boolean;
@@ -462,6 +703,10 @@ class MarkdownDevHarness extends LitElement {
   private visualViewportBaseline = 0;
   private readinessTimer: number | undefined;
   private caretFrame: number | undefined;
+  private panelLayoutFrame: number | undefined;
+  private availablePanelHeight = Number.POSITIVE_INFINITY;
+  private readonly mobileLayoutQuery = window.matchMedia('(max-width: 700px)');
+  private sourceManuallyToggled = false;
 
   constructor() {
     super();
@@ -474,6 +719,8 @@ class MarkdownDevHarness extends LitElement {
     this.playing = false;
     this.renderVersion = 0;
     this.activeTab = 'render';
+    this.sourceExpanded = !this.mobileLayoutQuery.matches;
+    this.testToolsExpanded = false;
     this.serializedMarkdown = '';
     this.treeJson = '';
     this.toolbarVisible = false;
@@ -495,70 +742,65 @@ class MarkdownDevHarness extends LitElement {
 
   override render() {
     return html`
-      <main class="shell">
-        <section class="panel editor">
-          <h1>Block Render Harness</h1>
-          <p class="lede">
-            This page reparses markdown on every input change using the new chunk-based block parser
-            and renders only block structure.
-          </p>
-          <label class="label" for="source">Markdown Source</label>
-          <textarea
-            id="source"
-            .value=${this.source}
-            @input=${this.onInput}
-            spellcheck="false"
-          ></textarea>
-          <div class="meta">
-            <span>${this.source.length} chars</span>
-            <span>${this.source.split('\n').length} lines</span>
-            <span>pending tail: ${this.pendingText.length}</span>
-            <span>mode: ${this.parseMode}</span>
-          </div>
-          <div class="controls">
-            <button class="play" @click=${this.onPlayToggle}>
-              ${this.playing ? 'Stop' : 'Play'}
+      <div class="app-frame">
+        <header class="app-header">
+          <h1 class="brand">Grain <span>/ harness</span></h1>
+          <nav class="header-actions" aria-label="Harness panels">
+            <button
+              class="source-toggle"
+              aria-controls="source-pane"
+              aria-expanded=${this.sourceExpanded}
+              @pointerdown=${this.preserveControlFocus}
+              @click=${this.toggleSource}
+            >
+              Source
             </button>
-            <label class="slider-wrap">
-              <span class="slider-label"
-                >Playback progress: ${this.playbackIndex}/${this.source.length}</span
+            <button
+              class="tools-toggle"
+              aria-controls="test-tools-panel"
+              aria-expanded=${this.testToolsExpanded}
+              @pointerdown=${this.preserveControlFocus}
+              @click=${this.toggleTestTools}
+            >
+              Test tools
+            </button>
+          </nav>
+        </header>
+        <div class="panel-stack ${this.toolbarVisible ? 'keyboard-visible' : ''}">
+          <section
+            id="test-tools-panel"
+            class="tools-panel"
+            ?hidden=${!this.testToolsExpanded}
+            aria-label="Parser and playback controls"
+          >
+            <div class="playback-controls">
+              <button class="play" @click=${this.onPlayToggle}>
+                ${this.playing ? 'Stop' : 'Play'}
+              </button>
+              <label class="slider-wrap">
+                <span class="slider-label"
+                  >Playback progress: ${this.playbackIndex}/${this.source.length}</span
+                >
+                <input
+                  type="range"
+                  aria-label="Playback progress"
+                  min="0"
+                  max=${String(this.source.length)}
+                  step="1"
+                  .value=${String(this.playbackIndex)}
+                  @input=${this.onProgressInput}
+                />
+              </label>
+              <span class="playback-delay"
+                >Playback delay: ${this.playbackDelayMs} ms per character</span
               >
-              <input
-                type="range"
-                min="0"
-                max=${String(this.source.length)}
-                step="1"
-                .value=${String(this.playbackIndex)}
-                @input=${this.onProgressInput}
-              />
-            </label>
-            <span>50ms per char</span>
-          </div>
-        </section>
-        <section class="panel preview">
-          <label class="label">Tree Output</label>
-          <div class="tabs">
-            <button
-              class="tab"
-              ?selected=${this.activeTab === 'render'}
-              @click=${() => this.setTab('render')}
-            >
-              Render
-            </button>
-            <button
-              class="tab"
-              ?selected=${this.activeTab === 'serialize'}
-              @click=${() => this.setTab('serialize')}
-            >
-              Serialize
-            </button>
-            <button
-              class="tab"
-              ?selected=${this.activeTab === 'tree'}
-              @click=${() => this.setTab('tree')}
-            >
-              Tree
-            </button>
+            </div>
+            <div class="meta" aria-live="polite">
+              <span>${this.source.length} chars</span>
+              <span>${this.source.split('\n').length} lines</span>
+              <span>pending tail: ${this.pendingText.length}</span>
+              <span>mode: ${this.parseMode}</span>
+            </div>
             <button
               class="simulation-toggle"
               aria-pressed=${this.simulatedKeyboard}
@@ -567,23 +809,90 @@ class MarkdownDevHarness extends LitElement {
             >
               ${this.simulatedKeyboard ? 'Hide simulated keyboard' : 'Show simulated keyboard'}
             </button>
-          </div>
-          <div class="preview-card">
-            ${
-              this.activeTab === 'render'
-                ? this.root
-                  ? html`<md-editor
-                      .root=${this.root}
-                      .renderDelegate=${transclusionRenderDelegate}
-                    ></md-editor>`
-                  : html``
-                : this.activeTab === 'serialize'
-                  ? html`<pre class="serialized">${this.serializedMarkdown}</pre>`
-                  : html`<pre class="tree">${this.treeJson}</pre>`
-            }
-          </div>
-        </section>
-      </main>
+          </section>
+          <main class="shell ${this.sourceExpanded ? 'source-expanded' : 'source-collapsed'}">
+            <section
+              id="source-pane"
+              class="panel editor source-pane"
+              ?hidden=${!this.sourceExpanded}
+            >
+              <div class="source-heading">
+                <label class="label" for="source">Markdown Source</label>
+                <span class="badge">input</span>
+              </div>
+              <textarea
+                id="source"
+                .value=${this.source}
+                @input=${this.onInput}
+                spellcheck="false"
+              ></textarea>
+            </section>
+            <section class="panel preview">
+              <div class="tabs" role="tablist" aria-label="Output view">
+                <button
+                  class="tab"
+                  id="render-tab"
+                  role="tab"
+                  aria-controls="output-panel"
+                  aria-selected=${this.activeTab === 'render'}
+                  tabindex=${this.activeTab === 'render' ? '0' : '-1'}
+                  ?selected=${this.activeTab === 'render'}
+                  @click=${() => this.setTab('render')}
+                  @keydown=${this.onTabKeydown}
+                >
+                  Render
+                </button>
+                <button
+                  class="tab"
+                  id="serialize-tab"
+                  role="tab"
+                  aria-controls="output-panel"
+                  aria-selected=${this.activeTab === 'serialize'}
+                  tabindex=${this.activeTab === 'serialize' ? '0' : '-1'}
+                  ?selected=${this.activeTab === 'serialize'}
+                  @click=${() => this.setTab('serialize')}
+                  @keydown=${this.onTabKeydown}
+                >
+                  Serialize
+                </button>
+                <button
+                  class="tab"
+                  id="tree-tab"
+                  role="tab"
+                  aria-controls="output-panel"
+                  aria-selected=${this.activeTab === 'tree'}
+                  tabindex=${this.activeTab === 'tree' ? '0' : '-1'}
+                  ?selected=${this.activeTab === 'tree'}
+                  @click=${() => this.setTab('tree')}
+                  @keydown=${this.onTabKeydown}
+                >
+                  Tree
+                </button>
+              </div>
+              <div
+                id="output-panel"
+                class="preview-card"
+                role="tabpanel"
+                tabindex="0"
+                aria-labelledby="${this.activeTab}-tab"
+              >
+                ${
+                  this.activeTab === 'render'
+                    ? this.root
+                      ? html`<md-editor
+                          .root=${this.root}
+                          .renderDelegate=${transclusionRenderDelegate}
+                        ></md-editor>`
+                      : html``
+                    : this.activeTab === 'serialize'
+                      ? html`<pre class="serialized">${this.serializedMarkdown}</pre>`
+                      : html`<pre class="tree">${this.treeJson}</pre>`
+                }
+              </div>
+            </section>
+          </main>
+        </div>
+      </div>
       <md-mobile-keyboard-toolbar
         .visible=${this.toolbarVisible}
         .disabled=${this.toolbarDisabled}
@@ -617,6 +926,27 @@ class MarkdownDevHarness extends LitElement {
     `;
   }
 
+  private toggleSource = () => {
+    this.sourceManuallyToggled = true;
+    const opening = !this.sourceExpanded;
+    this.sourceExpanded = opening;
+    if (opening && this.isCompactKeyboardLayout()) this.testToolsExpanded = false;
+  };
+
+  private onMobileLayoutChange = (event: MediaQueryListEvent) => {
+    if (!this.sourceManuallyToggled) this.sourceExpanded = !event.matches;
+  };
+
+  private toggleTestTools = () => {
+    const opening = !this.testToolsExpanded;
+    this.testToolsExpanded = opening;
+    if (opening && this.isCompactKeyboardLayout()) this.sourceExpanded = false;
+  };
+
+  private isCompactKeyboardLayout() {
+    return this.toolbarVisible && this.availablePanelHeight < 410;
+  }
+
   private onInput = (event: Event) => {
     const value = (event.currentTarget as HTMLTextAreaElement).value;
     this.stopPlayback();
@@ -637,7 +967,36 @@ class MarkdownDevHarness extends LitElement {
     this.startPlayback();
   };
 
-  private setTab(tab: 'render' | 'serialize' | 'tree') {
+  private onTabKeydown = (event: KeyboardEvent) => {
+    const currentIndex = outputTabs.indexOf(this.activeTab);
+    let nextIndex: number;
+
+    switch (event.key) {
+      case 'ArrowRight':
+        nextIndex = (currentIndex + 1) % outputTabs.length;
+        break;
+      case 'ArrowLeft':
+        nextIndex = (currentIndex + outputTabs.length - 1) % outputTabs.length;
+        break;
+      case 'Home':
+        nextIndex = 0;
+        break;
+      case 'End':
+        nextIndex = outputTabs.length - 1;
+        break;
+      default:
+        return;
+    }
+
+    event.preventDefault();
+    const tab = outputTabs[nextIndex]!;
+    this.setTab(tab);
+    (event.currentTarget as HTMLButtonElement).parentElement
+      ?.querySelector<HTMLButtonElement>(`#${tab}-tab`)
+      ?.focus();
+  };
+
+  private setTab(tab: OutputTab) {
     this.activeTab = tab;
     if (tab !== 'render') this.clearEditingTarget();
     else this.refreshKeyboardState();
@@ -645,6 +1004,7 @@ class MarkdownDevHarness extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    this.mobileLayoutQuery.addEventListener('change', this.onMobileLayoutChange);
     window.addEventListener('resize', this.onViewportChange);
     window.addEventListener('orientationchange', this.onOrientationChange);
     window.visualViewport?.addEventListener('resize', this.onViewportChange);
@@ -654,6 +1014,7 @@ class MarkdownDevHarness extends LitElement {
   override disconnectedCallback(): void {
     this.observeRootTree(undefined);
     this.stopPlayback();
+    this.mobileLayoutQuery.removeEventListener('change', this.onMobileLayoutChange);
     window.removeEventListener('resize', this.onViewportChange);
     window.removeEventListener('orientationchange', this.onOrientationChange);
     window.visualViewport?.removeEventListener('resize', this.onViewportChange);
@@ -661,11 +1022,13 @@ class MarkdownDevHarness extends LitElement {
     this.clearReadinessTimer();
     this.stopObservingNativeSelection();
     this.stopObservingVirtualKeyboard();
+    if (this.panelLayoutFrame !== undefined) cancelAnimationFrame(this.panelLayoutFrame);
     super.disconnectedCallback();
   }
 
   protected override updated() {
     this.observeRootTree(this.root?.[viewModel].tree);
+    this.schedulePanelLayoutUpdate();
   }
 
   private startPlayback() {
@@ -896,6 +1259,7 @@ class MarkdownDevHarness extends LitElement {
     this.toolbarUndoDisabled = true;
     this.toolbarRedoDisabled = true;
     this.keyboardHeight = 0;
+    this.availablePanelHeight = Number.POSITIVE_INFINITY;
     this.style.setProperty('--mobile-keyboard-reserve', '0px');
     this.stopObservingNativeSelection();
     this.stopObservingVirtualKeyboard();
@@ -1127,7 +1491,9 @@ class MarkdownDevHarness extends LitElement {
     if (!inline || this.activeTab !== 'render') {
       this.toolbarVisible = false;
       this.keyboardHeight = 0;
+      this.availablePanelHeight = Number.POSITIVE_INFINITY;
       this.style.setProperty('--mobile-keyboard-reserve', '0px');
+      void this.updateComplete.then(() => this.schedulePanelLayoutUpdate());
       return;
     }
     if (inline.matches(':focus')) this.claimVirtualKeyboardOverlay();
@@ -1155,11 +1521,44 @@ class MarkdownDevHarness extends LitElement {
     this.toolbarVisible = keyboardHeight > 0;
     this.keyboardTop = keyboardTop;
     this.toolbarTop = Math.max(0, keyboardTop - 56);
-    this.style.setProperty(
-      '--mobile-keyboard-reserve',
-      keyboardHeight > 0 ? `${keyboardHeight + 68}px` : '0px',
-    );
+    void this.updateComplete.then(() => this.schedulePanelLayoutUpdate());
     if (this.toolbarVisible) this.scheduleCaretVisibilityCheck();
+  }
+
+  private schedulePanelLayoutUpdate() {
+    if (!this.toolbarVisible) {
+      if (this.panelLayoutFrame !== undefined) cancelAnimationFrame(this.panelLayoutFrame);
+      this.panelLayoutFrame = undefined;
+      this.availablePanelHeight = Number.POSITIVE_INFINITY;
+      this.style.setProperty('--mobile-keyboard-reserve', '0px');
+      return;
+    }
+    if (this.panelLayoutFrame !== undefined) return;
+
+    this.panelLayoutFrame = requestAnimationFrame(() => {
+      this.panelLayoutFrame = undefined;
+      if (!this.toolbarVisible) return;
+
+      const frame = this.shadowRoot?.querySelector<HTMLElement>('.app-frame');
+      const toolbar = this.shadowRoot?.querySelector('md-mobile-keyboard-toolbar');
+      if (!frame || !toolbar) return;
+
+      const frameRect = frame.getBoundingClientRect();
+      const toolbarRect = toolbar.getBoundingClientRect();
+      if (frameRect.height === 0 || toolbarRect.height === 0) return;
+
+      const availableHeight = Math.max(0, toolbarRect.top - frameRect.top);
+      const reserve = Math.max(0, frameRect.bottom - toolbarRect.top);
+      this.availablePanelHeight = availableHeight;
+      this.style.setProperty('--mobile-keyboard-reserve', `${reserve}px`);
+
+      if (availableHeight < 410 && this.sourceExpanded && this.testToolsExpanded) {
+        this.testToolsExpanded = false;
+        return;
+      }
+
+      this.scheduleCaretVisibilityCheck();
+    });
   }
 
   private scheduleCaretVisibilityCheck() {
@@ -1174,13 +1573,39 @@ class MarkdownDevHarness extends LitElement {
     const inline = this.getActionTarget();
     if (!inline || !inline.isConnected) return;
     try {
-      const caretBottom = inline.getCaretPosition().y;
-      const visibleBottom = this.toolbarVisible
-        ? this.toolbarTop
-        : (window.visualViewport?.offsetTop ?? 0) +
-          (window.visualViewport?.height ?? window.innerHeight);
-      if (caretBottom > visibleBottom - 12) {
-        window.scrollBy(0, caretBottom - visibleBottom + 28);
+      let caretBottom = inline.getCaretPosition().y;
+      const canvas = this.shadowRoot?.querySelector<HTMLElement>('.preview-card');
+      if (!canvas) return;
+
+      if (this.toolbarVisible) {
+        const panelStack = this.shadowRoot?.querySelector<HTMLElement>('.panel-stack');
+        const toolbar = this.shadowRoot?.querySelector('md-mobile-keyboard-toolbar');
+        if (!panelStack || !toolbar) return;
+
+        let stackRect = panelStack.getBoundingClientRect();
+        let canvasRect = canvas.getBoundingClientRect();
+        const visibleBottom = Math.min(stackRect.bottom, toolbar.getBoundingClientRect().top);
+        if (canvasRect.bottom > visibleBottom) {
+          panelStack.scrollTop += canvasRect.bottom - visibleBottom;
+          stackRect = panelStack.getBoundingClientRect();
+          canvasRect = canvas.getBoundingClientRect();
+          caretBottom = inline.getCaretPosition().y;
+        }
+
+        const visibleTop = Math.max(stackRect.top, canvasRect.top);
+        const canvasVisibleBottom = Math.min(stackRect.bottom, toolbar.getBoundingClientRect().top);
+        if (caretBottom > canvasVisibleBottom - 12) {
+          canvas.scrollTop += caretBottom - canvasVisibleBottom + 28;
+        } else if (caretBottom < visibleTop + 12) {
+          canvas.scrollTop -= visibleTop - caretBottom + 28;
+        }
+      } else {
+        const canvasRect = canvas.getBoundingClientRect();
+        if (caretBottom > canvasRect.bottom - 12) {
+          canvas.scrollTop += caretBottom - canvasRect.bottom + 28;
+        } else if (caretBottom < canvasRect.top + 12) {
+          canvas.scrollTop -= canvasRect.top - caretBottom + 28;
+        }
       }
     } catch {
       // A collapsed native selection may not have a measurable caret yet.

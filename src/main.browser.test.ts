@@ -66,6 +66,9 @@ test('Serialize follows partial, stopped, and finished playback', async () => {
   const harness = document.createElement('md-dev-harness') as LitElement;
   document.body.append(harness);
   await harness.updateComplete;
+  const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+  toolsToggle.click();
+  await harness.updateComplete;
   const source = harness.shadowRoot!.querySelector('textarea')!;
   source.value = 'alpha';
   source.dispatchEvent(new Event('input', { bubbles: true }));
@@ -76,9 +79,22 @@ test('Serialize follows partial, stopped, and finished playback', async () => {
   vi.advanceTimersByTime(20);
   await harness.updateComplete;
   expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe('al\n');
+  toolsToggle.click();
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!.hidden).toBe(true);
+  vi.advanceTimersByTime(10);
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe('alp\n');
+  toolsToggle.click();
+  await harness.updateComplete;
   play.click();
   await harness.updateComplete;
-  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe('al\n');
+  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe('alp\n');
+  const progress = harness.shadowRoot!.querySelector<HTMLInputElement>('input[type="range"]')!;
+  progress.value = '1';
+  progress.dispatchEvent(new Event('input', { bubbles: true }));
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe('a\n');
   play.click();
   vi.advanceTimersByTime(50);
   await harness.updateComplete;
@@ -112,6 +128,23 @@ async function settleHarness(harness: LitElement) {
   await harness.updateComplete;
 }
 
+async function nextAnimationFrame() {
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+async function settleMobileLayout(harness: LitElement) {
+  await settleHarness(harness);
+  for (let frame = 0; frame < 4; frame += 1) {
+    await nextAnimationFrame();
+    await harness.updateComplete;
+  }
+}
+
+function expectDocumentWithinViewport() {
+  expect(document.documentElement.scrollHeight).toBe(document.documentElement.clientHeight);
+  expect(document.documentElement.scrollWidth).toBe(document.documentElement.clientWidth);
+}
+
 async function createSettledHarness(value: string) {
   const result = await createHarness(value);
   await settleHarness(result.harness);
@@ -120,14 +153,608 @@ async function createSettledHarness(value: string) {
 
 async function showSimulatedKeyboard(harness: LitElement, inline: HTMLElement) {
   inline.focus();
+  const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+  if (toolsToggle.getAttribute('aria-expanded') !== 'true') {
+    toolsToggle.click();
+    await harness.updateComplete;
+  }
   const toggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.simulation-toggle')!;
   toggle.dispatchEvent(
     new PointerEvent('pointerdown', { bubbles: true, button: 0, cancelable: true }),
   );
   toggle.click();
-  await settleHarness(harness);
+  await settleMobileLayout(harness);
   return harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
 }
+
+async function resizeForPhoneToolbarSpace(harness: LitElement, availableHeight: number) {
+  await page.viewport(390, availableHeight + 346);
+  await settleMobileLayout(harness);
+  const frame = harness.shadowRoot!.querySelector<HTMLElement>('.app-frame')!;
+  const toolbar = harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
+  expect(toolbar.getBoundingClientRect().top - frame.getBoundingClientRect().top).toBeCloseTo(
+    availableHeight,
+    0,
+  );
+}
+
+function expectUsableToolbarCanvas(harness: LitElement, toolbar: HTMLElement) {
+  const stack = harness.shadowRoot!.querySelector<HTMLElement>('.panel-stack')!;
+  const canvas = harness.shadowRoot!.querySelector<HTMLElement>('.preview-card')!;
+  const canvasRect = canvas.getBoundingClientRect();
+  const stackRect = stack.getBoundingClientRect();
+  const toolbarRect = toolbar.getBoundingClientRect();
+  const style = getComputedStyle(canvas);
+  const contentHeight =
+    canvas.clientHeight -
+    Number.parseFloat(style.paddingTop) -
+    Number.parseFloat(style.paddingBottom);
+
+  expect(contentHeight).toBeGreaterThanOrEqual(44);
+  expect(canvasRect.bottom).toBeLessThanOrEqual(Math.min(stackRect.bottom, toolbarRect.top) + 1);
+  expect(toolbarRect.top - stackRect.bottom).toBeGreaterThanOrEqual(0);
+  expect(toolbarRect.top - stackRect.bottom).toBeLessThanOrEqual(2);
+  expectDocumentWithinViewport();
+}
+
+async function expectFocusedCaretInVisibleCanvas(
+  harness: LitElement,
+  toolbar: HTMLElement,
+  inline: MarkdownInline,
+  selection: { anchor: number; focus: number },
+) {
+  for (let frame = 0; frame < 10; frame += 1) {
+    await nextAnimationFrame();
+    await harness.updateComplete;
+  }
+  expect(await waitForFocusedInline(harness)).toBe(inline);
+  expect(inline.getTextSelection()).toEqual(selection);
+
+  const canvas = harness.shadowRoot!.querySelector<HTMLElement>('.preview-card')!;
+  const panelStack = harness.shadowRoot!.querySelector<HTMLElement>('.panel-stack')!;
+  const canvasRect = canvas.getBoundingClientRect();
+  const panelStackRect = panelStack.getBoundingClientRect();
+  const visibleTop = Math.max(canvasRect.top, panelStackRect.top);
+  const visibleBottom = Math.min(
+    canvasRect.bottom,
+    panelStackRect.bottom,
+    toolbar.getBoundingClientRect().top,
+  );
+  const caretY = inline.getCaretPosition().y;
+
+  expect(canvas.scrollHeight).toBeGreaterThan(canvas.clientHeight);
+  expect(caretY).toBeGreaterThanOrEqual(visibleTop);
+  expect(caretY).toBeLessThanOrEqual(visibleBottom);
+  expectDocumentWithinViewport();
+}
+
+test('responsive shell disclosures preserve the editor and expose live outputs and tools', async () => {
+  await page.viewport(1440, 1000);
+  const { harness, source } = await createSettledHarness('# Changed\n\nparagraph');
+  const sourcePane = harness.shadowRoot!.querySelector<HTMLElement>('#source-pane')!;
+  const editor = harness.shadowRoot!.querySelector('md-editor')!;
+  const sourceToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.source-toggle')!;
+  const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+  const desktopSourceRect = sourcePane.getBoundingClientRect();
+  const desktopPreviewRect = harness
+    .shadowRoot!.querySelector<HTMLElement>('.preview')!
+    .getBoundingClientRect();
+
+  expectDocumentWithinViewport();
+  expect(desktopPreviewRect.left).toBeGreaterThan(desktopSourceRect.left);
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!.hidden).toBe(true);
+
+  sourceToggle.click();
+  await harness.updateComplete;
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(sourcePane.hidden).toBe(true);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  expectDocumentWithinViewport();
+  const collapsedShellRect = harness
+    .shadowRoot!.querySelector<HTMLElement>('.shell')!
+    .getBoundingClientRect();
+  const collapsedPreviewRect = harness
+    .shadowRoot!.querySelector<HTMLElement>('.preview')!
+    .getBoundingClientRect();
+  expect(collapsedPreviewRect.left).toBeCloseTo(collapsedShellRect.left, 0);
+  expect(collapsedPreviewRect.right).toBeCloseTo(collapsedShellRect.right, 0);
+  expect(collapsedPreviewRect.width).toBeCloseTo(collapsedShellRect.width, 0);
+
+  sourceToggle.click();
+  await harness.updateComplete;
+  expect(sourcePane.hidden).toBe(false);
+  expect(harness.shadowRoot!.querySelector('textarea')).toBe(source);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  const restoredShellRect = harness
+    .shadowRoot!.querySelector<HTMLElement>('.shell')!
+    .getBoundingClientRect();
+  const restoredSourceRect = sourcePane.getBoundingClientRect();
+  const restoredPreviewRect = harness
+    .shadowRoot!.querySelector<HTMLElement>('.preview')!
+    .getBoundingClientRect();
+  expect(restoredPreviewRect.left).toBeGreaterThan(restoredSourceRect.left);
+  expect(restoredPreviewRect.right).toBeCloseTo(restoredShellRect.right, 0);
+  expect(restoredPreviewRect.width).toBeLessThan(restoredShellRect.width);
+  expectDocumentWithinViewport();
+
+  toolsToggle.click();
+  await harness.updateComplete;
+  const tools = harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!;
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.hidden).toBe(false);
+  expect(tools.textContent).toContain('Playback delay: 10 ms per character');
+  expect(tools.textContent).toContain('pending tail:');
+  expectDocumentWithinViewport();
+  expect(harness.shadowRoot!.querySelector<HTMLInputElement>('input[type="range"]')!.max).toBe(
+    String(source.value.length),
+  );
+
+  const tabs = harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab');
+  tabs[1]!.click();
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toContain('# Changed');
+  expectDocumentWithinViewport();
+  tabs[2]!.click();
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector('.tree')!.textContent).toContain('Changed');
+  expectDocumentWithinViewport();
+  tabs[0]!.click();
+  await harness.updateComplete;
+  expect(harness.shadowRoot!.querySelector('md-editor')).not.toBeNull();
+  expectDocumentWithinViewport();
+
+  await page.viewport(390, 844);
+  await nextTask();
+  const phoneSourceRect = sourcePane.getBoundingClientRect();
+  const phonePreviewRect = harness
+    .shadowRoot!.querySelector<HTMLElement>('.preview')!
+    .getBoundingClientRect();
+  expect(phonePreviewRect.top).toBeGreaterThanOrEqual(phoneSourceRect.bottom);
+  expectDocumentWithinViewport();
+});
+
+test('desktop frame margins stay inside the document viewport', async () => {
+  await page.viewport(1180, 757);
+  const { harness } = await createSettledHarness('# Desktop viewport\n\nparagraph');
+  const frame = harness.shadowRoot!.querySelector<HTMLElement>('.app-frame')!;
+  const frameRect = frame.getBoundingClientRect();
+
+  expectDocumentWithinViewport();
+  expect(frameRect.top).toBe(24);
+  expect(frameRect.bottom).toBe(733);
+  expect(frameRect.left).toBe(24);
+  expect(frameRect.right).toBe(1156);
+  harness.remove();
+});
+
+test('phone layout starts with the live editor and keeps Source available on demand', async () => {
+  await page.viewport(390, 844);
+  const { harness, source } = await createSettledHarness('# Phone editor\n\nparagraph');
+  const sourcePane = harness.shadowRoot!.querySelector<HTMLElement>('#source-pane')!;
+  const sourceToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.source-toggle')!;
+  const preview = harness.shadowRoot!.querySelector<HTMLElement>('.preview')!;
+  const editor = harness.shadowRoot!.querySelector('md-editor')!;
+
+  expect(sourcePane.hidden).toBe(true);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(preview.getBoundingClientRect().height).toBeGreaterThan(500);
+  expect(editor.isConnected).toBe(true);
+  expectDocumentWithinViewport();
+
+  sourceToggle.click();
+  await harness.updateComplete;
+  expect(sourcePane.hidden).toBe(false);
+  expect(harness.shadowRoot!.querySelector('textarea')).toBe(source);
+  expect(preview.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+    sourcePane.getBoundingClientRect().bottom,
+  );
+  expectDocumentWithinViewport();
+  source.value = '# Phone source edit\n\nparagraph';
+  source.dispatchEvent(new Event('input', { bubbles: true }));
+  await settleHarness(harness);
+  expect(
+    currentEditorInlines(harness).some((inline) =>
+      inline.textContent?.includes('Phone source edit'),
+    ),
+  ).toBe(true);
+  expectDocumentWithinViewport();
+  sourceToggle.click();
+  await harness.updateComplete;
+  expect(sourcePane.hidden).toBe(true);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  expectDocumentWithinViewport();
+});
+
+test('Source and simulated keyboard leave a usable phone output viewport', async () => {
+  async function expectUsableOutput(width: number, height: number, keepToolsOpen: boolean) {
+    await page.viewport(width, height);
+    const { harness, source } = await createSettledHarness('alpha');
+    const sourceToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.source-toggle')!;
+    sourceToggle.click();
+    await harness.updateComplete;
+
+    const [inline] = currentEditorInlines(harness);
+    const toolbar = await showSimulatedKeyboard(harness, inline!);
+    const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+    const tools = harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!;
+    if (tools.hidden === keepToolsOpen) {
+      toolsToggle.click();
+      await settleMobileLayout(harness);
+    }
+
+    const focusedInline = await waitForFocusedInline(harness);
+    focusedInline.setSelectionOffsets(
+      focusedInline.textContent!.length,
+      focusedInline.textContent!.length,
+    );
+    await userEvent.keyboard('X');
+    await settleHarness(harness);
+
+    const frame = harness.shadowRoot!.querySelector<HTMLElement>('.app-frame')!;
+    const preview = harness.shadowRoot!.querySelector<HTMLElement>('.preview')!;
+    const tabs = harness.shadowRoot!.querySelector<HTMLElement>('.tabs')!;
+    const canvas = harness.shadowRoot!.querySelector<HTMLElement>('.preview-card')!;
+    const sourceTextarea = harness.shadowRoot!.querySelector<HTMLTextAreaElement>('#source')!;
+    const toolbarRect = toolbar.getBoundingClientRect();
+    const frameRect = frame.getBoundingClientRect();
+    const previewRect = preview.getBoundingClientRect();
+    const tabsRect = tabs.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    const canvasStyle = getComputedStyle(canvas);
+    const usableCanvasHeight =
+      canvas.clientHeight -
+      Number.parseFloat(canvasStyle.paddingTop) -
+      Number.parseFloat(canvasStyle.paddingBottom);
+    const sourceStyle = getComputedStyle(sourceTextarea);
+    const sourceTextHeight =
+      sourceTextarea.clientHeight -
+      Number.parseFloat(sourceStyle.paddingTop) -
+      Number.parseFloat(sourceStyle.paddingBottom);
+
+    expect(source.value).toContain('alphaX');
+    expect(focusedInline.matches(':focus')).toBe(true);
+    expect(currentEditorInlines(harness).some((item) => item.textContent?.includes('alphaX'))).toBe(
+      true,
+    );
+    expect(tools.hidden).toBe(!keepToolsOpen);
+    expect(sourceTextHeight).toBeGreaterThanOrEqual(22);
+    expect(toolbar.visible).toBe(true);
+    expect(tabsRect.top).toBeGreaterThanOrEqual(previewRect.top);
+    expect(tabsRect.bottom).toBeLessThanOrEqual(previewRect.bottom);
+    expect(canvasRect.top).toBeGreaterThanOrEqual(tabsRect.bottom);
+    expect(canvasRect.bottom).toBeLessThanOrEqual(previewRect.bottom);
+    expect(previewRect.top).toBeGreaterThanOrEqual(frameRect.top);
+    expect(previewRect.bottom).toBeLessThan(frameRect.bottom);
+    expect(previewRect.bottom).toBeLessThanOrEqual(toolbarRect.top);
+    expect(previewRect.bottom).toBeLessThanOrEqual(
+      harness.shadowRoot!.querySelector<HTMLElement>('.panel-stack')!.getBoundingClientRect()
+        .bottom,
+    );
+    expect(preview.scrollTop).toBe(0);
+    expect(canvasStyle.overflowY).toBe('auto');
+    expect(usableCanvasHeight).toBeGreaterThanOrEqual(44);
+    expectDocumentWithinViewport();
+    expect(frameRect.top).toBeGreaterThanOrEqual(0);
+    expect(frameRect.bottom).toBeLessThanOrEqual(window.innerHeight);
+    harness.remove();
+  }
+
+  await expectUsableOutput(390, 667, false);
+  await expectUsableOutput(390, 844, true);
+});
+
+test('short phone panel scrolling preserves the editor and keeps Test tools reachable', async () => {
+  await page.viewport(390, 546);
+  const { harness, source } = await createSettledHarness('alpha\n\nbeta');
+  const editor = harness.shadowRoot!.querySelector('md-editor')!;
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  await resizeForPhoneToolbarSpace(harness, 200);
+
+  const sourceToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.source-toggle')!;
+  const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+  const tools = harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!;
+  const panelStack = harness.shadowRoot!.querySelector<HTMLElement>('.panel-stack')!;
+  const frame = harness.shadowRoot!.querySelector<HTMLElement>('.app-frame')!;
+  const frameRect = frame.getBoundingClientRect();
+  const sourceToggleRect = sourceToggle.getBoundingClientRect();
+  const toolsToggleRect = toolsToggle.getBoundingClientRect();
+  expect(toolbar.visible).toBe(true);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(sourceToggleRect.top).toBeGreaterThanOrEqual(0);
+  expect(toolsToggleRect.bottom).toBeLessThanOrEqual(frameRect.top + 57);
+  expect(tools.textContent).toContain('Playback delay: 10 ms per character');
+  expect(tools.textContent).toContain('pending tail:');
+  expect(tools.textContent).toContain('mode:');
+  expect(tools.getBoundingClientRect().height).toBeLessThanOrEqual(112);
+  expect(tools.scrollHeight).toBeGreaterThan(tools.clientHeight);
+
+  const focused = await waitForFocusedInline(harness);
+  focused.setSelectionOffsets(1, 3);
+  const selection = focused.getTextSelection();
+  await settleMobileLayout(harness);
+  expectUsableToolbarCanvas(harness, toolbar);
+  expect(focused.getCaretPosition().y).toBeLessThan(toolbar.getBoundingClientRect().top);
+
+  panelStack.scrollTop = 0;
+  await nextAnimationFrame();
+  expect(panelStack.scrollTop).toBe(0);
+  const play = harness.shadowRoot!.querySelector<HTMLButtonElement>('.play')!;
+  const progress = harness.shadowRoot!.querySelector<HTMLInputElement>('input[type="range"]')!;
+  expect(play.getBoundingClientRect().top).toBeGreaterThanOrEqual(
+    tools.getBoundingClientRect().top,
+  );
+  expect(progress.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+    tools.getBoundingClientRect().bottom,
+  );
+
+  tools.scrollTop = tools.scrollHeight;
+  await nextAnimationFrame();
+  const simulationToggle =
+    harness.shadowRoot!.querySelector<HTMLButtonElement>('.simulation-toggle')!;
+  const simulationRect = simulationToggle.getBoundingClientRect();
+  const toolsRect = tools.getBoundingClientRect();
+  expect(simulationRect.top).toBeGreaterThanOrEqual(toolsRect.top);
+  expect(simulationRect.bottom).toBeLessThanOrEqual(toolsRect.bottom);
+  expect(panelStack.scrollTop).toBe(0);
+  await nextAnimationFrame();
+  expect(panelStack.scrollTop).toBe(0);
+
+  panelStack.scrollTop = panelStack.scrollHeight;
+  await settleMobileLayout(harness);
+  expectUsableToolbarCanvas(harness, toolbar);
+  expect(focused.getTextSelection()).toEqual(selection);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+
+  await userEvent.click(sourceToggle);
+  await settleMobileLayout(harness);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.hidden).toBe(true);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  expect(await waitForFocusedInline(harness)).toBe(focused);
+  expect(focused.getTextSelection()).toEqual(selection);
+  expectUsableToolbarCanvas(harness, toolbar);
+
+  await userEvent.click(toolsToggle);
+  await settleMobileLayout(harness);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(tools.hidden).toBe(false);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  expect(await waitForFocusedInline(harness)).toBe(focused);
+  expect(focused.getTextSelection()).toEqual(selection);
+
+  await userEvent.keyboard('X');
+  await settleMobileLayout(harness);
+  expect(source.value).toContain('aXha');
+  expect(currentEditorInlines(harness).some((item) => item.textContent?.includes('aXha'))).toBe(
+    true,
+  );
+  expect(focused.matches(':focus')).toBe(true);
+  expectUsableToolbarCanvas(harness, toolbar);
+
+  await userEvent.click(simulationToggle);
+  await settleMobileLayout(harness);
+  expect(toolbar.visible).toBe(false);
+  expect(panelStack.classList.contains('keyboard-visible')).toBe(false);
+  expect(harness.style.getPropertyValue('--mobile-keyboard-reserve')).toBe('0px');
+  expect(getComputedStyle(panelStack).overflowY).toBe('visible');
+  expect(getComputedStyle(tools).maxHeight).toBe('none');
+  expectDocumentWithinViewport();
+
+  await userEvent.click(simulationToggle);
+  await settleMobileLayout(harness);
+  expect(toolbar.visible).toBe(true);
+  expectUsableToolbarCanvas(harness, toolbar);
+  harness.remove();
+});
+
+test('mobile caret recovery remeasures after panel scrolling and preserves selection and history', async () => {
+  await page.viewport(390, 546);
+  const paragraphs = Array.from(
+    { length: 40 },
+    (_, index) => `paragraph ${index} alpha beta omega`,
+  );
+  const { harness, source } = await createSettledHarness(paragraphs.join('\n\n'));
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  inline.setSelectionOffsets(1, 1);
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  const sourceToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.source-toggle')!;
+  const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+  const simulationToggle =
+    harness.shadowRoot!.querySelector<HTMLButtonElement>('.simulation-toggle')!;
+
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  await expectFocusedCaretInVisibleCanvas(harness, toolbar, inline, { anchor: 1, focus: 1 });
+
+  await userEvent.click(sourceToggle);
+  await settleMobileLayout(harness);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
+  await expectFocusedCaretInVisibleCanvas(harness, toolbar, inline, { anchor: 1, focus: 1 });
+
+  await userEvent.click(toolsToggle);
+  await settleMobileLayout(harness);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  await expectFocusedCaretInVisibleCanvas(harness, toolbar, inline, { anchor: 1, focus: 1 });
+
+  await userEvent.click(simulationToggle);
+  await settleMobileLayout(harness);
+  expect(toolbar.visible).toBe(false);
+  await userEvent.click(simulationToggle);
+  await settleMobileLayout(harness);
+  expect(toolbar.visible).toBe(true);
+  await expectFocusedCaretInVisibleCanvas(harness, toolbar, inline, { anchor: 1, focus: 1 });
+
+  inline.setSelectionOffsets(1, 3);
+  const selection = inline.getTextSelection()!;
+  await expectFocusedCaretInVisibleCanvas(harness, toolbar, inline, selection);
+  await userEvent.keyboard('X');
+  await settleHarness(harness);
+  expect(source.value).toContain('pXagraph 0');
+  expect(
+    currentEditorInlines(harness).some((item) => item.textContent?.includes('pXagraph 0')),
+  ).toBe(true);
+
+  await userEvent.keyboard('{Control>}z{/Control}');
+  await settleHarness(harness);
+  expect(source.value).toContain('paragraph 0');
+  expect(source.value).not.toContain('pXagraph 0');
+
+  await userEvent.keyboard('{Control>}y{/Control}');
+  await settleHarness(harness);
+  expect(source.value).toContain('pXagraph 0');
+  harness.remove();
+});
+
+test('mobile toolbar disclosure changes below 410 px and keeps the tools cap continuous', async () => {
+  await page.viewport(390, 757);
+  const { harness } = await createSettledHarness('alpha\n\nbeta');
+  const sourceToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.source-toggle')!;
+  sourceToggle.click();
+  await harness.updateComplete;
+  const editor = harness.shadowRoot!.querySelector('md-editor')!;
+  const inline = currentEditorInlines(harness)[0]!;
+  inline.focus();
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  const toolsToggle = harness.shadowRoot!.querySelector<HTMLButtonElement>('.tools-toggle')!;
+  const tools = harness.shadowRoot!.querySelector<HTMLElement>('#test-tools-panel')!;
+  const focused = await waitForFocusedInline(harness);
+  focused.setSelectionOffsets(1, 3);
+  const selection = focused.getTextSelection();
+
+  await resizeForPhoneToolbarSpace(harness, 411);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.getBoundingClientRect().height).toBeLessThanOrEqual(112);
+  expectUsableToolbarCanvas(harness, toolbar);
+
+  await resizeForPhoneToolbarSpace(harness, 410);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.getBoundingClientRect().height).toBeLessThanOrEqual(112);
+
+  await resizeForPhoneToolbarSpace(harness, 409);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(tools.hidden).toBe(true);
+  expect(harness.shadowRoot!.querySelector('md-editor')).toBe(editor);
+  expect(await waitForFocusedInline(harness)).toBe(focused);
+  expect(focused.getTextSelection()).toEqual(selection);
+  expectUsableToolbarCanvas(harness, toolbar);
+
+  await resizeForPhoneToolbarSpace(harness, 411);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
+  await resizeForPhoneToolbarSpace(harness, 410);
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
+
+  await userEvent.click(toolsToggle);
+  await settleMobileLayout(harness);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.getBoundingClientRect().height).toBeLessThanOrEqual(112);
+  expect(focused.getTextSelection()).toEqual(selection);
+
+  await resizeForPhoneToolbarSpace(harness, 409);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('false');
+  await userEvent.click(toolsToggle);
+  await settleMobileLayout(harness);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.getBoundingClientRect().height).toBeLessThanOrEqual(112);
+  expectUsableToolbarCanvas(harness, toolbar);
+
+  await resizeForPhoneToolbarSpace(harness, 411);
+  expect(sourceToggle.getAttribute('aria-expanded')).toBe('false');
+  expect(toolsToggle.getAttribute('aria-expanded')).toBe('true');
+  expect(tools.getBoundingClientRect().height).toBeLessThanOrEqual(112);
+  expectUsableToolbarCanvas(harness, toolbar);
+  harness.remove();
+});
+
+test('output tabs switch between live views with keyboard navigation', async () => {
+  const { harness } = await createSettledHarness('# Keyboard output\n\nparagraph');
+  const tabs = harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+  const [renderTab, serializeTab, treeTab] = tabs;
+  renderTab!.focus();
+
+  await userEvent.keyboard('{ArrowRight}');
+  await harness.updateComplete;
+  expect(serializeTab!.getAttribute('aria-selected')).toBe('true');
+  expect(harness.shadowRoot!.activeElement).toBe(serializeTab);
+  expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toContain(
+    '# Keyboard output',
+  );
+
+  await userEvent.keyboard('{ArrowRight}');
+  await harness.updateComplete;
+  expect(treeTab!.getAttribute('aria-selected')).toBe('true');
+  expect(harness.shadowRoot!.activeElement).toBe(treeTab);
+  expect(harness.shadowRoot!.querySelector('.tree')!.textContent).toContain('Keyboard output');
+
+  await userEvent.keyboard('{ArrowLeft}');
+  await harness.updateComplete;
+  expect(serializeTab!.getAttribute('aria-selected')).toBe('true');
+  expect(harness.shadowRoot!.activeElement).toBe(serializeTab);
+
+  await userEvent.keyboard('{ArrowLeft}');
+  await harness.updateComplete;
+  expect(renderTab!.getAttribute('aria-selected')).toBe('true');
+  expect(harness.shadowRoot!.activeElement).toBe(renderTab);
+
+  await userEvent.keyboard('{End}');
+  await harness.updateComplete;
+  expect(treeTab!.getAttribute('aria-selected')).toBe('true');
+  expect(harness.shadowRoot!.activeElement).toBe(treeTab);
+  await userEvent.keyboard('{Home}');
+  await harness.updateComplete;
+  expect(renderTab!.getAttribute('aria-selected')).toBe('true');
+  expect(harness.shadowRoot!.activeElement).toBe(renderTab);
+});
+
+test('mobile toolbar follows shell tokens without changing Markdown typography', async () => {
+  await page.viewport(390, 844);
+  const { harness } = await createSettledHarness('A paragraph with **strong text**.');
+  const inline = currentEditorInlines(harness)[0]!;
+  const toolbar = await showSimulatedKeyboard(harness, inline);
+  const strip = toolbar.shadowRoot!.querySelector<HTMLElement>('.strip')!;
+  const button = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button')!;
+  const originalInlineStyle = getComputedStyle(inline);
+  const originalFont = originalInlineStyle.font;
+  const originalLineHeight = originalInlineStyle.lineHeight;
+  const lightSurface = getComputedStyle(strip).backgroundColor;
+  const lightText = getComputedStyle(button).color;
+  const originalTextColor = originalInlineStyle.color;
+  const shellTokens = ['--harness-panel', '--harness-ink', '--harness-selected'];
+  const previous = new Map(
+    shellTokens.map((name) => [name, harness.style.getPropertyValue(name)] as const),
+  );
+
+  try {
+    harness.style.setProperty('--harness-panel', '#202822');
+    harness.style.setProperty('--harness-ink', '#e0e8db');
+    harness.style.setProperty('--harness-selected', '#35452f');
+    await nextTask();
+
+    expect(getComputedStyle(strip).backgroundColor).not.toBe(lightSurface);
+    expect(getComputedStyle(button).color).not.toBe(lightText);
+    expect(getComputedStyle(inline).font).toBe(originalFont);
+    expect(getComputedStyle(inline).lineHeight).toBe(originalLineHeight);
+    expect(getComputedStyle(inline).color).toBe(originalTextColor);
+  } finally {
+    for (const [name, value] of previous) {
+      if (value) harness.style.setProperty(name, value);
+      else harness.style.removeProperty(name);
+    }
+  }
+});
 
 async function activateToolbarAction(harness: LitElement, label: string) {
   const toolbar = harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
@@ -386,13 +1013,14 @@ test('native selection changes keep the caret above the mobile toolbar', async (
   inline.addEventListener('input', () => inputEvents++);
   inline.addEventListener('keydown', () => keydownEvents++);
 
-  const scrollBeforeSelection = window.scrollY;
+  const canvas = harness.shadowRoot!.querySelector<HTMLElement>('.preview-card')!;
+  const scrollBeforeSelection = canvas.scrollTop;
   inline.setSelectionOffsets(text.length, text.length);
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
   expect(inputEvents).toBe(0);
   expect(keydownEvents).toBe(0);
-  expect(window.scrollY).toBeGreaterThan(scrollBeforeSelection);
+  expect(canvas.scrollTop).toBeGreaterThan(scrollBeforeSelection);
   expect(inline.getCaretPosition().y).toBeLessThanOrEqual(toolbar.getBoundingClientRect().top);
   harness.remove();
 });
@@ -715,46 +1343,67 @@ test('VirtualKeyboard geometry controls visibility and overlay ownership restore
     const { harness } = await createSettledHarness('alpha\n\nbeta');
     const inline = currentEditorInlines(harness)[0]!;
     inline.focus();
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     const toolbar = harness.shadowRoot!.querySelector('md-mobile-keyboard-toolbar')!;
     expect(keyboard.overlaysContent).toBe(true);
     expect(toolbar.visible).toBe(true);
     expect(toolbar.getBoundingClientRect().top).toBe(364);
     expect(toolbar.getBoundingClientRect().bottom).toBe(rect.top);
+    const frame = harness.shadowRoot!.querySelector<HTMLElement>('.app-frame')!;
+    const panelStack = harness.shadowRoot!.querySelector<HTMLElement>('.panel-stack')!;
+    expect(
+      toolbar.getBoundingClientRect().top - panelStack.getBoundingClientRect().bottom,
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      toolbar.getBoundingClientRect().top - panelStack.getBoundingClientRect().bottom,
+    ).toBeLessThanOrEqual(2);
+    expect(harness.style.getPropertyValue('--mobile-keyboard-reserve')).toBe(
+      `${frame.getBoundingClientRect().bottom - toolbar.getBoundingClientRect().top}px`,
+    );
 
     const button = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button')!;
     button.focus();
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     expect(keyboard.overlaysContent).toBe(false);
     rect = new DOMRect(0, 720, 800, 0);
     keyboard.dispatchEvent(new Event('geometrychange'));
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     expect(toolbar.visible).toBe(false);
+    expect(panelStack.classList.contains('keyboard-visible')).toBe(false);
+    expect(harness.style.getPropertyValue('--mobile-keyboard-reserve')).toBe('0px');
+    expect(getComputedStyle(panelStack).overflowY).toBe('visible');
 
     rect = new DOMRect(0, 420, 800, 300);
     inline.focus();
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     keyboard.dispatchEvent(new Event('geometrychange'));
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     expect(keyboard.overlaysContent).toBe(true);
     expect(toolbar.visible).toBe(true);
+    rect = new DOMRect(0, 400, 800, 320);
+    keyboard.dispatchEvent(new Event('geometrychange'));
+    await settleMobileLayout(harness);
+    expect(toolbar.getBoundingClientRect().top).toBe(344);
+    expect(
+      toolbar.getBoundingClientRect().top - panelStack.getBoundingClientRect().bottom,
+    ).toBeLessThanOrEqual(2);
     window.dispatchEvent(new Event('orientationchange'));
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     expect(toolbar.visible).toBe(true);
 
     rect = new DOMRect(0, 720, 800, 0);
     keyboard.dispatchEvent(new Event('geometrychange'));
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     expect(toolbar.visible).toBe(false);
     expect(keyboard.overlaysContent).toBe(true);
 
     harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab')[1]!.click();
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     expect(keyboard.overlaysContent).toBe(false);
     expect(toolbar.visible).toBe(false);
 
     harness.shadowRoot!.querySelectorAll<HTMLButtonElement>('.tab')[0]!.click();
-    await settleHarness(harness);
+    await settleMobileLayout(harness);
     currentEditorInlines(harness)[0]!.focus();
     expect(keyboard.overlaysContent).toBe(true);
     harness.remove();
