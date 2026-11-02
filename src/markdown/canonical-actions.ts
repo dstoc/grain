@@ -2260,12 +2260,11 @@ function applyPlan(
           const index = indexAfterDeletes(boundary.index, deletions, boundary.tapeId);
           const priorInsertions = plan.insertions
             .filter((insertion) => insertion.tapeId === boundary.tapeId)
-            .map((insertion) => ({
-              index: indexAfterDeletes(insertion.index, deletions, insertion.tapeId),
-              length: insertion.text.length,
-            }));
+            .map((insertion) => ({ index: insertion.index, length: insertion.text.length }));
+          // Deleted ranges can collapse distinct native gaps to the same index.
+          // Compare their original positions to keep insertion-before-boundary order.
           const before = priorInsertions
-            .filter((insertion) => insertion.index < index)
+            .filter((insertion) => insertion.index < boundary.index)
             .reduce((total, insertion) => total + insertion.length, 0);
           return {
             ...boundary,

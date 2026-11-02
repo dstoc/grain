@@ -124,6 +124,70 @@ describe('canonical parser promotion', () => {
     }
   });
 
+  it.each([
+    ['heading', '# first\n\n'],
+    ['list', '- first\n\n'],
+  ] as const)(
+    'keeps a replacement before the retained second block during %s promotion',
+    (kind, prefix) => {
+      const original = 'oldsecond';
+      const source = `${prefix}second`;
+      const document = documentFor(original, `replacement-${kind}-promotion`);
+      const writer = new CanonicalWriter(document);
+      const sourceId = document.root.children[0]!.sharedId;
+      const originalIds = visibleCharacterIds(document, sourceId);
+      const retainedBodyIds = originalIds.slice('old'.length);
+
+      try {
+        const result = writer.edit(
+          { actionId: `replace-and-promote-${kind}`, sessionId: 'A' },
+          (draft) => {
+            draft.spliceText(sourceId, { from: 0, to: 3, insert: prefix });
+            const current = draft.node(sourceId).content!;
+            const parsed = parseBlocks(current, { provenance: true });
+            expect(
+              applyParserConversion(
+                draft,
+                document.root.sharedId,
+                sourceId,
+                current,
+                parsed.provenance,
+              ),
+            ).toBe(true);
+          },
+        );
+
+        expect('receipt' in result, JSON.stringify(result)).toBe(true);
+        expect(document.exportMarkdownTree()).toEqual(parseBlocks(source).node);
+        const second = descendants(document.root).find(
+          (node) => node.type === 'paragraph' && node.content === 'second',
+        )!;
+        expect(visibleCharacterIds(document, second.sharedId)).toEqual(retainedBodyIds);
+        expect(document.validate()).toEqual({ valid: true, errors: [] });
+
+        expect(writer.undo('A').status).toBe('applied');
+        expect(document.root.children[0]).toMatchObject({
+          sharedId: sourceId,
+          type: 'paragraph',
+          content: original,
+        });
+        expect(visibleCharacterIds(document, sourceId).slice(-retainedBodyIds.length)).toEqual(
+          retainedBodyIds,
+        );
+        expect(writer.redo('A').status).toBe('applied');
+        expect(document.exportMarkdownTree()).toEqual(parseBlocks(source).node);
+        const redoneSecond = descendants(document.root).find(
+          (node) => node.type === 'paragraph' && node.content === 'second',
+        )!;
+        expect(visibleCharacterIds(document, redoneSecond.sharedId)).toEqual(retainedBodyIds);
+        expect(document.validate()).toEqual({ valid: true, errors: [] });
+      } finally {
+        writer.close();
+        document.close();
+      }
+    },
+  );
+
   it('splices retained text between action-local pieces in a seeded output tape', () => {
     const source = '# first\n\n before original after';
     const document = documentFor('original', 'inserted-around-retained-output');
