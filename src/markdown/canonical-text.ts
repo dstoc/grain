@@ -38,7 +38,7 @@ interface TextRun {
   readonly nativeFrom: number;
 }
 
-interface SpanIndex {
+export interface ProjectedSpanIndex {
   readonly span: Span;
   readonly spanIndex: number;
   readonly visibleFrom: number;
@@ -48,6 +48,21 @@ interface SpanIndex {
   readonly markerGaps: ReadonlyMap<number, { readonly left: number; readonly right: number }>;
   readonly startGap: number;
   readonly endGap: number;
+}
+
+export interface NativeTapePart {
+  readonly insert: unknown;
+  readonly nativeFrom: number;
+  readonly nativeTo: number;
+}
+
+/** A reconstructible index over one tape revision. Build it once per revision. */
+export interface NativeTapeIndex {
+  readonly tapeId: TapeId;
+  readonly parts: readonly NativeTapePart[];
+  readonly partStarts: readonly number[];
+  readonly boundaries: ReadonlyMap<string, number>;
+  readonly length: number;
 }
 
 function isBoundary(value: unknown): value is BoundaryEmbed {
@@ -87,53 +102,79 @@ function assertBoundary(value: string, offset: number, label: string): void {
   }
 }
 
-function indexSpan(span: Span, spanIndex: number, visibleFrom: number, tape: Y.Text): SpanIndex {
+export function indexNativeTape(tapeId: TapeId, tape: Y.Text): NativeTapeIndex {
+  const parts: NativeTapePart[] = [];
+  const boundaries = new Map<string, number>();
+  let native = 0;
+  for (const part of tape.toDelta()) {
+    const insert = part.insert;
+    const length = typeof insert === 'string' ? insert.length : 1;
+    parts.push(Object.freeze({ insert, nativeFrom: native, nativeTo: native + length }));
+    if (isBoundary(insert)) boundaries.set(insert.grainBoundary, native);
+    native += length;
+  }
+  return Object.freeze({
+    tapeId,
+    parts: Object.freeze(parts),
+    partStarts: Object.freeze(parts.map((part) => part.nativeFrom)),
+    boundaries,
+    length: native,
+  });
+}
+
+function indexSpan(
+  span: Span,
+  spanIndex: number,
+  visibleFrom: number,
+  tape: NativeTapeIndex,
+): ProjectedSpanIndex {
   const runs: TextRun[] = [];
   const textParts: string[] = [];
   const markerGaps = new Map<number, { left: number; right: number }>();
-  let native = 0;
   let visible = 0;
-  let inside = false;
-  let startGap = -1;
-  let endGap = -1;
+  const start = tape.boundaries.get(span.startBoundaryId);
+  const end = tape.boundaries.get(span.endBoundaryId);
+  if (start === undefined || end === undefined || start >= end) {
+    throw new Error(`span ${span.startBoundaryId}:${span.endBoundaryId} has missing markers`);
+  }
 
-  for (const part of tape.toDelta()) {
+  const startGap = start + 1;
+  const endGap = end;
+  let low = 0;
+  let high = tape.partStarts.length;
+  const firstNative = start + 1;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (tape.partStarts[middle]! < firstNative) low = middle + 1;
+    else high = middle;
+  }
+  for (let partIndex = low; partIndex < tape.parts.length; partIndex++) {
+    const part = tape.parts[partIndex]!;
+    if (part.nativeFrom > end) break;
     const inserted = part.insert;
     if (typeof inserted === 'string') {
-      if (inside) {
-        runs.push({ from: visible, to: visible + inserted.length, nativeFrom: native });
-        textParts.push(inserted);
-        visible += inserted.length;
-      }
-      native += inserted.length;
+      runs.push({ from: visible, to: visible + inserted.length, nativeFrom: part.nativeFrom });
+      textParts.push(inserted);
+      visible += inserted.length;
       continue;
     }
 
     const boundary = isBoundary(inserted) ? inserted.grainBoundary : undefined;
-    if (boundary === span.startBoundaryId) {
-      inside = true;
-      startGap = native + 1;
-      markerGaps.set(visible, { left: startGap, right: startGap });
-    } else if (boundary === span.endBoundaryId) {
-      endGap = native;
+    if (boundary === span.endBoundaryId) {
       const gap = markerGaps.get(visible);
       markerGaps.set(
         visible,
         gap ? { left: gap.left, right: endGap } : { left: endGap, right: endGap },
       );
-      inside = false;
-    } else if (inside) {
+    } else {
       const gap = markerGaps.get(visible);
       markerGaps.set(
         visible,
-        gap ? { left: gap.left, right: native + 1 } : { left: native, right: native + 1 },
+        gap
+          ? { left: gap.left, right: part.nativeTo }
+          : { left: part.nativeFrom, right: part.nativeTo },
       );
     }
-    native++;
-  }
-
-  if (startGap < 0 || endGap < 0) {
-    throw new Error(`span ${span.startBoundaryId}:${span.endBoundaryId} has missing markers`);
   }
   return {
     span,
@@ -148,16 +189,16 @@ function indexSpan(span: Span, spanIndex: number, visibleFrom: number, tape: Y.T
   };
 }
 
-function visibleString(spans: readonly SpanIndex[]): string {
+function visibleString(spans: readonly ProjectedSpanIndex[]): string {
   return spans.map((span) => span.text).join('');
 }
 
 function chooseSpan(
-  spans: readonly SpanIndex[],
+  spans: readonly ProjectedSpanIndex[],
   offset: number,
   affinity: TextAffinity,
   explicitSpanIndex?: number,
-): SpanIndex {
+): ProjectedSpanIndex {
   if (explicitSpanIndex !== undefined) {
     const explicit = spans[explicitSpanIndex];
     if (!explicit) throw new RangeError(`span index ${explicitSpanIndex} is out of range`);
@@ -175,7 +216,11 @@ function chooseSpan(
   return affinity === 'left' ? touching[0]! : touching.at(-1)!;
 }
 
-function insertionIndex(span: SpanIndex, localOffset: number, affinity: TextAffinity): number {
+function insertionIndex(
+  span: ProjectedSpanIndex,
+  localOffset: number,
+  affinity: TextAffinity,
+): number {
   if (localOffset < 0 || localOffset > span.text.length) {
     throw new RangeError('span insertion offset is out of bounds');
   }
@@ -201,15 +246,51 @@ export function mapTextEdit(
   tapes: ReadonlyMap<TapeId, Y.Text>,
   edit: TextEdit,
 ): MappedTextEdit {
-  const indexed = spans.map((span, index) => {
+  const indexedTapes = new Map<TapeId, NativeTapeIndex>();
+  for (const span of spans) {
+    if (indexedTapes.has(span.tapeId)) continue;
     const tape = tapes.get(span.tapeId);
     if (!tape) throw new Error(`missing tape ${span.tapeId}`);
-    const priorVisible = spans
-      .slice(0, index)
-      .reduce((total, prior) => total + (indexedLength(prior, tapes) ?? 0), 0);
-    return indexSpan(span, index, priorVisible, tape);
+    indexedTapes.set(span.tapeId, indexNativeTape(span.tapeId, tape));
+  }
+  return mapTextEditIndexed(spans, indexedTapes, edit);
+}
+
+export function mapTextEditIndexed(
+  spans: readonly Span[],
+  tapes: ReadonlyMap<TapeId, NativeTapeIndex>,
+  edit: TextEdit,
+): MappedTextEdit {
+  return mapProjectedTextEdit(indexProjectedSpans(spans, tapes), edit);
+}
+
+export interface ProjectedTextIndex {
+  readonly spans: readonly ProjectedSpanIndex[];
+  readonly text: string;
+}
+
+export function indexProjectedSpans(
+  spans: readonly Span[],
+  tapes: ReadonlyMap<TapeId, NativeTapeIndex>,
+): ProjectedTextIndex {
+  let visibleFrom = 0;
+  const indexed = spans.map((span, index) => {
+    const tape = tapes.get(span.tapeId);
+    if (!tape) throw new Error(`missing tape index ${span.tapeId}`);
+    const result = indexSpan(span, index, visibleFrom, tape);
+    visibleFrom = result.visibleTo;
+    return result;
   });
   const projectedText = visibleString(indexed);
+  return Object.freeze({ spans: Object.freeze(indexed), text: projectedText });
+}
+
+export function mapProjectedTextEdit(
+  projected: ProjectedTextIndex,
+  edit: TextEdit,
+): MappedTextEdit {
+  const indexed = projected.spans;
+  const projectedText = projected.text;
   assertWellFormed(projectedText, 'projected text');
   assertWellFormed(edit.insert, 'inserted text');
   if (!Number.isInteger(edit.from) || !Number.isInteger(edit.to)) {
@@ -253,18 +334,6 @@ export function mapTextEdit(
   });
 }
 
-function indexedLength(span: Span, tapes: ReadonlyMap<TapeId, Y.Text>): number | undefined {
-  const tape = tapes.get(span.tapeId);
-  if (!tape) return undefined;
-  let inside = false;
-  let length = 0;
-  for (const part of tape.toDelta()) {
-    if (typeof part.insert === 'string') {
-      if (inside) length += part.insert.length;
-    } else if (isBoundary(part.insert)) {
-      if (part.insert.grainBoundary === span.startBoundaryId) inside = true;
-      else if (part.insert.grainBoundary === span.endBoundaryId) break;
-    }
-  }
-  return length;
+export function spanTextFromIndex(span: Span, index: NativeTapeIndex): string {
+  return indexSpan(span, 0, 0, index).text;
 }

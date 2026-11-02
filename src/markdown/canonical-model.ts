@@ -1639,12 +1639,20 @@ export function validateActiveSpans(document: CanonicalDocument): ValidationResu
       }
       if (isActive) {
         const intervals = activeIntervals.get(span.tapeId) ?? [];
-        if (intervals.some((other) => Math.max(start, other.start) < Math.min(end, other.end))) {
-          errors.push(`node ${id} has overlapping active ownership on tape ${span.tapeId}`);
-        }
         intervals.push({ start, end, nodeId: id });
         activeIntervals.set(span.tapeId, intervals);
       }
+    }
+  }
+
+  for (const [tapeId, intervals] of activeIntervals) {
+    intervals.sort((left, right) => left.start - right.start || left.end - right.end);
+    let furthestEnd = -1;
+    for (const interval of intervals) {
+      if (interval.start < furthestEnd) {
+        errors.push(`node ${interval.nodeId} has overlapping active ownership on tape ${tapeId}`);
+      }
+      furthestEnd = Math.max(furthestEnd, interval.end);
     }
   }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { isInlineNode, type DocumentNode, type MarkdownNode } from './node.js';
-import { createBlockParser, parseBlocks } from './block-parser/api.js';
+import { createBlockParser, isLiteralParagraphInput, parseBlocks } from './block-parser/api.js';
 import type { OutputPiece, ParserConversionPlan } from './block-parser/types.js';
 
 function inlineTexts(node: MarkdownNode, path: number[] = []): { key: string; text: string }[] {
@@ -39,6 +39,27 @@ function expectValidPlan(source: string, plan: ParserConversionPlan): void {
 }
 
 describe('block parser provenance', () => {
+  it.each([
+    ['ordinary paragraph', 'ordinary text'],
+    ['an incomplete heading prefix', '#'],
+    ['a multiline paragraph', 'first line\nsecond line'],
+  ])('keeps %s on the literal input path', (_name, source) => {
+    expect(isLiteralParagraphInput(source)).toBe(true);
+  });
+
+  it.each([
+    ['ATX heading', '# heading '],
+    ['setext heading', 'Title\n==='],
+    ['list item', '- item'],
+    ['block quote', '> quoted'],
+    ['incomplete quote prefix', '>'],
+    ['fenced code block', '```ts\ncode\n```'],
+    ['paragraph split', 'first\n\nsecond'],
+    ['terminal newline conversion', 'last\n'],
+  ])('routes %s through parser conversion', (_name, source) => {
+    expect(isLiteralParagraphInput(source)).toBe(false);
+  });
+
   it('classifies a parser-created empty root paragraph without inventing source text', () => {
     const result = parseBlocks('', { provenance: true });
     expect(inlineTexts(result.node).map(({ text }) => text)).toEqual(['']);

@@ -239,6 +239,29 @@ export function parseBlocks(
   return { node: blockTree.serialize() as DocumentNode };
 }
 
+/**
+ * Conservatively says whether inline source is still exactly one literal
+ * paragraph under Grain's block parser. Any consumed syntax or structural
+ * output takes the conversion path.
+ */
+export function isLiteralParagraphInput(markdown: string): boolean {
+  return classifyInlineInput(markdown).kind === 'literal';
+}
+
+export type InlineInputClassification =
+  | { readonly kind: 'literal' }
+  | { readonly kind: 'conversion'; readonly plan: ParserConversionPlan };
+
+export function classifyInlineInput(markdown: string): InlineInputClassification {
+  const result = parseBlocks(markdown, { provenance: true });
+  const children = result.provenance.output.children ?? [];
+  return children.length === 1 &&
+    children[0]?.type === 'paragraph' &&
+    children[0].content === markdown
+    ? { kind: 'literal' }
+    : { kind: 'conversion', plan: result.provenance };
+}
+
 export function parseMarkdownTree(markdown: string): MarkdownTree {
   const parser = createBlockParser();
   parser.push(markdown);
