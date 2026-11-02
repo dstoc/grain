@@ -246,6 +246,40 @@ describe('CanonicalWriter', () => {
     document.close();
   });
 
+  it('does not group ordinary typing across different inline nodes', () => {
+    const document = textDocument('a\n\nb');
+    const writer = new CanonicalWriter(document);
+    const [first, second] = document.root.children;
+    if (!first || !second) throw new Error('missing text nodes');
+    accept(
+      writer,
+      writer.prepareTextInput(
+        first.sharedId,
+        { from: 1, to: 1, insert: 'x' },
+        { actionId: 'first-node-typing', historyGroupId: 'same-group' },
+      ),
+    );
+    accept(
+      writer,
+      writer.prepareTextInput(
+        second.sharedId,
+        { from: 1, to: 1, insert: 'y' },
+        { actionId: 'second-node-typing', historyGroupId: 'same-group' },
+      ),
+    );
+
+    expect(first.content).toBe('ax');
+    expect(second.content).toBe('by');
+    expect(writer.undo().status).toBe('applied');
+    expect(first.content).toBe('ax');
+    expect(second.content).toBe('b');
+    expect(writer.undo().status).toBe('applied');
+    expect(first.content).toBe('a');
+    expect(second.content).toBe('b');
+    writer.close();
+    document.close();
+  });
+
   it('consumes an accepted no-effect boundary without undoing the older text entry', () => {
     const document = textDocument('a');
     const writer = new CanonicalWriter(document);
@@ -403,5 +437,152 @@ describe('CanonicalWriter', () => {
       writer.close();
       document.close();
     }
+  });
+
+  it('records normalized cells and replays their inverse without running normalization again', () => {
+    const document = CanonicalDocument.fromParsed({
+      type: 'document',
+      children: [
+        { type: 'paragraph', content: 'before' },
+        { type: 'section', marker: '#', content: 'heading', children: [] },
+        { type: 'paragraph', content: 'trailing' },
+      ],
+    });
+    const writer = new CanonicalWriter(document);
+    const [before, section, trailing] = document.root.children;
+    if (!before || !section || !trailing) throw new Error('missing normalization fixture');
+
+    const accepted = writer.edit({ actionId: 'normalize-section-boundary' }, (draft) => {
+      draft.setMarker(section.sharedId, '#');
+    });
+    expect(accepted).toHaveProperty('receipt.structuralPatch');
+    expect(document.root.children.map((node) => node.sharedId)).toEqual([
+      before.sharedId,
+      section.sharedId,
+    ]);
+    expect(section.children.map((node) => node.sharedId)).toEqual([trailing.sharedId]);
+    expect(document.validate()).toEqual({ valid: true, errors: [] });
+
+    expect(writer.undo().status).toBe('applied');
+    expect(document.root.children.map((node) => node.sharedId)).toEqual([
+      before.sharedId,
+      section.sharedId,
+      trailing.sharedId,
+    ]);
+    expect(section.children).toHaveLength(0);
+    expect(document.validate()).toEqual({ valid: true, errors: [] });
+    expect(writer.redo().status).toBe('applied');
+    expect(document.root.children.map((node) => node.sharedId)).toEqual([
+      before.sharedId,
+      section.sharedId,
+    ]);
+    writer.close();
+    document.close();
+  });
+
+  it('guards structural undo by resource token even after a same-value overwrite', () => {
+    const document = CanonicalDocument.fromParsed({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '1. ',
+              children: [{ type: 'paragraph', content: 'item' }],
+            },
+          ],
+        },
+      ],
+    });
+    const writer = new CanonicalWriter(document);
+    const item = document.root.children[0]!.children[0]!;
+    writer.edit({ actionId: 'set-marker', sessionId: 'A' }, (draft) => {
+      draft.setMarker(item.sharedId, '2. ');
+    });
+    writer.edit({ actionId: 'marker-away', sessionId: 'B' }, (draft) => {
+      draft.setMarker(item.sharedId, '3. ');
+    });
+    writer.edit({ actionId: 'marker-back', sessionId: 'B' }, (draft) => {
+      draft.setMarker(item.sharedId, '2. ');
+    });
+
+    expect(item.marker).toBe('2. ');
+    expect(writer.undo('A')).toMatchObject({ status: 'blocked', reason: 'resource-conflict' });
+    expect(item.marker).toBe('2. ');
+    expect(document.validate()).toEqual({ valid: true, errors: [] });
+    writer.close();
+    document.close();
+  });
+
+  it('blocks an inverse that would create a detached cycle', () => {
+    const document = CanonicalDocument.fromParsed({
+      type: 'document',
+      children: [
+        {
+          type: 'block-quote',
+          marker: '> ',
+          children: [
+            { type: 'paragraph', content: 'keep parent visible' },
+            { type: 'section', marker: '##', content: 'moved', children: [] },
+          ],
+        },
+        { type: 'section', marker: '#', content: 'destination', children: [] },
+      ],
+    });
+    const writer = new CanonicalWriter(document);
+    const [parent, destination] = document.root.children;
+    const moved = parent?.children.find((node) => node.type === 'section');
+    if (!parent || !destination || !moved) throw new Error('missing cycle fixture');
+    writer.edit({ actionId: 'move-section', sessionId: 'A' }, (draft) => {
+      draft.place(moved.sharedId, destination.sharedId, null);
+    });
+    writer.edit({ actionId: 'nest-old-parent', sessionId: 'B' }, (draft) => {
+      draft.place(parent.sharedId, moved.sharedId, null);
+    });
+    const before = document.checkpoint().update;
+
+    expect(writer.undo('A')).toMatchObject({ status: 'blocked', reason: 'invalid-inverse' });
+    expect(document.checkpoint().update).toEqual(before);
+    expect(document.validate()).toEqual({ valid: true, errors: [] });
+    writer.close();
+    document.close();
+  });
+
+  it('keeps text typed in both sides of a full-range transfer when the transfer is undone', () => {
+    const document = CanonicalDocument.fromMarkdown('source\n\ntarget', {
+      documentId: 'transfer-undo-document',
+      actionId: 'transfer-undo-import',
+      authorityEpoch: 'action-epoch',
+    });
+    const writer = new CanonicalWriter(document);
+    const [source, destination] = document.root.children;
+    if (!source || !destination) throw new Error('missing transfer nodes');
+    writer.edit({ actionId: 'full-transfer', sessionId: 'A' }, (draft) => {
+      draft.transferInlineRange({
+        source: source.sharedId,
+        from: 0,
+        to: source.content!.length,
+        destination: destination.sharedId,
+        at: 2,
+        affinity: 'right',
+      });
+    });
+    writer.edit({ actionId: 'type-source-residual', sessionId: 'B' }, (draft) => {
+      draft.spliceText(source.sharedId, { from: 0, to: 0, insert: 'S' });
+    });
+    writer.edit({ actionId: 'type-transferred-span', sessionId: 'B' }, (draft) => {
+      draft.spliceText(destination.sharedId, { from: 2, to: 2, insert: 'X' });
+    });
+    expect(source.content).toBe('S');
+    expect(destination.content).toBe('taXsource rget'.replace(' ', ''));
+
+    expect(writer.undo('A').status).toBe('applied');
+    expect(source.content).toBe('SXsource');
+    expect(destination.content).toBe('target');
+    expect(document.validate()).toEqual({ valid: true, errors: [] });
+    writer.close();
+    document.close();
   });
 });
