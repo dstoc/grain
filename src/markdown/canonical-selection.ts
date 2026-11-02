@@ -82,7 +82,7 @@ export function resolveCanonicalTextAnchor(
   const tapeMap = new Map(tapes.entries());
   const tape = tapes.get(anchor.tapeId);
   const relative = Y.decodeRelativePosition(Uint8Array.from(anchor.relativePosition));
-  const absolute = Y.createAbsolutePositionFromRelativePosition(relative, state);
+  const absolute = Y.createAbsolutePositionFromRelativePosition(relative, state, false);
   if (tape && absolute?.type === tape) {
     const visible = visibleInlineNodes(document.root);
     const candidates: Array<{ node: CanonicalNode; offset: number }> = [];

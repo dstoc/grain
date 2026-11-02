@@ -99,6 +99,8 @@ export interface ActionFocus {
   readonly selection?: {
     readonly anchor: Bookmark;
     readonly focus: Bookmark;
+    /** Restore this identity-preserving structural selection after redo as well. */
+    readonly restoreOnRedo?: boolean;
   };
 }
 
@@ -478,10 +480,25 @@ function copyActionFocus(value: unknown): ActionFocus | undefined {
   const end = copyBookmark(focus.end);
   let selection: ActionFocus['selection'];
   if (focus.selection !== undefined) {
+    assert(
+      Object.keys(focus.selection).every(
+        (key) => key === 'anchor' || key === 'focus' || key === 'restoreOnRedo',
+      ),
+      'focus selection contains an unsupported field',
+    );
     const anchor = copyBookmark(focus.selection.anchor);
     const selectionFocus = copyBookmark(focus.selection.focus);
     assert(anchor && selectionFocus, 'focus selection endpoints are required');
-    selection = Object.freeze({ anchor, focus: selectionFocus });
+    assert(
+      focus.selection.restoreOnRedo === undefined ||
+        typeof focus.selection.restoreOnRedo === 'boolean',
+      'focus selection redo flag is invalid',
+    );
+    selection = Object.freeze({
+      anchor,
+      focus: selectionFocus,
+      ...(focus.selection.restoreOnRedo ? { restoreOnRedo: true } : {}),
+    });
   }
   return Object.freeze({
     ...(start ? { start } : {}),
@@ -2666,7 +2683,9 @@ function historyFocusAnchor(
 }
 
 function historySelectionAnchors(entry: HistoryEntry, direction: 'undo' | 'redo') {
-  return direction === 'undo' ? entry.selectionAnchors : undefined;
+  return direction === 'undo' || entry.focus?.selection?.restoreOnRedo
+    ? entry.selectionAnchors
+    : undefined;
 }
 
 type HistoryScope = 'inside' | 'outside' | 'mixed';
@@ -2751,8 +2770,29 @@ interface PendingHistoryRecord {
   readonly update: Uint8Array;
 }
 
-function projectionNodeIds(touchedNodeIds: readonly NodeId[], patch: StructuralPatch): NodeId[] {
+function projectionNodeIds(
+  state: Y.Doc,
+  touchedNodeIds: readonly NodeId[],
+  touchedTapeIds: readonly TapeId[],
+  patch: StructuralPatch,
+): NodeId[] {
   const affected = new Set(touchedNodeIds);
+  const touchedTapes = new Set(touchedTapeIds);
+  if (touchedTapes.size) {
+    const nodes = nodeMap(state);
+    const pending = [metaMap(state).get('rootId') as NodeId];
+    const visited = new Set<NodeId>();
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      const record = nodes.get(id);
+      if (!record) continue;
+      const spans = readCell<readonly Span[]>(record, 'spans').value;
+      if (spans.some((span) => touchedTapes.has(span.tapeId))) affected.add(id);
+      pending.push(...readCell<readonly NodeId[]>(record, 'children').value);
+    }
+  }
   const addChildren = (value: unknown) => {
     if (Array.isArray(value)) {
       for (const id of value) if (typeof id === 'string') affected.add(id);
@@ -3051,6 +3091,7 @@ export class CanonicalWriter {
 
     let draft: MutableTreeDraft | undefined;
     let plan: LowLevelPlan;
+    let receiptFocus = request.focus;
     try {
       draft = new MutableTreeDraft(candidate, request.actionId, request.operations);
       const promotion = request.promotionTarget;
@@ -3065,6 +3106,7 @@ export class CanonicalWriter {
         const sourceNode = draft.node(promotion.nodeId);
         if (sourceNode.type === 'paragraph' && sourceNode.content !== undefined) {
           const parsed = parseBlocks(sourceNode.content, { provenance: true });
+          let mapSourceBookmark: ((bookmark: Bookmark) => Bookmark) | undefined;
           if (
             applyParserConversion(
               draft,
@@ -3072,8 +3114,18 @@ export class CanonicalWriter {
               promotion.nodeId,
               sourceNode.content,
               parsed.provenance,
+              (mapper) => {
+                mapSourceBookmark = mapper;
+              },
             )
           ) {
+            const end = receiptFocus?.end;
+            if (end?.nodeId === promotion.nodeId && mapSourceBookmark) {
+              receiptFocus = copyActionFocus({
+                ...receiptFocus,
+                end: mapSourceBookmark(end),
+              });
+            }
             normalizeCanonicalDraft(draft, metaMap(candidate).get('rootId') as NodeId);
           }
         }
@@ -3124,7 +3176,7 @@ export class CanonicalWriter {
       ]),
       touchedTapeIds: Object.freeze([...new Set([...plan.touchedTapes, ...finalChangedTapes])]),
       structuralPatch,
-      ...(request.focus ? { focus: request.focus } : {}),
+      ...(receiptFocus ? { focus: receiptFocus } : {}),
       noEffect,
       ...(promotionSkipped ? { promotionSkipped } : {}),
     });
@@ -3213,7 +3265,12 @@ export class CanonicalWriter {
     try {
       callbackErrors.push(
         ...this.access.publish(
-          projectionNodeIds(pending.receipt.touchedNodeIds, pending.receipt.structuralPatch),
+          projectionNodeIds(
+            this.state,
+            pending.receipt.touchedNodeIds,
+            pending.receipt.touchedTapeIds,
+            pending.receipt.structuralPatch,
+          ),
         ),
       );
       const accepted = {
@@ -3314,7 +3371,12 @@ export class CanonicalWriter {
     try {
       const callbackErrors = [
         ...this.access.publish(
-          projectionNodeIds(record.entry.touchedNodeIds, record.entry.structuralPatch),
+          projectionNodeIds(
+            this.state,
+            record.entry.touchedNodeIds,
+            record.entry.touchedTapeIds,
+            record.entry.structuralPatch,
+          ),
         ),
       ];
       callbackErrors.push(...this.notifyListeners({ type: 'history', revision: record.revision }));

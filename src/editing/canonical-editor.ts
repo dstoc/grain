@@ -11,6 +11,8 @@ import type {
   TreeDraft,
 } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, CanonicalNode } from '../markdown/canonical-model.js';
+import type { MarkdownNode } from '../markdown/node.js';
+import { serializeToString } from '../markdown/block-serializer.js';
 import '../markdown/block-render.js';
 import type { NodeId } from '../markdown/canonical-model.js';
 import {
@@ -22,6 +24,7 @@ import {
   deleteContentBackwards,
   editIndent,
   insertLineBreak,
+  insertMarkdownBlocks,
   insertParagraph,
   replaceSelectedBlocks,
 } from './canonical-edits.js';
@@ -39,6 +42,13 @@ interface CompositionDraft {
   readonly version: number;
   readonly selection: { readonly anchor: number; readonly focus: number };
   readonly blockSelection?: readonly NodeId[];
+  invalidate: () => void;
+}
+
+interface NativeSelectionSnapshot {
+  readonly nodeId: NodeId;
+  readonly anchor: number;
+  readonly focus: number;
 }
 
 let fallbackActionOrdinal = 0;
@@ -58,6 +68,8 @@ export class CanonicalEditor extends LitElement {
   private textGroup?: { readonly id: string; readonly nodeId: NodeId; lastInputAt: number };
   private selectionAnchor?: CanonicalTextAnchor;
   private selectionFocus?: CanonicalTextAnchor;
+  private lastNativeSelection?: NativeSelectionSnapshot;
+  private expectedInputSelection?: { readonly nodeId: NodeId; readonly offset: number };
   private localCommit = false;
   private restoringSelection = false;
   private selectionChangeRoot?: ShadowRoot;
@@ -115,7 +127,14 @@ export class CanonicalEditor extends LitElement {
     this.ownerDocument.removeEventListener('selectionchange', this.onSelectionChange);
     this.selectionChangeRoot?.removeEventListener('selectionchange', this.onSelectionChange);
     this.selectionChangeRoot = undefined;
-    this.composition = undefined;
+    if (this.composition) {
+      this.composition.inline.removeEventListener(
+        'composition-invalidated',
+        this.composition.invalidate,
+      );
+      this.composition.inline.composing = false;
+      this.composition = undefined;
+    }
     super.disconnectedCallback();
   }
 
@@ -165,12 +184,25 @@ export class CanonicalEditor extends LitElement {
     return this.visibleInlineNodes().filter((node) => selected.has(node.sharedId));
   }
 
-  private captureSelection() {
+  private captureSelection(sealChangedGroup = false) {
     if (this.restoringSelection || !this.document) return;
     const { inline } = this.renderer?.getInlineSelection() ?? {};
     const node = inline && this.activeInline(inline);
     const selection = inline?.getTextSelection();
     if (!node || !selection || !node.connected) return;
+    const snapshot = { nodeId: node.sharedId, anchor: selection.anchor, focus: selection.focus };
+    const previous = this.lastNativeSelection;
+    if (
+      sealChangedGroup &&
+      this.textGroup &&
+      previous &&
+      (previous.nodeId !== snapshot.nodeId ||
+        previous.anchor !== snapshot.anchor ||
+        previous.focus !== snapshot.focus)
+    ) {
+      this.sealTypingGroup();
+    }
+    this.lastNativeSelection = snapshot;
     const root = inline.getRootNode();
     const selectionRoot = root instanceof ShadowRoot ? root : undefined;
     if (selectionRoot !== this.selectionChangeRoot) {
@@ -194,7 +226,25 @@ export class CanonicalEditor extends LitElement {
     }
   }
 
-  private onSelectionChange = () => this.captureSelection();
+  private onSelectionChange = () => {
+    const { inline } = this.renderer?.getInlineSelection() ?? {};
+    const node = inline && this.activeInline(inline);
+    const selection = inline?.getTextSelection();
+    const expected = this.expectedInputSelection;
+    if (
+      node &&
+      selection &&
+      expected?.nodeId === node.sharedId &&
+      selection.anchor === expected.offset &&
+      selection.focus === expected.offset
+    ) {
+      this.expectedInputSelection = undefined;
+      this.captureSelection();
+      return;
+    }
+    this.expectedInputSelection = undefined;
+    this.captureSelection(true);
+  };
 
   private onPointerDown = () => {
     this.sealTypingGroup();
@@ -280,6 +330,14 @@ export class CanonicalEditor extends LitElement {
       await inline.updateComplete;
       inline.focus();
       inline.setSelectionOffsets(start.offset, end.offset);
+      this.lastNativeSelection = {
+        nodeId: target.sharedId,
+        anchor: start.offset,
+        focus: end.offset,
+      };
+      if (this.expectedInputSelection?.nodeId === target.sharedId) {
+        this.expectedInputSelection = { nodeId: target.sharedId, offset: end.offset };
+      }
       this.selectionAnchor = createCanonicalTextAnchor(document, start);
       this.selectionFocus = createCanonicalTextAnchor(document, end);
     } finally {
@@ -298,14 +356,34 @@ export class CanonicalEditor extends LitElement {
     }
   }
 
-  private onAccepted(accepted: AcceptedAction) {
+  private onAccepted(accepted: AcceptedAction, restoreBlockSelection = false) {
     this.captureSelection();
+    if (
+      accepted.receipt.structuralPatch.cells.length ||
+      accepted.receipt.structuralPatch.births.length
+    ) {
+      this.sealTypingGroup();
+    }
+    const selection = accepted.receipt.focus?.selection;
+    if (restoreBlockSelection && selection && this.document) {
+      try {
+        const anchor = createCanonicalTextAnchor(this.document, selection.anchor);
+        const focus = createCanonicalTextAnchor(this.document, selection.focus);
+        void this.restoreAnchors(anchor, focus, true);
+        return;
+      } catch {
+        // A selection endpoint can be hidden by the structural action.
+      }
+    }
     const focus = accepted.receipt.focus?.end;
     if (focus) void this.focusBookmark(focus);
     else void this.restoreSavedSelection();
   }
 
-  private runDraft(callback: (draft: TreeDraft) => ActionFocus | void) {
+  private runDraft(
+    callback: (draft: TreeDraft) => ActionFocus | void,
+    restoreBlockSelection = false,
+  ) {
     const document = this.document;
     const writer = this.writer;
     if (!document || !writer) return;
@@ -313,7 +391,7 @@ export class CanonicalEditor extends LitElement {
     this.localCommit = true;
     try {
       const result = writer.edit(this.options(), callback);
-      if ('receipt' in result) this.onAccepted(result);
+      if ('receipt' in result) this.onAccepted(result, restoreBlockSelection);
       else if (result.status === 'rejected') this.dispatchEditError(result.reason);
     } catch (error) {
       this.dispatchEditError(error);
@@ -339,6 +417,7 @@ export class CanonicalEditor extends LitElement {
       offset: from + insert.length,
       affinity: 'right',
     };
+    this.expectedInputSelection = { nodeId: node.sharedId, offset: end.offset };
     this.localCommit = true;
     try {
       const request = writer.prepareTextInput(
@@ -387,6 +466,15 @@ export class CanonicalEditor extends LitElement {
           ? (inputEvent.dataTransfer?.getData('text/plain') ?? inputEvent.data ?? '')
           : (inputEvent.data ?? '');
       this.replaceBlocks(selection, value);
+      return;
+    }
+    if (
+      selection.length &&
+      ['deleteContentBackward', 'deleteContentForward', 'deleteByCut'].includes(
+        inputEvent.inputType,
+      )
+    ) {
+      this.replaceBlocks(selection, '');
       return;
     }
     this.hostContext?.clearSelection();
@@ -487,6 +575,69 @@ export class CanonicalEditor extends LitElement {
     this.hostContext?.clearSelection();
   }
 
+  private serializeBlockSelection(selection: readonly CanonicalNode[]): string {
+    const document = this.document;
+    if (!document) return '';
+    const selected = new Set(selection.map((node) => node.sharedId));
+    const ownerByNode = new WeakMap<MarkdownNode, NodeId>();
+    const convert = (node: CanonicalNode): MarkdownNode => {
+      const children = node.children.map(convert);
+      let result: MarkdownNode;
+      switch (node.type) {
+        case 'document':
+          result = { type: 'document', children };
+          break;
+        case 'paragraph':
+          result = { type: 'paragraph', content: node.content ?? '' };
+          break;
+        case 'section':
+          result = {
+            type: 'section',
+            marker: node.marker ?? '',
+            content: node.content ?? '',
+            children,
+          };
+          break;
+        case 'code-block':
+          result = { type: 'code-block', info: node.info ?? null, content: node.content ?? '' };
+          break;
+        case 'list':
+          result = { type: 'list', children };
+          break;
+        case 'list-item':
+          result = {
+            type: 'list-item',
+            marker: node.marker ?? '',
+            ...(node.checked === undefined ? {} : { checked: node.checked }),
+            children,
+          };
+          break;
+        case 'block-quote':
+          result = { type: 'block-quote', marker: node.marker ?? '', children };
+          break;
+      }
+      ownerByNode.set(result, node.sharedId);
+      return result;
+    };
+    let markdown = serializeToString(convert(document.root), (node) => {
+      if (node.type !== 'paragraph' && node.type !== 'section' && node.type !== 'code-block')
+        return true;
+      return selected.has(ownerByNode.get(node)!);
+    });
+    const hasSelectedDescendant = (node: CanonicalNode): boolean =>
+      node.children.some((child) => selected.has(child.sharedId) || hasSelectedDescendant(child));
+    for (const node of selection) {
+      if (node.type !== 'section' || !hasSelectedDescendant(node)) continue;
+      const heading = `${node.marker ?? ''} ${node.content?.trimStart() ?? ''}\n`;
+      const index = markdown.indexOf(heading);
+      if (index >= 0) {
+        const end = index + heading.length;
+        markdown = `${markdown.slice(0, end)}\n${markdown.slice(end)}`;
+      }
+    }
+    return markdown;
+  }
+
   private onInlineKeyDown = (event: CustomEvent<InlineKeyDown>) => {
     const { inline, node: projectedNode, keyboardEvent } = event.detail;
     const node = projectedNode as unknown as CanonicalNode;
@@ -508,18 +659,49 @@ export class CanonicalEditor extends LitElement {
       this.moveAcrossBlocks(inline, node, keyboardEvent);
       return;
     }
+    if (key === 'Backspace' || key === 'Delete') {
+      const selected = this.currentBlockSelection();
+      if (selected.length) {
+        keyboardEvent.preventDefault();
+        this.replaceBlocks(selected, '');
+        return;
+      }
+    }
     if (key === 'Tab') {
       keyboardEvent.preventDefault();
       const selected = this.currentBlockSelection();
-      this.runDraft((draft) =>
-        editIndent(
+      const context = this.hostContext;
+      this.runDraft((draft) => {
+        const actionFocus = editIndent(
           draft,
           document.root.sharedId,
           node.sharedId,
           keyboardEvent.shiftKey ? 'unindent' : 'indent',
           selected.map((item) => item.sharedId),
-        ),
-      );
+        );
+        if (!actionFocus || !selected.length) return actionFocus;
+        const first = selected[0]!;
+        const last = selected.at(-1)!;
+        const reverse =
+          !!context?.selectionAnchor &&
+          (context.selectionAnchor as unknown as CanonicalNode).sharedId === last.sharedId;
+        const anchorNode = reverse ? last : first;
+        const focusNode = reverse ? first : last;
+        const anchor = draft.bookmark(
+          anchorNode.sharedId,
+          reverse ? (anchorNode.content ?? '').length : 0,
+          reverse ? 'right' : 'left',
+        );
+        const focus = draft.bookmark(
+          focusNode.sharedId,
+          reverse ? 0 : (focusNode.content ?? '').length,
+          reverse ? 'left' : 'right',
+        );
+        return {
+          ...actionFocus,
+          selection: { anchor, focus, restoreOnRedo: true },
+        };
+      }, selected.length > 0);
       return;
     }
     if (control && key.toLowerCase() === 'a') {
@@ -633,16 +815,27 @@ export class CanonicalEditor extends LitElement {
     const selection = inline.getTextSelection();
     if (!node || !selection || inline.textContent !== node.content) return;
     const blockSelection = this.currentBlockSelection().map((item) => item.sharedId);
-    this.composition = {
+    const session: CompositionDraft = {
       inline,
       node,
       content: node.content ?? '',
       version: node.version,
       selection,
       ...(blockSelection.length ? { blockSelection } : {}),
+      invalidate: () => this.invalidateComposition(session),
     };
+    this.composition = session;
+    inline.addEventListener('composition-invalidated', session.invalidate);
     this.sealTypingGroup();
   };
+
+  private invalidateComposition(session: CompositionDraft) {
+    if (this.composition !== session) return;
+    this.composition = undefined;
+    session.inline.removeEventListener('composition-invalidated', session.invalidate);
+    session.inline.composing = false;
+    if (session.inline.isConnected) void session.inline.recoverComposition(session.selection);
+  }
 
   private onCompositionEnd = (
     event: CustomEvent<{ inline: MarkdownInline; event: CompositionEvent }>,
@@ -651,6 +844,10 @@ export class CanonicalEditor extends LitElement {
     this.composition = undefined;
     const inline = event.detail.inline;
     const data = event.detail.event.data;
+    if (session) {
+      session.inline.removeEventListener('composition-invalidated', session.invalidate);
+      session.inline.composing = false;
+    }
     if (!session || session.inline !== inline || !this.document || !this.writer) {
       if (inline.isConnected)
         void inline.recoverComposition(inline.getTextSelection() ?? { anchor: 0, focus: 0 });
@@ -694,6 +891,19 @@ export class CanonicalEditor extends LitElement {
           nativeText[nativeText.length - 1 - suffix]
       )
         suffix++;
+      while (
+        prefix > 0 &&
+        (!isUtf16Boundary(session.content, prefix) || !isUtf16Boundary(nativeText, prefix))
+      ) {
+        prefix--;
+      }
+      while (
+        suffix > 0 &&
+        (!isUtf16Boundary(session.content, session.content.length - suffix) ||
+          !isUtf16Boundary(nativeText, nativeText.length - suffix))
+      ) {
+        suffix--;
+      }
       from = prefix;
       to = session.content.length - suffix;
       insert = nativeText.slice(prefix, nativeText.length - suffix);
@@ -740,8 +950,13 @@ export class CanonicalEditor extends LitElement {
     const selection = this.currentBlockSelection();
     if (!selection.length || !event.clipboardData) return;
     event.preventDefault();
-    const text = selection.map((node) => node.content ?? '').join('\n');
-    event.clipboardData.setData('text/plain', text);
+    const markdown = this.serializeBlockSelection(selection);
+    event.clipboardData.setData('text/plain', markdown);
+    try {
+      event.clipboardData.setData('text/markdown', markdown);
+    } catch {
+      // Plain text is sufficient when the browser rejects custom clipboard data.
+    }
     if (event.type === 'cut') this.replaceBlocks(selection, '');
   };
 
@@ -750,6 +965,15 @@ export class CanonicalEditor extends LitElement {
     if (!(inline instanceof MarkdownInline)) return;
     const node = this.activeInline(inline);
     if (!node || !event.clipboardData) return;
+    const markdown = event.clipboardData.getData('text/markdown');
+    if (markdown) {
+      event.preventDefault();
+      this.runDraft((draft) =>
+        insertMarkdownBlocks(draft, this.document!.root.sharedId, node.sharedId, markdown),
+      );
+      this.hostContext?.clearSelection();
+      return;
+    }
     event.preventDefault();
     const text = event.clipboardData.getData('text/plain');
     const selection = this.currentBlockSelection();
@@ -777,6 +1001,13 @@ function previousCodePoint(text: string, offset: number): number {
     if (high >= 0xd800 && high <= 0xdbff) return offset - 2;
   }
   return offset - 1;
+}
+
+function isUtf16Boundary(text: string, offset: number): boolean {
+  if (offset <= 0 || offset >= text.length) return true;
+  const before = text.charCodeAt(offset - 1);
+  const after = text.charCodeAt(offset);
+  return !(before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff);
 }
 
 declare global {

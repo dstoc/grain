@@ -1,5 +1,8 @@
 import type { ActionFocus, Bookmark, TreeDraft } from '../markdown/canonical-actions.js';
+import type { NodeSpec } from '../markdown/canonical-actions.js';
 import type { NodeId, NodeKind } from '../markdown/canonical-model.js';
+import { isInlineNode, type MarkdownNode } from '../markdown/node.js';
+import { parseBlocks } from '../markdown/block-parser/api.js';
 
 const INLINE_KINDS = new Set<NodeKind>(['paragraph', 'section', 'code-block']);
 
@@ -647,6 +650,87 @@ export function replaceSelectedBlocks(
   draft.spliceText(first, { from: 0, to: firstNode.content!.length, insert: text });
   for (const id of rest) removeNodePreservingChildren(draft, root, id);
   return focusResult(start, focus(draft, first, text.length));
+}
+
+function createParsedNode(draft: TreeDraft, node: MarkdownNode): NodeId {
+  const spec: NodeSpec = {
+    type: node.type,
+    ...(isInlineNode(node) ? { content: node.content } : {}),
+    ...('marker' in node ? { marker: node.marker } : {}),
+    ...(node.type === 'list-item' ? { checked: node.checked ?? null } : {}),
+    ...(node.type === 'code-block' ? { info: node.info } : {}),
+  };
+  const id = draft.create(spec);
+  for (const child of node.children ?? []) {
+    draft.place(createParsedNode(draft, child), id, null);
+  }
+  return id;
+}
+
+/** Inserts parsed Markdown beside the current block inside the canonical draft. */
+export function insertMarkdownBlocks(
+  draft: TreeDraft,
+  root: NodeId,
+  contextId: NodeId,
+  markdown: string,
+): ActionFocus | undefined {
+  const parsed = parseBlocks(markdown + '\n').node;
+  let nodes = [...(parsed.children ?? [])];
+  if (!nodes.length) return undefined;
+
+  const context = draft.node(contextId);
+  let parentId: NodeId | undefined;
+  let before: NodeId | null = null;
+  let attachAfter:
+    | { readonly id: NodeId; readonly parent: NodeId; readonly before: NodeId | null }
+    | undefined;
+  if (context.type === 'section') {
+    parentId = contextId;
+    if (nodes.some((node) => node.type === 'section')) {
+      const list = draft.create({ type: 'list' });
+      const item = draft.create({ type: 'list-item', marker: '* ' });
+      draft.place(item, list, null);
+      parentId = item;
+      attachAfter = { id: list, parent: contextId, before: null };
+    }
+  } else {
+    parentId = parentOf(draft, root, contextId);
+    if (!parentId) return undefined;
+    before = siblings(draft, root, contextId).next ?? null;
+    if (!before && draft.node(parentId).type === 'list-item') {
+      const item = parentId;
+      parentId = parentOf(draft, root, item);
+      if (!parentId) return undefined;
+      before = siblings(draft, root, item).next ?? null;
+    }
+  }
+
+  if (draft.node(parentId).type === 'list') {
+    if (nodes.length === 1 && nodes[0]!.type === 'list') {
+      nodes = [...(nodes[0]!.children ?? [])];
+    } else {
+      const item = draft.create({ type: 'list-item', marker: '* ' });
+      attachAfter = { id: item, parent: parentId, before };
+      parentId = item;
+      before = null;
+    }
+  }
+
+  let lastInline: NodeId | undefined;
+  for (const node of nodes) {
+    const id = createParsedNode(draft, node);
+    draft.place(id, parentId, before);
+    for (const nested of walk(draft, id)) {
+      if (INLINE_KINDS.has(draft.node(nested).type)) lastInline = nested;
+    }
+  }
+  if (attachAfter) draft.place(attachAfter.id, attachAfter.parent, attachAfter.before);
+  return lastInline
+    ? focusResult(
+        undefined,
+        focus(draft, lastInline, (draft.node(lastInline).content ?? '').length),
+      )
+    : undefined;
 }
 
 export function joinWithPrevious(

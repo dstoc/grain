@@ -2,6 +2,7 @@ import { isInlineNode, type InlineNode, type MarkdownNode } from './node.js';
 import type { ParserConversionPlan } from './block-parser/types.js';
 import type { NodeId } from './canonical-model.js';
 import type {
+  Bookmark,
   DraftNode,
   DraftTextPiece,
   NodeSpec,
@@ -200,6 +201,7 @@ export function applyParserConversion(
   sourceId: NodeId,
   source: string,
   plan: ParserConversionPlan,
+  onSourceBookmarkMapper?: (mapper: (bookmark: Bookmark) => Bookmark) => void,
 ): boolean {
   const validated = validateTextPieces(source, plan);
   if (!validated) return false;
@@ -249,6 +251,55 @@ export function applyParserConversion(
   for (const [key, node] of parsedNodes) {
     if (isInlineNode(node)) outputTargetByKey.set(key, ids.get(key)!);
   }
+
+  const sourceSegments: Array<{
+    readonly from: number;
+    readonly to: number;
+    readonly nodeId: NodeId;
+    readonly outputFrom: number;
+    readonly outputTo: number;
+  }> = [];
+  for (const [key, node] of parsedNodes) {
+    if (!isInlineNode(node)) continue;
+    let outputOffset = 0;
+    for (const piece of composedByKey.get(key) ?? []) {
+      if (piece.kind !== 'synthesize') {
+        const length = piece.to - piece.from;
+        sourceSegments.push({
+          from: piece.from,
+          to: piece.to,
+          nodeId: outputTargetByKey.get(key)!,
+          outputFrom: outputOffset,
+          outputTo: outputOffset + length,
+        });
+        outputOffset += length;
+      } else {
+        outputOffset += piece.text.length;
+      }
+    }
+  }
+  onSourceBookmarkMapper?.((bookmark) => {
+    const offset = bookmark.offset;
+    const left = sourceSegments.filter((piece) => piece.from < offset && offset <= piece.to);
+    const right = sourceSegments.filter((piece) => piece.from <= offset && offset < piece.to);
+    let segment = bookmark.affinity === 'left' ? left.at(-1) : right[0];
+    if (!segment) segment = bookmark.affinity === 'left' ? right[0] : left.at(-1);
+    if (!segment) {
+      const previous = sourceSegments
+        .filter((piece) => piece.to < offset)
+        .toSorted((a, b) => b.to - a.to);
+      const next = sourceSegments
+        .filter((piece) => piece.from > offset)
+        .toSorted((a, b) => a.from - b.from);
+      segment = bookmark.affinity === 'left' ? (previous[0] ?? next[0]) : (next[0] ?? previous[0]);
+    }
+    if (!segment) return bookmark;
+    const mappedOffset = Math.max(
+      segment.outputFrom,
+      Math.min(segment.outputTo, segment.outputFrom + offset - segment.from),
+    );
+    return Object.freeze({ ...bookmark, nodeId: segment.nodeId, offset: mappedOffset });
+  });
 
   const events: TextEvent[] = [];
   const sourceDeletes = [...plan.consumed].map((range) => ({ from: range.from, to: range.to }));
