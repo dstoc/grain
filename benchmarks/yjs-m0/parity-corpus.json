@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "visibleBehaviorFixtures": [
+    {
+      "id": "plain-middle-insert",
+      "classification": "parity",
+      "rationale": "Ordinary text input must preserve surrounding text and canonical serialization.",
+      "markdown": "alpha beta",
+      "targetContent": "alpha beta",
+      "edit": { "from": 5, "to": 5, "insert": "!" },
+      "expectedContent": "alpha! beta",
+      "expectedMarkdown": "alpha! beta\n"
+    },
+    {
+      "id": "same-text-replacement",
+      "classification": "parity",
+      "rationale": "Repeated visible text must use the requested range, not a text search result.",
+      "markdown": "same same",
+      "targetContent": "same same",
+      "edit": { "from": 0, "to": 4, "insert": "same!" },
+      "expectedContent": "same! same",
+      "expectedMarkdown": "same! same\n"
+    },
+    {
+      "id": "unicode-utf16-boundary",
+      "classification": "parity",
+      "rationale": "The browser and canonical text APIs use UTF-16 offsets; edits after a surrogate pair must preserve the pair.",
+      "markdown": "A🌾B",
+      "targetContent": "A🌾B",
+      "edit": { "from": 3, "to": 4, "insert": "C" },
+      "expectedContent": "A🌾C",
+      "expectedMarkdown": "A🌾C\n"
+    },
+    {
+      "id": "heading-structure-preserved",
+      "classification": "parity",
+      "rationale": "Editing a child paragraph must retain its containing section and heading marker.",
+      "markdown": "# Topic\n\nalpha",
+      "targetContent": "alpha",
+      "edit": { "from": 5, "to": 5, "insert": "!" },
+      "expectedContent": "alpha!",
+      "expectedMarkdown": "# Topic\nalpha!\n"
+    },
+    {
+      "id": "list-structure-preserved",
+      "classification": "parity",
+      "rationale": "Editing list-item content must retain list order and markers.",
+      "markdown": "- one\n- two",
+      "targetContent": "one",
+      "edit": { "from": 3, "to": 3, "insert": "!" },
+      "expectedContent": "one!",
+      "expectedMarkdown": "- one!\n- two\n"
+    }
+  ],
+  "intentionalDifferences": [
+    {
+      "id": "canonical-checkpoint-identity",
+      "classification": "intentional-difference",
+      "legacyBehavior": "The legacy MarkdownTree has transient view-model identity and reparses source into a new tree; it has no durable node or native text identity to compare.",
+      "canonicalBehavior": "Checkpoint reconstruction preserves canonical node IDs, tape IDs, boundary IDs, and native retained text item signatures.",
+      "rationale": "Collaboration, guarded history, and selection anchors depend on canonical identity. These internal IDs are outside visible Markdown parity; visible content and structure remain equal after reconstruction."
+    }
+  ],
+  "protectedSuites": [
+    "src/markdown/canonical-collaboration.test.ts",
+    "src/markdown/canonical-model.test.ts",
+    "src/markdown/canonical-actions.test.ts",
+    "src/markdown/canonical-promotion.test.ts",
+    "src/editing/canonical-edits.test.ts",
+    "src/editing/canonical-editor.browser.test.ts"
+  ]
+}
