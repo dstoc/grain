@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { userEvent, cdp } from 'vitest/browser';
 import { CanonicalWriter, type TreeDraft } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, type CanonicalNode } from '../markdown/canonical-model.js';
+import type { HostContext } from '../markdown/host-context.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
 import { CanonicalEditor } from './canonical-editor.js';
 import { insertParagraph, joinWithPrevious } from './canonical-edits.js';
@@ -42,6 +43,25 @@ describe('M6 review browser contracts', () => {
   }
   function inlines() {
     return [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')];
+  }
+  function expectBlockSelection(
+    context: HostContext,
+    anchorId: CanonicalNode['sharedId'],
+    focusId: CanonicalNode['sharedId'],
+    selectedIds: readonly CanonicalNode['sharedId'][],
+  ) {
+    const anchor = context.selectionAnchor as unknown as CanonicalNode | undefined;
+    const focus = context.selectionFocus as unknown as CanonicalNode | undefined;
+    expect(anchor?.sharedId).toBe(anchorId);
+    expect(focus?.sharedId).toBe(focusId);
+    expect(anchor?.connected).toBe(true);
+    expect(focus?.connected).toBe(true);
+    expect(
+      [...context.selection].map((node) => (node as unknown as CanonicalNode).sharedId).sort(),
+    ).toEqual([...selectedIds].sort());
+    expect(
+      [...context.selection].every((node) => (node as unknown as CanonicalNode).connected),
+    ).toBe(true);
   }
   function devtools() {
     return cdp() as unknown as {
@@ -122,26 +142,67 @@ describe('M6 review browser contracts', () => {
   });
   test('Backspace deletes selected blocks and undo restores them', async () => {
     const inline = await mount('alpha\n\nbeta');
-    const context = renderer.hostContext;
+    const context = renderer.hostContext!;
     const [first, last] = model.root.children;
     inline.focus();
     inline.setSelectionOffsets(5, 5);
     await userEvent.keyboard('{Control>}a{/Control}{Control>}a{/Control}{Control>}a{/Control}');
     await settle();
     expect(renderer.hostContext.selection.size).toBe(2);
+    context.selectionAnchor = last as never;
+    context.selectionFocus = first as never;
     await userEvent.keyboard('{Backspace}');
     await settle();
     expect(model.root.children.map((n) => n.content)).toEqual(['']);
     await userEvent.keyboard('{Control>}z{/Control}');
     await settle();
     expect(model.root.children.map((n) => n.content)).toEqual(['alpha', 'beta']);
-    expect(context.selection.size).toBe(2);
-    expect((context.selectionAnchor as unknown as CanonicalNode).sharedId).toBe(first!.sharedId);
-    expect((context.selectionFocus as unknown as CanonicalNode).sharedId).toBe(last!.sharedId);
+    expectBlockSelection(context, last!.sharedId, first!.sharedId, [
+      first!.sharedId,
+      last!.sharedId,
+    ]);
     await userEvent.keyboard('{Control>}y{/Control}');
     await settle();
     expect(model.root.children.map((n) => n.content)).toEqual(['']);
     expect(inlines().map((i) => i.textContent)).toEqual(['']);
+    expect(context.selection.size).toBe(0);
+    expect(context.selectionAnchor).toBeUndefined();
+    expect(context.selectionFocus).toBeUndefined();
+    const redoInline = renderer.getInlineSelection().inline!;
+    const redoFocus = redoInline.node as unknown as CanonicalNode;
+    expect(redoFocus.sharedId).toBe(first!.sharedId);
+    expect(redoFocus.connected).toBe(true);
+    expect(redoInline.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
+  });
+  test('deleteContentBackward input replaces the active block selection', async () => {
+    const inline = await mount('alpha\n\nbeta');
+    const context = renderer.hostContext;
+    const [first, last] = model.root.children;
+    inline.focus();
+    inline.setSelectionOffsets(5, 5);
+    await userEvent.keyboard('{Control>}a{/Control}{Control>}a{/Control}{Control>}a{/Control}');
+    await settle();
+    context.selectionAnchor = last as never;
+    context.selectionFocus = first as never;
+
+    const input = new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      inputType: 'deleteContentBackward',
+    });
+    inline.dispatchEvent(input);
+    await settle();
+
+    expect(input.defaultPrevented).toBe(true);
+    expect(model.root.children.map((node) => node.content)).toEqual(['']);
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual(['alpha', 'beta']);
+    expectBlockSelection(context, last!.sharedId, first!.sharedId, [
+      first!.sharedId,
+      last!.sharedId,
+    ]);
   });
   test('selectionchange seals the preceding typing group', async () => {
     const inline = await mount('alpha');
@@ -207,7 +268,7 @@ describe('M6 review browser contracts', () => {
     inline.setSelectionOffsets(0, 0);
     await userEvent.keyboard('{Control>}a{/Control}{Control>}a{/Control}{Control>}a{/Control}');
     await settle();
-    const selected = editor.shadowRoot!.querySelector('md-block-render')!.hostContext;
+    const selected = editor.shadowRoot!.querySelector('md-block-render')!.hostContext!;
     const [first, last] = model.root.children.flatMap(function visit(node): CanonicalNode[] {
       return [node, ...node.children.flatMap(visit)].filter((item) =>
         ['paragraph', 'section', 'code-block'].includes(item.type),
@@ -219,22 +280,25 @@ describe('M6 review browser contracts', () => {
     const original = JSON.stringify(model.exportMarkdownTree());
     await userEvent.keyboard(key);
     await settle();
-    expect(selected.selection.size).toBe(2);
-    expect((selected.selectionAnchor as unknown as CanonicalNode).sharedId).toBe(last!.sharedId);
-    expect((selected.selectionFocus as unknown as CanonicalNode).sharedId).toBe(first!.sharedId);
+    const indented = JSON.stringify(model.exportMarkdownTree());
+    expectBlockSelection(selected, last!.sharedId, first!.sharedId, [
+      first!.sharedId,
+      last!.sharedId,
+    ]);
     await userEvent.keyboard('{Control>}z{/Control}');
     await settle();
     expect(JSON.stringify(model.exportMarkdownTree())).toBe(original);
-    expect(selected.selection.size).toBe(2);
-    expect((selected.selectionAnchor as unknown as CanonicalNode).sharedId).toBe(last!.sharedId);
-    expect((selected.selectionFocus as unknown as CanonicalNode).sharedId).toBe(first!.sharedId);
+    expectBlockSelection(selected, last!.sharedId, first!.sharedId, [
+      first!.sharedId,
+      last!.sharedId,
+    ]);
     await userEvent.keyboard('{Control>}y{/Control}');
     await settle();
-    expect(model.root.children.length).toBeGreaterThan(0);
-    expect(inlines().every((item) => (item.node as unknown as CanonicalNode).connected)).toBe(true);
-    expect(selected.selection.size).toBe(2);
-    expect((selected.selectionAnchor as unknown as CanonicalNode).sharedId).toBe(last!.sharedId);
-    expect((selected.selectionFocus as unknown as CanonicalNode).sharedId).toBe(first!.sharedId);
+    expect(JSON.stringify(model.exportMarkdownTree())).toBe(indented);
+    expectBlockSelection(selected, last!.sharedId, first!.sharedId, [
+      first!.sharedId,
+      last!.sharedId,
+    ]);
   });
   test('block clipboard preserves Markdown structure', async () => {
     const inline = await mount('# title\n\n- child');

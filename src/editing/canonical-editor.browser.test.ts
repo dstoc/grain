@@ -152,6 +152,20 @@ describe('CanonicalEditor in Chromium', () => {
     expect(context.selection.size).toBe(2);
     expect((context.selectionAnchor as unknown as CanonicalNode).sharedId).toBe(last.sharedId);
     expect((context.selectionFocus as unknown as CanonicalNode).sharedId).toBe(first.sharedId);
+    expect((context.selectionAnchor as unknown as CanonicalNode).connected).toBe(true);
+    expect((context.selectionFocus as unknown as CanonicalNode).connected).toBe(true);
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await nextTask();
+    expect(document!.root.children.map((node) => node.content)).toEqual(['X']);
+    expect(context.selection.size).toBe(0);
+    expect(context.selectionAnchor).toBeUndefined();
+    expect(context.selectionFocus).toBeUndefined();
+    const redoInline = mounted.renderer.getInlineSelection().inline!;
+    const redoFocus = redoInline.node as unknown as CanonicalNode;
+    expect(redoFocus.sharedId).toBe(first.sharedId);
+    expect(redoFocus.connected).toBe(true);
+    expect(redoInline.getTextSelection()).toEqual({ anchor: 1, focus: 1 });
   });
 
   test('retains the unaffected rendered block facade and element during input', async () => {
