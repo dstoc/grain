@@ -1,12 +1,13 @@
 import { afterEach, expect, test } from 'vitest';
 import { userEvent, cdp } from 'vitest/browser';
 import { CanonicalDocument } from '../markdown/canonical-model.js';
-import { CanonicalWriter, type TreeDraft } from '../markdown/canonical-actions.js';
+import { CanonicalWriter, type ActionRequest } from '../markdown/canonical-actions.js';
 import { MarkdownTree } from '../markdown/view-model.js';
 import { parseBlocks } from '../markdown/block-parser/api.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
 import { CanonicalEditor } from './canonical-editor.js';
-import { insertParagraph } from './canonical-edits.js';
+import { insertParagraph } from './commands/insert-paragraph.js';
+import { prepareEdit } from './prepare-edit.js';
 import { Editor } from './editor.js';
 import { nextTask } from './test/lifecycle.js';
 
@@ -45,12 +46,25 @@ async function mount(mode: string, source: string) {
   return renderer;
 }
 
-async function applyRemote(actionId: string, command: (draft: TreeDraft) => void) {
+async function applyRemote(prepare: (writer: CanonicalWriter) => ActionRequest | undefined) {
   const replica = CanonicalDocument.open(model!.checkpoint());
   const remote = new CanonicalWriter(replica);
   try {
-    const action = remote.edit({ actionId, sessionId: 'remote' }, command);
-    if (!('receipt' in action)) throw new Error(action.status);
+    remote.admitSession('remote');
+    const request = prepare(remote);
+    if (!request) throw new Error('remote command was not applicable');
+    const result = remote.apply(request, {
+      sessionId: request.sessionId,
+      authorityEpoch: request.authorityEpoch,
+      sessionSequence: request.sessionSequence,
+    });
+    const action =
+      result.status === 'pending'
+        ? remote.publish(result.pending)
+        : result.status === 'duplicate'
+          ? result.accepted
+          : undefined;
+    if (!action) throw new Error(result.status);
     model!.applyAccepted({ revision: action.revision, update: action.update });
   } finally {
     remote.close();
@@ -131,9 +145,11 @@ test('composition invalidation restores the mapped caret before subsequent nativ
     selectionStart: 1,
     selectionEnd: 1,
   });
-  await applyRemote('interrupt', (draft) => {
-    draft.spliceText(node.sharedId, { from: 0, to: 0, insert: 'R' });
-  });
+  await applyRemote((remote) =>
+    remote.prepareCommand({ actionId: 'interrupt', sessionId: 'remote' }, (draft) => {
+      draft.spliceText(node.sharedId, { from: 0, to: 0, insert: 'R' });
+    }),
+  );
   await nextTask();
   await nextTask();
   const recovered = renderer.shadowRoot!.querySelector<MarkdownInline>('md-inline')!;
@@ -185,8 +201,16 @@ test('composition recovery follows its text anchor through a remote split', asyn
   inline.addEventListener('composition-invalidated', () => inline.dispatchEvent(queuedKey), {
     once: true,
   });
-  await applyRemote('split-during-composition', (draft) =>
-    insertParagraph(draft, model!.root.sharedId, node.sharedId, 2),
+  await applyRemote(
+    (remote) =>
+      prepareEdit(
+        remote,
+        { actionId: 'split-during-composition', sessionId: 'remote' },
+        model!.root.sharedId,
+        undefined,
+        insertParagraph,
+        { nodeId: node.sharedId, from: 2 },
+      )?.request,
   );
   await nextTask();
   await nextTask();
@@ -240,8 +264,16 @@ test('typing in the original paragraph after a remote split works without compos
   const devtools = cdp() as unknown as {
     send(method: string, params: Record<string, unknown>): Promise<unknown>;
   };
-  await applyRemote('split-without-composition', (draft) =>
-    insertParagraph(draft, model!.root.sharedId, node.sharedId, 2),
+  await applyRemote(
+    (remote) =>
+      prepareEdit(
+        remote,
+        { actionId: 'split-without-composition', sessionId: 'remote' },
+        model!.root.sharedId,
+        undefined,
+        insertParagraph,
+        { nodeId: node.sharedId, from: 2 },
+      )?.request,
   );
   await nextTask();
   await nextTask();

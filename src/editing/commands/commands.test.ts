@@ -1,16 +1,20 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import {
-  deleteContentBackwards,
-  editIndent,
-  insertLineBreak,
-  insertParagraph,
-  replaceSelectedBlocks,
-  wrapInline,
-} from './canonical-edits.js';
-import { CanonicalWriter } from '../markdown/canonical-actions.js';
-import { CanonicalDocument } from '../markdown/canonical-model.js';
-import type { CanonicalNode } from '../markdown/canonical-model.js';
+import { CanonicalWriter } from '../../markdown/canonical-actions.js';
+import { CanonicalDocument } from '../../markdown/canonical-model.js';
+import type { CanonicalNode } from '../../markdown/canonical-model.js';
+import { deleteBackwardAtStart } from './delete-backward.js';
+import { indent } from './indent.js';
+import { insertLineBreak } from './insert-line-break.js';
+import { insertMarkdown } from './insert-markdown.js';
+import { insertParagraph } from './insert-paragraph.js';
+import { joinWithPrevious } from './join-with-previous.js';
+import { outdent } from './outdent.js';
+import { replaceBlocks } from './replace-blocks.js';
+import { wrap } from './wrap.js';
+import type { EditSelection } from '../../markdown/semantic/selection.js';
+import type { Edit } from '../outcomes.js';
+import { runCommand } from '../test/run-command.js';
 
 let documentOrdinal = 0;
 const documents: CanonicalDocument[] = [];
@@ -41,14 +45,32 @@ function inlineNodes(document: CanonicalDocument, type?: CanonicalNode['type']) 
   );
 }
 
-function commit(
+function commitEdit<Input>(
   writer: CanonicalWriter,
+  document: CanonicalDocument,
   actionId: string,
-  callback: Parameters<CanonicalWriter['edit']>[1],
+  command: Edit<Input>,
+  input: Input,
+  selectionBefore?: EditSelection,
+  sessionId?: string,
 ) {
-  const result = writer.edit({ actionId }, callback);
-  if (!('receipt' in result)) throw new Error(`edit was not accepted: ${JSON.stringify(result)}`);
+  const result = runCommand(
+    writer,
+    { actionId, ...(sessionId ? { sessionId } : {}) },
+    document.root.sharedId,
+    selectionBefore,
+    command,
+    input,
+  );
+  if (!result) throw new Error('edit command was not applicable');
   return result;
+}
+
+function textSelection(nodeId: string, anchor: number, focus = anchor): EditSelection {
+  return {
+    anchor: { nodeId, offset: anchor, affinity: anchor <= focus ? 'left' : 'right' },
+    focus: { nodeId, offset: focus, affinity: focus >= anchor ? 'right' : 'left' },
+  };
 }
 
 afterEach(() => {
@@ -66,8 +88,16 @@ describe('canonical editing commands', () => {
       .nodes.find((node) => node.id === original!.sharedId)!
       .spans.map((span) => span.tapeId);
 
-    commit(writer, 'split-interior', (draft) =>
-      insertParagraph(draft, document.root.sharedId, original!.sharedId, 2),
+    commitEdit(
+      writer,
+      document,
+      'split-interior',
+      insertParagraph,
+      {
+        nodeId: original!.sharedId,
+        from: 2,
+      },
+      textSelection(original!.sharedId, 2),
     );
     let paragraphs = inlineNodes(document, 'paragraph');
     expect(paragraphs.map((node) => node.content)).toEqual(['ab', 'cd']);
@@ -80,8 +110,16 @@ describe('canonical editing commands', () => {
         .spans.some((span) => originalTapeIds.includes(span.tapeId)),
     ).toBe(true);
 
-    commit(writer, 'split-at-zero', (draft) =>
-      insertParagraph(draft, document.root.sharedId, paragraphs[0]!.sharedId, 0),
+    commitEdit(
+      writer,
+      document,
+      'split-at-zero',
+      insertParagraph,
+      {
+        nodeId: paragraphs[0]!.sharedId,
+        from: 0,
+      },
+      textSelection(paragraphs[0]!.sharedId, 0),
     );
     paragraphs = inlineNodes(document, 'paragraph');
     expect(paragraphs.map((node) => node.content)).toEqual(['', 'ab', 'cd']);
@@ -93,15 +131,33 @@ describe('canonical editing commands', () => {
   it('keeps Shift+Enter selection behavior and extracts an interior code line', () => {
     const { document, writer } = create('abcd\n');
     const [paragraph] = inlineNodes(document, 'paragraph');
-    commit(writer, 'line-break-selection', (draft) =>
-      insertLineBreak(draft, document.root.sharedId, paragraph!.sharedId, 1, 3),
+    commitEdit(
+      writer,
+      document,
+      'line-break-selection',
+      insertLineBreak,
+      {
+        nodeId: paragraph!.sharedId,
+        from: 1,
+        to: 3,
+      },
+      textSelection(paragraph!.sharedId, 1, 3),
     );
     expect(inlineNodes(document, 'paragraph').map((node) => node.content)).toEqual(['a', 'bcd']);
 
     const codeDoc = create('```ts\nabcdef\n```\n');
     const [code] = inlineNodes(codeDoc.document, 'code-block');
-    commit(codeDoc.writer, 'code-line-break', (draft) =>
-      insertLineBreak(draft, codeDoc.document.root.sharedId, code!.sharedId, 2, 4),
+    commitEdit(
+      codeDoc.writer,
+      codeDoc.document,
+      'code-line-break',
+      insertLineBreak,
+      {
+        nodeId: code!.sharedId,
+        from: 2,
+        to: 4,
+      },
+      textSelection(code!.sharedId, 2, 4),
     );
     const output = inlineNodes(codeDoc.document);
     expect(output.map(({ type, content, info }) => [type, content, info])).toEqual([
@@ -116,8 +172,16 @@ describe('canonical editing commands', () => {
     const { document, writer } = create('* alpha\n* beta\n');
     const [first, second] = inlineNodes(document, 'paragraph');
     const originalId = first!.sharedId;
-    commit(writer, 'list-enter', (draft) =>
-      insertParagraph(draft, document.root.sharedId, first!.sharedId, 2),
+    commitEdit(
+      writer,
+      document,
+      'list-enter',
+      insertParagraph,
+      {
+        nodeId: first!.sharedId,
+        from: 2,
+      },
+      textSelection(first!.sharedId, 2),
     );
     expect(inlineNodes(document, 'paragraph').map((node) => node.content)).toEqual([
       'al',
@@ -126,8 +190,16 @@ describe('canonical editing commands', () => {
     ]);
 
     const [alpha, alphaTail] = inlineNodes(document, 'paragraph');
-    commit(writer, 'list-enter-zero', (draft) =>
-      insertParagraph(draft, document.root.sharedId, alpha!.sharedId, 0),
+    commitEdit(
+      writer,
+      document,
+      'list-enter-zero',
+      insertParagraph,
+      {
+        nodeId: alpha!.sharedId,
+        from: 0,
+      },
+      textSelection(alpha!.sharedId, 0),
     );
     const paragraphs = inlineNodes(document, 'paragraph');
     expect(paragraphs.map((node) => node.content)).toEqual(['', 'al', 'pha', 'beta']);
@@ -140,8 +212,16 @@ describe('canonical editing commands', () => {
   it('splits empty quote and list-item containers while preserving trailing blocks', () => {
     const quote = create('> first\n> \n> tail\n');
     const quoteParagraph = inlineNodes(quote.document, 'paragraph')[1]!;
-    commit(quote.writer, 'quote-empty-enter', (draft) =>
-      insertParagraph(draft, quote.document.root.sharedId, quoteParagraph.sharedId, 0),
+    commitEdit(
+      quote.writer,
+      quote.document,
+      'quote-empty-enter',
+      insertParagraph,
+      {
+        nodeId: quoteParagraph.sharedId,
+        from: 0,
+      },
+      textSelection(quoteParagraph.sharedId, 0),
     );
     expect(inlineNodes(quote.document, 'paragraph').map((node) => node.content)).toEqual([
       'first',
@@ -152,8 +232,16 @@ describe('canonical editing commands', () => {
 
     const list = create('* first\n* \n* tail\n');
     const emptyParagraph = inlineNodes(list.document, 'paragraph')[1]!;
-    commit(list.writer, 'list-empty-enter', (draft) =>
-      insertParagraph(draft, list.document.root.sharedId, emptyParagraph.sharedId, 0),
+    commitEdit(
+      list.writer,
+      list.document,
+      'list-empty-enter',
+      insertParagraph,
+      {
+        nodeId: emptyParagraph.sharedId,
+        from: 0,
+      },
+      textSelection(emptyParagraph.sharedId, 0),
     );
     expect(inlineNodes(list.document, 'paragraph').map((node) => node.content)).toEqual([
       'first',
@@ -167,8 +255,16 @@ describe('canonical editing commands', () => {
     const sectionDoc = create('# heading\nbody\n');
     const [section] = inlineNodes(sectionDoc.document, 'section');
     const sectionId = section!.sharedId;
-    commit(sectionDoc.writer, 'section-enter-zero', (draft) =>
-      insertParagraph(draft, sectionDoc.document.root.sharedId, sectionId, 0),
+    commitEdit(
+      sectionDoc.writer,
+      sectionDoc.document,
+      'section-enter-zero',
+      insertParagraph,
+      {
+        nodeId: sectionId,
+        from: 0,
+      },
+      textSelection(sectionId, 0),
     );
     expect(sectionDoc.document.root.children.map((node) => [node.type, node.content])).toEqual([
       ['paragraph', ''],
@@ -180,15 +276,29 @@ describe('canonical editing commands', () => {
 
     const quoteDoc = create('> one\n>\n> two\n');
     let quoteParagraphs = inlineNodes(quoteDoc.document, 'paragraph');
-    commit(quoteDoc.writer, 'quote-backspace-join', (draft) =>
-      deleteContentBackwards(draft, quoteDoc.document.root.sharedId, quoteParagraphs[1]!.sharedId),
+    commitEdit(
+      quoteDoc.writer,
+      quoteDoc.document,
+      'quote-backspace-join',
+      deleteBackwardAtStart,
+      {
+        nodeId: quoteParagraphs[1]!.sharedId,
+      },
+      textSelection(quoteParagraphs[1]!.sharedId, 0),
     );
     expect(inlineNodes(quoteDoc.document, 'paragraph').map((node) => node.content)).toEqual([
       'onetwo',
     ]);
     quoteParagraphs = inlineNodes(quoteDoc.document, 'paragraph');
-    commit(quoteDoc.writer, 'quote-backspace-unwrap', (draft) =>
-      deleteContentBackwards(draft, quoteDoc.document.root.sharedId, quoteParagraphs[0]!.sharedId),
+    commitEdit(
+      quoteDoc.writer,
+      quoteDoc.document,
+      'quote-backspace-unwrap',
+      deleteBackwardAtStart,
+      {
+        nodeId: quoteParagraphs[0]!.sharedId,
+      },
+      textSelection(quoteParagraphs[0]!.sharedId, 0),
     );
     expect(quoteDoc.document.exportMarkdownTree().children?.map((node) => node.type)).toEqual([
       'paragraph',
@@ -197,8 +307,15 @@ describe('canonical editing commands', () => {
 
     const listDoc = create('* first\n* second\n');
     const first = inlineNodes(listDoc.document, 'paragraph')[0]!;
-    commit(listDoc.writer, 'root-first-list-backspace', (draft) =>
-      deleteContentBackwards(draft, listDoc.document.root.sharedId, first.sharedId),
+    commitEdit(
+      listDoc.writer,
+      listDoc.document,
+      'root-first-list-backspace',
+      deleteBackwardAtStart,
+      {
+        nodeId: first.sharedId,
+      },
+      textSelection(first.sharedId, 0),
     );
     expect(listDoc.document.exportMarkdownTree().children?.map((node) => node.type)).toEqual([
       'paragraph',
@@ -212,8 +329,15 @@ describe('canonical editing commands', () => {
     const sectionDoc = create('# title\nbody\n');
     const [section] = inlineNodes(sectionDoc.document, 'section');
     const sectionId = section!.sharedId;
-    commit(sectionDoc.writer, 'demote-section', (draft) =>
-      deleteContentBackwards(draft, sectionDoc.document.root.sharedId, sectionId),
+    commitEdit(
+      sectionDoc.writer,
+      sectionDoc.document,
+      'demote-section',
+      deleteBackwardAtStart,
+      {
+        nodeId: sectionId,
+      },
+      textSelection(sectionId, 0),
     );
     expect(sectionDoc.document.node(sectionId).type).toBe('paragraph');
     expect(sectionDoc.document.node(sectionId).content).toBe('title');
@@ -224,8 +348,15 @@ describe('canonical editing commands', () => {
 
     const joinDoc = create('left\n\nright\n');
     const [left, right] = inlineNodes(joinDoc.document, 'paragraph');
-    const joined = commit(joinDoc.writer, 'join-backspace', (draft) =>
-      deleteContentBackwards(draft, joinDoc.document.root.sharedId, right!.sharedId),
+    const joined = commitEdit(
+      joinDoc.writer,
+      joinDoc.document,
+      'join-backspace',
+      deleteBackwardAtStart,
+      {
+        nodeId: right!.sharedId,
+      },
+      textSelection(right!.sharedId, 0),
     );
     expect(inlineNodes(joinDoc.document, 'paragraph').map((node) => node.content)).toEqual([
       'leftright',
@@ -239,23 +370,46 @@ describe('canonical editing commands', () => {
     const codeDoc = create('```js\nbody\n```\n');
     const [code] = inlineNodes(codeDoc.document, 'code-block');
     const codeId = code!.sharedId;
-    commit(codeDoc.writer, 'demote-code', (draft) =>
-      deleteContentBackwards(draft, codeDoc.document.root.sharedId, codeId),
+    commitEdit(
+      codeDoc.writer,
+      codeDoc.document,
+      'demote-code',
+      deleteBackwardAtStart,
+      {
+        nodeId: codeId,
+      },
+      textSelection(codeId, 0),
     );
     expect(codeDoc.document.node(codeId).type).toBe('paragraph');
     expect(codeDoc.document.node(codeId).content).toBe('body');
 
     const wrapDoc = create('body\n');
     const [body] = inlineNodes(wrapDoc.document, 'paragraph');
-    commit(wrapDoc.writer, 'wrap-quote', (draft) =>
-      wrapInline(draft, wrapDoc.document.root.sharedId, body!.sharedId, 'block-quote'),
+    commitEdit(
+      wrapDoc.writer,
+      wrapDoc.document,
+      'wrap-quote',
+      wrap,
+      {
+        nodeId: body!.sharedId,
+        wrapper: 'block-quote',
+      },
+      textSelection(body!.sharedId, 0),
     );
     expect(inlineNodes(wrapDoc.document, 'paragraph')[0]!.sharedId).toBe(body!.sharedId);
     expect(wrapDoc.document.exportMarkdownTree().children?.[0]?.type).toBe('block-quote');
     const listWrapDoc = create('listed\n');
     const [listed] = inlineNodes(listWrapDoc.document, 'paragraph');
-    commit(listWrapDoc.writer, 'wrap-list', (draft) =>
-      wrapInline(draft, listWrapDoc.document.root.sharedId, listed!.sharedId, 'list-item'),
+    commitEdit(
+      listWrapDoc.writer,
+      listWrapDoc.document,
+      'wrap-list',
+      wrap,
+      {
+        nodeId: listed!.sharedId,
+        wrapper: 'list-item',
+      },
+      textSelection(listed!.sharedId, 0),
     );
     expect(listWrapDoc.document.exportMarkdownTree().children?.[0]?.type).toBe('list');
     expect(inlineNodes(listWrapDoc.document, 'paragraph')[0]!.sharedId).toBe(listed!.sharedId);
@@ -266,16 +420,30 @@ describe('canonical editing commands', () => {
   it('indents, unindents, and replaces selected blocks through draft operations', () => {
     const indentDoc = create('one\n\ntwo\n');
     const [one, two] = inlineNodes(indentDoc.document, 'paragraph');
-    commit(indentDoc.writer, 'indent', (draft) =>
-      editIndent(draft, indentDoc.document.root.sharedId, two!.sharedId, 'indent'),
+    commitEdit(
+      indentDoc.writer,
+      indentDoc.document,
+      'indent',
+      indent,
+      {
+        nodeId: two!.sharedId,
+      },
+      textSelection(two!.sharedId, 0),
     );
     expect(indentDoc.document.exportMarkdownTree().children?.map((node) => node.type)).toEqual([
       'paragraph',
       'list',
     ]);
     expect(inlineNodes(indentDoc.document, 'paragraph')[1]!.sharedId).toBe(two!.sharedId);
-    commit(indentDoc.writer, 'unindent', (draft) =>
-      editIndent(draft, indentDoc.document.root.sharedId, two!.sharedId, 'unindent'),
+    commitEdit(
+      indentDoc.writer,
+      indentDoc.document,
+      'unindent',
+      outdent,
+      {
+        nodeId: two!.sharedId,
+      },
+      textSelection(two!.sharedId, 0),
     );
     expect(inlineNodes(indentDoc.document, 'paragraph').map((node) => node.content)).toEqual([
       'one',
@@ -286,20 +454,106 @@ describe('canonical editing commands', () => {
 
     const replaceDoc = create('first\n\nsecond\n');
     const [first, second] = inlineNodes(replaceDoc.document, 'paragraph');
-    commit(replaceDoc.writer, 'replace-selection', (draft) =>
-      replaceSelectedBlocks(
-        draft,
-        replaceDoc.document.root.sharedId,
-        [second!.sharedId, first!.sharedId],
-        'new',
-      ),
-    );
+    commitEdit(replaceDoc.writer, replaceDoc.document, 'replace-selection', replaceBlocks, {
+      nodeIds: [second!.sharedId, first!.sharedId],
+      text: 'new',
+    });
     expect(inlineNodes(replaceDoc.document, 'paragraph').map((node) => node.content)).toEqual([
       'new',
     ]);
     expect(inlineNodes(replaceDoc.document, 'paragraph')[0]!.sharedId).toBe(first!.sharedId);
     expect(replaceDoc.document.node(second!.sharedId).connected).toBe(false);
     expect(replaceDoc.document.validate().valid).toBe(true);
+  });
+
+  it('splits a checked task with its marker and an unchecked continuation', () => {
+    const { document, writer } = create('- [x] task\n- next\n');
+    const list = document.root.children[0]!;
+    const firstItem = list.children[0]!;
+    const originalParagraph = firstItem.children[0]!;
+    commitEdit(
+      writer,
+      document,
+      'split-task',
+      insertParagraph,
+      {
+        nodeId: originalParagraph.sharedId,
+        from: 2,
+      },
+      textSelection(originalParagraph.sharedId, 2),
+    );
+
+    expect(
+      list.children.map((item) => [item.marker, item.checked, item.children[0]!.content]),
+    ).toEqual([
+      ['- ', true, 'ta'],
+      ['- ', false, 'sk'],
+      ['- ', undefined, 'next'],
+    ]);
+    expect(document.validate().valid).toBe(true);
+    expect(writer.undo().status).toBe('applied');
+    expect(list.children.map((item) => [item.checked, item.children[0]!.content])).toEqual([
+      [true, 'task'],
+      [undefined, 'next'],
+    ]);
+    expect(writer.redo().status).toBe('applied');
+    expect(document.validate().valid).toBe(true);
+  });
+
+  it('copies pasted Markdown into new nodes and joins literal text without reparsing', () => {
+    const pasted = create('anchor\n');
+    const anchor = pasted.document.root.children[0]!;
+    const oldTapeIds = new Set(
+      pasted.document
+        .canonicalSnapshot()
+        .nodes.flatMap((node) => node.spans.map((span) => span.tapeId)),
+    );
+    const inserted = commitEdit(
+      pasted.writer,
+      pasted.document,
+      'paste-markdown',
+      insertMarkdown,
+      {
+        contextId: anchor.sharedId,
+        markdown: 'pasted\n\n* list item',
+      },
+      textSelection(anchor.sharedId, anchor.content!.length),
+    );
+    const newNodes = pasted.document
+      .canonicalSnapshot()
+      .nodes.filter((node) =>
+        ['pasted', 'list item'].includes(pasted.document.node(node.id).content ?? ''),
+      );
+    expect(newNodes.length).toBe(2);
+    expect(newNodes.every((node) => node.spans.every((span) => !oldTapeIds.has(span.tapeId)))).toBe(
+      true,
+    );
+    expect(inserted.receipt.focus?.end?.offset).toBe('list item'.length);
+    expect(pasted.document.root.children.map((node) => node.type)).toEqual([
+      'paragraph',
+      'paragraph',
+      'list',
+    ]);
+
+    const literal = create('left\n');
+    const left = literal.document.root.children[0]!;
+    let literalId = '';
+    const created = literal.writer.edit({ actionId: 'create-literal-paragraph' }, (draft) => {
+      literalId = draft.create({ type: 'paragraph', content: '# heading' });
+      draft.place(literalId, literal.document.root.sharedId, null);
+    });
+    expect('receipt' in created).toBe(true);
+    commitEdit(
+      literal.writer,
+      literal.document,
+      'join-literal',
+      joinWithPrevious,
+      { nodeId: literalId },
+      textSelection(literalId, 0),
+    );
+    expect(left.type).toBe('paragraph');
+    expect(left.content).toBe('left# heading');
+    expect(literal.document.validate().valid).toBe(true);
   });
 
   it('undoes and redoes typing after a later split without losing transferred text', () => {
@@ -321,20 +575,15 @@ describe('canonical editing commands', () => {
     writer.publish(applied.pending);
     writer.sealTextGroup('author-a');
 
-    const split = writer.prepareCommand(
-      { actionId: 'later-split', sessionId: 'author-b' },
-      (draft) => insertParagraph(draft, document.root.sharedId, paragraph!.sharedId, 2),
+    commitEdit(
+      writer,
+      document,
+      'later-split',
+      insertParagraph,
+      { nodeId: paragraph!.sharedId, from: 2 },
+      textSelection(paragraph!.sharedId, 2),
+      'author-b',
     );
-    writer.admitSession('author-b');
-    const splitResult = writer.apply(split, {
-      sessionId: 'author-b',
-      authorityEpoch: split.authorityEpoch,
-      sessionSequence: split.sessionSequence,
-    });
-    expect(splitResult.status).toBe('pending');
-    if (splitResult.status !== 'pending')
-      throw new Error(`split did not stage: ${splitResult.status}`);
-    writer.publish(splitResult.pending);
 
     expect(inlineNodes(document, 'paragraph').map((node) => node.content)).toEqual(['aX', 'Yb']);
     expect(writer.undo('author-a').status).toBe('applied');
@@ -362,17 +611,15 @@ describe('canonical editing commands', () => {
     writer.publish(typed.pending);
     writer.sealTextGroup('author-a');
 
-    const join = writer.prepareCommand({ actionId: 'later-join', sessionId: 'author-b' }, (draft) =>
-      deleteContentBackwards(draft, document.root.sharedId, right!.sharedId),
+    commitEdit(
+      writer,
+      document,
+      'later-join',
+      deleteBackwardAtStart,
+      { nodeId: right!.sharedId },
+      textSelection(right!.sharedId, 0),
+      'author-b',
     );
-    writer.admitSession('author-b');
-    const joined = writer.apply(join, {
-      sessionId: 'author-b',
-      authorityEpoch: join.authorityEpoch,
-      sessionSequence: join.sessionSequence,
-    });
-    if (joined.status !== 'pending') throw new Error(`join did not stage: ${joined.status}`);
-    writer.publish(joined.pending);
 
     expect(inlineNodes(document, 'paragraph').map((node) => node.content)).toEqual(['leftrXight']);
     expect(inlineNodes(document, 'paragraph')[0]!.sharedId).toBe(left!.sharedId);
@@ -421,18 +668,15 @@ describe('canonical editing commands', () => {
     expect(right!.content).toBe('Yright');
     expect(writer.undo('A', left!.sharedId).status).toBe('empty');
 
-    const split = writer.prepareCommand({ actionId: 'scope-split', sessionId: 'B' }, (draft) =>
-      insertParagraph(draft, document.root.sharedId, right!.sharedId, 1),
+    commitEdit(
+      writer,
+      document,
+      'scope-split',
+      insertParagraph,
+      { nodeId: right!.sharedId, from: 1 },
+      textSelection(right!.sharedId, 1),
+      'B',
     );
-    writer.admitSession('B');
-    const splitResult = writer.apply(split, {
-      sessionId: 'B',
-      authorityEpoch: split.authorityEpoch,
-      sessionSequence: split.sessionSequence,
-    });
-    if (splitResult.status !== 'pending')
-      throw new Error(`split did not stage: ${splitResult.status}`);
-    writer.publish(splitResult.pending);
     // The remaining A entry belongs to the right tape, now split across both blocks.
     expect(writer.undo('A', right!.sharedId)).toMatchObject({
       status: 'blocked',

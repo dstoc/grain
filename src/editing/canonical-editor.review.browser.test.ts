@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { userEvent, cdp } from 'vitest/browser';
-import { CanonicalWriter, type TreeDraft } from '../markdown/canonical-actions.js';
+import { CanonicalWriter, type ActionRequest } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, type CanonicalNode } from '../markdown/canonical-model.js';
 import type { HostContext } from '../markdown/host-context.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
 import { CanonicalEditor } from './canonical-editor.js';
-import { insertParagraph, joinWithPrevious } from './canonical-edits.js';
+import { insertParagraph } from './commands/insert-paragraph.js';
+import { joinWithPrevious } from './commands/join-with-previous.js';
+import { prepareEdit } from './prepare-edit.js';
 import { nextTask } from './test/lifecycle.js';
 
 describe('M6 review browser contracts', () => {
@@ -68,12 +70,27 @@ describe('M6 review browser contracts', () => {
       send(method: string, params: Record<string, unknown>): Promise<unknown>;
     };
   }
-  async function remote(id: string, command: (draft: TreeDraft) => void) {
+  async function remote(
+    prepare: (replica: CanonicalDocument, writer: CanonicalWriter) => ActionRequest | undefined,
+  ) {
     const replica = CanonicalDocument.open(model.checkpoint());
     const other = new CanonicalWriter(replica);
     try {
-      const action = other.edit({ actionId: id, sessionId: 'remote' }, command);
-      if (!('receipt' in action)) throw Error(action.status);
+      other.admitSession('remote');
+      const request = prepare(replica, other);
+      if (!request) throw new Error('remote command was not applicable');
+      const result = other.apply(request, {
+        sessionId: request.sessionId,
+        authorityEpoch: request.authorityEpoch,
+        sessionSequence: request.sessionSequence,
+      });
+      const action =
+        result.status === 'pending'
+          ? other.publish(result.pending)
+          : result.status === 'duplicate'
+            ? result.accepted
+            : undefined;
+      if (!action) throw Error(result.status);
       model.applyAccepted({ revision: action.revision, update: action.update });
     } finally {
       other.close();
@@ -88,7 +105,17 @@ describe('M6 review browser contracts', () => {
     inline.setSelectionOffsets(1, 1);
     await userEvent.keyboard('XY');
     await settle();
-    await remote('split', (draft) => insertParagraph(draft, model.root.sharedId, node.sharedId, 2));
+    await remote(
+      (replica, other) =>
+        prepareEdit(
+          other,
+          { actionId: 'split', sessionId: 'remote' },
+          replica.root.sharedId,
+          undefined,
+          insertParagraph,
+          { nodeId: node.sharedId, from: 2 },
+        )?.request,
+    );
     expect(model.root.children.map((n) => n.content)).toEqual(['aX', 'Y']);
     expect(inlines().map((i) => i.textContent)).toEqual(['aX', 'Y']);
     await userEvent.keyboard('{Control>}z{/Control}');
@@ -118,7 +145,17 @@ describe('M6 review browser contracts', () => {
     inline.setSelectionOffsets(6, 6);
     await userEvent.keyboard('X');
     await settle();
-    await remote('join', (draft) => joinWithPrevious(draft, model.root.sharedId, node.sharedId));
+    await remote(
+      (replica, other) =>
+        prepareEdit(
+          other,
+          { actionId: 'join', sessionId: 'remote' },
+          replica.root.sharedId,
+          undefined,
+          joinWithPrevious,
+          { nodeId: node.sharedId },
+        )?.request,
+    );
     expect(model.root.children.map((n) => n.content)).toEqual(['firstsecondX']);
     expect(inlines().map((i) => i.textContent)).toEqual(['firstsecondX']);
     await userEvent.keyboard('{Control>}z{/Control}');
@@ -408,8 +445,10 @@ describe('M6 review browser contracts', () => {
       selectionStart: 1,
       selectionEnd: 1,
     });
-    await remote('interrupt', (draft) =>
-      draft.spliceText(node.sharedId, { from: 0, to: 0, insert: 'R' }),
+    await remote((_replica, other) =>
+      other.prepareCommand({ actionId: 'interrupt', sessionId: 'remote' }, (draft) =>
+        draft.spliceText(node.sharedId, { from: 0, to: 0, insert: 'R' }),
+      ),
     );
     const current = inlines()[0]!;
     current.focus();

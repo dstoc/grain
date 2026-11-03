@@ -2,10 +2,12 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { userEvent } from 'vitest/browser';
 
 import { CanonicalWriter } from '../markdown/canonical-actions.js';
-import type { AcceptedAction, TreeDraft } from '../markdown/canonical-actions.js';
+import type { AcceptedAction, ActionRequest } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, CanonicalNode } from '../markdown/canonical-model.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
-import { insertParagraph, joinWithPrevious } from './canonical-edits.js';
+import { insertParagraph } from './commands/insert-paragraph.js';
+import { joinWithPrevious } from './commands/join-with-previous.js';
+import { prepareEdit } from './prepare-edit.js';
 import { CanonicalEditor } from './canonical-editor.js';
 import { nextTask } from './test/lifecycle.js';
 import type { InlineViewModelNode } from '../markdown/view-model-node.js';
@@ -46,18 +48,30 @@ describe('CanonicalEditor in Chromium', () => {
   }
 
   async function deliverRemote(
-    actionId: string,
-    command: (replica: CanonicalDocument, draft: TreeDraft) => void,
+    prepare: (
+      replica: CanonicalDocument,
+      remoteWriter: CanonicalWriter,
+    ) => ActionRequest | undefined,
   ) {
     const current = document!;
     const replica = CanonicalDocument.open(current.checkpoint());
     const remoteWriter = new CanonicalWriter(replica);
     try {
-      const accepted = remoteWriter.edit({ actionId, sessionId: 'remote' }, (draft) =>
-        command(replica, draft),
-      );
-      if (!('receipt' in accepted))
-        throw new Error(`remote action was not accepted: ${accepted.status}`);
+      remoteWriter.admitSession('remote');
+      const request = prepare(replica, remoteWriter);
+      if (!request) throw new Error('remote command was not applicable');
+      const result = remoteWriter.apply(request, {
+        sessionId: request.sessionId,
+        authorityEpoch: request.authorityEpoch,
+        sessionSequence: request.sessionSequence,
+      });
+      const accepted =
+        result.status === 'pending'
+          ? remoteWriter.publish(result.pending)
+          : result.status === 'duplicate'
+            ? result.accepted
+            : undefined;
+      if (!accepted) throw new Error(`remote action was not accepted: ${result.status}`);
       current.applyAccepted({ revision: accepted.revision, update: accepted.update });
     } finally {
       remoteWriter.close();
@@ -383,8 +397,16 @@ describe('CanonicalEditor in Chromium', () => {
     await nextTask();
     const [first] = document!.root.children as CanonicalNode[];
 
-    await deliverRemote('remote-split', (replica, draft) =>
-      insertParagraph(draft, replica.root.sharedId, first!.sharedId, 3, 3),
+    await deliverRemote(
+      (replica, remoteWriter) =>
+        prepareEdit(
+          remoteWriter,
+          { actionId: 'remote-split', sessionId: 'remote' },
+          replica.root.sharedId,
+          undefined,
+          insertParagraph,
+          { nodeId: first!.sharedId, from: 3 },
+        )?.request,
     );
     expect(document!.root.children.map((node) => node.content)).toEqual(['abc', 'def']);
     let focused = [
@@ -397,8 +419,16 @@ describe('CanonicalEditor in Chromium', () => {
     expect(focused!.getTextSelection()).toEqual({ anchor: 1, focus: 1 });
 
     const right = document!.root.children[1] as CanonicalNode;
-    await deliverRemote('remote-join', (replica, draft) =>
-      joinWithPrevious(draft, replica.root.sharedId, right.sharedId),
+    await deliverRemote(
+      (replica, remoteWriter) =>
+        prepareEdit(
+          remoteWriter,
+          { actionId: 'remote-join', sessionId: 'remote' },
+          replica.root.sharedId,
+          undefined,
+          joinWithPrevious,
+          { nodeId: right.sharedId },
+        )?.request,
     );
     expect(document!.root.children.map((node) => node.content)).toEqual(['abcdef']);
     focused = [...mounted.renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
@@ -408,9 +438,11 @@ describe('CanonicalEditor in Chromium', () => {
     expect((focused!.nodeView as unknown as CanonicalNode).sharedId).toBe(first!.sharedId);
     expect(focused!.getTextSelection()).toEqual({ anchor: 4, focus: 4 });
 
-    await deliverRemote('remote-remove', (replica, draft) => {
-      draft.detach(replica.root.children[0]!.sharedId);
-    });
+    await deliverRemote((replica, remoteWriter) =>
+      remoteWriter.prepareCommand({ actionId: 'remote-remove', sessionId: 'remote' }, (draft) => {
+        draft.detach(replica.root.children[0]!.sharedId);
+      }),
+    );
     expect(document!.root.children).toHaveLength(1);
     focused = [...mounted.renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
       (inline) => inline.matches(':focus'),
@@ -432,9 +464,14 @@ describe('CanonicalEditor in Chromium', () => {
     await nextTask();
     expect(node.content).toBe('abcdefX');
 
-    await deliverRemote('remote-interruption', (_replica, draft) => {
-      draft.spliceText(node.sharedId, { from: 0, to: 0, insert: 'R' });
-    });
+    await deliverRemote((_replica, remoteWriter) =>
+      remoteWriter.prepareCommand(
+        { actionId: 'remote-interruption', sessionId: 'remote' },
+        (draft) => {
+          draft.spliceText(node.sharedId, { from: 0, to: 0, insert: 'R' });
+        },
+      ),
+    );
     expect(node.content).toBe('RabcdefX');
     const focused = [
       ...mounted.renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
