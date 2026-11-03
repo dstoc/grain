@@ -295,7 +295,8 @@ export class CanonicalEditor extends LitElement {
     return guard;
   }
 
-  private onFocusIntent = () => {
+  private onFocusIntent = (event: Event) => {
+    if (event.type === 'keydown' && (event as KeyboardEvent).isComposing) return;
     this.focusIntentEpoch++;
   };
 

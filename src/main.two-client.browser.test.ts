@@ -346,6 +346,57 @@ test.each(['Client A', 'Client B', 'Source'] as const)(
   },
 );
 
+test('preserves connected composition focus through an IME keydown, commit, and continued input', async () => {
+  await mountHarness('alpha');
+  const [editorA] = await enableTwoClients();
+  const state = harness as unknown as HarnessInternals;
+  const composing = inlineWithText(editorA!, 'alpha');
+  composing.focus();
+  composing.setSelectionOffsets(5, 5);
+  await nextTask();
+
+  const composingKeydowns: { key: string; isComposing: boolean }[] = [];
+  composing.addEventListener('keydown', (event) => {
+    const keyboardEvent = event as KeyboardEvent;
+    if (keyboardEvent.key === 'Process') {
+      composingKeydowns.push({ key: keyboardEvent.key, isComposing: keyboardEvent.isComposing });
+    }
+  });
+  await devtools().send('Input.imeSetComposition', {
+    text: '漢',
+    selectionStart: 1,
+    selectionEnd: 1,
+  });
+  await devtools().send('Input.dispatchKeyEvent', {
+    type: 'rawKeyDown',
+    key: 'Process',
+    code: 'KeyA',
+    windowsVirtualKeyCode: 229,
+    nativeVirtualKeyCode: 229,
+  });
+  await devtools().send('Input.dispatchKeyEvent', {
+    type: 'keyUp',
+    key: 'Process',
+    code: 'KeyA',
+    windowsVirtualKeyCode: 229,
+    nativeVirtualKeyCode: 229,
+  });
+  expect(composingKeydowns).toEqual([{ key: 'Process', isComposing: true }]);
+
+  await devtools().send('Input.insertText', { text: '漢' });
+  await settleHarness();
+  await settleHarness();
+
+  const recovered = inlineWithText(editorA!, 'alpha漢');
+  expect(recovered.matches(':focus')).toBe(true);
+  expect(recovered.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
+  await devtools().send('Input.insertText', { text: '!' });
+  await settleHarness();
+  await settleHarness();
+  expect(state.canonicalDocument!.root.children[0]!.content).toBe('alpha漢!');
+  expectReplicaConvergence();
+});
+
 test('reentrant accepted-update delivery keeps both panes locked after replica projection callback', async () => {
   await mountHarness('alpha');
   const [editorA, editorB] = await enableTwoClients();
