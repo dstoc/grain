@@ -9,7 +9,7 @@ import {
 import type { CanonicalTextAnchor } from '../../markdown/canonical-selection.js';
 import { CanonicalNode as CanonicalNodeProjection } from '../../markdown/canonical/node-projection.js';
 import type { Bookmark } from '../../markdown/canonical/action-types.js';
-import type { MarkdownInline } from '../../markdown/inline-render.js';
+import type { FocusRestoreGuard, MarkdownInline } from '../../markdown/inline-render.js';
 import type { MarkdownRenderer } from '../../markdown/block-render.js';
 import type { SelectionController } from './selection-controller.js';
 import type { BrowserSessionRunner } from './session-runner.js';
@@ -24,6 +24,7 @@ interface CompositionDraft {
   readonly selectionFocus: CanonicalTextAnchor;
   readonly blockSelection?: readonly NodeId[];
   readonly generation: number;
+  readonly shouldRestoreFocus?: FocusRestoreGuard;
   invalidate: () => void;
 }
 
@@ -41,6 +42,7 @@ interface CompositionEnvironment {
   renderer(): MarkdownRenderer | undefined;
   updateComplete(): Promise<unknown>;
   isConnected(): boolean;
+  focusRestoreGuard(inline: MarkdownInline): FocusRestoreGuard | undefined;
   readonly session: BrowserSessionRunner;
   readonly selection: SelectionController;
   blockSelection(inline: MarkdownInline): readonly CanonicalNode[];
@@ -89,6 +91,7 @@ export class CompositionController {
       offset: selection.focus,
       affinity: selection.focus >= selection.anchor ? 'right' : 'left',
     });
+    const shouldRestoreFocus = this.environment.focusRestoreGuard(inline);
     const session: CompositionDraft = {
       inline,
       node,
@@ -98,6 +101,7 @@ export class CompositionController {
       selectionAnchor,
       selectionFocus,
       generation: this.environment.session.generation,
+      ...(shouldRestoreFocus ? { shouldRestoreFocus } : {}),
       ...(blockSelection.length ? { blockSelection } : {}),
       invalidate: () => this.invalidate(session),
     };
@@ -123,7 +127,11 @@ export class CompositionController {
         );
       } else {
         void inline
-          .recoverComposition(inline.getTextSelection() ?? { anchor: 0, focus: 0 }, false)
+          .recoverComposition(
+            inline.getTextSelection() ?? { anchor: 0, focus: 0 },
+            false,
+            this.environment.focusRestoreGuard(inline),
+          )
           .then((recovered) => {
             inline.discardRecoveryEvents();
             recovered?.discardRecoveryEvents();
@@ -267,7 +275,7 @@ export class CompositionController {
       ? { anchor: anchor.offset, focus: focus.offset }
       : session.selection;
     const current = await this.recoverProjection(recovery, selection);
-    if (!current) {
+    if (!current || !this.mayRestoreFocus(session)) {
       this.finishRecovery(recovery, false);
       return;
     }
@@ -278,8 +286,13 @@ export class CompositionController {
     await this.environment.selection.restoreAnchors(
       session.selectionAnchor,
       session.selectionFocus,
+      false,
+      false,
+      undefined,
+      false,
+      session.shouldRestoreFocus,
     );
-    if (!this.isRecoveryCurrent(recovery)) {
+    if (!this.isRecoveryCurrent(recovery) || !this.mayRestoreFocus(session)) {
       this.finishRecovery(recovery, false);
       return;
     }
@@ -305,6 +318,10 @@ export class CompositionController {
     ) {
       return false;
     }
+    if (!this.mayRestoreFocus(recovery.session)) {
+      this.discardRecovery(recovery);
+      return true;
+    }
     await this.environment.updateComplete();
     await renderer.updateComplete;
     if (
@@ -312,6 +329,10 @@ export class CompositionController {
       !this.environment.session.isCurrent(recovery.session.generation, document, writer, sessionId)
     ) {
       return false;
+    }
+    if (!this.mayRestoreFocus(recovery.session)) {
+      this.discardRecovery(recovery);
+      return true;
     }
     const recovered = this.findInline(nodeId, hostContext);
     const target = (hostContext && recovered) || renderer.getInlineSelection().inline || recovered;
@@ -370,7 +391,11 @@ export class CompositionController {
     recovery: PendingRecovery,
     selection: { readonly anchor: number; readonly focus: number },
   ): Promise<boolean> {
-    const recoveredInline = await recovery.source.recoverComposition(selection, false);
+    const recoveredInline = await recovery.source.recoverComposition(
+      selection,
+      false,
+      recovery.session.shouldRestoreFocus,
+    );
     if (recoveredInline) this.trackRecoveryInline(recovery, recoveredInline);
     return this.isRecoveryCurrent(recovery);
   }
@@ -392,7 +417,11 @@ export class CompositionController {
   }
 
   private finishRecovery(recovery: PendingRecovery, replayEvents: boolean): void {
-    if (replayEvents && this.isRecoveryCurrent(recovery)) {
+    if (
+      replayEvents &&
+      this.isRecoveryCurrent(recovery) &&
+      this.mayRestoreFocus(recovery.session)
+    ) {
       for (const inline of recovery.inlines) {
         if (!this.isRecoveryCurrent(recovery)) break;
         inline.replayRecoveryEvents();
@@ -448,6 +477,10 @@ export class CompositionController {
         this.environment.sessionId(),
       )
     );
+  }
+
+  private mayRestoreFocus(session: CompositionDraft): boolean {
+    return !session.shouldRestoreFocus || session.shouldRestoreFocus();
   }
 }
 

@@ -2,6 +2,7 @@ import { LitElement, css, html } from 'lit';
 
 import './editing/canonical-editor.js';
 import './editing/mobile-keyboard-toolbar.js';
+import type { CanonicalEditor } from './editing/canonical-editor.js';
 import './markdown/transclusion.js';
 import { MarkdownInline } from './markdown/inline-render.js';
 import type {
@@ -13,6 +14,9 @@ import { createBlockParser, parseMarkdownTree } from './markdown/block-parser/ap
 import { ConstructionPreviewAdapter } from './markdown/construction-preview.js';
 import { CanonicalWriter } from './markdown/canonical/writer.js';
 import { CanonicalDocument } from './markdown/canonical/document.js';
+import { TwoClientExperiment } from './editing/two-client-experiment.js';
+import type { TwoClientState } from './editing/two-client-experiment.js';
+import type { AcceptedUpdateRelay } from './editing/canonical-editor.js';
 import type { BlockParser } from './markdown/block-parser/api.js';
 import type { DocumentNode } from './markdown/node.js';
 import { serializeToString } from './markdown/block-serializer.js';
@@ -347,6 +351,78 @@ class MarkdownDevHarness extends LitElement {
       background: color-mix(in srgb, var(--root-color) 6%, transparent);
     }
 
+    .experiment-toggle {
+      border: 1px solid color-mix(in srgb, var(--md-accent-color) 36%, transparent);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--md-accent-color) 8%, transparent);
+      color: var(--md-accent-color);
+      padding: 0.5rem 0.75rem;
+      font:
+        600 0.75rem/1 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
+      cursor: pointer;
+    }
+
+    .experiment-toggle[aria-pressed='true'] {
+      background: color-mix(in srgb, var(--md-accent-color) 16%, transparent);
+    }
+
+    .experiment-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      align-items: start;
+      gap: 1rem;
+    }
+
+    .experiment-pane {
+      min-width: 0;
+      border: 1px solid color-mix(in srgb, var(--root-color) 10%, transparent);
+      border-radius: 16px;
+      background: color-mix(in srgb, var(--root-background-color) 76%, transparent);
+      padding: 0.8rem;
+    }
+
+    .experiment-heading {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 0.6rem;
+      margin: 0 0 0.6rem;
+      color: var(--md-accent-color);
+      font:
+        600 0.78rem/1.3 ui-monospace,
+        SFMono-Regular,
+        Menlo,
+        monospace;
+    }
+
+    .experiment-heading span {
+      color: color-mix(in srgb, var(--root-color) 64%, transparent);
+      font-weight: 400;
+    }
+
+    .experiment-note,
+    .experiment-status,
+    .experiment-error {
+      margin: 0.7rem 0 0;
+      font:
+        0.78rem/1.45 ui-sans-serif,
+        system-ui,
+        sans-serif;
+    }
+
+    .experiment-note,
+    .experiment-status {
+      color: color-mix(in srgb, var(--root-color) 65%, transparent);
+    }
+
+    .experiment-error {
+      color: #a13226;
+      font-weight: 600;
+    }
+
     .simulation-toggle {
       border: 1px dashed color-mix(in srgb, var(--root-color) 25%, transparent);
       border-radius: 999px;
@@ -493,6 +569,10 @@ class MarkdownDevHarness extends LitElement {
       .preview-card {
         min-height: 42vh;
       }
+
+      .experiment-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
     }
   `;
 
@@ -506,6 +586,11 @@ class MarkdownDevHarness extends LitElement {
     renderVersion: { state: true },
     canonicalDocument: { state: true },
     canonicalWriter: { state: true },
+    twoClientMode: { state: true },
+    twoClientExperiment: { state: true },
+    experimentStatus: { state: true },
+    experimentError: { state: true },
+    editError: { state: true },
     activeTab: { state: true },
     serializedMarkdown: { state: true },
     treeJson: { state: true },
@@ -528,6 +613,11 @@ class MarkdownDevHarness extends LitElement {
   declare private renderVersion: number;
   declare private canonicalDocument: CanonicalDocument | undefined;
   declare private canonicalWriter: CanonicalWriter | undefined;
+  declare private twoClientMode: boolean;
+  declare private twoClientExperiment: TwoClientExperiment | undefined;
+  declare private experimentStatus: string;
+  declare private experimentError: string;
+  declare private editError: string;
   declare private activeTab: 'render' | 'serialize' | 'tree';
   declare private serializedMarkdown: string;
   declare private treeJson: string;
@@ -565,6 +655,26 @@ class MarkdownDevHarness extends LitElement {
     readonly tree: DocumentNode;
   };
 
+  private acceptedUpdateRelay: AcceptedUpdateRelay = (envelope, callbackErrors) => {
+    const experiment = this.twoClientExperiment;
+    if (!experiment) return true;
+    if (callbackErrors.length) return experiment.reportPublicationErrors(callbackErrors);
+    return envelope ? experiment.receiveAccepted(envelope) : experiment.reportPublicationErrors([]);
+  };
+
+  private onTwoClientStateChange = (state: TwoClientState) => {
+    this.experimentStatus = state.status;
+    this.experimentError = state.error ?? '';
+    for (const editor of this.shadowRoot?.querySelectorAll<HTMLElement & { disabled: boolean }>(
+      'md-canonical-editor',
+    ) ?? []) {
+      editor.disabled = state.status !== 'ready';
+    }
+    if (state.status === 'failed' || state.status === 'closed') this.clearEditingTarget();
+    this.refreshToolbarHistoryAvailability();
+    this.requestUpdate();
+  };
+
   constructor() {
     super();
     this.parser = createBlockParser();
@@ -578,6 +688,11 @@ class MarkdownDevHarness extends LitElement {
     this.renderVersion = 0;
     this.canonicalDocument = undefined;
     this.canonicalWriter = undefined;
+    this.twoClientMode = false;
+    this.twoClientExperiment = undefined;
+    this.experimentStatus = 'ready';
+    this.experimentError = '';
+    this.editError = '';
     this.activeTab = 'render';
     this.serializedMarkdown = '';
     this.treeJson = '';
@@ -599,6 +714,7 @@ class MarkdownDevHarness extends LitElement {
     this.addEventListener('inline-composition-end', this.onCompositionChange);
     this.addEventListener('inline-projection-recovery', this.onCompositionChange);
     this.addEventListener('canonical-change', this.onCanonicalChange as EventListener);
+    this.addEventListener('canonical-edit-error', this.onCanonicalEditError as EventListener);
     this.addEventListener('canonical-history-reset', this.onCanonicalHistoryReset as EventListener);
   }
 
@@ -678,6 +794,14 @@ class MarkdownDevHarness extends LitElement {
             >
               ${this.simulatedKeyboard ? 'Hide simulated keyboard' : 'Show simulated keyboard'}
             </button>
+            <button
+              class="experiment-toggle"
+              aria-pressed=${this.twoClientMode}
+              @pointerdown=${this.preserveControlFocus}
+              @click=${this.toggleTwoClientMode}
+            >
+              ${this.twoClientMode ? 'Single client' : 'Try two clients'}
+            </button>
           </div>
           <div class="preview-card">
             ${
@@ -690,13 +814,63 @@ class MarkdownDevHarness extends LitElement {
                         .renderDelegate=${transclusionRenderDelegate}
                       ></md-block-render>`
                     : html``
-                  : this.canonicalDocument && this.canonicalWriter
-                    ? html`<md-canonical-editor
-                        .document=${this.canonicalDocument}
-                        .writer=${this.canonicalWriter}
-                        .renderDelegate=${transclusionRenderDelegate}
-                      ></md-canonical-editor>`
-                    : html``
+                  : this.twoClientMode && this.twoClientExperiment && this.canonicalWriter
+                    ? html`
+                        <div class="experiment-grid">
+                          ${this.twoClientExperiment.clients.map(
+                            (client) => html`
+                              <section class="experiment-pane" aria-label=${client.label}>
+                                <div class="experiment-heading">
+                                  <strong>${client.label}</strong>
+                                  <span>revision ${client.document.acceptedRevision}</span>
+                                </div>
+                                <md-canonical-editor
+                                  .document=${client.document}
+                                  .writer=${this.canonicalWriter}
+                                  .sessionId=${client.sessionId}
+                                  .disabled=${this.experimentStatus !== 'ready'}
+                                  .acceptedUpdateRelay=${this.acceptedUpdateRelay}
+                                  .renderDelegate=${transclusionRenderDelegate}
+                                ></md-canonical-editor>
+                              </section>
+                            `,
+                          )}
+                        </div>
+                        <p class="experiment-status">
+                          ${
+                            this.experimentStatus === 'delivering'
+                              ? 'Delivering authority update…'
+                              : this.experimentStatus === 'failed'
+                                ? 'Experiment stopped; replicas are not reported as synchronized.'
+                                : `Connected to one in-process authority · revision ${this.twoClientExperiment.state.revision}`
+                          }
+                        </p>
+                        <p class="experiment-note">
+                          Updates use validated authority acceptance. Network/offline delivery and
+                          stale-client Receive reconciliation are omitted.
+                        </p>
+                        ${
+                          this.editError
+                            ? html`<p class="experiment-error" role="alert">
+                                Edit failed: ${this.editError}
+                              </p>`
+                            : ''
+                        }
+                        ${
+                          this.experimentError
+                            ? html`<p class="experiment-error" role="alert">
+                                ${this.experimentError}
+                              </p>`
+                            : ''
+                        }
+                      `
+                    : this.canonicalDocument && this.canonicalWriter
+                      ? html`<md-canonical-editor
+                          .document=${this.canonicalDocument}
+                          .writer=${this.canonicalWriter}
+                          .renderDelegate=${transclusionRenderDelegate}
+                        ></md-canonical-editor>`
+                      : html``
                 : this.activeTab === 'serialize'
                   ? html`<pre class="serialized">${this.serializedMarkdown}</pre>`
                   : html`<pre class="tree">${this.treeJson}</pre>`
@@ -903,6 +1077,31 @@ class MarkdownDevHarness extends LitElement {
     else this.refreshKeyboardState();
   }
 
+  private toggleTwoClientMode = () => {
+    this.clearEditingTarget();
+    if (this.twoClientMode) {
+      const retired = this.twoClientExperiment;
+      const pendingRenderUpdates = this.pendingRenderUpdates();
+      this.twoClientExperiment = undefined;
+      this.twoClientMode = false;
+      this.experimentStatus = 'ready';
+      this.experimentError = '';
+      this.editError = '';
+      if (retired) void this.disposeExperiment(retired, pendingRenderUpdates);
+      return;
+    }
+
+    const authority = this.canonicalDocument;
+    if (!authority || !this.canonicalWriter) return;
+    this.stopPlayback();
+    this.twoClientExperiment = this.createTwoClientExperiment(authority);
+    this.twoClientMode = true;
+    this.activeTab = 'render';
+    this.experimentStatus = 'ready';
+    this.experimentError = '';
+    this.editError = '';
+  };
+
   override connectedCallback(): void {
     super.connectedCallback();
     if (!this.canonicalDocument || !this.canonicalWriter) this.reparse(this.source, true);
@@ -927,11 +1126,19 @@ class MarkdownDevHarness extends LitElement {
     this.stopObservingVirtualKeyboard();
     const retiredWriter = this.canonicalWriter;
     const retiredDocument = this.canonicalDocument;
+    const retiredExperiment = this.twoClientExperiment;
     const pendingRenderUpdates = this.pendingRenderUpdates();
     this.canonicalWriter = undefined;
     this.canonicalDocument = undefined;
+    this.twoClientExperiment = undefined;
     if (retiredWriter && retiredDocument)
-      void this.disposeCanonical(retiredWriter, retiredDocument, undefined, pendingRenderUpdates);
+      void this.disposeCanonical(
+        retiredWriter,
+        retiredDocument,
+        undefined,
+        pendingRenderUpdates,
+        retiredExperiment,
+      );
     super.disconnectedCallback();
   }
 
@@ -1028,11 +1235,20 @@ class MarkdownDevHarness extends LitElement {
   private replaceCanonicalDocument(tree: DocumentNode) {
     const previousDocument = this.canonicalDocument;
     const previousWriter = this.canonicalWriter;
+    const previousExperiment = this.twoClientExperiment;
     const pendingRenderUpdates = this.pendingRenderUpdates();
     const nextDocument = CanonicalDocument.fromTree(tree);
     const nextWriter = new CanonicalWriter(nextDocument);
     this.canonicalDocument = nextDocument;
     this.canonicalWriter = nextWriter;
+    this.twoClientExperiment = this.twoClientMode
+      ? this.createTwoClientExperiment(nextDocument)
+      : undefined;
+    if (this.twoClientMode) {
+      this.experimentStatus = 'ready';
+      this.experimentError = '';
+      this.editError = '';
+    }
     this.markdownExportDocument = nextDocument;
     this.markdownExportRevision = nextDocument.acceptedRevision;
     this.treeExportDocument = nextDocument;
@@ -1044,7 +1260,10 @@ class MarkdownDevHarness extends LitElement {
         previousDocument,
         nextDocument,
         pendingRenderUpdates,
+        previousExperiment,
       );
+    } else if (previousExperiment) {
+      void this.disposeExperiment(previousExperiment, pendingRenderUpdates);
     }
   }
 
@@ -1062,29 +1281,65 @@ class MarkdownDevHarness extends LitElement {
     return elements;
   }
 
+  private createTwoClientExperiment(authority: CanonicalDocument): TwoClientExperiment {
+    let experiment: TwoClientExperiment;
+    experiment = new TwoClientExperiment(authority, (state) => {
+      if (this.twoClientExperiment === experiment) this.onTwoClientStateChange(state);
+    });
+    return experiment;
+  }
+
   private async disposeCanonical(
     writer: CanonicalWriter,
     document: CanonicalDocument,
     replacement?: CanonicalDocument,
     pendingRenderUpdates: readonly (HTMLElement & { updateComplete?: Promise<unknown> })[] = [],
+    experiment?: TwoClientExperiment,
   ) {
     await this.updateComplete;
     if (replacement) {
-      const editor = this.shadowRoot?.querySelector('md-canonical-editor');
-      if (editor?.document === replacement) await editor.updateComplete;
+      const editors = this.shadowRoot?.querySelectorAll('md-canonical-editor') ?? [];
+      await Promise.all(
+        [...editors].map(
+          (editor) => (editor as HTMLElement & { updateComplete: Promise<unknown> }).updateComplete,
+        ),
+      );
     }
     for (const element of pendingRenderUpdates) await element.updateComplete;
     await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    experiment?.close();
     writer.close();
     document.close();
   }
 
+  private async disposeExperiment(
+    experiment: TwoClientExperiment,
+    pendingRenderUpdates: readonly (HTMLElement & { updateComplete?: Promise<unknown> })[] = [],
+  ) {
+    await this.updateComplete;
+    for (const element of pendingRenderUpdates) await element.updateComplete;
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    experiment.close();
+  }
+
   private onCanonicalChange = (event: CustomEvent<{ readonly document: CanonicalDocument }>) => {
     const document = event.detail.document;
-    if (document !== this.canonicalDocument) return;
+    const fromClient = this.twoClientExperiment?.clients.some(
+      (client) => client.document === document,
+    );
+    if (document !== this.canonicalDocument && !fromClient) return;
     this.historyStatus = '';
+    this.editError = '';
     this.refreshToolbarHistoryAvailability();
-    this.scheduleCanonicalExports(document.acceptedRevision);
+    this.scheduleCanonicalExports(
+      this.canonicalDocument?.acceptedRevision ?? document.acceptedRevision,
+    );
+  };
+
+  private onCanonicalEditError = (event: CustomEvent<unknown>) => {
+    const error = event.detail;
+    this.editError = error instanceof Error ? error.message : String(error);
+    this.requestUpdate();
   };
 
   private scheduleCanonicalExports(revision: number) {
@@ -1213,9 +1468,16 @@ class MarkdownDevHarness extends LitElement {
   }
 
   private activeEditor() {
-    return this.activeTab === 'render'
-      ? this.shadowRoot?.querySelector('md-canonical-editor')
-      : undefined;
+    if (this.activeTab !== 'render') return undefined;
+    const editors = [
+      ...(this.shadowRoot?.querySelectorAll<CanonicalEditor>('md-canonical-editor') ?? []),
+    ];
+    const focused = editors.find((editor) => this.findFocusedInline(editor));
+    if (focused) return focused;
+    if (this.toolbarHasFocus && this.activeInline) {
+      return editors.find((editor) => this.isComposedDescendant(this.activeInline!, editor));
+    }
+    return editors[0];
   }
 
   private findFocusedInline(editor: HTMLElement): MarkdownInline | undefined {
@@ -1308,10 +1570,11 @@ class MarkdownDevHarness extends LitElement {
       this.toolbarRedoDisabled = true;
       return;
     }
-    const writer = this.canonicalWriter;
-    if (writer) {
-      this.toolbarUndoDisabled = !writer.canUndo('local');
-      this.toolbarRedoDisabled = !writer.canRedo('local');
+    const editor = this.activeEditor();
+    const writer = editor?.writer;
+    if (writer && editor) {
+      this.toolbarUndoDisabled = !writer.canUndo(editor.sessionId);
+      this.toolbarRedoDisabled = !writer.canRedo(editor.sessionId);
       return;
     }
     this.toolbarUndoDisabled = true;
