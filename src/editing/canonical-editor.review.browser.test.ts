@@ -3,6 +3,7 @@ import { userEvent, cdp } from 'vitest/browser';
 import { html } from 'lit';
 import { CanonicalWriter, type ActionRequest } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, type CanonicalNode } from '../markdown/canonical-model.js';
+import { serializeToString } from '../markdown/block-serializer.js';
 import type { HostContext } from '../markdown/host-context.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
 import type { DocumentNode } from '../markdown/node.js';
@@ -331,6 +332,183 @@ describe('M6 review browser contracts', () => {
       }
       await settle();
       expect(inlines().map((item) => item.nodeView?.content)).toContain('Xhello');
+    },
+  );
+
+  test('trusted link interaction stays in edit mode after live heading promotion', async () => {
+    await mount('');
+    const linkClicks: { type: string; destination: string }[] = [];
+    const trustedPointerEvents: boolean[] = [];
+    editor.addEventListener('inline-link-click', (event) => {
+      linkClicks.push((event as CustomEvent<{ type: string; destination: string }>).detail);
+    });
+    editor.addEventListener('pointerdown', (event) => trustedPointerEvents.push(event.isTrusted), {
+      capture: true,
+    });
+    editor.addEventListener('click', (event) => trustedPointerEvents.push(event.isTrusted), {
+      capture: true,
+    });
+    editor.addEventListener('beforeinput', (event) => trustedPointerEvents.push(event.isTrusted), {
+      capture: true,
+    });
+
+    let inline = inlines()[0]!;
+    inline.focus();
+    inline.setSelectionOffsets(0, 0);
+    await userEvent.keyboard('# ');
+    await settle();
+    await devtools().send('Input.insertText', { text: '[alpha](url)' });
+    await settle();
+
+    inline = inlines()[0]!;
+    expect(model.root.children[0]!.type).toBe('section');
+    expect(serializeToString(model.exportMarkdownTree())).toBe('# [alpha](url)\n');
+    expect(inline.matches(':focus')).toBe(true);
+    expect(inline.matches(':focus-within')).toBe(false);
+    const linkText = inline.querySelector<HTMLElement>(
+      'md-span[type="inline_link"] md-span[type="link_text"]',
+    );
+    expect(linkText, inline.innerHTML).not.toBeNull();
+    await userEvent.click(linkText!);
+    await settle();
+
+    const caret = inline.getTextSelection()!;
+    expect(caret.anchor).toBeGreaterThan(1);
+    expect(caret.anchor).toBeLessThan(6);
+    expect(caret.focus).toBe(caret.anchor);
+    expect(linkClicks).toEqual([]);
+
+    const markdownBeforeTyping = model.root.children[0]!.content ?? '';
+    await userEvent.keyboard('!');
+    await settle();
+    expect(model.root.children[0]!.content).toBe(
+      `${markdownBeforeTyping.slice(0, caret.anchor)}!${markdownBeforeTyping.slice(caret.anchor)}`,
+    );
+    expect(model.root.children[0]!.content).toMatch(/^\[alp!ha\]\(url\)$/);
+
+    inline.blur();
+    await settle();
+    await userEvent.click(
+      inline.querySelector<HTMLElement>('md-span[type="inline_link"] md-span[type="link_text"]')!,
+    );
+    await settle();
+    expect(linkClicks).toEqual([{ type: 'inline_link', destination: 'url' }]);
+    expect(trustedPointerEvents.length).toBeGreaterThan(2);
+    expect(trustedPointerEvents.every(Boolean)).toBe(true);
+  });
+
+  test('trusted link interaction stays editable in a seeded heading', async () => {
+    await mount('# [alpha](url)');
+    const linkClicks: { type: string; destination: string }[] = [];
+    editor.addEventListener('inline-link-click', (event) => {
+      linkClicks.push((event as CustomEvent<{ type: string; destination: string }>).detail);
+    });
+
+    const inline = inlines()[0]!;
+    inline.focus();
+    inline.setSelectionOffsets(5, 5);
+    const linkText = inline.querySelector<HTMLElement>(
+      'md-span[type="inline_link"] md-span[type="link_text"]',
+    )!;
+    await userEvent.click(linkText);
+    await settle();
+
+    const caret = inline.getTextSelection()!;
+    expect(caret.anchor).toBeGreaterThan(1);
+    expect(caret.anchor).toBeLessThan(6);
+    expect(caret.focus).toBe(caret.anchor);
+    expect(linkClicks).toEqual([]);
+
+    const markdownBeforeTyping = model.root.children[0]!.content ?? '';
+    await userEvent.keyboard('!');
+    await settle();
+    expect(model.root.children[0]!.content).toBe(
+      `${markdownBeforeTyping.slice(0, caret.anchor)}!${markdownBeforeTyping.slice(caret.anchor)}`,
+    );
+    expect(model.root.children[0]!.content).toMatch(/^\[alp!ha\]\(url\)$/);
+  });
+
+  test('trusted typing after live heading promotion keeps trailing spaces in the native caret position', async () => {
+    await mount('');
+    const trustedBeforeInputs: boolean[] = [];
+    editor.addEventListener('beforeinput', (event) => trustedBeforeInputs.push(event.isTrusted), {
+      capture: true,
+    });
+    let inline = inlines()[0]!;
+    inline.focus();
+    inline.setSelectionOffsets(0, 0);
+
+    await userEvent.keyboard('# alpha');
+    await settle();
+    inline = inlines()[0]!;
+    expect(model.root.children[0]!.type).toBe('section');
+
+    await userEvent.keyboard(' ');
+    await settle();
+    expect(inline.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
+    expect(getComputedStyle(inline).whiteSpace).toBe('pre');
+
+    await userEvent.keyboard(' ');
+    await settle();
+    expect(inline.getTextSelection()).toEqual({ anchor: 7, focus: 7 });
+
+    inline.setSelectionOffsets(0, 1);
+    window.document.dispatchEvent(new Event('selectionchange'));
+    inline.setSelectionOffsets(7, 7);
+    window.document.dispatchEvent(new Event('selectionchange'));
+    await userEvent.keyboard('beta');
+    await settle();
+    expect(serializeToString(model.exportMarkdownTree())).toBe('# alpha  beta\n');
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children[0]!.content).toBe('alpha  ');
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(serializeToString(model.exportMarkdownTree())).toBe('# alpha  beta\n');
+    expect(trustedBeforeInputs.length).toBeGreaterThan(0);
+    expect(trustedBeforeInputs.every(Boolean)).toBe(true);
+  });
+
+  test.each([
+    ['seeded heading', '# alpha', '# alpha beta\n'],
+    ['live list conversion', '', '* alpha beta\n'],
+  ])(
+    '%s keeps trailing space before continued typing and history replay',
+    async (mode, source, expected) => {
+      await mount(source);
+      let inline = inlines()[0]!;
+      if (mode === 'seeded heading') {
+        inline.focus();
+        inline.setSelectionOffsets(5, 5);
+      } else {
+        inline.focus();
+        inline.setSelectionOffsets(0, 0);
+        await userEvent.keyboard('* alpha');
+        await settle();
+        inline = inlines()[0]!;
+        expect(model.root.children[0]!.type).toBe('list');
+      }
+
+      await userEvent.keyboard(' ');
+      await settle();
+      expect(inline.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
+      inline.setSelectionOffsets(0, 1);
+      window.document.dispatchEvent(new Event('selectionchange'));
+      inline.setSelectionOffsets(6, 6);
+      window.document.dispatchEvent(new Event('selectionchange'));
+
+      await userEvent.keyboard('beta');
+      await settle();
+      expect(serializeToString(model.exportMarkdownTree())).toBe(expected);
+
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(inline.nodeView?.content).toBe('alpha ');
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle();
+      expect(serializeToString(model.exportMarkdownTree())).toBe(expected);
     },
   );
 

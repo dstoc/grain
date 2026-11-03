@@ -540,7 +540,7 @@ export class MarkdownSpan extends LitElement {
     let parent = this.parentElement;
     while (parent) {
       if (parent instanceof MarkdownInline) {
-        return parent.matches(':focus-within');
+        return parent.matches(':is(:focus, :focus-within)');
       }
       parent = parent.parentElement;
     }

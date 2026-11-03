@@ -7,10 +7,10 @@ export const styles = [
       outline: none;
       min-height: 1rlh;
     }
-    md-inline:focus-within {
+    md-inline:is(:focus, :focus-within) {
       white-space: pre;
     }
-    md-inline:focus-within * {
+    md-inline:is(:focus, :focus-within) * {
       white-space: pre-wrap;
     }
     md-span a,
@@ -21,7 +21,7 @@ export const styles = [
     md-span[formatting] {
       color: var(--md-accent-color);
     }
-    md-inline:not(:focus-within)
+    md-inline:not(:is(:focus, :focus-within))
       :is(
         md-span[type='link_destination'],
         md-span[type='link_title'],
@@ -30,7 +30,7 @@ export const styles = [
       ) {
       display: none;
     }
-    md-inline:not(:focus-within)
+    md-inline:not(:is(:focus, :focus-within))
       :is(
         md-span[type='inline_link'],
         md-span[type='image'],
@@ -42,10 +42,10 @@ export const styles = [
       visibility: collapse;
       font-size: 0;
     }
-    md-inline:not(:focus-within) md-span[type='strikethrough'] {
+    md-inline:not(:is(:focus, :focus-within)) md-span[type='strikethrough'] {
       text-decoration: none;
     }
-    md-inline:not(:focus-within) md-span[type='strikethrough'] > md-span {
+    md-inline:not(:is(:focus, :focus-within)) md-span[type='strikethrough'] > md-span {
       text-decoration: line-through;
     }
     a,
