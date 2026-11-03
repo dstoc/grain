@@ -84,7 +84,7 @@ export class MarkdownTransclusion extends LitElement {
     if (node) invalidateNodeView(node);
   }
 
-  async focusEdge(direction: 'forward' | 'backward'): Promise<boolean> {
+  async focusEdge(direction: 'forward' | 'backward', visualX?: number): Promise<boolean> {
     if (!this.isConnected || !this.root) return false;
     await this.updateComplete;
     if (!this.isConnected) return false;
@@ -95,8 +95,11 @@ export class MarkdownTransclusion extends LitElement {
 
     inline.hostContext?.clearSelection();
     const offset = direction === 'forward' ? 0 : inline.nodeView.content.length;
+    await inline.updateComplete;
     inline.focus();
-    inline.setSelectionOffsets(offset, offset);
+    if (visualX === undefined || !inline.setCaretAtVisualX(visualX, direction)) {
+      inline.setSelectionOffsets(offset, offset);
+    }
     return true;
   }
 }

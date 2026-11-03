@@ -120,6 +120,23 @@ describe('canonical editor transclusion navigation', () => {
     return renderer.getInlineSelection().inline;
   }
 
+  function caretX(inline: MarkdownInline) {
+    const root = inline.getRootNode() as ShadowRoot & { getSelection: () => Selection | null };
+    return root.getSelection()!.getRangeAt(0).getBoundingClientRect().x;
+  }
+
+  function nearestCaretDistance(inline: MarkdownInline, visualX: number) {
+    inline.focus();
+    const selection = inline.getTextSelection();
+    let nearest = Infinity;
+    for (let offset = 0; offset <= inline.nodeView!.content.length; offset++) {
+      inline.setSelectionOffsets(offset, offset);
+      nearest = Math.min(nearest, Math.abs(caretX(inline) - visualX));
+    }
+    if (selection) inline.setSelectionOffsets(selection.anchor, selection.focus);
+    return nearest;
+  }
+
   function expectSelection(
     context: HostContext,
     anchor: CanonicalNode,
@@ -167,23 +184,49 @@ describe('canonical editor transclusion navigation', () => {
     );
 
     const keyboard = observeKeydowns();
-    inline('Alpha', 'outer').focus();
-    inline('Alpha', 'outer').setSelectionOffsets(5, 5);
+    const alpha = inline('Alpha', 'outer');
+    alpha.focus();
+    alpha.setSelectionOffsets(5, 5);
+    const alphaX = alpha.getCaretPosition().x;
     await key('ArrowDown');
     expect(activeInline()?.nodeView?.content).toBe('Inside');
-    expect(activeInline()?.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
+    const firstInside = activeInline()!;
+    const firstInsideOffset = firstInside.getTextSelection()!.focus;
+    const firstInsideX = firstInside.getCaretPosition().x;
+    expect(Math.abs(firstInsideX - alphaX)).toBeLessThanOrEqual(
+      nearestCaretDistance(firstInside, alphaX) + 1,
+    );
+    firstInside.focus();
+    firstInside.setSelectionOffsets(firstInsideOffset, firstInsideOffset);
+    await userEvent.keyboard('X');
+    await settle();
+    expect(activeInline()?.nodeView?.content).toBe('Inside');
+    expect(model.root.children.map((node) => node.content)).toEqual(['Alpha', 'Inside', 'Omega']);
 
-    inline('Omega', 'outer').focus();
-    inline('Omega', 'outer').setSelectionOffsets(0, 0);
+    const omega = inline('Omega', 'outer');
+    omega.focus();
+    omega.setSelectionOffsets(0, 0);
+    const omegaX = omega.getCaretPosition().x;
     await key('ArrowUp');
     expect(activeInline()?.nodeView?.content).toBe('Inside');
-    expect(activeInline()?.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
+    const lastInside = activeInline()!;
+    const lastInsideOffset = lastInside.getTextSelection()!.focus;
+    const lastInsideX = lastInside.getCaretPosition().x;
+    expect(Math.abs(lastInsideX - omegaX)).toBeLessThanOrEqual(
+      nearestCaretDistance(lastInside, omegaX) + 1,
+    );
+    lastInside.focus();
+    lastInside.setSelectionOffsets(lastInsideOffset, lastInsideOffset);
 
     await key('ArrowDown');
     expect(activeInline()?.nodeView?.content).toBe('Omega');
-    expect(activeInline()?.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
+    const finalOmega = activeInline()!;
+    expect(Math.abs(finalOmega.getCaretPosition().x - lastInsideX)).toBeLessThanOrEqual(
+      nearestCaretDistance(finalOmega, lastInsideX) + 1,
+    );
     expect(keyboard.events.map((event) => event.key)).toEqual([
       'ArrowDown',
+      'X',
       'ArrowUp',
       'ArrowDown',
     ]);
@@ -242,14 +285,29 @@ describe('canonical editor transclusion navigation', () => {
       }),
     );
 
-    inline('Alpha').focus();
-    inline('Alpha').setSelectionOffsets(5, 5);
+    const alpha = inline('Alpha');
+    alpha.focus();
+    alpha.setSelectionOffsets(5, 5);
+    const alphaX = alpha.getCaretPosition().x;
     await key('ArrowDown');
     expect(activeInline()?.nodeView?.content).toBe('Inside');
+    const inside = activeInline()!;
+    const insideX = inside.getCaretPosition().x;
+    expect(Math.abs(insideX - alphaX)).toBeLessThanOrEqual(
+      nearestCaretDistance(inside, alphaX) + 1,
+    );
     await key('ArrowDown');
     expect(activeInline()?.nodeView?.content).toBe('Omega');
+    const omega = activeInline()!;
+    const omegaX = omega.getCaretPosition().x;
+    expect(Math.abs(omegaX - insideX)).toBeLessThanOrEqual(
+      nearestCaretDistance(omega, insideX) + 1,
+    );
     await key('ArrowDown');
     expect(activeInline()?.nodeView?.content).toBe('After');
+    expect(Math.abs(activeInline()!.getCaretPosition().x - omegaX)).toBeLessThanOrEqual(
+      nearestCaretDistance(activeInline()!, omegaX) + 1,
+    );
   });
 
   test('enters and leaves an empty rendered paragraph', async () => {
@@ -554,8 +612,10 @@ describe('canonical editor transclusion navigation', () => {
       ),
     );
 
-    inline('Alpha', 'outer').focus();
-    inline('Alpha', 'outer').setSelectionOffsets(5, 5);
+    const alpha = inline('Alpha', 'outer');
+    alpha.focus();
+    alpha.setSelectionOffsets(5, 5);
+    const alphaX = alpha.getCaretPosition().x;
     await key('ArrowDown');
     expect(activeInline()?.nodeView).toBeInstanceOf(CanonicalNode);
     expect(activeInline()?.nodeView?.content).toBe('Editable');
@@ -565,8 +625,35 @@ describe('canonical editor transclusion navigation', () => {
     )[0] as HTMLElementTagNameMap['md-transclusion'];
     const nestedRenderer = transclusion.shadowRoot!.querySelector('md-block-render')!;
     expect(activeInline()?.hostContext).toBe(nestedRenderer.hostContext);
+    const nestedInline = activeInline()!;
+    const caretOffset = activeInline()!.getTextSelection()!.focus;
+    expect(Math.abs(nestedInline.getCaretPosition().x - alphaX)).toBeLessThanOrEqual(
+      nearestCaretDistance(nestedInline, alphaX) + 1,
+    );
+    expect(caretOffset).toBeGreaterThan(0);
+    expect(caretOffset).toBeLessThan('Editable'.length);
+    nestedInline.focus();
+    nestedInline.setSelectionOffsets(caretOffset, caretOffset);
     await userEvent.keyboard('!');
     await settle();
-    expect(model.root.children.find((node) => node.type === 'section')?.content).toBe('!Editable');
+    const editedContent = 'Editable'.slice(0, caretOffset) + '!' + 'Editable'.slice(caretOffset);
+    expect(model.root.children.find((node) => node.type === 'section')?.content).toBe(
+      editedContent,
+    );
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children.find((node) => node.type === 'section')?.content).toBe('Editable');
+    expect(activeInline()?.hostContext).toBe(nestedRenderer.hostContext);
+    expect(activeInline()?.getTextSelection()).toEqual({ anchor: caretOffset, focus: caretOffset });
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(model.root.children.find((node) => node.type === 'section')?.content).toBe(
+      editedContent,
+    );
+    expect(activeInline()?.hostContext).toBe(nestedRenderer.hostContext);
+    expect(activeInline()?.getTextSelection()).toEqual({
+      anchor: caretOffset + 1,
+      focus: caretOffset + 1,
+    });
   });
 });
