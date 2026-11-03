@@ -1,16 +1,20 @@
 import { afterEach, expect, it } from 'vitest';
-import { CanonicalDocument } from '../markdown/canonical-model.js';
-import type { CanonicalNode } from '../markdown/canonical-model.js';
-import { CanonicalWriter } from '../markdown/canonical-actions.js';
-import { deleteContentBackwards, editIndent, insertParagraph } from './canonical-edits.js';
-import { MarkdownTree } from '../markdown/view-model.js';
-import { parseBlocks } from '../markdown/block-parser/api.js';
-import { serializeToString } from '../markdown/block-serializer.js';
-import { editInlineIndent as legacyIndent } from './edits/indent-inline.js';
-import { deleteContentBackwards as legacyBackspace } from './edits/delete-content-backwards.js';
-import { insertParagraph as legacyEnter } from './edits/insert-paragraph.js';
-import type { EditContext } from './editor.js';
-import type { ViewModelNode } from '../markdown/view-model-node.js';
+import { CanonicalDocument } from '../../markdown/canonical-model.js';
+import type { CanonicalNode } from '../../markdown/canonical-model.js';
+import { CanonicalWriter } from '../../markdown/canonical-actions.js';
+import { deleteBackwardAtStart } from './delete-backward.js';
+import { indent } from './indent.js';
+import { insertParagraph } from './insert-paragraph.js';
+import { runCommand } from '../test/run-command.js';
+import type { EditSelection } from '../../markdown/semantic/selection.js';
+import { MarkdownTree } from '../../markdown/view-model.js';
+import { parseBlocks } from '../../markdown/block-parser/api.js';
+import { serializeToString } from '../../markdown/block-serializer.js';
+import { editInlineIndent as legacyIndent } from '../edits/indent-inline.js';
+import { deleteContentBackwards as legacyBackspace } from '../edits/delete-content-backwards.js';
+import { insertParagraph as legacyEnter } from '../edits/insert-paragraph.js';
+import type { EditContext } from '../editor.js';
+import type { ViewModelNode } from '../../markdown/view-model-node.js';
 import * as Y from 'yjs';
 
 const cleanup: (() => void)[] = [];
@@ -33,6 +37,12 @@ function accepted(result: ReturnType<CanonicalWriter['edit']>) {
   expect(result).toHaveProperty('receipt');
   if (!('receipt' in result)) throw new Error('edit was not accepted');
   return result;
+}
+function textSelection(nodeId: string, offset: number): EditSelection {
+  return {
+    anchor: { nodeId, offset, affinity: 'left' },
+    focus: { nodeId, offset, affinity: 'right' },
+  };
 }
 function serialized(document: CanonicalDocument): string {
   return serializeToString(document.exportMarkdownTree());
@@ -90,11 +100,15 @@ it('indenting the second list item nests it below the first without reversing or
   const [first, second] = list.children;
   const beta = second!.children[0]!;
   const betaSpans = spans(document, beta.sharedId);
-  const changed = accepted(
-    writer.edit({ actionId: 'indent-beta' }, (draft) =>
-      editIndent(draft, document.root.sharedId, beta.sharedId, 'indent'),
-    ),
+  const changed = runCommand(
+    writer,
+    { actionId: 'indent-beta' },
+    document.root.sharedId,
+    textSelection(beta.sharedId, 0),
+    indent,
+    { nodeId: beta.sharedId },
   );
+  if (!changed) throw new Error('indent command was not applicable');
   expect(changed.receipt.focus?.start).toMatchObject({ nodeId: beta.sharedId, offset: 0 });
   expect(changed.receipt.focus?.end).toMatchObject({ nodeId: beta.sharedId, offset: 0 });
   expect(document.exportMarkdownTree()).toEqual({
@@ -143,11 +157,15 @@ it('Backspace joins a paragraph into the immediately preceding code block', () =
   const codeSpans = spans(document, code!.sharedId);
   const afterSpans = spans(document, after!.sharedId);
   const original = serialized(document);
-  const changed = accepted(
-    writer.edit({ actionId: 'backspace-after-code' }, (draft) =>
-      deleteContentBackwards(draft, document.root.sharedId, after!.sharedId),
-    ),
+  const changed = runCommand(
+    writer,
+    { actionId: 'backspace-after-code' },
+    document.root.sharedId,
+    textSelection(after!.sharedId, 0),
+    deleteBackwardAtStart,
+    { nodeId: after!.sharedId },
   );
+  if (!changed) throw new Error('Backspace command was not applicable');
   expect(changed.receipt.focus?.end).toMatchObject({ nodeId: code!.sharedId, offset: 4 });
   expect(document.root.children.map((node) => [node.type, node.content])).toEqual([
     ['paragraph', 'before'],
@@ -183,11 +201,15 @@ it('Enter on the first empty ordered item preserves the remaining run start', ()
   const tail = tailItem.children[0]!;
   const tailSpans = spans(document, tail.sharedId);
   const original = serialized(document);
-  const changed = accepted(
-    writer.edit({ actionId: 'exit-ordered-list' }, (draft) =>
-      insertParagraph(draft, document.root.sharedId, empty.sharedId, 0),
-    ),
+  const changed = runCommand(
+    writer,
+    { actionId: 'exit-ordered-list' },
+    document.root.sharedId,
+    textSelection(empty.sharedId, 0),
+    insertParagraph,
+    { nodeId: empty.sharedId, from: 0 },
   );
+  if (!changed) throw new Error('Enter command was not applicable');
   expect(changed.receipt.focus?.end).toMatchObject({ nodeId: empty.sharedId, offset: 0 });
   expect(document.root.children.map((node) => node.type)).toEqual(['paragraph', 'list']);
   expect(document.root.children[1]!.children[0]!.marker).toBe('5. ');
@@ -212,11 +234,15 @@ it('scoped typing undo follows the current tape owner after a join', () => {
       draft.spliceText(right!.sharedId, { from: 0, to: 0, insert: 'X' });
     }),
   );
-  accepted(
-    writer.edit({ actionId: 'join-right', sessionId: 'B' }, (draft) =>
-      deleteContentBackwards(draft, document.root.sharedId, right!.sharedId),
-    ),
+  const joined = runCommand(
+    writer,
+    { actionId: 'join-right', sessionId: 'B' },
+    document.root.sharedId,
+    textSelection(right!.sharedId, 0),
+    deleteBackwardAtStart,
+    { nodeId: right!.sharedId },
   );
+  if (!joined) throw new Error('Backspace command was not applicable');
   expect(left!.content).toBe('leftXright');
   expect(right!.connected).toBe(false);
   expect(writer.undo('A', left!.sharedId)).toMatchObject({ status: 'applied' });

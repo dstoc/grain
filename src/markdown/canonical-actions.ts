@@ -3759,8 +3759,7 @@ function projectionNodeIds(
 }
 
 interface QueuedLocalEdit {
-  readonly options: ActionOptions;
-  readonly callback: DraftCommand;
+  readonly callback: () => void;
 }
 
 function makeTextHistoryManager(
@@ -4034,6 +4033,13 @@ export class CanonicalWriter {
   subscribe(listener: WriterListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /** Defers a local host edit until the current publication has finished. */
+  deferLocalEdit(callback: () => void): boolean {
+    if (!this.publishing) return false;
+    this.localQueue.push({ callback });
+    return true;
   }
 
   /** Host admission is explicit for requests received from another session. */
@@ -4929,7 +4935,8 @@ export class CanonicalWriter {
 
   edit(options: ActionOptions, callback: DraftCommand): AcceptedAction | ApplyResult {
     if (this.publishing) {
-      this.localQueue.push({ options: deepCopy(options), callback });
+      const queuedOptions = deepCopy(options);
+      this.deferLocalEdit(() => this.edit(queuedOptions, callback));
       return { status: 'queued', actionId: options.actionId };
     }
     // This in-process convenience is itself a host-originated admission. Network
@@ -5512,6 +5519,6 @@ export class CanonicalWriter {
   private flushLocalQueue(): void {
     if (!this.localQueue.length) return;
     const queued = this.localQueue.splice(0);
-    for (const item of queued) queueMicrotask(() => this.edit(item.options, item.callback));
+    for (const item of queued) queueMicrotask(item.callback);
   }
 }

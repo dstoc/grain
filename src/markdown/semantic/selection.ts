@@ -13,15 +13,19 @@ export interface TextSelection {
 
 export interface BlockSelection {
   readonly nodeIds: readonly NodeId[];
-  readonly anchorNodeId: NodeId;
-  readonly focusNodeId: NodeId;
+  readonly anchor: TextPoint;
+  readonly focus: TextPoint;
 }
 
 export type EditSelection = TextSelection | BlockSelection;
 
 export type SelectionIntent =
   | { readonly type: 'clear' }
-  | { readonly type: 'preserve-block-selection'; readonly selection: BlockSelection };
+  | {
+      readonly type: 'preserve-block-selection';
+      readonly selection: BlockSelection;
+      readonly restoreOnRedo?: boolean;
+    };
 
 export interface EditFocus {
   readonly start?: TextPoint;

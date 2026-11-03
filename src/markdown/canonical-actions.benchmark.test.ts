@@ -1,7 +1,11 @@
 import { it, expect } from 'vitest';
 import * as Y from 'yjs';
 
-import { deleteContentBackwards, insertParagraph } from '../editing/canonical-edits.js';
+import { deleteBackwardAtStart } from '../editing/commands/delete-backward.js';
+import { insertParagraph } from '../editing/commands/insert-paragraph.js';
+import type { Edit } from '../editing/outcomes.js';
+import { runCommand } from '../editing/test/run-command.js';
+import type { EditSelection } from './semantic/selection.js';
 import { viewModel, type InlineViewModelNode } from './view-model-node.js';
 import { MarkdownTree } from './view-model.js';
 import { parseBlocks } from './block-parser/api.js';
@@ -65,8 +69,8 @@ function elapsed(action: () => void): number {
   return performance.now() - start;
 }
 
-function acceptedEdit(result: ReturnType<CanonicalWriter['edit']>): void {
-  if (!('receipt' in result)) throw new Error(`benchmark edit was not accepted: ${result.status}`);
+function acceptedEdit(result: unknown): void {
+  if (!result) throw new Error('benchmark edit was not accepted');
 }
 
 function snapshotCounts(document: CanonicalDocument) {
@@ -317,8 +321,14 @@ function splitJoinUndoMeasurements(markdown: string) {
     acceptedEdit(
       elapsedEdit(
         writer,
+        document,
         `fragment-split-${cycle}`,
-        (draft) => insertParagraph(draft, document.root.sharedId, original.sharedId, 2),
+        insertParagraph,
+        { nodeId: original.sharedId, from: 2 },
+        {
+          anchor: { nodeId: original.sharedId, offset: 2, affinity: 'left' },
+          focus: { nodeId: original.sharedId, offset: 2, affinity: 'right' },
+        },
         splitTimes,
       ),
     );
@@ -326,8 +336,14 @@ function splitJoinUndoMeasurements(markdown: string) {
     acceptedEdit(
       elapsedEdit(
         writer,
+        document,
         `fragment-join-${cycle}`,
-        (draft) => deleteContentBackwards(draft, document.root.sharedId, trailing.sharedId),
+        deleteBackwardAtStart,
+        { nodeId: trailing.sharedId },
+        {
+          anchor: { nodeId: trailing.sharedId, offset: 0, affinity: 'left' },
+          focus: { nodeId: trailing.sharedId, offset: 0, affinity: 'right' },
+        },
         joinTimes,
       ),
     );
@@ -360,16 +376,26 @@ function splitJoinUndoMeasurements(markdown: string) {
   return report;
 }
 
-function elapsedEdit(
+function elapsedEdit<Input>(
   writer: CanonicalWriter,
+  document: CanonicalDocument,
   actionId: string,
-  callback: Parameters<CanonicalWriter['edit']>[1],
+  command: Edit<Input>,
+  input: Input,
+  selectionBefore: EditSelection,
   samples: number[],
 ) {
-  let result: ReturnType<CanonicalWriter['edit']> | undefined;
+  let result: unknown;
   samples.push(
     elapsed(() => {
-      result = writer.edit({ actionId, sessionId: 'fragment' }, callback);
+      result = runCommand(
+        writer,
+        { actionId, sessionId: 'fragment' },
+        document.root.sharedId,
+        selectionBefore,
+        command,
+        input,
+      );
     }),
   );
   if (!result) throw new Error('benchmark edit did not return');

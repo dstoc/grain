@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { TreeDraft } from '../markdown/canonical-actions.js';
+import type { ActionRequest } from '../markdown/canonical-actions.js';
 import { CanonicalWriter } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, type NodeId } from '../markdown/canonical-model.js';
 import { parseBlocks } from '../markdown/block-parser/api.js';
@@ -8,16 +8,16 @@ import { serializeToString } from '../markdown/block-serializer.js';
 import { MarkdownTreeDraft } from '../markdown/semantic-tree-draft.js';
 import { MarkdownTree } from '../markdown/view-model.js';
 import type { ViewModelNode } from '../markdown/view-model-node.js';
-import {
-  deleteContentBackwards,
-  editIndent,
-  insertLineBreak,
-  insertParagraph,
-  replaceSelectedBlocks,
-  wrapInline,
-} from './canonical-edits.js';
+import type { EditContext } from './context.js';
+import type { EditOutcome } from './outcomes.js';
+import { deleteBackwardAtStart } from './commands/delete-backward.js';
+import { indent } from './commands/indent.js';
+import { insertLineBreak } from './commands/insert-line-break.js';
+import { insertParagraph } from './commands/insert-paragraph.js';
+import { replaceBlocks } from './commands/replace-blocks.js';
+import { wrap } from './commands/wrap.js';
 
-type SharedEdit = (draft: TreeDraft, root: NodeId, node: NodeId) => void;
+type SharedEdit = (context: EditContext, nodeId: NodeId) => EditOutcome;
 
 interface ParityCase {
   readonly name: string;
@@ -59,7 +59,9 @@ function markdown(document: CanonicalDocument): string {
 function runTreeEdit(tree: MarkdownTree, node: ViewModelNode, edit: SharedEdit): void {
   tree.edit(() => {
     const draft = new MarkdownTreeDraft(tree);
-    edit(draft, draft.rootId, draft.idOf(node));
+    const outcome = edit({ draft, scopeRoot: draft.rootId }, draft.idOf(node));
+    if (outcome.status === 'not-applicable')
+      throw new Error('construction edit was not applicable');
     return {};
   });
 }
@@ -73,37 +75,37 @@ const cases: readonly ParityCase[] = [
     name: 'split a paragraph',
     markdown: 'alpha beta\n',
     path: [0],
-    edit: (draft, root, node) => void insertParagraph(draft, root, node, 5),
+    edit: (context, nodeId) => insertParagraph(context, { nodeId, from: 5 }),
   },
   {
     name: 'indent a list item',
     markdown: '* alpha\n* beta\n',
     path: [0, 1, 0],
-    edit: (draft, root, node) => void editIndent(draft, root, node, 'indent'),
+    edit: (context, nodeId) => indent(context, { nodeId }),
   },
   {
     name: 'wrap an inline node',
     markdown: 'alpha\n',
     path: [0],
-    edit: (draft, root, node) => void wrapInline(draft, root, node, 'block-quote'),
+    edit: (context, nodeId) => wrap(context, { nodeId, wrapper: 'block-quote' }),
   },
   {
     name: 'replace selected block text',
     markdown: 'first\n\nsecond\n',
     path: [1],
-    edit: (draft, root, node) => void replaceSelectedBlocks(draft, root, [node], 'replacement'),
+    edit: (context, nodeId) => replaceBlocks(context, { nodeIds: [nodeId], text: 'replacement' }),
   },
   {
     name: 'split a code block',
     markdown: '```js\nabcd\n```\n',
     path: [0],
-    edit: (draft, root, node) => void insertLineBreak(draft, root, node, 2),
+    edit: (context, nodeId) => insertLineBreak(context, { nodeId, from: 2 }),
   },
   {
     name: 'convert a section to a paragraph',
     markdown: '# heading\nbody\n',
     path: [0],
-    edit: (draft, root, node) => void deleteContentBackwards(draft, root, node),
+    edit: (context, nodeId) => deleteBackwardAtStart(context, { nodeId }),
   },
 ];
 
@@ -120,10 +122,35 @@ describe('shared semantic editing draft', () => {
     const canonicalTarget = atPath(canonical.root, fixture.path);
     const treeTarget = nodeAtPath(tree.root, fixture.path);
     const before = markdown(canonical);
-    const canonicalEdit = writer.edit({ actionId: `edit-${ordinal}` }, (draft) =>
-      fixture.edit(draft, canonical.root.sharedId, canonicalTarget.sharedId),
+    writer.admitSession('local');
+    const request: ActionRequest = writer.prepareCommand(
+      { actionId: `edit-${ordinal}` },
+      (draft) => {
+        const outcome = fixture.edit(
+          { draft, scopeRoot: canonical.root.sharedId },
+          canonicalTarget.sharedId,
+        );
+        if (outcome.status === 'not-applicable') return;
+        return outcome.focus
+          ? {
+              end: draft.bookmark(
+                outcome.focus.nodeId,
+                outcome.focus.offset,
+                outcome.focus.affinity,
+              ),
+            }
+          : undefined;
+      },
     );
-    expect(canonicalEdit).toHaveProperty('receipt');
+    const applied = writer.apply(request, {
+      sessionId: 'local',
+      authorityEpoch: request.authorityEpoch,
+      sessionSequence: request.sessionSequence,
+    });
+    expect(applied.status).toBe('pending');
+    if (applied.status !== 'pending')
+      throw new Error(`canonical command failed: ${applied.status}`);
+    writer.publish(applied.pending);
     runTreeEdit(tree, treeTarget, fixture.edit);
 
     expect(serializedTree(tree)).toBe(markdown(canonical));
