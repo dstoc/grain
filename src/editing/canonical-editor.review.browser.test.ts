@@ -133,6 +133,15 @@ describe('M6 review browser contracts', () => {
       send(method: string, params: Record<string, unknown>): Promise<unknown>;
     };
   }
+  async function typeKeys(text: string) {
+    for (const character of text) await userEvent.keyboard(character === '[' ? '{[}' : character);
+  }
+  async function typeTaskPrefix(inline: MarkdownInline, marker: ' ' | 'x') {
+    inline.focus();
+    inline.setSelectionOffsets(0, 0);
+    await typeKeys(`[${marker}] `);
+    await settle();
+  }
   async function remote(
     prepare: (replica: CanonicalDocument, writer: CanonicalWriter) => ActionRequest | undefined,
   ) {
@@ -1743,6 +1752,257 @@ describe('M6 review browser contracts', () => {
     await settle();
     expect(model.root.children[0]!.children[0]!.children[0]!.content).toBe('[x] code\n');
     expect(item.checked).toBeUndefined();
+  });
+  test.each([
+    { name: 'unchecked', marker: ' ' as const, checked: false },
+    { name: 'checked', marker: 'x' as const, checked: true },
+  ])(
+    'trusted per-key typing promotes a $name task marker after list promotion',
+    async ({ marker, checked }) => {
+      const inline = await mount('a');
+      const paragraph = model.root.children[0]!;
+      const paragraphId = paragraph.sharedId;
+      const trustedInput: boolean[] = [];
+      editor.addEventListener('beforeinput', (event) => {
+        trustedInput.push((event as InputEvent).isTrusted);
+      });
+      inline.focus();
+      await userEvent.keyboard('{Control>}a{/Control}');
+      expect(inline.getTextSelection()).toEqual({ anchor: 0, focus: 1 });
+      await typeKeys('- ');
+      await settle();
+
+      const list = model.root.children[0]!;
+      expect(list.type).toBe('list');
+      const item = list.children[0]!;
+      expect(item.type).toBe('list-item');
+      expect(item.children[0]!.sharedId).toBe(paragraphId);
+      await typeKeys(`[${marker}] Task`);
+      await settle();
+
+      expect(item.checked).toBe(checked);
+      expect(item.children[0]!.content).toBe('Task');
+      expect(item.children[0]!.sharedId).toBe(paragraphId);
+      expect(model.node(item.sharedId)).toBe(item);
+      expect(model.node(paragraphId)).toBe(paragraph);
+      const activeInline = inlines().find((candidate) => candidate.nodeView?.content === 'Task')!;
+      expect(activeInline.getTextSelection()).toEqual({ anchor: 4, focus: 4 });
+      expect(trustedInput.length).toBeGreaterThan(8);
+      expect(trustedInput.every(Boolean)).toBe(true);
+      expect(model.validate()).toEqual({ valid: true, errors: [] });
+      expect(parseBlocks(serializeToString(model.exportMarkdownTree())).node).toEqual(
+        model.exportMarkdownTree(),
+      );
+    },
+  );
+  test.each([
+    { name: 'nested unordered list', source: '- parent\n  - item' },
+    { name: 'ordered list', source: '3. item' },
+    { name: 'list in a quote', source: '> - item' },
+  ])('promotes a task marker in a $name', async ({ source }) => {
+    await mount(source);
+    const inline = inlines().find((candidate) => candidate.nodeView?.content === 'item')!;
+    const findParagraph = (node: CanonicalNode): CanonicalNode | undefined => {
+      if (node.type === 'paragraph' && node.content === 'item') return node;
+      for (const child of node.children) {
+        const found = findParagraph(child);
+        if (found) return found;
+      }
+      return undefined;
+    };
+    const paragraph = findParagraph(model.root)!;
+    const item = paragraph.parent!;
+    expect(item.type).toBe('list-item');
+
+    await typeTaskPrefix(inline, 'x');
+
+    expect(item.checked).toBe(true);
+    expect(inline.nodeView?.content).toBe('item');
+    expect(model.node(item.sharedId)).toBe(item);
+    expect(model.node(paragraph.sharedId)).toBe(paragraph);
+    expect(model.validate()).toEqual({ valid: true, errors: [] });
+    expect(parseBlocks(serializeToString(model.exportMarkdownTree())).node).toEqual(
+      model.exportMarkdownTree(),
+    );
+  });
+  test.each([
+    { name: 'unchecked', marker: ' ' as const, checked: false },
+    { name: 'checked', marker: 'x' as const, checked: true },
+  ])(
+    'undo and redo a trusted $name task-marker completion with its caret',
+    async ({ marker, checked }) => {
+      const inline = await mount(`- [${marker}]`);
+      const item = model.root.children[0]!.children[0]!;
+      const paragraph = item.children[0]!;
+      inline.focus();
+      inline.setSelectionOffsets(3, 3);
+      await userEvent.keyboard(' ');
+      await settle();
+
+      expect(item.checked).toBe(checked);
+      expect(paragraph.content).toBe('');
+      expect(inline.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(item.checked).toBeUndefined();
+      expect(paragraph.content).toBe(`[${marker}]`);
+      expect(inline.getTextSelection()).toEqual({ anchor: 3, focus: 3 });
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle();
+      expect(item.checked).toBe(checked);
+      expect(paragraph.content).toBe('');
+      expect(inline.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
+      expect(model.validate()).toEqual({ valid: true, errors: [] });
+    },
+  );
+  test.each([
+    ['forward', 0, 3],
+    ['reverse', 3, 0],
+  ] as const)(
+    'insertReplacementText promotes the task marker and restores a %s native selection on undo',
+    async (_direction, anchor, focus) => {
+      const inline = await mount('- abcTask');
+      const item = model.root.children[0]!.children[0]!;
+      const paragraph = item.children[0]!;
+      const paragraphId = paragraph.sharedId;
+      inline.focus();
+      inline.setSelectionOffsets(anchor, focus);
+      const event = new InputEvent('beforeinput', {
+        inputType: 'insertReplacementText',
+        data: '[x] ',
+        bubbles: true,
+        cancelable: true,
+      });
+      inline.dispatchEvent(event);
+      await settle();
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(item.checked).toBe(true);
+      expect(paragraph.content).toBe('Task');
+      expect(inline.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(item.checked).toBeUndefined();
+      expect(paragraph.content).toBe('abcTask');
+      expect(inline.getTextSelection()).toEqual({ anchor, focus });
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle();
+      expect(item.checked).toBe(true);
+      expect(paragraph.content).toBe('Task');
+      expect(inline.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
+      expect(model.node(paragraphId)).toBe(paragraph);
+      expect(model.validate()).toEqual({ valid: true, errors: [] });
+    },
+  );
+  test.each(['[ ]', '[X] '] as const)(
+    'keeps incomplete or unsupported task marker %j literal in a plain item',
+    async (text) => {
+      await mount('- item');
+      const inline = inlines()[0]!;
+      const item = model.root.children[0]!.children[0]!;
+      inline.focus();
+      inline.setSelectionOffsets(0, 0);
+      await typeKeys(text);
+      await settle();
+
+      expect(item.checked).toBeUndefined();
+      expect(item.children[0]!.content).toBe(`${text}item`);
+      expect(model.validate()).toEqual({ valid: true, errors: [] });
+    },
+  );
+  test('keeps task markers literal on existing tasks', async () => {
+    await mount('- [ ] Task');
+    const alreadyTask = model.root.children[0]!.children[0]!;
+    const taskInline = inlines()[0]!;
+    taskInline.focus();
+    taskInline.setSelectionOffsets(0, 0);
+    await typeKeys('[x] ');
+    await settle();
+    expect(alreadyTask.checked).toBe(false);
+    expect(alreadyTask.children[0]!.content).toBe('[x] Task');
+    expect(model.validate()).toEqual({ valid: true, errors: [] });
+  });
+
+  test('keeps task markers literal outside list items', async () => {
+    await mount('outside');
+    const outside = inlines()[0]!;
+    outside.focus();
+    outside.setSelectionOffsets(0, 0);
+    await typeKeys('[x] ');
+    await settle();
+    expect(model.root.children[0]!.content).toBe('[x] outside');
+    expect(model.root.children[0]!.type).toBe('paragraph');
+  });
+  test('keeps task marker text literal in a later list-item paragraph and code', async () => {
+    await mountTree({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '- ',
+              children: [
+                { type: 'code-block', info: 'ts', content: 'code' },
+                { type: 'paragraph', content: 'later' },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const item = model.root.children[0]!.children[0]!;
+    const later = inlines().find((inline) => inline.nodeView?.content === 'later')!;
+    later.focus();
+    later.setSelectionOffsets(0, 0);
+    await typeKeys('[x] ');
+    await settle();
+    expect(item.checked).toBeUndefined();
+    expect(later.nodeView?.content).toBe('[x] later');
+
+    const code = inlines().find((inline) => inline.nodeView?.type === 'code-block')!;
+    code.focus();
+    code.setSelectionOffsets(0, 0);
+    await typeKeys('[x] ');
+    await settle();
+    expect(item.checked).toBeUndefined();
+    expect(code.nodeView?.content).toBe('[x] code');
+    expect(model.validate()).toEqual({ valid: true, errors: [] });
+  });
+  test('plain-text paste completes a task marker in an eligible list item', async () => {
+    const plain = await mount('- Task');
+    const plainItem = model.root.children[0]!.children[0]!;
+    plain.focus();
+    plain.setSelectionOffsets(0, 0);
+    dispatchPlainTextPaste(plain, '[x] ');
+    await settle();
+    expect(plainItem.checked).toBe(true);
+    expect(plainItem.children[0]!.content).toBe('Task');
+    expect(model.validate()).toEqual({ valid: true, errors: [] });
+  });
+
+  test('Markdown paste and full parsing retain task semantics', async () => {
+    const fullParse = parseBlocks('- [ ] Task\n- [x] Done').node;
+    const parsedList = fullParse.children?.[0];
+    if (parsedList?.type !== 'list') throw new Error('expected parsed tasks inside a list');
+    expect(
+      (parsedList.children ?? []).map((node) =>
+        node.type === 'list-item' ? node.checked : undefined,
+      ),
+    ).toEqual([false, true]);
+    const markdown = await mount('');
+    markdown.focus();
+    markdown.setSelectionOffsets(0, 0);
+    dispatchMarkdownPaste(markdown, '- [ ] Task');
+    await settle();
+    const pastedItem = model.root.children[0]!.children[0]!;
+    expect(pastedItem.checked).toBe(false);
+    expect(pastedItem.children[0]!.content).toBe('Task');
+    expect(parseBlocks(serializeToString(model.exportMarkdownTree())).node).toEqual(
+      model.exportMarkdownTree(),
+    );
+    expect(model.validate()).toEqual({ valid: true, errors: [] });
   });
   test('commits composition at the final code line after a trailing newline', async () => {
     const inline = await mountTree({

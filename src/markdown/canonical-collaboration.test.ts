@@ -13,6 +13,8 @@ import {
   type AdmittedContext,
   type DraftCommand,
 } from './canonical-actions.js';
+import { parseBlocks } from './block-parser/api.js';
+import { serializeToString } from './block-serializer.js';
 import type { TextEdit } from './semantic/types.js';
 
 function makeDocument(text = 'base'): CanonicalDocument {
@@ -162,6 +164,76 @@ function assertFreshReconstruction(document: CanonicalDocument): void {
 }
 
 describe('headless collaboration protocol', () => {
+  it.each([
+    { marker: ' ', checked: false },
+    { marker: 'x', checked: true },
+  ])(
+    'completes a concurrent $checked task prefix in either accepted order',
+    ({ marker, checked }) => {
+      for (const order of ['AB', 'BA'] as const) {
+        const document = makeDocument(`- [${marker}]Task`);
+        const writer = new CanonicalWriter(document);
+        const initial = document.checkpoint();
+        const peer = CanonicalDocument.open(initial);
+        const list = document.root.children[0]!;
+        const item = list.children[0]!;
+        const paragraph = item.children[0]!;
+        const requests = {
+          A: authorText(
+            initial,
+            paragraph.sharedId,
+            { from: 3, to: 3, insert: ' ' },
+            { actionId: `task-complete-${marker}`, sessionId: 'task-author' },
+          ),
+          B: authorText(
+            initial,
+            paragraph.sharedId,
+            { from: 7, to: 7, insert: '!' },
+            { actionId: `task-body-${marker}`, sessionId: 'body-author' },
+          ),
+        };
+        try {
+          for (const author of order.split('') as ('A' | 'B')[]) {
+            const sessionId = author === 'A' ? 'task-author' : 'body-author';
+            const accepted = accept(writer, requests[author], sessionId);
+            peer.applyAccepted(accepted);
+            expect(peer.canonicalSnapshot()).toEqual(document.canonicalSnapshot());
+            expect(document.validate()).toEqual({ valid: true, errors: [] });
+            assertFreshReconstruction(document);
+          }
+
+          expect(item.checked).toBe(checked);
+          expect(paragraph.content).toBe('Task!');
+          expect(document.node(item.sharedId)).toBe(item);
+          expect(document.node(paragraph.sharedId)).toBe(paragraph);
+          expect(parseBlocks(serializeToString(document.exportMarkdownTree())).node).toEqual(
+            document.exportMarkdownTree(),
+          );
+          expect(peer.validate()).toEqual({ valid: true, errors: [] });
+          assertFreshReconstruction(peer);
+
+          expect(writer.undo('task-author').status).toBe('applied');
+          expect(item.checked).toBeUndefined();
+          expect(paragraph.content).toBe(`[${marker}]Task!`);
+          expect(document.validate()).toEqual({ valid: true, errors: [] });
+          assertFreshReconstruction(document);
+
+          expect(writer.redo('task-author').status).toBe('applied');
+          expect(item.checked).toBe(checked);
+          expect(paragraph.content).toBe('Task!');
+          expect(document.node(item.sharedId)).toBe(item);
+          expect(document.node(paragraph.sharedId)).toBe(paragraph);
+          expect(document.validate()).toEqual({ valid: true, errors: [] });
+          assertFreshReconstruction(document);
+        } finally {
+          writer.close();
+          document.close();
+          peer.close();
+        }
+      }
+    },
+  );
+
   it('admits three concurrent authors in accepted order and reconstructs every checkpoint', () => {
     const authority = makeDocument('abcd');
     const writer = new CanonicalWriter(authority);
