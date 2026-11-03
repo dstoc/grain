@@ -62,10 +62,21 @@ export const insertMarkdown: Edit<InsertMarkdownInput> = (
       if (item !== scopeRoot && list) {
         parentId = list;
         beforeId = draft.nextSiblingOf(item) ?? null;
-        if (replaceTarget && draft.node(item).children.length === 1) {
-          draft.detach(contextId);
-          draft.detach(item);
-          targetDetached = true;
+        const itemNode = draft.node(item);
+        const pastedList = nodes.length === 1 && nodes[0]!.type === 'list';
+        if (replaceTarget && itemNode.children.length === 1) {
+          if (!pastedList) {
+            parentId = item;
+            beforeId = null;
+          } else if (
+            itemNode.type === 'list-item' &&
+            itemNode.marker === '* ' &&
+            itemNode.checked == null
+          ) {
+            draft.detach(contextId);
+            draft.detach(item);
+            targetDetached = true;
+          }
         }
       }
     }

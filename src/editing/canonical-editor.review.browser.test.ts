@@ -520,6 +520,87 @@ describe('M6 review browser contracts', () => {
     expect(JSON.stringify(model.exportMarkdownTree())).toBe(pasted);
     expect(model.validate()).toEqual({ valid: true, errors: [] });
   });
+  test.each([
+    {
+      name: 'numbered first item',
+      source: '5. <!-- -->\n6. tail',
+      enterAtStart: false,
+      marker: '5. ',
+      checked: null,
+    },
+    {
+      name: 'numbered first item created by Enter',
+      source: '5. seed\n6. tail',
+      enterAtStart: true,
+      marker: '5. ',
+      checked: null,
+    },
+    {
+      name: 'unchecked task item',
+      source: '* [ ] <!-- -->\n* tail',
+      enterAtStart: false,
+      marker: '* ',
+      checked: false,
+    },
+    {
+      name: 'checked task item',
+      source: '* [x] <!-- -->\n* tail',
+      enterAtStart: false,
+      marker: '* ',
+      checked: true,
+    },
+  ])(
+    'structured paste preserves metadata on $name',
+    async ({ source, enterAtStart, marker, checked }) => {
+      const inline = await mount(source);
+      inline.focus();
+      inline.setSelectionOffsets(0, 0);
+      if (enterAtStart) {
+        await userEvent.keyboard('{Enter}');
+        await settle();
+      }
+      const target = inlines().find((item) => item.nodeView?.content === '')!;
+      target.focus();
+      target.setSelectionOffsets(0, 0);
+      const before = JSON.stringify(model.exportMarkdownTree());
+      const listBefore = model.root.children[0]!;
+      if (listBefore.type !== 'list') throw new Error('expected a list before paste');
+      const targetItem = listBefore.children[0]!;
+      if (targetItem.type !== 'list-item') throw new Error('expected a list item before paste');
+
+      dispatchMarkdownPaste(target, 'Alpha\n\nBeta\n\nGamma');
+      await settle();
+
+      const listAfter = model.root.children[0]!;
+      if (listAfter.type !== 'list') throw new Error('expected a list after paste');
+      const replacedItem = listAfter.children[0]!;
+      if (replacedItem.type !== 'list-item') throw new Error('expected a list item after paste');
+      expect(replacedItem.sharedId).toBe(targetItem.sharedId);
+      expect(replacedItem.marker).toBe(marker);
+      expect(replacedItem.checked ?? null).toBe(checked);
+      expect(replacedItem.children.map((child) => child.content)).toEqual([
+        'Alpha',
+        'Beta',
+        'Gamma',
+      ]);
+      expect(
+        listAfter.children.slice(1).map((item) => item.children.map((child) => child.content)),
+      ).toEqual(enterAtStart ? [['seed'], ['tail']] : [['tail']]);
+      expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Gamma');
+      expect(model.validate()).toEqual({ valid: true, errors: [] });
+      const pasted = JSON.stringify(model.exportMarkdownTree());
+
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(JSON.stringify(model.exportMarkdownTree())).toBe(before);
+
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle();
+      expect(JSON.stringify(model.exportMarkdownTree())).toBe(pasted);
+      expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Gamma');
+      expect(model.validate()).toEqual({ valid: true, errors: [] });
+    },
+  );
   test('structured paste preserves unrelated and pasted empty paragraph sentinels', async () => {
     await mount('<!-- -->\n\nGamma');
     const target = inlines()[1]!;
