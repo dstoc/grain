@@ -2,7 +2,6 @@ import { signal } from '../../signals.js';
 import { createSyntaxNode, createTree } from '../parser-tree.js';
 import { parser as inlineParser } from '../inline-parser.js';
 import type { InlineTree, InlineTreeNode } from '../inline-parser.js';
-import type { Caches } from '../view-model-node.js';
 import type { NodeId, NodeKind } from '../semantic/types.js';
 
 const INLINE_KINDS = new Set<NodeKind>(['paragraph', 'section', 'code-block']);
@@ -30,7 +29,6 @@ export interface CanonicalNodeProjectionOwner {
   parentId(id: NodeId): NodeId | undefined;
   sibling(id: NodeId, direction: -1 | 1): CanonicalNode | undefined;
   isConnected(id: NodeId): boolean;
-  nodeCaches(id: NodeId): Readonly<Caches> | undefined;
   nodeVersion(id: NodeId): number;
 }
 
@@ -73,10 +71,6 @@ export class CanonicalNode {
 
   get version(): number {
     return this.owner.nodeVersion(this.sharedId);
-  }
-
-  get caches(): Readonly<Caches> | undefined {
-    return this.owner.nodeCaches(this.sharedId);
   }
 
   get content(): string | undefined {

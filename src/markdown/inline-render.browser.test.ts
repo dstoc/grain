@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'vitest';
 import { MarkdownInline } from './inline-render.js';
 import { createBlockParser } from './block-parser/api.js';
-import type { InlineViewModelNode } from './view-model-node.js';
+import { ConstructionPreviewAdapter } from './construction-preview.js';
+import { asInlineMarkdownNodeView } from './node-view.js';
 import { styles } from './style.js';
 import { serializeToString } from './block-serializer.js';
 import { MarkdownRenderer } from './block-render.js';
@@ -23,11 +24,12 @@ describe('MarkdownInline', () => {
     for (const character of source) parser.push(character);
     parser.finish();
     expect(serializeToString(parser.getTree().serialize())).toBe(`${source}\n`);
-    const nodes = parser.getTree().root.children!;
+    const preview = new ConstructionPreviewAdapter(parser.getTree());
+    const nodes = preview.root.children!;
     const paragraph = new MarkdownInline();
     const code = new MarkdownInline();
-    paragraph.node = nodes[0] as InlineViewModelNode;
-    code.node = nodes[1] as InlineViewModelNode;
+    paragraph.nodeView = asInlineMarkdownNodeView(nodes[0]!);
+    code.nodeView = asInlineMarkdownNodeView(nodes[1]!);
     document.body.append(paragraph, code);
     await settle(paragraph);
     await settle(code);
@@ -54,8 +56,9 @@ describe('MarkdownInline', () => {
     const parser = createBlockParser();
     parser.push(source);
     parser.finish();
+    const preview = new ConstructionPreviewAdapter(parser.getTree());
     const inline = new MarkdownInline();
-    inline.node = parser.getTree().root.children![0] as InlineViewModelNode;
+    inline.nodeView = asInlineMarkdownNodeView(preview.root.children![0]!);
     document.body.append(inline);
     await settle(inline);
     expect(inline.innerText).toBe(expected);
@@ -68,8 +71,9 @@ describe('MarkdownInline', () => {
     const parser = createBlockParser();
     parser.push(source);
     const tree = parser.finish();
+    const preview = new ConstructionPreviewAdapter(tree);
     const renderer = new MarkdownRenderer();
-    renderer.block = tree.root;
+    renderer.block = preview.root;
     document.body.append(renderer);
     await nextTask();
     const inline = renderer.shadowRoot!.querySelector('md-inline')!;
@@ -91,23 +95,25 @@ describe('MarkdownInline', () => {
   test('retains literal streaming output and delegate fallback', async () => {
     const parser = createBlockParser();
     parser.push('> ```js\n> ');
+    const preview = new ConstructionPreviewAdapter(parser.getTree());
     const renderer = new MarkdownRenderer();
-    renderer.block = parser.getTree().root;
+    renderer.block = preview.root;
     renderer.renderDelegate = { renderCodeBlock: () => undefined };
     document.body.append(renderer);
     await nextTask();
     const inline = renderer.shadowRoot!.querySelector('md-inline')!;
-    const node = inline.node;
+    const node = inline.nodeView;
     for (const chunk of ['**bold**', ' [label](url)', ' https://example.com']) {
       parser.push(chunk);
+      preview.refresh();
       await settle(inline);
       expect(inline.innerText).toBe(node!.content);
-      expect(inline.node).toBe(node);
+      expect(inline.nodeView).toBe(node);
       expect(inline.querySelector('a, [formatting]')).toBeNull();
     }
     renderer.remove();
     const custom = new MarkdownRenderer();
-    custom.block = parser.getTree().root;
+    custom.block = preview.root;
     custom.renderDelegate = { renderCodeBlock: () => html`<b>custom</b>` };
     document.body.append(custom);
     await nextTask();
@@ -118,8 +124,11 @@ describe('MarkdownInline', () => {
   test('continues formatting ordinary inline Markdown and links', async () => {
     const parser = createBlockParser();
     parser.push('**bold** https://example.com');
+    const preview = new ConstructionPreviewAdapter(parser.getTree());
     const renderer = new MarkdownRenderer();
-    renderer.block = parser.finish().root;
+    parser.finish();
+    preview.refresh();
+    renderer.block = preview.root;
     document.body.append(renderer);
     await nextTask();
     const inline = renderer.shadowRoot!.querySelector('md-inline')!;
@@ -134,8 +143,9 @@ describe('MarkdownInline', () => {
     const source = 'plain ~~alpha~~ omega a~~b~~c';
     parser.push(source);
     const tree = parser.finish();
+    const preview = new ConstructionPreviewAdapter(tree);
     const renderer = new MarkdownRenderer();
-    renderer.block = tree.root;
+    renderer.block = preview.root;
     document.body.append(renderer);
     await nextTask();
 
@@ -187,25 +197,29 @@ describe('MarkdownInline', () => {
   test('renders changes made while detached and follows replacement nodes', async () => {
     const first = createBlockParser();
     first.push('```js\nfirst');
+    const firstPreview = new ConstructionPreviewAdapter(first.getTree());
     const second = createBlockParser();
     second.push('```js\nsecond');
+    const secondPreview = new ConstructionPreviewAdapter(second.getTree());
     const inline = new MarkdownInline();
-    inline.node = first.getTree().root.children![0] as InlineViewModelNode;
+    inline.nodeView = asInlineMarkdownNodeView(firstPreview.root.children![0]!);
     document.body.append(inline);
     await settle(inline);
     expect(inline.textContent).toBe('first');
     inline.remove();
     first.push(' changed');
+    firstPreview.refresh();
     document.body.append(inline);
     await settle(inline);
     expect(inline.textContent).toBe('first changed');
     inline.remove();
-    inline.node = second.getTree().root.children![0] as InlineViewModelNode;
+    inline.nodeView = asInlineMarkdownNodeView(secondPreview.root.children![0]!);
     second.push(' updated');
+    secondPreview.refresh();
     document.body.append(inline);
     await settle(inline);
     expect(inline.textContent).toBe('second updated');
-    inline.node = undefined;
+    inline.nodeView = undefined;
     await settle(inline);
     expect(inline.textContent).toBe('');
     inline.remove();
@@ -214,17 +228,20 @@ describe('MarkdownInline', () => {
   test('renders leading empty code lines during playback', async () => {
     const parser = createBlockParser();
     parser.push('```js\n');
+    const preview = new ConstructionPreviewAdapter(parser.getTree());
     const inline = new MarkdownInline();
-    inline.node = parser.getTree().root.children![0] as InlineViewModelNode;
+    inline.nodeView = asInlineMarkdownNodeView(preview.root.children![0]!);
     document.body.append(inline);
     for (const char of '\n\nalpha\n```') {
       parser.push(char);
+      preview.refresh();
       await settle(inline);
       if (char === 'a' && parser.getPendingText() === 'a') {
         expect(inline.textContent).toBe('\n\na');
       }
     }
     parser.finish();
+    preview.refresh();
     await settle(inline);
     expect(inline.textContent).toBe('\n\nalpha');
     inline.remove();
@@ -233,9 +250,10 @@ describe('MarkdownInline', () => {
   test('updates a mounted code block as projected content is replaced and settled', async () => {
     const parser = createBlockParser();
     parser.push('```js\n');
-    const node = parser.getTree().root.children![0] as InlineViewModelNode;
+    const preview = new ConstructionPreviewAdapter(parser.getTree());
+    const node = asInlineMarkdownNodeView(preview.root.children![0]!);
     const inline = new MarkdownInline();
-    inline.node = node;
+    inline.nodeView = node;
     document.body.append(inline);
     await settle(inline);
     expect(inline.textContent).toBe('');
@@ -247,11 +265,13 @@ describe('MarkdownInline', () => {
       ['\n```', 'function greet(name)\nreturn name;'],
     ]) {
       parser.push(chunk);
+      preview.refresh();
       await settle(inline);
       expect(inline.textContent).toBe(expected);
-      expect(parser.getTree().root.children![0]).toBe(node);
+      expect(asInlineMarkdownNodeView(preview.root.children![0]!)).toBe(node);
     }
     parser.finish();
+    preview.refresh();
     await settle(inline);
     expect(inline.textContent).toBe('function greet(name)\nreturn name;');
     inline.remove();

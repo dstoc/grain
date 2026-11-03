@@ -1,22 +1,21 @@
-import { viewModel } from '../../view-model-node.js';
-import type { ViewModelNode } from '../../view-model-node.js';
+import type { ConstructionNode } from '../../semantic/construction-tree.js';
 import {
   type BlockParseState,
   type MappedText,
   type OutputPiece,
-  type ParagraphViewModelNode,
+  type ConstructionParagraphNode,
 } from '../types.js';
 import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
 import { createSemanticNode, editSemanticText, placeSemanticNode } from '../utils.js';
 
 export function appendParagraphLine(
   state: BlockParseState,
-  container: ViewModelNode,
+  container: ConstructionNode,
   line: string,
   mapped?: MappedText,
 ) {
   ensurePlaceholderRemoved(state);
-  if (state.currentParagraph?.[viewModel].parent === container) {
+  if (state.currentParagraph?.parent === container) {
     appendInlineText(state, state.currentParagraph, `\n${line}`);
     if (mapped) {
       const previous = state.inlinePieces.get(state.currentParagraph) ?? [];
@@ -35,14 +34,14 @@ export function appendParagraphLine(
     content: line,
   });
   placeSemanticNode(state, paragraph, container);
-  state.currentParagraph = paragraph as ParagraphViewModelNode;
+  state.currentParagraph = paragraph as ConstructionParagraphNode;
   if (mapped) state.inlinePieces.set(paragraph, mapped.pieces);
   state.sawContent = true;
 }
 
 export function appendInlineText(
   state: BlockParseState,
-  node: ParagraphViewModelNode,
+  node: ConstructionParagraphNode,
   text: string,
 ) {
   const startIndex = node.content.length;

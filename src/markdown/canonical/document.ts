@@ -19,8 +19,6 @@ import {
 import type { NodeId, NodeKind } from '../semantic/types.js';
 export type { NodeId, NodeKind } from '../semantic/types.js';
 import type { DocumentNode, MarkdownNode } from '../node.js';
-import type { Caches } from '../view-model-node.js';
-import { MarkdownTree } from '../view-model.js';
 import { parseBlocks } from '../block-parser/api.js';
 import { batch } from '../../signals.js';
 import { cloneSemanticTree, importCanonicalTree } from './import-tree.js';
@@ -53,6 +51,7 @@ export type {
   CanonicalOpenOptions,
 } from './document-types.js';
 import { CanonicalNode } from './node-projection.js';
+import { ConstructionTree } from '../semantic/construction-tree.js';
 import type { CanonicalNodeProjectionOwner } from './node-projection.js';
 import {
   validateActiveSpansState,
@@ -221,7 +220,6 @@ function metaValue<T>(meta: Y.Map<unknown>, key: string): T {
  */
 export class CanonicalDocument implements CanonicalNodeProjectionOwner {
   private readonly facades = new Map<NodeId, CanonicalNode>();
-  private readonly localCaches = new Map<NodeId, Caches>();
   private readonly nodeVersions = new Map<NodeId, number>();
   private readonly projectionListeners = new Set<(version: number) => void>();
   private disposed = false;
@@ -280,7 +278,9 @@ export class CanonicalDocument implements CanonicalNodeProjectionOwner {
   /** Imports a semantic tree after the existing one-pass construction normalization. */
   static fromTree(tree: DocumentNode, options: CanonicalDocumentOptions = {}): CanonicalDocument {
     const input = cloneSemanticTree(tree) as DocumentNode;
-    const normalized = new MarkdownTree(input).serialize() as DocumentNode;
+    const construction = new ConstructionTree(input);
+    construction.normalize();
+    const normalized = construction.serialize() as DocumentNode;
     return new CanonicalDocument(importCanonicalTree(cloneSemanticTree(normalized), options));
   }
 
@@ -465,12 +465,6 @@ export class CanonicalDocument implements CanonicalNodeProjectionOwner {
     return revision;
   }
 
-  /** @internal Local-only cache data for the node projection. */
-  nodeCaches(id: NodeId): Readonly<Caches> | undefined {
-    this.assertLive();
-    return this.localCaches.get(id);
-  }
-
   nodeVersion(id: NodeId): number {
     this.assertLive();
     return this.nodeVersions.get(id) ?? 0;
@@ -610,7 +604,6 @@ export class CanonicalDocument implements CanonicalNodeProjectionOwner {
       batch(() => {
         for (const id of new Set(affectedNodeIds)) {
           this.nodeVersions.set(id, (this.nodeVersions.get(id) ?? 0) + 1);
-          this.localCaches.delete(id);
           const facade = this.facades.get(id);
           if (facade) facade.renderSignal.value++;
         }

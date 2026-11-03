@@ -2,6 +2,8 @@
 
 This ledger records the R0 compatibility boundary from the Grain Yjs refactor proposal attached to `grain/58`. It describes the repository at post-M5 commit `c3a8812e8bbee69c805a50347dd29d11c076d2de` on branch `yjs`.
 
+The R0 inventory below is historical. The R4 section at the end records the current construction, renderer, and retirement state.
+
 R0 establishes the baseline. It does not authorize broad deletion. Keep each candidate until its production consumers and test cases have a named disposition.
 
 ## R1 extraction boundary
@@ -161,3 +163,29 @@ R0 does not rerun the long benchmark matrix. Keep the proposal's previously reco
 These tests record existing failures for the later integration correction. R0 does not alter editor or renderer integration to make them pass. In R3, remove `test.fails` and keep each test as an ordinary passing regression after the integration correction.
 
 With the expected-failure markers on PR #51 head `d5ab7ac96d5af1c728598eb3dd85aca5f8decc8d`, the local full browser run reported 11 files passed, 2 skipped; 279 tests passed, 2 expected failures, and 2 skipped. The active-element registration test passed. GitHub status checks on that exact head passed. An earlier CI run at `fadd6d20608d0ea62efef9c91dfffa2ea27beacb`, before the expected-failure markers, reported the two named behavior gates as failures and a separate failure in `src/editing/editor.browser.test.ts` for `copies and cuts blocks through trusted keyboard events` (`body\n` received instead of `hello\n\nworld\n`). The local runs did not reproduce that separate clipboard failure; it remains a historical CI observation, and this R0 correction does not change or mask the legacy test. The `chrome-devtools` daemon did not remain available across runner command invocations, so browser results use Vitest's Playwright provider with Chromium 156.0.8078.73. No physical mobile or IME behavior is claimed.
+
+## R4 retirement completion
+
+This section records the R4 implementation on `refactor/62-r4-construction`, based on `origin/yjs` at `bfcb670d4679950ef07c0b71ca465ca3cd59962e`.
+
+### Construction and parser
+
+`src/markdown/semantic/construction-tree.ts` is the parser's mutable tree. It stores plain records, temporary string IDs, parent links, sibling links, children, and inline text. It has no Yjs objects, renderer signals, durable node IDs, user undo, or timed history. `createDraft()` gives an operation a new draft-local fragment lifetime over the same construction records.
+
+`createBlockParser()` returns the parser API. Its `push()`, `finish()`, and `getTree()` methods return `ConstructionTree`, as does `parseMarkdownTree()`. `parseBlocks()` still returns a serializable `DocumentNode`. Snapshots contain serialized Markdown nodes and parser paths; temporary IDs and parent links do not escape the tree. Parser creation normalizes once, changed pushes normalize with `preserveEmptyBlocks`, and `finish()` runs normalization again. Provenance, provisional rollback, source mapping, chunking, surrogate-pair handling, and resume remain in the parser tests.
+
+`CanonicalDocument.fromTree()` runs one normalization pass through `ConstructionTree`. `fromParsed()` still imports its input without normalization. The shared allowed-child rule now lives in `semantic/types.ts`, so the construction draft can enforce the same child contract without importing the Yjs schema module.
+
+### Preview and host
+
+`src/markdown/construction-preview.ts` owns the renderer adapter for parser trees. It provides stable numeric facade IDs, read-only signals, and lazy inline parsing. The headless parser does not import Lit, `@lit/context`, or Yjs. `src/markdown/block-parser-imports.test.ts` walks the parser's local import graph and rejects Lit or Yjs dependencies.
+
+The demo host now passes preview facades to the existing renderer. Transclusion retains its host delegate. Canonical rendering continues to use canonical node projections. `md-editor` is removed from the custom-element surface; `md-canonical-editor` remains the active editor.
+
+### Retired code and test ledger
+
+The R4 change deletes `src/editing/editor.ts`, `src/editing/edits/**`, the old editor-only keyboard, selection, copy/paste, indent, and block helpers, and the `MarkdownTree`, `ViewModelNode`, symbol adapter, old normalizer adapter, and old semantic draft adapter. It also deletes tests whose subject was parser or model user history. These APIs are not retained under new names.
+
+`docs/legacy-test-crosswalk.md` lists each removed test by fully qualified Vitest title and gives its R4 disposition. Parser construction, provenance, generated permutations, semantic draft conformance, canonical commands, history, and current browser behavior retain independent tests. It records deliberate retirements where a case belonged to the removed second editor or model.
+
+The exact Yjs dependency remains `13.6.33`. Canonical schema 2, action and wire formats, normalization rules, and history storage remain on the approved R4 boundary.

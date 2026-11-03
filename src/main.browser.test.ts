@@ -943,7 +943,7 @@ test('toolbar actions are inert during projection recovery and held recovery eve
   finishRecovery();
   await recovery;
   const current = currentEditorInlines(harness).find(
-    (candidate) => candidate.node === recoveredInline.node,
+    (candidate) => candidate.nodeView === recoveredInline.nodeView,
   )!;
   current.focus();
   expect(current.mobileToolbarInputReady).toBe(true);

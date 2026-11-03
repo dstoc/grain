@@ -2,26 +2,27 @@ import { html, type TemplateResult } from 'lit';
 import { describe, expect, test, vi } from 'vitest';
 
 import { parseMarkdownTree } from './block-parser/api.js';
+import { ConstructionPreviewAdapter } from './construction-preview.js';
+import { ConstructionTree } from './semantic/construction-tree.js';
 import { HostContext } from './host-context.js';
 import { MarkdownBlock } from './block-render.js';
-import { MarkdownTree } from './view-model.js';
 import { CanonicalDocument } from './canonical-model.js';
-import type { CodeBlockNode } from './node.js';
-import type { ViewModelNode } from './view-model-node.js';
-import type { ReadonlyMarkdownNodeView } from './node-view.js';
+import type { ReadonlyCodeBlockNodeView, ReadonlyMarkdownNodeView } from './node-view.js';
 
-function makeCodeBlock(): ViewModelNode & CodeBlockNode {
-  const tree = new MarkdownTree({
-    type: 'document',
-    children: [
-      {
-        type: 'code-block',
-        info: 'md',
-        content: 'transclusion target',
-      },
-    ],
-  });
-  return tree.root.children![0] as ViewModelNode & CodeBlockNode;
+function makeCodeBlock(): ReadonlyCodeBlockNodeView {
+  const preview = new ConstructionPreviewAdapter(
+    new ConstructionTree({
+      type: 'document',
+      children: [
+        {
+          type: 'code-block',
+          info: 'md',
+          content: 'transclusion target',
+        },
+      ],
+    }),
+  );
+  return preview.root.children![0] as ReadonlyCodeBlockNodeView;
 }
 
 function renderBlock(
@@ -42,7 +43,7 @@ describe('MarkdownBlock', () => {
     const result = renderBlock(node, hostContext)!;
     const subResult = result.values[0] as TemplateResult;
 
-    expect(subResult.strings).toEqual(['<md-inline .nodeView=', ' .node=', '></md-inline>']);
+    expect(subResult.strings).toEqual(['<md-inline .nodeView=', '></md-inline>']);
   });
 
   test('falls back to the default code-block path when the delegate returns undefined', () => {
@@ -62,7 +63,7 @@ describe('MarkdownBlock', () => {
         selected: false,
       }),
     );
-    expect(subResult.strings).toEqual(['<md-inline .nodeView=', ' .node=', '></md-inline>']);
+    expect(subResult.strings).toEqual(['<md-inline .nodeView=', '></md-inline>']);
   });
 
   test('renders canonical inline nodes through the read-only node view', () => {
@@ -72,9 +73,8 @@ describe('MarkdownBlock', () => {
       const result = renderBlock(node, new HostContext())!;
       const inline = result.values[0] as TemplateResult;
 
-      expect(inline.strings).toEqual(['<md-inline .nodeView=', ' .node=', '></md-inline>']);
+      expect(inline.strings).toEqual(['<md-inline .nodeView=', '></md-inline>']);
       expect(inline.values[0]).toBe(node);
-      expect(inline.values[1]).toBeUndefined();
     } finally {
       document.close();
     }
@@ -84,16 +84,10 @@ describe('MarkdownBlock', () => {
     const node = makeCodeBlock();
     const hostContext = new HostContext();
     const renderCodeBlock = vi.fn(
-      ({
-        node,
-        selected,
-      }: {
-        node: ReadonlyMarkdownNodeView & CodeBlockNode;
-        selected: boolean;
-      }) => {
+      ({ node, selected }: { node: ReadonlyCodeBlockNodeView; selected: boolean }) => {
         if (node.info !== 'md') return undefined;
         // oxfmt-ignore
-        return html`<md-transclusion .node=${node} .root=${parseMarkdownTree(node.content).root} ?selected=${selected}></md-transclusion>`;
+        return html`<md-transclusion .node=${node} .root=${new ConstructionPreviewAdapter(parseMarkdownTree(node.content)).root} ?selected=${selected}></md-transclusion>`;
       },
     );
     hostContext.renderDelegate = { renderCodeBlock };

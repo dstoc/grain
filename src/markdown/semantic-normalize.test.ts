@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { CanonicalWriter } from './canonical-actions.js';
 import { CanonicalDocument } from './canonical-model.js';
 import type { DocumentNode } from './node.js';
-import { MarkdownTree } from './view-model.js';
+import { ConstructionTree } from './semantic/construction-tree.js';
 
 const documents: CanonicalDocument[] = [];
 const writers: CanonicalWriter[] = [];
@@ -33,7 +33,9 @@ describe('shared semantic normalization', () => {
         { type: 'block-quote', marker: '> ', children: [] },
       ],
     };
-    const parserTree = new MarkdownTree(structuredClone(source)).serialize();
+    const construction = new ConstructionTree(structuredClone(source));
+    construction.normalize();
+    const parserTree = construction.serialize();
     const canonical = CanonicalDocument.fromParsed(source, {
       documentId: 'shared-normalization-document',
       actionId: 'shared-normalization-import',

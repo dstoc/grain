@@ -5,12 +5,12 @@ import { CanonicalWriter } from '../markdown/canonical-actions.js';
 import type { AcceptedAction, ActionRequest } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, CanonicalNode } from '../markdown/canonical-model.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
+import { asInlineMarkdownNodeView } from '../markdown/node-view.js';
 import { insertParagraph } from './commands/insert-paragraph.js';
 import { joinWithPrevious } from './commands/join-with-previous.js';
 import { prepareEdit } from './prepare-edit.js';
 import { CanonicalEditor } from './canonical-editor.js';
 import { nextTask } from './test/lifecycle.js';
-import type { InlineViewModelNode } from '../markdown/view-model-node.js';
 
 describe('CanonicalEditor in Chromium', () => {
   let editor: CanonicalEditor | undefined;
@@ -87,7 +87,7 @@ describe('CanonicalEditor in Chromium', () => {
     const mounted = await mount('alpha');
     const node = document!.root.children[0]!;
     expect(mounted.inline.nodeView).toBe(node);
-    expect(mounted.inline.node).toBeUndefined();
+    expect('node' in mounted.inline).toBe(false);
     mounted.inline.focus();
     mounted.inline.setSelectionOffsets(5, 5);
 
@@ -271,11 +271,13 @@ describe('CanonicalEditor in Chromium', () => {
   test('restores block selection direction after replacing selected blocks and undoing', async () => {
     const mounted = await mount('alpha\n\nbeta');
     const [first, last] = document!.root.children as CanonicalNode[];
+    const firstView = asInlineMarkdownNodeView(first);
+    const lastView = asInlineMarkdownNodeView(last);
     const context = mounted.renderer.hostContext;
-    context.selection.add(first as unknown as InlineViewModelNode);
-    context.selection.add(last as unknown as InlineViewModelNode);
-    context.selectionAnchor = last as unknown as InlineViewModelNode;
-    context.selectionFocus = first as unknown as InlineViewModelNode;
+    context.selection.add(firstView);
+    context.selection.add(lastView);
+    context.selectionAnchor = lastView;
+    context.selectionFocus = firstView;
     mounted.inline.focus();
 
     await userEvent.keyboard('X');

@@ -1,21 +1,19 @@
-import { viewModel } from '../view-model-node.js';
-import { MarkdownTree } from '../view-model.js';
-import { MarkdownTreeDraft } from '../semantic-tree-draft.js';
+import type { ConstructionTree } from '../semantic/construction-tree.js';
 import { nodeAtPath, isDefined } from './utils.js';
 import {
   type BlockParseState,
   type BlockParserSnapshot,
-  type ParagraphViewModelNode,
-  type ListItemViewModelNode,
-  type BlockQuoteViewModelNode,
-  type CodeBlockViewModelNode,
-  type SectionViewModelNode,
+  type ConstructionParagraphNode,
+  type ConstructionListItemNode,
+  type ConstructionBlockQuoteNode,
+  type ConstructionCodeBlockNode,
+  type ConstructionSectionNode,
 } from './types.js';
 
-export function createInitialState(tree: MarkdownTree): BlockParseState {
+export function createInitialState(tree: ConstructionTree): BlockParseState {
   return {
     tree,
-    draft: new MarkdownTreeDraft(tree),
+    draft: tree.draft,
     root: tree.root,
     sawContent: false,
     hasExplicitRootParagraph: false,
@@ -30,15 +28,18 @@ export function createInitialState(tree: MarkdownTree): BlockParseState {
   };
 }
 
-export function restoreState(tree: MarkdownTree, snapshot: BlockParserSnapshot): BlockParseState {
+export function restoreState(
+  tree: ConstructionTree,
+  snapshot: BlockParserSnapshot,
+): BlockParseState {
   const state = createInitialState(tree);
   state.sawContent = snapshot.sawContent;
   state.hasExplicitRootParagraph = snapshot.hasExplicitRootParagraph ?? false;
   state.currentParagraph = nodeAtPath(state.root, snapshot.currentParagraphPath) as
-    | ParagraphViewModelNode
+    | ConstructionParagraphNode
     | undefined;
   state.currentListPath = snapshot.currentListPath
-    .map((path) => nodeAtPath(state.root, path) as ListItemViewModelNode | undefined)
+    .map((path) => nodeAtPath(state.root, path) as ConstructionListItemNode | undefined)
     .filter(isDefined);
   for (const { path, width } of snapshot.sourceMarkerWidths ?? []) {
     const item = nodeAtPath(state.root, path);
@@ -46,19 +47,19 @@ export function restoreState(tree: MarkdownTree, snapshot: BlockParserSnapshot):
   }
   state.currentQuoteBase = nodeAtPath(state.root, snapshot.currentQuoteBasePath);
   state.currentQuoteStack = snapshot.currentQuoteStackPaths
-    .map((path) => nodeAtPath(state.root, path) as BlockQuoteViewModelNode | undefined)
+    .map((path) => nodeAtPath(state.root, path) as ConstructionBlockQuoteNode | undefined)
     .filter(isDefined);
   state.currentCodeBlock = nodeAtPath(state.root, snapshot.currentCodeBlockPath) as
-    | CodeBlockViewModelNode
+    | ConstructionCodeBlockNode
     | undefined;
   state.currentCodeFence = snapshot.currentCodeFence;
   state.currentCodeHasLines =
     snapshot.currentCodeHasLines ?? Boolean(state.currentCodeBlock?.content);
   state.sectionStack = snapshot.sectionStackPaths
-    .map((path) => nodeAtPath(state.root, path) as SectionViewModelNode | undefined)
+    .map((path) => nodeAtPath(state.root, path) as ConstructionSectionNode | undefined)
     .filter(isDefined);
   const currentListItem = state.currentListPath.at(-1);
-  const parent = currentListItem?.[viewModel].parent;
+  const parent = currentListItem?.parent;
   state.currentList = parent?.type === 'list' ? parent : undefined;
   return state;
 }

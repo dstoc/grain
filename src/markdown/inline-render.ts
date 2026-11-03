@@ -9,12 +9,7 @@ import { cast } from '../asserts.js';
 import { NodeSignalController } from './node-signal-controller.js';
 import { HostContext, hostContext } from './host-context.js';
 import type { InlineTreeNode } from './inline-parser.js';
-import type { InlineViewModelNode } from './view-model-node.js';
-import {
-  asInlineMarkdownNodeView,
-  type InlineMarkdownNodeView,
-  type ReadonlyMarkdownNodeView,
-} from './node-view.js';
+import { type InlineMarkdownNodeView, type ReadonlyMarkdownNodeView } from './node-view.js';
 
 export interface InlineInputPoint {
   span?: MarkdownSpan;
@@ -81,15 +76,9 @@ export class MarkdownInline extends LitElement {
 
   @query('md-span') accessor span!: MarkdownSpan;
 
-  /** Legacy editing adapter. Canonical rendering leaves this unset. */
-  @property({ attribute: false }) accessor node: InlineViewModelNode | undefined;
   @property({ attribute: false }) accessor nodeView: InlineMarkdownNodeView | undefined;
 
-  private nodeSignal = new NodeSignalController(this, () => {
-    if (this.node) return asInlineMarkdownNodeView(this.node);
-    return this.legacyNodeView ? undefined : this.nodeView;
-  });
-  private legacyNodeView = false;
+  private nodeSignal = new NodeSignalController(this, () => this.nodeView);
   private projectionVersion = 0;
   private recovery?: Promise<MarkdownInline | undefined>;
   private recoveringProjection = false;
@@ -253,16 +242,6 @@ export class MarkdownInline extends LitElement {
 
   protected override willUpdate(changed: Map<PropertyKey, unknown>) {
     if (this.composing) this.dispatchEvent(new Event('composition-invalidated'));
-    if (changed.has('nodeView')) this.legacyNodeView = false;
-    if (changed.has('node')) {
-      if (this.node) {
-        this.nodeView = asInlineMarkdownNodeView(this.node);
-        this.legacyNodeView = true;
-      } else if (this.legacyNodeView) {
-        this.nodeView = undefined;
-        this.legacyNodeView = false;
-      }
-    }
   }
 
   override render() {
@@ -664,7 +643,7 @@ export class MarkdownSpan extends LitElement {
   }
 
   private renderText(content: string): TemplateResult {
-    const codeBlock = this.closest('md-inline')?.node;
+    const codeBlock = this.closest('md-inline')?.nodeView;
     if (codeBlock?.type === 'code-block') {
       // The trailing break gives Chromium a caret position after a final newline without
       // adding text to the code block's projection.

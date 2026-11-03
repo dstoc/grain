@@ -1,10 +1,9 @@
-import { viewModel } from '../../view-model-node.js';
-import type { ViewModelNode } from '../../view-model-node.js';
+import type { ConstructionNode } from '../../semantic/construction-tree.js';
 import {
   type BlockParseState,
   type MappedText,
-  type SectionViewModelNode,
-  type ParagraphViewModelNode,
+  type ConstructionSectionNode,
+  type ConstructionParagraphNode,
 } from '../types.js';
 import {
   createSemanticNode,
@@ -19,20 +18,15 @@ import { closeParagraph } from './paragraphs.js';
 export function tryPromoteSetextHeading(
   state: BlockParseState,
   line: string,
-  container: ViewModelNode,
+  container: ConstructionNode,
 ): boolean {
   const match = /^(=+|-+)\s*$/.exec(line);
   const paragraph = state.currentParagraph;
-  if (
-    !match ||
-    !paragraph ||
-    paragraph.content.includes('\n') ||
-    paragraph[viewModel].parent !== container
-  ) {
+  if (!match || !paragraph || paragraph.content.includes('\n') || paragraph.parent !== container) {
     return false;
   }
 
-  const parent = paragraph[viewModel].parent;
+  const parent = paragraph.parent;
   if (!parent || (parent.type !== 'document' && parent.type !== 'section')) {
     return false;
   }
@@ -45,20 +39,20 @@ export function tryPromoteSetextHeading(
 
 export function promoteParagraphToSection(
   state: BlockParseState,
-  paragraph: ParagraphViewModelNode,
-  parent: ViewModelNode,
+  paragraph: ConstructionParagraphNode,
+  parent: ConstructionNode,
   level: number,
 ) {
   syncSectionStack(state, parent);
   popSectionsToLevel(state, level);
 
   const container = currentSectionContainer(state);
-  const nextSibling = paragraph[viewModel].nextSibling;
+  const nextSibling = paragraph.nextSibling;
   const section = createSemanticNode(state, {
     type: 'section',
     marker: '#'.repeat(level),
     content: paragraph.content,
-  }) as SectionViewModelNode;
+  }) as ConstructionSectionNode;
   placeSemanticNode(state, section, container, nextSibling);
   const pieces = state.inlinePieces.get(paragraph);
   if (pieces) state.inlinePieces.set(section, pieces);
@@ -93,7 +87,7 @@ export function openSection(
     type: 'section',
     marker: '#'.repeat(level),
     content,
-  }) as SectionViewModelNode;
+  }) as ConstructionSectionNode;
   placeSemanticNode(state, section, parent);
   if (mapped) state.inlinePieces.set(section, mapped.pieces);
   state.sectionStack.push(section);

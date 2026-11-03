@@ -29,6 +29,11 @@ export type InlineMarkdownNodeView = ReadonlyMarkdownNodeView &
     | { readonly type: 'code-block'; readonly content: string; readonly info: string | null }
   );
 
+export type ReadonlyCodeBlockNodeView = Extract<
+  InlineMarkdownNodeView,
+  { readonly type: 'code-block' }
+>;
+
 export function asInlineMarkdownNodeView(node: ReadonlyMarkdownNodeView): InlineMarkdownNodeView {
   if (
     (node.type !== 'paragraph' && node.type !== 'section' && node.type !== 'code-block') ||

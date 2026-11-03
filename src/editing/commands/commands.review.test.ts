@@ -7,14 +7,7 @@ import { indent } from './indent.js';
 import { insertParagraph } from './insert-paragraph.js';
 import { runCommand } from '../test/run-command.js';
 import type { EditSelection } from '../../markdown/semantic/selection.js';
-import { MarkdownTree } from '../../markdown/view-model.js';
-import { parseBlocks } from '../../markdown/block-parser/api.js';
 import { serializeToString } from '../../markdown/block-serializer.js';
-import { editInlineIndent as legacyIndent } from '../edits/indent-inline.js';
-import { deleteContentBackwards as legacyBackspace } from '../edits/delete-content-backwards.js';
-import { insertParagraph as legacyEnter } from '../edits/insert-paragraph.js';
-import type { EditContext } from '../editor.js';
-import type { ViewModelNode } from '../../markdown/view-model-node.js';
 import * as Y from 'yjs';
 
 const cleanup: (() => void)[] = [];
@@ -52,48 +45,6 @@ function spans(document: CanonicalDocument, id: string) {
   if (!node) throw new Error(`missing canonical node ${id}`);
   return node.spans.map((span) => ({ ...span }));
 }
-function legacyContext(tree: MarkdownTree, node: ViewModelNode) {
-  return {
-    root: tree.root,
-    node,
-    startEditing() {},
-    focus() {},
-    keepFocus() {},
-  } as unknown as EditContext;
-}
-
-it('standalone reference preserves nesting, code adjacency, and the ordered run start', () => {
-  const indent = new MarkdownTree(parseBlocks('* alpha\n* beta\n').node);
-  indent.edit(() => {
-    legacyIndent(
-      legacyContext(indent, indent.root.children![0].children![1].children![0]),
-      'indent',
-    );
-    return {};
-  });
-  expect(serializeToString(indent.serialize())).toBe('* alpha\n  * beta\n');
-  const backspace = new MarkdownTree(parseBlocks('before\n\n```text\ncode\n```\n\nafter\n').node);
-  backspace.edit(() => {
-    legacyBackspace(legacyContext(backspace, backspace.root.children![2]));
-    return {};
-  });
-  expect(
-    backspace.root.children!.map((node) => [
-      node.type,
-      'content' in node ? node.content : undefined,
-    ]),
-  ).toEqual([
-    ['paragraph', 'before'],
-    ['code-block', 'codeafter'],
-  ]);
-  const enter = new MarkdownTree(parseBlocks('5. <!-- -->\n6. tail\n').node);
-  enter.edit(() => {
-    legacyEnter(legacyContext(enter, enter.root.children![0].children![0].children![0]), 0);
-    return {};
-  });
-  expect(serializeToString(enter.serialize())).toBe('<!-- -->\n\n5. tail\n');
-});
-
 it('indenting the second list item nests it below the first without reversing order', () => {
   const { document, writer } = create('* alpha\n* beta\n');
   const list = document.root.children[0]!;

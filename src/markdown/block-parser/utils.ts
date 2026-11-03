@@ -1,86 +1,92 @@
-import { viewModel } from '../view-model-node.js';
-import type { ViewModelNode } from '../view-model-node.js';
-import type { BlockParseState, ListItemViewModelNode, BlockQuoteViewModelNode } from './types.js';
+import type { ConstructionNode } from '../semantic/construction-tree.js';
+import type {
+  BlockParseState,
+  ConstructionListItemNode,
+  ConstructionBlockQuoteNode,
+} from './types.js';
 import type { CreateNodeSpec } from '../semantic/types.js';
 
 export function isBlankLine(line: string): boolean {
   return /^\s*$/.test(line);
 }
 
-export function createSemanticNode(state: BlockParseState, spec: CreateNodeSpec): ViewModelNode {
-  return state.draft.createNode(spec);
+export function createSemanticNode(state: BlockParseState, spec: CreateNodeSpec): ConstructionNode {
+  return state.tree.node(state.draft.create(spec));
 }
 
 export function placeSemanticNode(
   state: BlockParseState,
-  node: ViewModelNode,
-  parent: ViewModelNode,
-  before?: ViewModelNode,
+  node: ConstructionNode,
+  parent: ConstructionNode,
+  before?: ConstructionNode,
 ): void {
-  state.draft.placeNodes(node, parent, before);
+  state.draft.place(node.id, parent.id, before?.id ?? null);
 }
 
-export function detachSemanticNodeIfAttached(state: BlockParseState, node: ViewModelNode): void {
-  state.draft.detachNodeIfAttached(node);
+export function detachSemanticNodeIfAttached(state: BlockParseState, node: ConstructionNode): void {
+  if (state.draft.parentOf(node.id) !== undefined) state.draft.detach(node.id);
 }
 
 export function editSemanticText(
   state: BlockParseState,
-  node: ViewModelNode,
+  node: ConstructionNode,
   from: number,
   to: number,
   insert: string,
 ): void {
-  state.draft.editNode(node, from, to, insert);
+  state.draft.spliceText(node.id, { from, to, insert });
 }
 
 export function setSemanticMarker(
   state: BlockParseState,
-  node: ViewModelNode,
+  node: ConstructionNode,
   marker: string,
 ): void {
-  state.draft.setMarker(state.draft.idOf(node), marker);
+  state.draft.setMarker(node.id, marker);
 }
 
 export function setSemanticChecked(
   state: BlockParseState,
-  node: ViewModelNode,
+  node: ConstructionNode,
   checked: boolean | null,
 ): void {
-  state.draft.setChecked(state.draft.idOf(node), checked);
+  state.draft.setChecked(node.id, checked);
 }
 
-export function isInsideListPath(node: ViewModelNode, ancestor?: ListItemViewModelNode): boolean {
+export function isInsideListPath(
+  node: ConstructionNode,
+  ancestor?: ConstructionListItemNode,
+): boolean {
   if (!ancestor) return false;
-  let parent: ViewModelNode | undefined = node;
+  let parent: ConstructionNode | undefined = node;
   while (parent) {
     if (parent === ancestor) return true;
-    parent = parent[viewModel].parent;
+    parent = parent.parent;
   }
   return false;
 }
 
-export function isAttached(root: ViewModelNode, node: ViewModelNode): boolean {
+export function isAttached(root: ConstructionNode, node: ConstructionNode): boolean {
   return pathForNode(root, node) !== undefined;
 }
 
 export function hasContainerAncestor(
-  node: ViewModelNode,
+  node: ConstructionNode,
   type: 'list-item' | 'block-quote',
 ): boolean {
-  let parent = node[viewModel].parent;
+  let parent = node.parent;
   while (parent) {
     if (parent.type === type) return true;
-    parent = parent[viewModel].parent;
+    parent = parent.parent;
   }
   return false;
 }
 
-export function pathForNode(root: ViewModelNode, node?: ViewModelNode): number[] | undefined {
+export function pathForNode(root: ConstructionNode, node?: ConstructionNode): number[] | undefined {
   if (!node) return;
   const path: number[] = [];
   while (node !== root) {
-    const parent: ViewModelNode | undefined = node[viewModel].parent;
+    const parent: ConstructionNode | undefined = node.parent;
     if (!parent) return;
     const index = parent.children?.indexOf(node);
     if (index === undefined || index < 0) return;
@@ -90,9 +96,9 @@ export function pathForNode(root: ViewModelNode, node?: ViewModelNode): number[]
   return path;
 }
 
-export function nodeAtPath(root: ViewModelNode, path?: number[]): ViewModelNode | undefined {
+export function nodeAtPath(root: ConstructionNode, path?: number[]): ConstructionNode | undefined {
   if (!path) return;
-  let node: ViewModelNode | undefined = root;
+  let node: ConstructionNode | undefined = root;
   for (const index of path) {
     node = node.children?.[index];
     if (!node) return;
@@ -104,33 +110,33 @@ export function isDefined<T>(value: T | undefined): value is T {
   return value !== undefined;
 }
 
-export function currentSectionContainer(state: BlockParseState): ViewModelNode {
+export function currentSectionContainer(state: BlockParseState): ConstructionNode {
   return state.sectionStack.at(-1) ?? state.root;
 }
 
 export function listContinuationPrefix(
   state: BlockParseState,
-  item?: ListItemViewModelNode,
+  item?: ConstructionListItemNode,
 ): string {
   return ' '.repeat(item ? (state.sourceMarkerWidths.get(item) ?? item.marker.length) : 0);
 }
 
 export function nextListPathItem(
-  path: ListItemViewModelNode[],
-  container: ViewModelNode,
+  path: ConstructionListItemNode[],
+  container: ConstructionNode,
   depth: number,
-): ListItemViewModelNode | undefined {
+): ConstructionListItemNode | undefined {
   const item = path[depth];
-  const parent = item?.[viewModel].parent;
+  const parent = item?.parent;
   if (parent?.type !== 'list') return;
-  return parent[viewModel].parent === container ? item : undefined;
+  return parent.parent === container ? item : undefined;
 }
 
 export function getQuotedPrefixContainer(
   state: BlockParseState,
-  base: ViewModelNode,
+  base: ConstructionNode,
   depth: number,
-): ViewModelNode | undefined {
+): ConstructionNode | undefined {
   const activeChain = activeQuoteChainForBase(state, base);
   if (activeChain.length >= depth) {
     return activeChain[depth - 1];
@@ -143,8 +149,8 @@ export function getQuotedPrefixContainer(
 
 export function activeQuoteChainForBase(
   state: BlockParseState,
-  base: ViewModelNode,
-): BlockQuoteViewModelNode[] {
+  base: ConstructionNode,
+): ConstructionBlockQuoteNode[] {
   const seed =
     state.currentCodeBlock ??
     state.currentParagraph ??
@@ -153,31 +159,31 @@ export function activeQuoteChainForBase(
     state.sectionStack.at(-1);
   if (!seed) return [];
 
-  const path: ViewModelNode[] = [];
-  let node: ViewModelNode | undefined = seed;
+  const path: ConstructionNode[] = [];
+  let node: ConstructionNode | undefined = seed;
   while (node && node !== base) {
     path.push(node);
-    node = node[viewModel].parent;
+    node = node.parent;
   }
   if (node !== base) return [];
 
   const chain = path
     .reverse()
-    .filter((node): node is BlockQuoteViewModelNode => node.type === 'block-quote');
+    .filter((node): node is ConstructionBlockQuoteNode => node.type === 'block-quote');
   return chain.length ? chain : trailingQuoteChainFromBase(base);
 }
 
-function trailingQuoteChainFromBase(base: ViewModelNode): BlockQuoteViewModelNode[] {
-  const quotes: BlockQuoteViewModelNode[] = [];
+function trailingQuoteChainFromBase(base: ConstructionNode): ConstructionBlockQuoteNode[] {
+  const quotes: ConstructionBlockQuoteNode[] = [];
   let current = base.children?.at(-1);
   while (current?.type === 'block-quote') {
-    quotes.push(current as BlockQuoteViewModelNode);
+    quotes.push(current as ConstructionBlockQuoteNode);
     current = current.children?.at(-1);
   }
   return quotes.some(hasBlockQuoteDescendant) ? quotes : [];
 }
 
-function hasBlockQuoteDescendant(node: ViewModelNode): boolean {
+function hasBlockQuoteDescendant(node: ConstructionNode): boolean {
   for (const child of node.children ?? []) {
     if (child.type === 'block-quote') {
       return true;
@@ -190,11 +196,11 @@ function hasBlockQuoteDescendant(node: ViewModelNode): boolean {
 }
 
 export function quoteContextForNode(
-  node: ViewModelNode,
-): { quoteBase: ViewModelNode; quoteDepth: number } | undefined {
-  const quotes: BlockQuoteViewModelNode[] = [];
-  let current: ViewModelNode | undefined = node[viewModel].parent;
-  let quoteBase: ViewModelNode | undefined;
+  node: ConstructionNode,
+): { quoteBase: ConstructionNode; quoteDepth: number } | undefined {
+  const quotes: ConstructionBlockQuoteNode[] = [];
+  let current: ConstructionNode | undefined = node.parent;
+  let quoteBase: ConstructionNode | undefined;
 
   while (current) {
     if (current.type === 'block-quote') {
@@ -203,7 +209,7 @@ export function quoteContextForNode(
       quoteBase = current;
       break;
     }
-    current = current[viewModel].parent;
+    current = current.parent;
   }
 
   if (!quoteBase || quotes.length === 0) {

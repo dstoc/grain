@@ -3,8 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { CanonicalWriter } from '../canonical-actions.js';
 import { CanonicalDocument } from '../canonical-model.js';
 import { parseBlocks } from '../block-parser/api.js';
-import { MarkdownTreeDraft } from '../semantic-tree-draft.js';
-import { MarkdownTree } from '../view-model.js';
+import { ConstructionTree } from './construction-tree.js';
 import type { TreeDraft, InlineFragment } from './draft.js';
 import type { CreateNodeSpec, NodeId } from './types.js';
 
@@ -42,16 +41,12 @@ function canonicalHarness(source: string): DraftHarness {
 }
 
 function constructionHarness(source: string): DraftHarness {
-  const tree = new MarkdownTree(parseBlocks(source).node);
-  const initialDraft = new MarkdownTreeDraft(tree);
-  const rootId = initialDraft.rootId;
+  const tree = new ConstructionTree(parseBlocks(source).node);
+  const rootId = tree.rootId;
   return {
     rootId,
     run(callback) {
-      tree.edit(() => {
-        callback(new MarkdownTreeDraft(tree));
-        return {};
-      });
+      callback(tree.createDraft());
     },
     close() {},
   };

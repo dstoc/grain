@@ -2,17 +2,16 @@ import { afterEach, expect, test } from 'vitest';
 import { userEvent, cdp } from 'vitest/browser';
 import { CanonicalDocument } from '../markdown/canonical-model.js';
 import { CanonicalWriter, type ActionRequest } from '../markdown/canonical-actions.js';
-import { MarkdownTree } from '../markdown/view-model.js';
 import { parseBlocks } from '../markdown/block-parser/api.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
-import type { InlineViewModelNode } from '../markdown/view-model-node.js';
+import { asInlineMarkdownNodeView } from '../markdown/node-view.js';
+import type { ReadonlyMarkdownNodeView } from '../markdown/node-view.js';
 import { CanonicalEditor } from './canonical-editor.js';
 import { insertParagraph } from './commands/insert-paragraph.js';
 import { prepareEdit } from './prepare-edit.js';
-import { Editor } from './editor.js';
 import { nextTask } from './test/lifecycle.js';
 
-let editor: Editor | CanonicalEditor;
+let editor: CanonicalEditor | undefined;
 let model: CanonicalDocument | undefined;
 let writer: CanonicalWriter | undefined;
 afterEach(async () => {
@@ -25,19 +24,13 @@ afterEach(async () => {
   window.getSelection()?.removeAllRanges();
 });
 
-async function mount(mode: string, source: string) {
-  if (mode === 'canonical') {
-    model = CanonicalDocument.fromMarkdown(source);
-    writer = new CanonicalWriter(model);
-    const canonical = new CanonicalEditor();
-    canonical.document = model;
-    canonical.writer = writer;
-    editor = canonical;
-  } else {
-    const legacy = new Editor();
-    legacy.root = new MarkdownTree(parseBlocks(source).node).root;
-    editor = legacy;
-  }
+async function mount(_mode: string, source: string) {
+  model = CanonicalDocument.fromMarkdown(source);
+  writer = new CanonicalWriter(model);
+  const canonical = new CanonicalEditor();
+  canonical.document = model;
+  canonical.writer = writer;
+  editor = canonical;
   window.document.body.replaceChildren(editor);
   await nextTask();
   await editor.updateComplete;
@@ -73,7 +66,7 @@ async function applyRemote(prepare: (writer: CanonicalWriter) => ActionRequest |
   }
 }
 
-for (const mode of ['legacy', 'canonical']) {
+for (const mode of ['canonical']) {
   test(`${mode} copying code plus a same-text heading preserves literal code`, async () => {
     const source = '```text\n# title\nliteral\n```\n\n# title\n\nbody';
     const renderer = await mount(mode, source);
@@ -369,7 +362,7 @@ test.each(['session', 'disconnect'] as const)(
 
 test('cross-node composition recovery discards queued input after a session change', async () => {
   const renderer = await mount('canonical', 'alpha');
-  const canonical = editor as CanonicalEditor;
+  const canonical = editor!;
   const node = model!.root.children[0]!;
   const inline = renderer.shadowRoot!.querySelector<MarkdownInline>('md-inline')!;
   inline.focus();
@@ -436,13 +429,15 @@ test('cross-node composition recovery discards queued input after a session chan
 
 test('selected-block composition recovery does not commit or hold input across a session change', async () => {
   const renderer = await mount('canonical', 'alpha\n\nbeta');
-  const canonical = editor as CanonicalEditor;
+  const canonical = editor!;
   const [first, last] = model!.root.children;
   const context = renderer.hostContext;
-  context.selection.add(first as unknown as InlineViewModelNode);
-  context.selection.add(last as unknown as InlineViewModelNode);
-  context.selectionAnchor = last as unknown as InlineViewModelNode;
-  context.selectionFocus = first as unknown as InlineViewModelNode;
+  const firstView = asInlineMarkdownNodeView(first as unknown as ReadonlyMarkdownNodeView);
+  const lastView = asInlineMarkdownNodeView(last as unknown as ReadonlyMarkdownNodeView);
+  context.selection.add(firstView);
+  context.selection.add(lastView);
+  context.selectionAnchor = lastView;
+  context.selectionFocus = firstView;
   const inline = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')][1]!;
   inline.focus();
   inline.setSelectionOffsets(4, 4);

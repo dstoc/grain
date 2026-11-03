@@ -3,8 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { createBlockParser, parseBlocks } from './block-parser/api.js';
 import { serializeToString } from './block-serializer.js';
 import type { DocumentNode, MarkdownNode } from './node.js';
-import { MarkdownTree } from './view-model.js';
-import { viewModel } from './view-model-node.js';
+import { ConstructionTree, type ConstructionNode } from './semantic/construction-tree.js';
 import { DEFAULT_UNSUPPORTED_GENERATED_CASE_NAMES } from './block-parser.permutations.default-skips.js';
 
 type ChainToken = 'section' | 'quote' | 'bullet' | 'ordered';
@@ -55,7 +54,7 @@ interface NamedGeneratedCase extends GeneratedCase {
 type VisibleContentNodeType = 'paragraph' | 'code-block' | 'section';
 
 interface VisibleContentSnapshot {
-  nodeId: number;
+  nodeId: string;
   identity: string;
   path: string;
   type: VisibleContentNodeType;
@@ -357,8 +356,8 @@ function supportsStableQuoteIncrementalShapes(
 }
 
 function canonicalizeGeneratedDocument(doc: DocumentNode): DocumentNode {
-  const tree = new MarkdownTree(structuredClone(doc));
-  tree.edit(() => ({}), false, { force: true });
+  const tree = new ConstructionTree(structuredClone(doc));
+  tree.normalize();
   return tree.serialize() as DocumentNode;
 }
 
@@ -673,17 +672,12 @@ function describeAugmentation(augmentation: Augmentation): string {
   }
 }
 
-function collectVisibleContentSnapshots(tree: MarkdownTree): VisibleContentSnapshot[] {
+function collectVisibleContentSnapshots(tree: ConstructionTree): VisibleContentSnapshot[] {
   const snapshots: VisibleContentSnapshot[] = [];
 
-  function visit(node: MarkdownNode, path: string): void {
+  function visit(node: ConstructionNode, path: string): void {
     if (node.type === 'paragraph' || node.type === 'code-block' || node.type === 'section') {
-      const nodeId =
-        (
-          node as MarkdownNode & {
-            [viewModel]?: { id: number };
-          }
-        )[viewModel]?.id ?? -1;
+      const nodeId = node.id;
       snapshots.push({
         nodeId,
         identity: `${path}:${node.type}`,
@@ -1040,7 +1034,7 @@ function getVisibleContentStartIndex(markdown: string, lineStart: number): numbe
 
 describe('block parser content growth heuristic helpers', () => {
   it('collects visible content-bearing nodes with path-based identities in document order', () => {
-    const tree = new MarkdownTree({
+    const tree = new ConstructionTree({
       type: 'document',
       children: [
         {
@@ -1061,45 +1055,46 @@ describe('block parser content growth heuristic helpers', () => {
         { type: 'paragraph', content: 'ee' },
       ],
     });
+    tree.normalize();
 
     expect(collectVisibleContentSnapshots(tree)).toEqual([
       {
-        nodeId: expect.any(Number) as number,
+        nodeId: expect.stringMatching(/^construction:/) as unknown as string,
         identity: 'document/0:section',
         path: 'document/0',
         type: 'section',
         contentLength: 4,
       },
       {
-        nodeId: expect.any(Number) as number,
+        nodeId: expect.any(String) as string,
         identity: 'document/0/0:paragraph',
         path: 'document/0/0',
         type: 'paragraph',
         contentLength: 1,
       },
       {
-        nodeId: expect.any(Number) as number,
+        nodeId: expect.any(String) as string,
         identity: 'document/0/1:code-block',
         path: 'document/0/1',
         type: 'code-block',
         contentLength: 2,
       },
       {
-        nodeId: expect.any(Number) as number,
+        nodeId: expect.any(String) as string,
         identity: 'document/0/2:section',
         path: 'document/0/2',
         type: 'section',
         contentLength: 3,
       },
       {
-        nodeId: expect.any(Number) as number,
+        nodeId: expect.any(String) as string,
         identity: 'document/0/2/0:paragraph',
         path: 'document/0/2/0',
         type: 'paragraph',
         contentLength: 4,
       },
       {
-        nodeId: expect.any(Number) as number,
+        nodeId: expect.any(String) as string,
         identity: 'document/0/2/1:paragraph',
         path: 'document/0/2/1',
         type: 'paragraph',
@@ -1111,7 +1106,7 @@ describe('block parser content growth heuristic helpers', () => {
   it('accepts the expected visible-content growth progression', () => {
     const previousSnapshot: VisibleContentSnapshot[] = [
       {
-        nodeId: 1,
+        nodeId: 'construction:1',
         identity: 'document/0:paragraph',
         path: 'document/0',
         type: 'paragraph',
@@ -1120,21 +1115,21 @@ describe('block parser content growth heuristic helpers', () => {
     ];
     const currentSnapshot: VisibleContentSnapshot[] = [
       {
-        nodeId: 1,
+        nodeId: 'construction:1',
         identity: 'document/0:paragraph',
         path: 'document/0',
         type: 'paragraph',
         contentLength: 2,
       },
       {
-        nodeId: 2,
+        nodeId: 'construction:2',
         identity: 'document/1:code-block',
         path: 'document/1',
         type: 'code-block',
         contentLength: 1,
       },
       {
-        nodeId: 3,
+        nodeId: 'construction:3',
         identity: 'document/2:section',
         path: 'document/2',
         type: 'section',
@@ -1150,7 +1145,7 @@ describe('block parser content growth heuristic helpers', () => {
   it('rejects newly visible content-bearing nodes that start above length one', () => {
     const previousSnapshot: VisibleContentSnapshot[] = [
       {
-        nodeId: 1,
+        nodeId: 'construction:1',
         identity: 'document/0:paragraph',
         path: 'document/0',
         type: 'paragraph',
@@ -1159,14 +1154,14 @@ describe('block parser content growth heuristic helpers', () => {
     ];
     const currentSnapshot: VisibleContentSnapshot[] = [
       {
-        nodeId: 1,
+        nodeId: 'construction:1',
         identity: 'document/0:paragraph',
         path: 'document/0',
         type: 'paragraph',
         contentLength: 1,
       },
       {
-        nodeId: 2,
+        nodeId: 'construction:2',
         identity: 'document/1:section',
         path: 'document/1',
         type: 'section',
@@ -1187,7 +1182,7 @@ describe('block parser content growth heuristic helpers', () => {
   it('rejects visible content nodes that grow by more than one character', () => {
     const previousSnapshot: VisibleContentSnapshot[] = [
       {
-        nodeId: 1,
+        nodeId: 'construction:1',
         identity: 'document/0:section',
         path: 'document/0',
         type: 'section',
@@ -1196,7 +1191,7 @@ describe('block parser content growth heuristic helpers', () => {
     ];
     const currentSnapshot: VisibleContentSnapshot[] = [
       {
-        nodeId: 1,
+        nodeId: 'construction:1',
         identity: 'document/0:section',
         path: 'document/0',
         type: 'section',

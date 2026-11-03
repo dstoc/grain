@@ -1,9 +1,9 @@
-import type { ViewModelNode } from '../../view-model-node.js';
+import type { ConstructionNode } from '../../semantic/construction-tree.js';
 import { type BlockParseState } from '../types.js';
 import { hasContainerAncestor } from '../utils.js';
 import { syncQuoteStack, resetQuoteStack } from '../container-management.js';
 
-export function projectPendingQuoteOpen(state: BlockParseState, parent: ViewModelNode) {
+export function projectPendingQuoteOpen(state: BlockParseState, parent: ConstructionNode) {
   syncQuoteStack(state, parent, 1);
 }
 
@@ -14,6 +14,6 @@ export function closeQuote(state: BlockParseState) {
   resetQuoteStack(state);
 }
 
-function isInsideBlockQuote(node: ViewModelNode): boolean {
+function isInsideBlockQuote(node: ConstructionNode): boolean {
   return hasContainerAncestor(node, 'block-quote');
 }

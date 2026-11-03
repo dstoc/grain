@@ -5,9 +5,7 @@ import { CanonicalWriter } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, type NodeId } from '../markdown/canonical-model.js';
 import { parseBlocks } from '../markdown/block-parser/api.js';
 import { serializeToString } from '../markdown/block-serializer.js';
-import { MarkdownTreeDraft } from '../markdown/semantic-tree-draft.js';
-import { MarkdownTree } from '../markdown/view-model.js';
-import type { ViewModelNode } from '../markdown/view-model-node.js';
+import { ConstructionTree, type ConstructionNode } from '../markdown/semantic/construction-tree.js';
 import type { EditContext } from './context.js';
 import type { EditOutcome } from './outcomes.js';
 import { deleteBackwardAtStart } from './commands/delete-backward.js';
@@ -46,9 +44,9 @@ function atPath<T extends { readonly children: readonly T[] }>(
   return node;
 }
 
-function nodeAtPath(root: ViewModelNode, path: readonly number[]): ViewModelNode {
+function nodeAtPath(root: ConstructionNode, path: readonly number[]): ConstructionNode {
   let node = root;
-  for (const index of path) node = node.children![index] as ViewModelNode;
+  for (const index of path) node = node.children[index]!;
   return node;
 }
 
@@ -56,17 +54,13 @@ function markdown(document: CanonicalDocument): string {
   return serializeToString(document.exportMarkdownTree());
 }
 
-function runTreeEdit(tree: MarkdownTree, node: ViewModelNode, edit: SharedEdit): void {
-  tree.edit(() => {
-    const draft = new MarkdownTreeDraft(tree);
-    const outcome = edit({ draft, scopeRoot: draft.rootId }, draft.idOf(node));
-    if (outcome.status === 'not-applicable')
-      throw new Error('construction edit was not applicable');
-    return {};
-  });
+function runTreeEdit(tree: ConstructionTree, node: ConstructionNode, edit: SharedEdit): void {
+  const outcome = edit({ draft: tree.draft, scopeRoot: tree.rootId }, node.id);
+  if (outcome.status === 'not-applicable') throw new Error('construction edit was not applicable');
+  tree.normalize();
 }
 
-function serializedTree(tree: MarkdownTree): string {
+function serializedTree(tree: ConstructionTree): string {
   return serializeToString(tree.serialize());
 }
 
@@ -110,7 +104,7 @@ const cases: readonly ParityCase[] = [
 ];
 
 describe('shared semantic editing draft', () => {
-  it.each(cases)('$name has the same tree and history on each draft backend', (fixture) => {
+  it.each(cases)('$name has the same resulting tree and canonical history', (fixture) => {
     const canonical = CanonicalDocument.fromMarkdown(fixture.markdown, {
       documentId: `semantic-draft-parity-${++ordinal}`,
       actionId: `semantic-draft-import-${ordinal}`,
@@ -118,7 +112,7 @@ describe('shared semantic editing draft', () => {
     const writer = new CanonicalWriter(canonical);
     openDocuments.push({ document: canonical, writer });
 
-    const tree = new MarkdownTree(parseBlocks(fixture.markdown).node);
+    const tree = new ConstructionTree(parseBlocks(fixture.markdown).node);
     const canonicalTarget = atPath(canonical.root, fixture.path);
     const treeTarget = nodeAtPath(tree.root, fixture.path);
     const before = markdown(canonical);
@@ -154,12 +148,9 @@ describe('shared semantic editing draft', () => {
     runTreeEdit(tree, treeTarget, fixture.edit);
 
     expect(serializedTree(tree)).toBe(markdown(canonical));
-    expect(tree.undo(tree.root)).toBeDefined();
     expect(writer.undo()).toHaveProperty('status', 'applied');
-    expect(serializedTree(tree)).toBe(before);
     expect(markdown(canonical)).toBe(before);
 
-    expect(tree.redo(tree.root)).toBeDefined();
     expect(writer.redo()).toHaveProperty('status', 'applied');
     expect(serializedTree(tree)).toBe(markdown(canonical));
   });

@@ -1,5 +1,4 @@
-import { viewModel } from '../view-model-node.js';
-import type { ViewModelNode } from '../view-model-node.js';
+import type { ConstructionNode } from '../semantic/construction-tree.js';
 import { isAttached, hasContainerAncestor } from './utils.js';
 import { type BlockParseState } from './types.js';
 import { resetQuoteStack } from './container-management.js';
@@ -41,19 +40,19 @@ export function pruneDetachedState(state: BlockParseState) {
   }
 
   const currentListItem = state.currentListPath.at(-1);
-  const parent = currentListItem?.[viewModel].parent;
+  const parent = currentListItem?.parent;
   if (parent?.type === 'list') {
     state.currentList = parent;
   }
 }
 
 export function cleanupInactiveEmptyBlocks(state: BlockParseState) {
-  const preserved = new Set<ViewModelNode>();
+  const preserved = new Set<ConstructionNode>();
   for (const node of activeNodes(state)) {
-    let current: ViewModelNode | undefined = node;
+    let current: ConstructionNode | undefined = node;
     while (current && !preserved.has(current)) {
       preserved.add(current);
-      current = current[viewModel].parent;
+      current = current.parent;
     }
   }
 
@@ -65,7 +64,7 @@ export function cleanupInactiveEmptyBlocks(state: BlockParseState) {
   pruneDetachedState(state);
 }
 
-function* activeNodes(state: BlockParseState): Generator<ViewModelNode> {
+function* activeNodes(state: BlockParseState): Generator<ConstructionNode> {
   yield state.root;
   if (state.currentParagraph) yield state.currentParagraph;
   if (state.currentList) yield state.currentList;
@@ -76,11 +75,11 @@ function* activeNodes(state: BlockParseState): Generator<ViewModelNode> {
   for (const node of state.sectionStack) yield node;
 }
 
-export function collectEmptyBlocks(root: ViewModelNode): ViewModelNode[] {
-  const result: ViewModelNode[] = [];
+export function collectEmptyBlocks(root: ConstructionNode): ConstructionNode[] {
+  const result: ConstructionNode[] = [];
 
-  function visit(node: ViewModelNode) {
-    for (const child of (node.children ?? []) as ViewModelNode[]) {
+  function visit(node: ConstructionNode) {
+    for (const child of (node.children ?? []) as ConstructionNode[]) {
       visit(child);
     }
     if (

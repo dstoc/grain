@@ -10,15 +10,14 @@ import type {
   MobileToolbarFocusEvent,
 } from './editing/mobile-keyboard-toolbar.js';
 import { createBlockParser, parseMarkdownTree } from './markdown/block-parser/api.js';
+import { ConstructionPreviewAdapter } from './markdown/construction-preview.js';
 import { CanonicalWriter } from './markdown/canonical/writer.js';
 import { CanonicalDocument } from './markdown/canonical/document.js';
 import type { BlockParser } from './markdown/block-parser/api.js';
 import type { DocumentNode } from './markdown/node.js';
 import { serializeToString } from './markdown/block-serializer.js';
 import type { MarkdownRenderDelegate } from './markdown/render-delegate.js';
-import { viewModel } from './markdown/view-model-node.js';
-import type { ViewModelNode } from './markdown/view-model-node.js';
-import type { MarkdownTree } from './markdown/view-model.js';
+import type { ReadonlyMarkdownNodeView } from './markdown/node-view.js';
 import { styles as appStyles } from './style.js';
 
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, ...appStyles];
@@ -74,7 +73,7 @@ const transclusionRenderDelegate: MarkdownRenderDelegate = {
     if (node.info !== 'md') return undefined;
     return html`<md-transclusion
       .node=${node}
-      .root=${parseMarkdownTree(node.content).root}
+      .root=${new ConstructionPreviewAdapter(parseMarkdownTree(node.content)).root}
       ?selected=${selected}
     ></md-transclusion>`;
   },
@@ -520,7 +519,7 @@ class MarkdownDevHarness extends LitElement {
     keyboardTop: { state: true },
   };
 
-  declare root: ViewModelNode | undefined;
+  declare root: ReadonlyMarkdownNodeView | undefined;
   declare private source: string;
   declare private pendingText: string;
   declare private parseMode: string;
@@ -541,7 +540,7 @@ class MarkdownDevHarness extends LitElement {
   declare private simulatedKeyboard: boolean;
   declare private keyboardTop: number;
   private parser: BlockParser;
-  private observedTree: MarkdownTree | undefined;
+  private preview: ConstructionPreviewAdapter;
   private parserReusable = false;
   private playbackTimer: number | undefined;
   private readonly playbackDelayMs = 10;
@@ -569,6 +568,7 @@ class MarkdownDevHarness extends LitElement {
   constructor() {
     super();
     this.parser = createBlockParser();
+    this.preview = new ConstructionPreviewAdapter(this.parser.getTree());
     this.root = undefined;
     this.source = sample;
     this.pendingText = '';
@@ -913,7 +913,6 @@ class MarkdownDevHarness extends LitElement {
   }
 
   override disconnectedCallback(): void {
-    this.observeRootTree(undefined);
     this.stopPlayback();
     window.removeEventListener('resize', this.onViewportChange);
     window.removeEventListener('orientationchange', this.onOrientationChange);
@@ -936,18 +935,14 @@ class MarkdownDevHarness extends LitElement {
     super.disconnectedCallback();
   }
 
-  protected override updated() {
-    this.observeRootTree(this.root?.[viewModel].tree);
-  }
-
   private startPlayback() {
     this.stopPlayback();
     this.playing = true;
     this.parserReusable = false;
     this.playbackIndex = 0;
-    this.parser = createBlockParser();
+    this.resetParser();
     this.parseMode = 'append';
-    this.root = this.parser.getTree().root;
+    this.root = this.preview.root;
     this.serializedMarkdown = '';
     this.updateFromParser();
 
@@ -991,7 +986,7 @@ class MarkdownDevHarness extends LitElement {
       this.parser.push(appended);
       this.parseMode = 'append';
     } else {
-      this.parser = createBlockParser();
+      this.resetParser();
       this.source = markdown;
       this.parser.push(markdown);
       this.parseMode = forceFull ? 'initial' : 'full';
@@ -1005,7 +1000,7 @@ class MarkdownDevHarness extends LitElement {
   private setPlaybackProgress(index: number, mode = 'scrub') {
     this.parserReusable = false;
     const clamped = Math.max(0, Math.min(index, this.source.length));
-    this.parser = createBlockParser();
+    this.resetParser();
     const partial = this.source.slice(0, clamped);
     this.parser.push(partial);
     this.playbackIndex = clamped;
@@ -1015,15 +1010,19 @@ class MarkdownDevHarness extends LitElement {
 
   private updateFromParser() {
     const tree = this.parser.getTree();
+    this.preview.refresh();
     const serializedTree = tree.serialize();
-    if (this.parseMode != 'append') {
-      this.root = tree.root;
-    }
+    this.root = this.preview.root;
     this.serializedMarkdown = serializeToString(serializedTree);
     this.pendingText = this.parser.getPendingText();
     this.treeJson = JSON.stringify(serializedTree, null, 2);
     this.renderVersion++;
     if (!this.playing) this.replaceCanonicalDocument(serializedTree as DocumentNode);
+  }
+
+  private resetParser() {
+    this.parser = createBlockParser();
+    this.preview = new ConstructionPreviewAdapter(this.parser.getTree());
   }
 
   private replaceCanonicalDocument(tree: DocumentNode) {
@@ -1315,15 +1314,8 @@ class MarkdownDevHarness extends LitElement {
       this.toolbarRedoDisabled = !writer.canRedo('local');
       return;
     }
-    if (!(viewModel in root)) {
-      this.toolbarUndoDisabled = true;
-      this.toolbarRedoDisabled = true;
-      return;
-    }
-    const legacyRoot = root as ViewModelNode;
-    const tree = legacyRoot[viewModel].tree;
-    this.toolbarUndoDisabled = !tree.canUndo(legacyRoot);
-    this.toolbarRedoDisabled = !tree.canRedo(legacyRoot);
+    this.toolbarUndoDisabled = true;
+    this.toolbarRedoDisabled = true;
   }
 
   private waitForReadiness(inline: MarkdownInline) {
@@ -1590,34 +1582,6 @@ class MarkdownDevHarness extends LitElement {
       // A collapsed native selection may not have a measurable caret yet.
     }
   }
-
-  private observeRootTree(tree: MarkdownTree | undefined) {
-    if (this.observedTree === tree) return;
-    this.observedTree?.removeEventListener('tree-change', this.onTreeChange);
-    this.observedTree?.removeEventListener('history-change', this.onHistoryChange);
-    this.observedTree = tree;
-    this.observedTree?.addEventListener('tree-change', this.onTreeChange);
-    this.observedTree?.addEventListener('history-change', this.onHistoryChange);
-    this.refreshToolbarHistoryAvailability();
-  }
-
-  private onHistoryChange = () => this.refreshToolbarHistoryAvailability();
-
-  private onTreeChange = (event: Event) => {
-    if ((event as CustomEvent<string>).detail !== 'edit') return;
-    if (!this.root) return;
-    this.refreshToolbarHistoryAvailability();
-    this.stopPlayback();
-    const serializedTree = this.root[viewModel].tree.serialize();
-    this.source = serializeToString(serializedTree);
-    this.serializedMarkdown = this.source;
-    this.treeJson = JSON.stringify(serializedTree, null, 2);
-    this.pendingText = '';
-    this.parseMode = 'edited';
-    this.playbackIndex = this.source.length;
-    this.parserReusable = false;
-    this.requestUpdate();
-  };
 }
 
 customElements.define('md-dev-harness', MarkdownDevHarness);
