@@ -2,7 +2,7 @@ import * as Y from 'yjs';
 
 import { deepCopy, deepFreeze } from './util.js';
 import type { CanonicalIndexes } from './indexes.js';
-import type { BoundaryEmbed, ResourceToken, Span } from '../canonical-model.js';
+import type { BoundaryEmbed, ResourceToken, Span } from './types.js';
 import {
   META,
   NODES,

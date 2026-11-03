@@ -12,7 +12,7 @@ import {
   tapeMap,
 } from '../state-access.js';
 import type { CellValue } from '../state-access.js';
-import type { Span, TapeId } from '../../canonical-model.js';
+import type { Span, TapeId } from '../types.js';
 import type { NodeId, NodeKind, TextAffinity } from '../../semantic/types.js';
 import { assertTextEdit, splitsSurrogatePair } from '../../semantic/types.js';
 import type {

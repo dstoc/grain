@@ -3,7 +3,7 @@ import * as Y from 'yjs';
 import { CanonicalIndexes } from './indexes.js';
 import { metaMap } from './state-access.js';
 import { assertResolvedUpdate } from './native-execution.js';
-import type { TapeId } from '../canonical-model.js';
+import type { TapeId } from './types.js';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);

@@ -11,8 +11,7 @@ import {
   tapeMap,
 } from './state-access.js';
 import type { RecordMap } from './state-access.js';
-import type { BoundaryEmbed } from '../canonical-model.js';
-import type { TapeId } from '../canonical-model.js';
+import type { BoundaryEmbed, TapeId } from './types.js';
 import type { NodeId } from '../semantic/types.js';
 import type { CellField, StructuralPatch } from './action-types.js';
 import { mapTextEdit } from '../canonical-text.js';

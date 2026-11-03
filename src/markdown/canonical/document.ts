@@ -21,37 +21,26 @@ import { parseBlocks } from '../block-parser/api.js';
 import { batch } from '../../signals.js';
 import { CanonicalNode } from './node-projection.js';
 import type { CanonicalNodeProjectionOwner } from './node-projection.js';
+import type {
+  BoundaryEmbed,
+  BoundaryId,
+  CanonicalNodeFields,
+  Cell,
+  ResourceToken,
+  Span,
+  TapeId,
+} from './types.js';
 
 export { CanonicalNode } from './node-projection.js';
-
-export type TapeId = string;
-export type BoundaryId = string;
-export type ResourceToken = string;
-
-export interface Cell<T> {
-  readonly token: ResourceToken;
-  readonly value: T;
-}
-
-export interface Span {
-  readonly tapeId: TapeId;
-  readonly startBoundaryId: BoundaryId;
-  readonly endBoundaryId: BoundaryId;
-}
-
-export interface BoundaryEmbed {
-  readonly grainBoundary: BoundaryId;
-}
-
-export interface CanonicalNodeFields {
-  readonly kind: Cell<NodeKind>;
-  readonly children: Y.Array<NodeId>;
-  readonly childrenToken: ResourceToken;
-  readonly spans: Cell<readonly Span[]>;
-  readonly marker: Cell<string | null>;
-  readonly checked: Cell<boolean | null>;
-  readonly info: Cell<string | null>;
-}
+export type {
+  BoundaryEmbed,
+  BoundaryId,
+  CanonicalNodeFields,
+  Cell,
+  ResourceToken,
+  Span,
+  TapeId,
+} from './types.js';
 
 export interface CanonicalCheckpoint {
   readonly documentId: string;

@@ -1,4 +1,4 @@
-import type { Span, ResourceToken, TapeId } from '../canonical-model.js';
+import type { Span, ResourceToken, TapeId } from './types.js';
 import type { TreeDraft } from '../semantic/draft.js';
 import type { CreateNodeSpec, NodeId, TextAffinity, TextEdit } from '../semantic/types.js';
 import type { ConversionPlan, Transfer } from '../semantic/draft.js';

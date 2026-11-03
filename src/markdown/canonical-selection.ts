@@ -1,7 +1,10 @@
 import * as Y from 'yjs';
 
-import { canonicalWriterAccess, CanonicalDocument, CanonicalNode } from './canonical-model.js';
-import type { NodeId, Span, TapeId } from './canonical-model.js';
+import { canonicalWriterAccess } from './canonical/document.js';
+import type { CanonicalDocument } from './canonical/document.js';
+import { CanonicalNode } from './canonical/node-projection.js';
+import type { Span, TapeId } from './canonical/types.js';
+import type { NodeId } from './semantic/types.js';
 import type { Bookmark, CanonicalTextAnchor } from './canonical/action-types.js';
 export type { CanonicalTextAnchor } from './canonical/action-types.js';
 import { mapProjectedTextEdit, mapTextEdit } from './canonical-text.js';

@@ -1,7 +1,7 @@
 import * as Y from 'yjs';
 
 import { currentActive, metaMap, nodeMap, readCell, revisionMap, tapeMap } from './state-access.js';
-import type { Span, TapeId } from '../canonical-model.js';
+import type { Span, TapeId } from './types.js';
 import type { NodeId } from '../semantic/types.js';
 import type {
   ActionFocus,
