@@ -11,6 +11,7 @@ function nearestListItem(context: EditContext, nodeId: NodeId): NodeId | undefin
   while (current !== scopeRoot) {
     const parent = draft.parentOf(current);
     if (!parent) return undefined;
+    if (parent === scopeRoot) return undefined;
     if (draft.node(parent).type === 'list-item') return parent;
     current = parent;
   }
@@ -56,6 +57,7 @@ export const deleteBackwardAtStart: Edit<DeleteBackwardInput> = (context, { node
     while (current !== scopeRoot) {
       const parent = draft.parentOf(current);
       if (!parent) return undefined;
+      if (parent === scopeRoot) return undefined;
       if (draft.node(parent).type === 'block-quote') return parent;
       current = parent;
     }

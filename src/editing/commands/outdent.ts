@@ -1,5 +1,5 @@
 import type { EditContext } from '../context.js';
-import { assertScopedTarget, isBlockSelection } from '../context.js';
+import { assertScopedTarget, isBlockSelection, isWithinScope } from '../context.js';
 import { handled, NOT_APPLICABLE, type Edit } from '../outcomes.js';
 import { normalizeBlockSelection } from '../operations/selection.js';
 import { placeAfter, placeBefore } from '../operations/placement.js';
@@ -12,6 +12,7 @@ function nearestListItem(context: EditContext, nodeId: NodeId): NodeId | undefin
   while (current !== scopeRoot) {
     const parent = draft.parentOf(current);
     if (!parent) return undefined;
+    if (parent === scopeRoot) return undefined;
     if (draft.node(parent).type === 'list-item') return parent;
     current = parent;
   }
@@ -42,13 +43,12 @@ export function outdentNode(context: EditContext, nodeId: NodeId): boolean {
   const listParent = draft.parentOf(list);
   if (!listParent) return false;
   const listParentType: NodeKind = draft.node(listParent).type;
+  const destination = listParentType === 'list-item' ? draft.parentOf(listParent) : listParent;
+  if (!destination || !isWithinScope(draft, scopeRoot, destination)) return false;
   const next = nextAfter(draft, listItem);
 
   if (listParentType === 'list-item') {
-    const grandparent = draft.parentOf(listParent);
-    if (grandparent) {
-      placeAfter(draft, listItem, grandparent, listParent);
-    }
+    placeAfter(draft, listItem, destination, listParent);
   }
 
   if (next) {

@@ -1,4 +1,4 @@
-import { assertScopedTarget } from '../context.js';
+import { assertScopedTarget, isWithinScope } from '../context.js';
 import { parseBlocks } from '../../markdown/block-parser/api.js';
 import type { MarkdownNode } from '../../markdown/node.js';
 import type { NodeId } from '../../markdown/semantic/types.js';
@@ -46,13 +46,17 @@ export const insertMarkdown: Edit<InsertMarkdownInput> = (context, { contextId, 
     beforeId = draft.nextSiblingOf(contextId) ?? null;
     if (!beforeId && draft.node(parentId).type === 'list-item') {
       const item = parentId;
-      parentId = draft.parentOf(item);
-      if (!parentId) return NOT_APPLICABLE;
-      beforeId = draft.nextSiblingOf(item) ?? null;
+      const list = draft.parentOf(item);
+      if (item !== scopeRoot && list) {
+        parentId = list;
+        beforeId = draft.nextSiblingOf(item) ?? null;
+      }
     }
   }
 
-  if (!parentId) return NOT_APPLICABLE;
+  const scopeDestination = attachAfter?.parent ?? parentId;
+  if (!parentId || !scopeDestination || !isWithinScope(draft, scopeRoot, scopeDestination))
+    return NOT_APPLICABLE;
   if (draft.node(parentId).type === 'list') {
     if (nodes.length === 1 && nodes[0]!.type === 'list') {
       nodes = [...(nodes[0]!.children ?? [])];

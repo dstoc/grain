@@ -393,6 +393,13 @@ export class CanonicalEditor extends LitElement {
     const document = this.document;
     const writer = this.writer;
     if (!document || !writer) return;
+    if (
+      writer.deferLocalEdit(() => {
+        if (this.document === document && this.writer === writer)
+          this.runEdit(command, input, selectionBefore);
+      })
+    )
+      return;
     try {
       const prepared = prepareEdit(
         writer,

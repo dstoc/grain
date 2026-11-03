@@ -1,6 +1,6 @@
 import type { EditContext } from '../context.js';
-import { assertScopedTarget } from '../context.js';
-import { handled, type Edit } from '../outcomes.js';
+import { assertScopedTarget, isWithinScope } from '../context.js';
+import { handled, NOT_APPLICABLE, type Edit } from '../outcomes.js';
 import type { NodeId } from '../../markdown/semantic/types.js';
 import { assertTextRange } from '../../markdown/semantic/types.js';
 import { nearestAncestor } from '../../markdown/semantic/queries.js';
@@ -142,6 +142,7 @@ function splitParagraphInSimpleList(
     beforeItem = nextAfter(context, item) ?? null;
   }
 
+  if (!isWithinScope(draft, context.scopeRoot, targetList)) return undefined;
   const first = draft.node(targetList).children[0];
   const newItem = draft.create({
     type: 'list-item',
@@ -205,7 +206,7 @@ export const insertParagraph: Edit<InsertParagraphInput> = (
       list && draft.node(list).children[0] === parent ? markerOf(context, parent) : undefined;
     const next = draft.nextSiblingOf(parent);
     const promoteToParent = !!listParent && draft.node(listParent).type !== 'list-item';
-    outdentNode(context, nodeId);
+    if (!outdentNode(context, nodeId)) return NOT_APPLICABLE;
     const orderedMarker = firstMarker && /^(\d+)([.)])\s*$/.exec(firstMarker);
     if (promoteToParent && next && orderedMarker) {
       let number = BigInt(orderedMarker[1]!);

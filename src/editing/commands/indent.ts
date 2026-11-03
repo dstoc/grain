@@ -1,5 +1,5 @@
 import type { EditContext } from '../context.js';
-import { assertScopedTarget, isBlockSelection } from '../context.js';
+import { assertScopedTarget, isBlockSelection, isWithinScope } from '../context.js';
 import { handled, NOT_APPLICABLE, type Edit } from '../outcomes.js';
 import { normalizeBlockSelection } from '../operations/selection.js';
 import { appendChild, placeBefore } from '../operations/placement.js';
@@ -30,6 +30,7 @@ export function indentNode(context: EditContext, nodeId: NodeId): boolean {
   if (draft.node(targetParent).type === 'list-item') {
     const previousItem = draft.previousSiblingOf(targetParent);
     if (!previousItem) return false;
+    if (!isWithinScope(draft, scopeRoot, previousItem)) return false;
     const previousType = draft.node(previousItem).type;
     if (previousType === 'list-item') {
       const last = draft.node(previousItem).children.at(-1);

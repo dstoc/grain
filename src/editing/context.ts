@@ -8,13 +8,19 @@ export interface EditContext {
   readonly selectionBefore?: EditSelection;
 }
 
-export function assertInScope(draft: TreeDraft, scopeRoot: NodeId, nodeId: NodeId): void {
+export function isWithinScope(draft: TreeDraft, scopeRoot: NodeId, nodeId: NodeId): boolean {
   let current = nodeId;
   while (current !== scopeRoot) {
     const parent = draft.parentOf(current);
-    if (!parent) throw new Error(`node ${nodeId} is outside edit scope ${scopeRoot}`);
+    if (!parent) return false;
     current = parent;
   }
+  return true;
+}
+
+export function assertInScope(draft: TreeDraft, scopeRoot: NodeId, nodeId: NodeId): void {
+  if (!isWithinScope(draft, scopeRoot, nodeId))
+    throw new Error(`node ${nodeId} is outside edit scope ${scopeRoot}`);
 }
 
 export function assertScopedTarget(draft: TreeDraft, scopeRoot: NodeId, nodeId: NodeId): void {

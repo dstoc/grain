@@ -33,6 +33,7 @@ export function nearestAncestor(
   while (current !== rootId) {
     const parent = draft.parentOf(current);
     if (!parent) return undefined;
+    if (parent === rootId) return undefined;
     if (types.includes(draft.node(parent).type)) return parent;
     current = parent;
   }
