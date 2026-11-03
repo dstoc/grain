@@ -6,7 +6,7 @@ export interface TextPoint {
   readonly affinity: TextAffinity;
 }
 
-export interface TextSelection {
+interface TextSelection {
   readonly anchor: TextPoint;
   readonly focus: TextPoint;
 }
@@ -26,9 +26,3 @@ export type SelectionIntent =
       readonly selection: BlockSelection;
       readonly restoreOnRedo?: boolean;
     };
-
-export interface EditFocus {
-  readonly start?: TextPoint;
-  readonly end?: TextPoint;
-  readonly selection?: TextSelection & { readonly restoreOnRedo?: boolean };
-}

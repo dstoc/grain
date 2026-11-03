@@ -1,10 +1,9 @@
 import type { SemanticNormalizationDraft } from './draft.js';
-import type { NodeId as NodeIdType, NodeKind as NodeKindType } from './types.js';
+import type { NodeId as NodeIdType } from './types.js';
 import { walkSemanticTree } from './queries.js';
 
 export type SemanticNodeId = NodeIdType;
-export type SemanticNodeKind = NodeKindType;
-export type { SemanticDraftNode, SemanticNormalizationDraft } from './draft.js';
+export type { SemanticNormalizationDraft } from './draft.js';
 
 export interface SemanticNormalizeOptions {
   readonly preserveEmptyBlocks?: boolean;

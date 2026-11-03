@@ -1,5 +1,3 @@
-import type { NodeId } from '../semantic/types.js';
-
 export interface CanonicalCheckpoint {
   readonly documentId: string;
   readonly schemaVersion: number;
@@ -26,25 +24,23 @@ export interface AcceptedUpdate {
   readonly update: Uint8Array;
 }
 
-export interface CanonicalMaintenanceReset {
-  readonly oldSchemaVersion: number;
-  readonly schemaVersion: number;
-  readonly oldAuthorityEpoch: string;
-  readonly authorityEpoch: string;
-  readonly documentId: string;
-  readonly rootId: NodeId;
-  readonly preservedNodeIds: readonly NodeId[];
-  readonly invalidated: readonly [
-    'nativeIdentities',
-    'history',
-    'pendingActions',
-    'sessionWatermarks',
-    'receipts',
-    'selectionAnchors',
-  ];
-}
-
 export interface CanonicalMaintenanceResult {
   readonly checkpoint: CanonicalCheckpoint;
-  readonly reset: CanonicalMaintenanceReset;
+  readonly reset: {
+    readonly oldSchemaVersion: number;
+    readonly schemaVersion: number;
+    readonly oldAuthorityEpoch: string;
+    readonly authorityEpoch: string;
+    readonly documentId: string;
+    readonly rootId: string;
+    readonly preservedNodeIds: readonly string[];
+    readonly invalidated: readonly [
+      'nativeIdentities',
+      'history',
+      'pendingActions',
+      'sessionWatermarks',
+      'receipts',
+      'selectionAnchors',
+    ];
+  };
 }

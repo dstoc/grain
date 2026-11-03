@@ -1,8 +1,6 @@
 import type { ConstructionNode } from '../semantic/construction-tree.js';
-import { isAttached, hasContainerAncestor } from './utils.js';
+import { detachSemanticNodeIfAttached, hasContainerAncestor, isAttached } from './utils.js';
 import { type BlockParseState } from './types.js';
-import { resetQuoteStack } from './container-management.js';
-import { detachSemanticNodeIfAttached } from './utils.js';
 
 export function removeEmptyRootParagraph(state: BlockParseState) {
   if (state.hasExplicitRootParagraph) return;
@@ -75,7 +73,7 @@ function* activeNodes(state: BlockParseState): Generator<ConstructionNode> {
   for (const node of state.sectionStack) yield node;
 }
 
-export function collectEmptyBlocks(root: ConstructionNode): ConstructionNode[] {
+function collectEmptyBlocks(root: ConstructionNode): ConstructionNode[] {
   const result: ConstructionNode[] = [];
 
   function visit(node: ConstructionNode) {
@@ -98,7 +96,8 @@ export function collectEmptyBlocks(root: ConstructionNode): ConstructionNode[] {
 export function exitDetachedContainerContexts(state: BlockParseState) {
   state.currentList = undefined;
   state.currentListPath = [];
-  resetQuoteStack(state);
+  state.currentQuoteBase = undefined;
+  state.currentQuoteStack = [];
   state.sectionStack = state.sectionStack.filter(
     (node) =>
       !hasContainerAncestor(node, 'list-item') && !hasContainerAncestor(node, 'block-quote'),

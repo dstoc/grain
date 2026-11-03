@@ -14,13 +14,11 @@
 
 import { css, html, LitElement } from 'lit';
 import { property, customElement, query } from 'lit/decorators.js';
-import { MarkdownRenderer } from './block-render.js';
 import type {
   InlineMarkdownNodeView,
   ReadonlyCodeBlockNodeView,
   ReadonlyMarkdownNodeView,
 } from './node-view.js';
-import './block-render.js';
 import { consume } from '@lit/context';
 import { HostContext, hostContext, invalidateNodeView } from './host-context.js';
 
@@ -40,7 +38,7 @@ export class MarkdownTransclusion extends LitElement {
   accessor root: ReadonlyMarkdownNodeView | undefined;
 
   @query('md-block-render')
-  private accessor markdownRenderer!: MarkdownRenderer;
+  private accessor markdownRenderer!: LitElement & { hostContext: HostContext };
 
   override render() {
     return this.root
@@ -113,18 +111,6 @@ function finalInlineNode(root: ReadonlyMarkdownNodeView): InlineMarkdownNodeView
     pending.push(...[...(node.children ?? [])].reverse());
   }
   return result;
-}
-
-export function getContainingTransclusion(element: Element) {
-  const renderShadow = element.getRootNode();
-  if (!(renderShadow instanceof ShadowRoot)) return;
-  const renderHost = renderShadow.host;
-  if (!(renderHost instanceof MarkdownRenderer)) return;
-  const shadow = renderHost.getRootNode();
-  if (!(shadow instanceof ShadowRoot)) return;
-  const transclusion = shadow.host;
-  if (!(transclusion instanceof MarkdownTransclusion)) return;
-  return transclusion;
 }
 
 declare global {

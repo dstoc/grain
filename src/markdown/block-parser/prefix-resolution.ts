@@ -15,7 +15,7 @@ import {
 } from './utils.js';
 import { resetQuoteStack, syncQuoteStack } from './container-management.js';
 
-export function parseQuotePrefix(line: string): string | undefined {
+function parseQuotePrefix(line: string): string | undefined {
   return parseQuotePrefixMatch(line)?.content;
 }
 

@@ -243,7 +243,7 @@ function removeTrailingText(
   editSemanticText(state, node, startIndex, node.content.length, '');
 }
 
-export function canProjectPendingParagraph(line: string): boolean {
+function canProjectPendingParagraph(line: string): boolean {
   return !parseFenceStart(line);
 }
 

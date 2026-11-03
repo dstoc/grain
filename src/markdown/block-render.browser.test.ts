@@ -6,6 +6,7 @@ import { ConstructionPreviewAdapter } from './construction-preview.js';
 import { ConstructionTree } from './semantic/construction-tree.js';
 import { HostContext } from './host-context.js';
 import { MarkdownBlock } from './block-render.js';
+import './transclusion.js';
 import { CanonicalDocument } from './canonical-model.js';
 import type { ReadonlyCodeBlockNodeView, ReadonlyMarkdownNodeView } from './node-view.js';
 

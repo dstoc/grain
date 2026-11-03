@@ -20,7 +20,7 @@ function indentTarget(context: EditContext, nodeId: NodeId): NodeId {
 }
 
 /** Performs one indentation move without opening another edit runner. */
-export function indentNode(context: EditContext, nodeId: NodeId): boolean {
+function indentNode(context: EditContext, nodeId: NodeId): boolean {
   const { draft, scopeRoot } = context;
   assertScopedTarget(draft, scopeRoot, nodeId);
   const target = indentTarget(context, nodeId);

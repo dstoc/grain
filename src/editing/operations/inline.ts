@@ -32,7 +32,7 @@ export function textPoint(
   return Object.freeze({ nodeId, offset, affinity });
 }
 
-export function moveInlineRange(
+function moveInlineRange(
   draft: TreeDraft,
   sourceId: NodeId,
   from: number,

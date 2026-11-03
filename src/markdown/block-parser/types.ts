@@ -67,7 +67,7 @@ export interface LinePrefixResult {
   continuedListIndent: boolean;
 }
 
-export type ProjectedPendingKind =
+type ProjectedPendingKind =
   | 'paragraph'
   | 'section'
   | 'code-block'

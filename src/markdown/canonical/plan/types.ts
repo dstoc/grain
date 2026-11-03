@@ -23,7 +23,7 @@ export type InsertionSlotTarget = Omit<InsertionSlot, 'order'> & {
   readonly parentBufferOffset?: number;
 };
 
-export interface ExistingPiece {
+interface ExistingPiece {
   readonly kind: 'existing';
   readonly source: NodeId;
   readonly tapeId: TapeId;
@@ -126,12 +126,12 @@ export interface LowLevelPlan {
   readonly textTapes: readonly TapeId[];
 }
 
-export interface CompilationDraftSpan {
+interface CompilationDraftSpan {
   readonly span: Span;
   readonly pieces: readonly DraftPiece[];
 }
 
-export interface CompilationDraftNode {
+interface CompilationDraftNode {
   readonly id: NodeId;
   readonly type: NodeKind;
   readonly children: readonly NodeId[];

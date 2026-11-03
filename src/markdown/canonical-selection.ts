@@ -34,10 +34,7 @@ export function createCanonicalTextAnchor(
 }
 
 /** @internal Capture history focus while a candidate state is being validated. */
-export function createCanonicalTextAnchorFromState(
-  state: Y.Doc,
-  bookmark: Bookmark,
-): CanonicalTextAnchor {
+function createCanonicalTextAnchorFromState(state: Y.Doc, bookmark: Bookmark): CanonicalTextAnchor {
   const record = state.getMap<Y.Map<unknown>>('nodes').get(bookmark.nodeId);
   if (!record) throw new Error(`unknown bookmark node ${bookmark.nodeId}`);
   const spansCell = record.get('spans') as { readonly value: readonly Span[] } | undefined;

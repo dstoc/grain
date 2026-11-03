@@ -4,13 +4,13 @@ import type { MarkdownNode } from '../../markdown/node.js';
 import { isInlineNodeKind } from '../../markdown/semantic/types.js';
 import { appendChild, placeBefore } from './placement.js';
 
-export interface InsertedSubtree {
+interface InsertedSubtree {
   readonly id: NodeId;
   readonly lastInline?: NodeId;
 }
 
 /** Copies parser content into new semantic nodes; it never transfers source identity. */
-export function insertParsedSubtree(draft: TreeDraft, node: MarkdownNode): InsertedSubtree {
+function insertParsedSubtree(draft: TreeDraft, node: MarkdownNode): InsertedSubtree {
   const spec: CreateNodeSpec = (() => {
     switch (node.type) {
       case 'document':

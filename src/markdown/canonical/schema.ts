@@ -28,17 +28,8 @@ export const CONTAINER_KINDS = new Set<NodeKind>([
   'list-item',
   'block-quote',
 ]);
-export const BLOCK_KINDS = new Set<NodeKind>([
-  'paragraph',
-  'section',
-  'code-block',
-  'list',
-  'block-quote',
-]);
-
 export type NodeDataField = (typeof NODE_FIELDS)[number];
 export type CanonicalRecord = Y.Map<unknown>;
-export type CanonicalNodeMap = Y.Map<CanonicalRecord>;
 
 export interface SchemaCell<T> {
   readonly token: string;
@@ -110,7 +101,7 @@ export function readSchemaCell<T>(
   return cell;
 }
 
-export function readSchemaField<T>(record: CanonicalRecord, field: NodeDataField | 'children'): T {
+function readSchemaField<T>(record: CanonicalRecord, field: NodeDataField | 'children'): T {
   return readSchemaCell<T>(record, field).value;
 }
 

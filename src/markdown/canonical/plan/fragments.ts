@@ -14,7 +14,7 @@ import type {
 } from './types.js';
 import { DraftTextBuffers } from './buffers.js';
 
-export interface NativeInsertion {
+interface NativeInsertion {
   readonly tapeId: TapeId;
   readonly index: number;
   readonly spanIndex: number;
