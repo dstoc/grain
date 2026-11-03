@@ -1,5 +1,6 @@
-import type { CanonicalDocument, CanonicalNode } from '../../markdown/canonical-model.js';
-import type { CanonicalWriter } from '../../markdown/canonical-actions.js';
+import type { CanonicalDocument } from '../../markdown/canonical/document.js';
+import type { CanonicalNode } from '../../markdown/canonical/node-projection.js';
+import type { CanonicalWriter } from '../../markdown/canonical/writer.js';
 import type { NodeId } from '../../markdown/semantic/types.js';
 import {
   createCanonicalTextAnchor,

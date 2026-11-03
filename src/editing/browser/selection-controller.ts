@@ -1,4 +1,5 @@
-import type { CanonicalDocument, CanonicalNode } from '../../markdown/canonical-model.js';
+import type { CanonicalDocument } from '../../markdown/canonical/document.js';
+import type { CanonicalNode } from '../../markdown/canonical/node-projection.js';
 import type { Bookmark } from '../../markdown/canonical/action-types.js';
 import { CanonicalNode as CanonicalNodeProjection } from '../../markdown/canonical/node-projection.js';
 import {

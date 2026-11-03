@@ -1,5 +1,5 @@
-import { CanonicalWriter } from '../../markdown/canonical-actions.js';
-import type { AcceptedAction, ActionOptions } from '../../markdown/canonical-actions.js';
+import { CanonicalWriter } from '../../markdown/canonical/writer.js';
+import type { AcceptedAction, ActionOptions } from '../../markdown/canonical/action-types.js';
 import type { EditSelection } from '../../markdown/semantic/selection.js';
 import type { NodeId } from '../../markdown/semantic/types.js';
 import type { Edit } from '../outcomes.js';

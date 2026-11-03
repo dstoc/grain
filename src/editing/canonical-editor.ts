@@ -1,11 +1,11 @@
 import { html, LitElement } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 
-import type { CanonicalWriter } from '../markdown/canonical-actions.js';
+import type { CanonicalWriter } from '../markdown/canonical/writer.js';
 import { hasStructuralEffects } from '../markdown/canonical/action-types.js';
 import type { AcceptedAction, HistoryResult } from '../markdown/canonical/action-types.js';
 import { CanonicalNode } from '../markdown/canonical/node-projection.js';
-import type { CanonicalDocument } from '../markdown/canonical-model.js';
+import type { CanonicalDocument } from '../markdown/canonical/document.js';
 import '../markdown/block-render.js';
 import type { NodeId } from '../markdown/semantic/types.js';
 import { createCanonicalTextAnchor } from '../markdown/canonical-selection.js';

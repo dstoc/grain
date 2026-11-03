@@ -1,6 +1,7 @@
 import { serializeToString } from '../../markdown/block-serializer.js';
 import type { MarkdownNode } from '../../markdown/node.js';
-import type { CanonicalDocument, CanonicalNode } from '../../markdown/canonical-model.js';
+import type { CanonicalDocument } from '../../markdown/canonical/document.js';
+import type { CanonicalNode } from '../../markdown/canonical/node-projection.js';
 
 export interface ClipboardPayload {
   readonly markdown: string;

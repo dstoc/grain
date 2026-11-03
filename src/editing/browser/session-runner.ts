@@ -1,10 +1,10 @@
-import { CanonicalWriter } from '../../markdown/canonical-actions.js';
+import { CanonicalWriter } from '../../markdown/canonical/writer.js';
 import type {
   AcceptedAction,
   ActionOptions,
   HistoryResult,
 } from '../../markdown/canonical/action-types.js';
-import type { CanonicalDocument } from '../../markdown/canonical-model.js';
+import type { CanonicalDocument } from '../../markdown/canonical/document.js';
 import type { EditSelection } from '../../markdown/semantic/selection.js';
 import type { NodeId } from '../../markdown/semantic/types.js';
 import { prepareEdit } from '../prepare-edit.js';

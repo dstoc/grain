@@ -2,9 +2,9 @@ import type {
   ActionFocus,
   ActionOptions,
   ActionRequest,
-  CanonicalWriter,
-} from '../markdown/canonical-actions.js';
-import type { Bookmark } from '../markdown/canonical-actions.js';
+} from '../markdown/canonical/action-types.js';
+import type { CanonicalWriter } from '../markdown/canonical/writer.js';
+import type { Bookmark } from '../markdown/canonical/action-types.js';
 import type { EditSelection } from '../markdown/semantic/selection.js';
 import type { SelectionIntent } from '../markdown/semantic/selection.js';
 import type { EditContext } from './context.js';
