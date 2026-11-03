@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { userEvent, cdp } from 'vitest/browser';
+import { html } from 'lit';
 import { CanonicalWriter, type ActionRequest } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, type CanonicalNode } from '../markdown/canonical-model.js';
 import type { HostContext } from '../markdown/host-context.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
+import type { DocumentNode } from '../markdown/node.js';
+import type { MarkdownRenderDelegate } from '../markdown/render-delegate.js';
 import { CanonicalEditor } from './canonical-editor.js';
 import { insertParagraph } from './commands/insert-paragraph.js';
 import { joinWithPrevious } from './commands/join-with-previous.js';
@@ -33,10 +36,24 @@ describe('M6 review browser contracts', () => {
   }
   async function mount(source: string) {
     model = CanonicalDocument.fromMarkdown(source);
-    writer = new CanonicalWriter(model);
+    return mountModel(model);
+  }
+  async function mountTree(
+    tree: DocumentNode,
+    makeRenderDelegate?: (document: CanonicalDocument) => MarkdownRenderDelegate,
+  ) {
+    model = CanonicalDocument.fromTree(tree);
+    return mountModel(model, makeRenderDelegate);
+  }
+  async function mountModel(
+    canonical: CanonicalDocument,
+    makeRenderDelegate?: (document: CanonicalDocument) => MarkdownRenderDelegate,
+  ) {
+    writer = new CanonicalWriter(canonical);
     editor = new CanonicalEditor();
-    editor.document = model;
+    editor.document = canonical;
     editor.writer = writer;
+    editor.renderDelegate = makeRenderDelegate?.(canonical);
     window.document.body.replaceChildren(editor);
     await nextTask();
     renderer = editor.shadowRoot!.querySelector('md-block-render')!;
@@ -380,6 +397,87 @@ describe('M6 review browser contracts', () => {
     await settle();
     expect(model.root.children.map((node) => node.content)).toEqual(['target']);
   });
+  test('plain-text clipboard paste replaces the inline selection and undo restores it', async () => {
+    const inline = await mount('hello world');
+    inline.focus();
+    inline.setSelectionOffsets(6, 11);
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', 'Grain');
+    inline.dispatchEvent(
+      new ClipboardEvent('paste', {
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+        clipboardData,
+      }),
+    );
+    await settle();
+    expect(model.root.children[0]!.content).toBe('hello Grain');
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children[0]!.content).toBe('hello world');
+  });
+  test.each([
+    ['supplementary character', 'a😀', 3, 3, 'a'],
+    ['selected emoji', 'a😀b', 1, 3, 'ab'],
+    ['combining mark', 'e\u0301', 2, 2, 'e'],
+  ] as const)(
+    'trusted Backspace deletes the %s without splitting UTF-16 text',
+    async (_case, original, anchor, focus, expected) => {
+      const inline = await mount(original);
+      inline.focus();
+      inline.setSelectionOffsets(anchor, focus);
+      await userEvent.keyboard('{Backspace}');
+      await settle();
+
+      expect(model.root.children[0]!.content).toBe(expected);
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(model.root.children[0]!.content).toBe(original);
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle();
+      expect(model.root.children[0]!.content).toBe(expected);
+    },
+  );
+  test('trusted multi-block copy, cut and paste preserve clipboard content and history', async () => {
+    const inline = await mount('hello\n\nworld');
+    inline.focus();
+    inline.setSelectionOffsets(0, 0);
+    await userEvent.keyboard('{Control>}a{/Control}{Control>}a{/Control}{Control>}a{/Control}');
+    await settle();
+    const context = renderer.hostContext!;
+    expect(context.selection.size).toBe(2);
+
+    await userEvent.keyboard('{Control>}c{/Control}');
+    const destination = window.document.createElement('textarea');
+    window.document.body.append(destination);
+    destination.focus();
+    await userEvent.keyboard('{Control>}v{/Control}');
+    expect(destination.value).toBe('hello\n\nworld\n');
+
+    inline.focus();
+    await userEvent.keyboard('{Control>}x{/Control}');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual(['']);
+    const emptyInline = inlines()[0]!;
+    emptyInline.focus();
+    await userEvent.keyboard('{Control>}v{/Control}');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual(['', 'hello', 'world']);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual(['']);
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual(['hello', 'world']);
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual(['']);
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual(['', 'hello', 'world']);
+  });
   test('Markdown heading paste into a section keeps the draft valid', async () => {
     const inline = await mount('# Heading');
     inline.focus();
@@ -402,6 +500,285 @@ describe('M6 review browser contracts', () => {
     await userEvent.keyboard('{Control>}z{/Control}');
     await settle();
     expect(JSON.stringify(model.exportMarkdownTree())).toBe(original);
+  });
+  test.each([
+    [
+      'start',
+      0,
+      [
+        { type: 'paragraph', content: '' },
+        { type: 'code-block', info: 'js', content: 'code' },
+      ],
+    ],
+    [
+      'end',
+      4,
+      [
+        { type: 'code-block', info: 'js', content: 'code' },
+        { type: 'paragraph', content: '' },
+      ],
+    ],
+  ] as const)(
+    'trusted Shift+Enter at the code block %s keeps the paragraph boundary behavior',
+    async (_edge, offset, expected) => {
+      const inline = await mountTree({
+        type: 'document',
+        children: [{ type: 'code-block', info: 'js', content: 'code' }],
+      });
+      inline.focus();
+      inline.setSelectionOffsets(offset, offset);
+      await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
+      await settle();
+
+      expect(model.exportMarkdownTree().children).toEqual(expected);
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(model.exportMarkdownTree().children).toEqual([
+        { type: 'code-block', info: 'js', content: 'code' },
+      ]);
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle();
+      expect(model.exportMarkdownTree().children).toEqual(expected);
+    },
+  );
+  test.each([
+    ['forward', 6, 10],
+    ['reverse', 10, 6],
+  ] as const)(
+    'trusted Shift+Enter replaces an interior %s code selection with a boundary paragraph',
+    async (_direction, anchor, focus) => {
+      const content = 'alpha BETA omega';
+      const inline = await mountTree({
+        type: 'document',
+        children: [{ type: 'code-block', info: 'js', content }],
+      });
+      inline.focus();
+      inline.setSelectionOffsets(anchor, focus);
+      await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
+      await settle();
+
+      const expected = [
+        { type: 'code-block', info: 'js', content: 'alpha ' },
+        { type: 'paragraph', content: '' },
+        { type: 'code-block', info: 'js', content: ' omega' },
+      ];
+      expect(model.exportMarkdownTree().children).toEqual(expected);
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(model.exportMarkdownTree().children).toEqual([
+        { type: 'code-block', info: 'js', content },
+      ]);
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle();
+      expect(model.exportMarkdownTree().children).toEqual(expected);
+    },
+  );
+  test('trusted Shift+Enter in an empty code block inserts a boundary paragraph', async () => {
+    const inline = await mountTree({
+      type: 'document',
+      children: [{ type: 'code-block', info: 'js', content: '' }],
+    });
+    inline.focus();
+    inline.setSelectionOffsets(0, 0);
+    await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
+    await settle();
+
+    const expected = [
+      { type: 'code-block', info: 'js', content: '' },
+      { type: 'paragraph', content: '' },
+    ];
+    expect(model.exportMarkdownTree().children).toEqual(expected);
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.exportMarkdownTree().children).toEqual([
+      { type: 'code-block', info: 'js', content: '' },
+    ]);
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(model.exportMarkdownTree().children).toEqual(expected);
+  });
+  test.each([
+    ['at the end', 'alpha', 5, 5, 'alpha\n'],
+    ['replacing a selection', 'alpha BETA omega', 6, 10, 'alpha \n omega'],
+  ] as const)(
+    'trusted Enter %s inserts a literal newline into code and preserves history',
+    async (_case, original, anchor, focus, expected) => {
+      const inline = await mountTree({
+        type: 'document',
+        children: [{ type: 'code-block', info: 'js', content: original }],
+      });
+      inline.focus();
+      inline.setSelectionOffsets(anchor, focus);
+      await userEvent.keyboard('{Enter}');
+      await settle();
+      expect(model.root.children[0]!.content).toBe(expected);
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(model.root.children[0]!.content).toBe(original);
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle();
+      expect(model.root.children[0]!.content).toBe(expected);
+    },
+  );
+  test('Enter keeps task-looking text literal in a code block inside a list item', async () => {
+    await mountTree({
+      type: 'document',
+      children: [
+        {
+          type: 'list',
+          children: [
+            {
+              type: 'list-item',
+              marker: '- ',
+              children: [{ type: 'code-block', info: 'ts', content: '[x] code' }],
+            },
+          ],
+        },
+      ],
+    });
+    const inline = inlines().find((item) => item.nodeView?.type === 'code-block')!;
+    const item = model.root.children[0]!.children[0]!;
+    inline.focus();
+    inline.setSelectionOffsets(9, 9);
+    await userEvent.keyboard('{Enter}');
+    await settle();
+
+    expect(inlines().find((item) => item.nodeView?.type === 'code-block')?.nodeView?.content).toBe(
+      '[x] code\n',
+    );
+    expect(item.checked).toBeUndefined();
+    expect(model.validate()).toEqual({ valid: true, errors: [] });
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children[0]!.children[0]!.children[0]!.content).toBe('[x] code');
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(model.root.children[0]!.children[0]!.children[0]!.content).toBe('[x] code\n');
+    expect(item.checked).toBeUndefined();
+  });
+  test('commits composition at the final code line after a trailing newline', async () => {
+    const inline = await mountTree({
+      type: 'document',
+      children: [{ type: 'code-block', info: 'ts', content: 'alpha\n' }],
+    });
+    inline.focus();
+    inline.setSelectionOffsets(6, 6);
+    await devtools().send('Input.imeSetComposition', {
+      text: 'é',
+      selectionStart: 1,
+      selectionEnd: 1,
+    });
+    await devtools().send('Input.insertText', { text: 'é' });
+    await settle();
+
+    expect(model.root.children[0]!.content).toBe('alpha\né');
+    expect(inlines()[0]!.textContent).toBe('alpha\né');
+    expect(inlines()[0]!.getTextSelection()).toEqual({ anchor: 7, focus: 7 });
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children[0]!.content).toBe('alpha\n');
+    expect(inlines()[0]!.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
+  });
+  test('replays selected-block composition inside a nested host and restores history', async () => {
+    await mountTree(
+      {
+        type: 'document',
+        children: [
+          { type: 'code-block', info: 'nested', content: 'host' },
+          {
+            type: 'section',
+            marker: '#',
+            content: 'transcluded',
+            children: [
+              { type: 'paragraph', content: 'alpha' },
+              { type: 'paragraph', content: 'beta' },
+            ],
+          },
+          { type: 'paragraph', content: 'after' },
+        ],
+      },
+      (canonical) => ({
+        renderCodeBlock: ({ node }) =>
+          node.info === 'nested'
+            ? html`<md-transclusion
+                .node=${node}
+                .root=${canonical.root.children.find((child) => child.type === 'section')}
+              ></md-transclusion>`
+            : undefined,
+      }),
+    );
+    const blocks = [...renderer.shadowRoot!.querySelectorAll('md-block')];
+    await Promise.all(blocks.map((block) => block.updateComplete));
+    const codeBlock = blocks.find((block) => block.node?.type === 'code-block')!;
+    const transclusion = codeBlock.querySelector('md-transclusion')!;
+    await transclusion.updateComplete;
+    const nestedRenderer = transclusion.shadowRoot!.querySelector('md-block-render')!;
+    const nestedInlines = () => [
+      ...nestedRenderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
+    ];
+    const alpha = nestedInlines().find((inline) => inline.nodeView?.content === 'alpha')!;
+    const beta = nestedInlines().find((inline) => inline.nodeView?.content === 'beta')!;
+    const nestedContext = nestedRenderer.hostContext!;
+    const section = model.root.children.find((node) => node.type === 'section')!;
+
+    beta.focus();
+    nestedContext.expandSelection([beta.nodeView!, alpha.nodeView!]);
+    beta.setSelectionOffsets(0, beta.nodeView!.content!.length);
+    beta.dispatchEvent(
+      new CompositionEvent('compositionstart', { bubbles: true, composed: true, data: '' }),
+    );
+    beta.queueRecoveryInput(
+      new InputEvent('beforeinput', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: 'Z',
+      }),
+    );
+    beta.dispatchEvent(
+      new CompositionEvent('compositionend', { bubbles: true, composed: true, data: 'BETA' }),
+    );
+    await settle();
+    await nestedRenderer.updateComplete;
+    await Promise.all(nestedInlines().map((inline) => inline.updateComplete));
+    await nextTask();
+
+    expect(section.children.map((node) => node.content).filter(Boolean)).toEqual([
+      'BETAZ',
+      'after',
+    ]);
+    expect(model.validate()).toEqual({ valid: true, errors: [] });
+    expect(nestedContext.selection.size).toBe(0);
+    nestedInlines()
+      .find((inline) => inline.nodeView?.content === 'BETAZ')!
+      .focus();
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(section.children.map((node) => node.content)).toEqual(['BETA', 'after']);
+    nestedInlines()
+      .find((inline) => inline.nodeView?.content === 'BETA')!
+      .focus();
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(section.children.map((node) => node.content)).toEqual(['alpha', 'beta', 'after']);
+    expect(nestedContext.selection.size).toBe(2);
+    nestedInlines()
+      .find((inline) => inline.nodeView?.content === 'alpha')!
+      .focus();
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(section.children.map((node) => node.content)).toEqual(['BETA', 'after']);
+    nestedInlines()
+      .find((inline) => inline.nodeView?.content === 'BETA')!
+      .focus();
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(section.children.map((node) => node.content).filter(Boolean)).toEqual([
+      'BETAZ',
+      'after',
+    ]);
+    await userEvent.keyboard('!');
+    await settle();
+    expect(section.children.map((node) => node.content)).toEqual(['BETAZ!', 'after']);
   });
   test('composition replacing a supplementary character remains valid UTF-16', async () => {
     const inline = await mount('😀');

@@ -4,6 +4,7 @@ import { createBlockParser, parseBlocks } from './block-parser/api.js';
 import { serializeToString } from './block-serializer.js';
 import type { DocumentNode, MarkdownNode } from './node.js';
 import { ConstructionTree, type ConstructionNode } from './semantic/construction-tree.js';
+import { FROZEN_GENERATED_CORPUS } from './block-parser.permutations.corpus.js';
 import { DEFAULT_UNSUPPORTED_GENERATED_CASE_NAMES } from './block-parser.permutations.default-skips.js';
 
 type ChainToken = 'section' | 'quote' | 'bullet' | 'ordered';
@@ -38,6 +39,34 @@ const RUN_EXTENSIVE_SMOKE =
   ).process?.env?.MARKDOWN_EXTENSIVE_SMOKE_TESTS === '1';
 
 type GeneratedMode = 'default' | 'extensive-smoke' | 'extensive';
+type FrozenCorpusMode = 'default' | 'extensive';
+
+function decodeBase64(encoded: string): Uint8Array {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0;
+  const bytes = new Uint8Array(Math.floor((encoded.length * 3) / 4) - padding);
+  let accumulator = 0;
+  let bitCount = 0;
+  let offset = 0;
+  for (const character of encoded) {
+    if (character === '=') break;
+    const value = alphabet.indexOf(character);
+    if (value < 0) throw new Error(`Invalid base64 character ${character}`);
+    accumulator = (accumulator << 6) | value;
+    bitCount += 6;
+    if (bitCount >= 8) {
+      bitCount -= 8;
+      bytes[offset++] = (accumulator >>> bitCount) & 0xff;
+      accumulator &= (1 << bitCount) - 1;
+    }
+  }
+  return bytes;
+}
+
+const frozenCorpusMembership = {
+  default: decodeBase64(FROZEN_GENERATED_CORPUS.default.membership),
+  extensive: decodeBase64(FROZEN_GENERATED_CORPUS.extensive.membership),
+} satisfies Record<FrozenCorpusMode, Uint8Array>;
 
 interface GeneratedCase {
   chain: ChainToken[];
@@ -355,16 +384,6 @@ function supportsStableQuoteIncrementalShapes(
   return true;
 }
 
-function canonicalizeGeneratedDocument(doc: DocumentNode): DocumentNode {
-  const tree = new ConstructionTree(structuredClone(doc));
-  tree.normalize();
-  return tree.serialize() as DocumentNode;
-}
-
-function isCanonicalGeneratedDocument(doc: DocumentNode): boolean {
-  return JSON.stringify(canonicalizeGeneratedDocument(doc)) === JSON.stringify(doc);
-}
-
 function augmentationPermutationsForMode(
   chain: ChainToken[],
   mode: GeneratedMode,
@@ -607,26 +626,48 @@ function selectExtensiveSmokeCases(extensiveCases: NamedGeneratedCase[]): NamedG
   return smokeCases;
 }
 
+function frozenCorpusMode(mode: GeneratedMode): FrozenCorpusMode {
+  return mode === 'default' ? 'default' : 'extensive';
+}
+
+function isFrozenCorpusMember(mode: FrozenCorpusMode, index: number): boolean {
+  const byte = frozenCorpusMembership[mode][index >>> 3];
+  return byte !== undefined && (byte & (1 << (index & 7))) !== 0;
+}
+
+function frozenMembershipHash(membership: Uint8Array): string {
+  let hash = 0x811c9dc5;
+  for (const byte of membership) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+  return `fnv1a32:${hash.toString(16).padStart(8, '0')}`;
+}
+
 function generatedCanonicalCasesForMode(mode: GeneratedMode): NamedGeneratedCase[] {
   const seenMarkdown = new Set<string>();
   const cases: NamedGeneratedCase[] = [];
+  const corpusMode = frozenCorpusMode(mode);
   const chains = [...chainPermutations(2), ...chainPermutations(3)];
   const leaves: LeafToken[] = ['paragraph', 'code-block'];
+  let candidateIndex = 0;
 
   for (const chain of chains) {
     for (const leaf of leaves) {
       for (const augmentations of augmentationPermutationsForMode(chain, mode)) {
+        const member = isFrozenCorpusMember(corpusMode, candidateIndex++);
+        if (!member) continue;
         if (!supportsGeneratedRoundtrip(chain, leaf, augmentations)) {
-          continue;
+          throw new Error(
+            `Frozen fixture no longer satisfies roundtrip constraints: ${generatedCaseName(chain, leaf, augmentations)}`,
+          );
         }
-        const candidate = buildRoundtripDocument(chain, leaf, augmentations);
-        if (!isCanonicalGeneratedDocument(candidate)) {
-          continue;
-        }
-        const expected = canonicalizeGeneratedDocument(candidate);
+        // The fixture builder creates the expected tree as plain DTO data. Keep
+        // that independent value as the expectation; test admission must not
+        // depend on the construction backend under test.
+        const expected = buildRoundtripDocument(chain, leaf, augmentations);
         const markdown = serializeToString(expected);
         if (seenMarkdown.has(markdown)) {
-          continue;
+          throw new Error(
+            `Frozen corpus contains duplicate Markdown: ${generatedCaseName(chain, leaf, augmentations)}`,
+          );
         }
         seenMarkdown.add(markdown);
         cases.push({
@@ -639,6 +680,22 @@ function generatedCanonicalCasesForMode(mode: GeneratedMode): NamedGeneratedCase
         });
       }
     }
+  }
+
+  const frozenCorpus = FROZEN_GENERATED_CORPUS[corpusMode];
+  expect(candidateIndex).toBe(frozenCorpus.candidateCount);
+  expect(cases).toHaveLength(frozenCorpus.caseCount);
+  expect(frozenMembershipHash(frozenCorpusMembership[corpusMode])).toBe(
+    frozenCorpus.membershipHash,
+  );
+  if (corpusMode === 'extensive') {
+    const sectionCases = cases.filter(({ chain }) => chain.includes('section'));
+    const codeCases = cases.filter(({ leaf }) => leaf === 'code-block');
+    expect(sectionCases).toHaveLength(21_298);
+    expect(codeCases).toHaveLength(45_554);
+  } else {
+    expect(cases.some(({ chain }) => chain.includes('section'))).toBe(true);
+    expect(cases.some(({ leaf }) => leaf === 'code-block')).toBe(true);
   }
 
   if (mode === 'extensive-smoke') {

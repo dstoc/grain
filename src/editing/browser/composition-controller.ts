@@ -43,7 +43,7 @@ interface CompositionEnvironment {
   isConnected(): boolean;
   readonly session: BrowserSessionRunner;
   readonly selection: SelectionController;
-  blockSelection(): readonly CanonicalNode[];
+  blockSelection(inline: MarkdownInline): readonly CanonicalNode[];
   replaceBlocks(selection: readonly CanonicalNode[], text: string): void;
   runTextInput(
     node: CanonicalNode,
@@ -73,7 +73,7 @@ export class CompositionController {
     ) {
       return;
     }
-    const blockSelection = this.environment.blockSelection().map((item) => item.sharedId);
+    const blockSelection = this.environment.blockSelection(inline).map((item) => item.sharedId);
     const selectionAnchor = createCanonicalTextAnchor(document, {
       nodeId: node.sharedId,
       offset: selection.anchor,
@@ -148,7 +148,13 @@ export class CompositionController {
             return;
           }
           this.environment.replaceBlocks(selected, data ?? '');
-          const replayed = await this.replayQueuedInputs(session.node.sharedId, recovery);
+          recovery.source.hostContext?.clearSelection();
+          const replayed = await this.replayQueuedInputs(
+            session.blockSelection?.[0] ?? session.node.sharedId,
+            recovery,
+            recovery.source.hostContext,
+            true,
+          );
           this.finishRecovery(recovery, !replayed);
         })
         .catch(() => this.finishRecovery(recovery, false));
@@ -285,7 +291,12 @@ export class CompositionController {
     this.finishRecovery(recovery, !replayed);
   }
 
-  private async replayQueuedInputs(nodeId: NodeId, recovery: PendingRecovery): Promise<boolean> {
+  private async replayQueuedInputs(
+    nodeId: NodeId,
+    recovery: PendingRecovery,
+    hostContext?: MarkdownInline['hostContext'],
+    focusAtEnd = false,
+  ): Promise<boolean> {
     const renderer = this.environment.renderer();
     const document = this.environment.document();
     const writer = this.environment.writer();
@@ -306,17 +317,28 @@ export class CompositionController {
     ) {
       return false;
     }
-    const recovered = this.findInline(nodeId);
-    const target = renderer.getInlineSelection().inline;
-    if (recovered) this.trackRecoveryInline(recovery, recovered);
-    if (target) this.trackRecoveryInline(recovery, target);
-    if (recovered && target && recovered !== target) {
-      target.holdRecoveryEventsFrom(recovered.takeRecoveryEvents());
+    const recovered = this.findInline(nodeId, hostContext);
+    const target = (hostContext && recovered) || renderer.getInlineSelection().inline || recovered;
+    const participants = new Set(recovery.inlines);
+    if (recovered) participants.add(recovered);
+    if (target) participants.add(target);
+    for (const participant of participants) this.trackRecoveryInline(recovery, participant);
+    if (!this.isRecoveryCurrent(recovery)) return false;
+    const pending = [...participants].flatMap((participant) => participant.takeRecoveryEvents());
+    const replayTarget = target?.isConnected
+      ? target
+      : recovered?.isConnected
+        ? recovered
+        : undefined;
+    if (pending.length && replayTarget) {
+      if (focusAtEnd) {
+        await replayTarget.updateComplete;
+        replayTarget.focus();
+        const offset = replayTarget.nodeView?.content?.length ?? 0;
+        replayTarget.setSelectionOffsets(offset, offset);
+      }
+      replayTarget.replayRecoveryEvents(pending);
     }
-    if (!this.isRecoveryCurrent(recovery)) return false;
-    target?.replayRecoveryEvents();
-    if (!this.isRecoveryCurrent(recovery)) return false;
-    recovered?.replayRecoveryEvents();
     return this.isRecoveryCurrent(recovery);
   }
 
@@ -379,13 +401,38 @@ export class CompositionController {
     this.pendingRecoveries.delete(recovery);
   }
 
-  private findInline(nodeId: NodeId): MarkdownInline | undefined {
+  private findInline(
+    nodeId: NodeId,
+    hostContext?: MarkdownInline['hostContext'],
+  ): MarkdownInline | undefined {
     const renderer = this.environment.renderer();
-    return [...(renderer?.shadowRoot?.querySelectorAll<MarkdownInline>('md-inline') ?? [])].find(
-      (candidate) =>
-        candidate.nodeView instanceof CanonicalNodeProjection &&
-        candidate.nodeView.sharedId === nodeId,
-    );
+    const root = renderer?.shadowRoot;
+    if (!hostContext) {
+      return [...(root?.querySelectorAll<MarkdownInline>('md-inline') ?? [])].find(
+        (candidate) =>
+          candidate.nodeView instanceof CanonicalNodeProjection &&
+          candidate.nodeView.sharedId === nodeId,
+      );
+    }
+    if (!root) return;
+    const pending: Node[] = [...root.childNodes].reverse();
+    while (pending.length) {
+      const current = pending.pop()!;
+      if (current instanceof HTMLElement && current.localName === 'md-inline') {
+        const candidate = current as MarkdownInline;
+        if (
+          candidate.hostContext === hostContext &&
+          candidate.nodeView instanceof CanonicalNodeProjection &&
+          candidate.nodeView.sharedId === nodeId
+        ) {
+          return candidate;
+        }
+      }
+      if (current instanceof Element && current.shadowRoot) {
+        pending.push(...[...current.shadowRoot.childNodes].reverse());
+      }
+      pending.push(...[...current.childNodes].reverse());
+    }
   }
 
   private isCurrent(session: CompositionDraft): boolean {
