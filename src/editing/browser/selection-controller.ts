@@ -397,7 +397,9 @@ export class SelectionController {
     }
     const rootRenderer = this.rendererForContext(context) ?? this.host.renderer();
     const visible = this.visibleInlineNodeViews(context.root);
-    const index = visible.indexOf(node);
+    const selectedFocus = context.hasSelection ? context.selectionFocus : undefined;
+    const origin = selectedFocus && visible.includes(selectedFocus) ? selectedFocus : node;
+    const index = visible.indexOf(origin);
     if (index < 0 || !rootRenderer?.shadowRoot) {
       if (originalSelection)
         inline.setSelectionOffsets(originalSelection.anchor, originalSelection.focus);
@@ -410,7 +412,7 @@ export class SelectionController {
       visible,
       index,
       direction,
-      node,
+      origin,
       event,
     );
     if (moved) return;
@@ -440,8 +442,6 @@ export class SelectionController {
       candidateIndex += step
     ) {
       const candidate = visible[candidateIndex]!;
-      const transclusion = getRenderedTransclusion(renderer.shadowRoot!, candidate);
-      if (transclusion && event.shiftKey) return false;
       const moved = await this.focusCandidate(
         renderer,
         context,
@@ -467,7 +467,13 @@ export class SelectionController {
   ): Promise<boolean> {
     const transclusion = getRenderedTransclusion(renderer.shadowRoot!, candidate);
     if (transclusion) {
-      if (event.shiftKey) return false;
+      if (event.shiftKey) {
+        const from = asInlineMarkdownNodeView(origin);
+        const to = asInlineMarkdownNodeView(candidate);
+        if (context.selectionAnchor && context.selectionFocus) context.extendSelection(from, to);
+        else context.setSelection(from, to);
+        return true;
+      }
       const moved = await transclusion.focusEdge(direction);
       if (moved) context.clearSelection();
       return moved;
