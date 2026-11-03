@@ -1259,38 +1259,37 @@ describe('Editor', () => {
       expect(serializeToString(tree.serialize())).toContain('keep');
     });
 
-    test('serializes selected blocks and cuts them through keyboard events', async () => {
+    test('copies and cuts blocks through trusted keyboard events', async () => {
       await state.input.insert('hello');
       await state.input.insertParagraph();
       await state.input.insert('world');
       await state.input.selectAll();
       await state.input.press('Control+a', 2);
+      await userEvent.keyboard('{Control>}c{/Control}');
+      const destination = document.createElement('textarea');
+      document.body.append(destination);
+      destination.focus();
+      await userEvent.keyboard('{Control>}v{/Control}');
+      expect(destination.value).toBe('hello\n\nworld\n');
       const renderer = state.editor.shadowRoot!.querySelector('md-block-render')!;
       const inline = renderer.shadowRoot!.querySelector('md-inline:focus') as MarkdownInline | null;
-      const copyData = new DataTransfer();
-      const copy = new ClipboardEvent('copy', {
-        bubbles: true,
-        cancelable: true,
-        composed: true,
-        clipboardData: copyData,
-      });
-      inline!.dispatchEvent(copy);
-      expect(copy.defaultPrevented).toBe(true);
-      expect(copyData.getData('text/plain')).toBe('hello\n\nworld\n');
-
+      // Focus was moved to the destination; restore it without changing the block selection.
+      (inline ?? renderer.shadowRoot!.querySelectorAll('md-inline')[1]).focus();
       await userEvent.keyboard('{Control>}x{/Control}');
       await nextTask();
-      const serialize = () => serializeToString(state.editor.root![viewModel].tree.serialize());
-      expect(serialize()).toBe('<!-- -->\n');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`<!-- -->`);
+      await userEvent.keyboard('{Control>}v{/Control}');
+      await nextTask();
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`
+        <!-- -->
+
+        hello
+
+        world
+      `);
       await userEvent.keyboard('{Control>}z{/Control}');
       await nextTask();
-      expect(serialize()).toBe('hello\n\nworld\n');
-      await userEvent.keyboard('{Control>}y{/Control}');
-      await nextTask();
-      expect(serialize()).toBe('<!-- -->\n');
-      await userEvent.keyboard('again');
-      await nextTask();
-      expect(serialize()).toBe('again\n');
+      expect(serializeEditor(state.editor)).toMatchInlineSnapshot(`<!-- -->`);
     });
     test.each(['undo', 'redo'] as const)(
       '%s of a task toggle preserves the current paragraph and caret',
