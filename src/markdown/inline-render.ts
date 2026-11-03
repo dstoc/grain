@@ -446,6 +446,123 @@ export class MarkdownInline extends LitElement {
     return { x, y: y + height };
   }
 
+  setCaretAtVisualX(x: number, direction: 'backward' | 'forward'): boolean {
+    if (!Number.isFinite(x) || !this.nodeView) return false;
+    if (
+      direction === 'backward' &&
+      this.nodeView.type === 'code-block' &&
+      this.nodeView.content.endsWith('\n')
+    ) {
+      return false;
+    }
+    const line = this.visualLine(direction);
+    if (!line) return false;
+
+    const position = document.caretPositionFromPoint?.(x, line.y, {
+      shadowRoots: this.shadowRoots(),
+    });
+    if (
+      position &&
+      this.isCaretOnLine(position.offsetNode, position.offset, line) &&
+      this.setCaret(position.offsetNode, position.offset)
+    ) {
+      return true;
+    }
+
+    const nearest = this.nearestCaretOnLine(x, line);
+    return nearest ? this.setCaret(nearest.node, nearest.offset) : false;
+  }
+
+  private visualLine(direction: 'backward' | 'forward') {
+    const range = document.createRange();
+    range.selectNodeContents(this);
+    const rects = [...range.getClientRects()]
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .sort((left, right) => left.top - right.top || left.left - right.left);
+    const lines: Array<{ top: number; bottom: number }> = [];
+    for (const rect of rects) {
+      const line = lines.at(-1);
+      if (line && rect.top < line.bottom) {
+        line.top = Math.min(line.top, rect.top);
+        line.bottom = Math.max(line.bottom, rect.bottom);
+      } else {
+        lines.push({ top: rect.top, bottom: rect.bottom });
+      }
+    }
+    const line = direction === 'backward' ? lines.at(-1) : lines[0];
+    return line ? { ...line, y: (line.top + line.bottom) / 2 } : undefined;
+  }
+
+  private shadowRoots(): ShadowRoot[] {
+    const roots: ShadowRoot[] = [];
+    let root: Node = this.getRootNode();
+    while (root instanceof ShadowRoot) {
+      roots.push(root);
+      root = root.host.getRootNode();
+    }
+    return roots;
+  }
+
+  private isCaretOnLine(node: Node, offset: number, line: { top: number; bottom: number }) {
+    if (this.textOffset(node, offset) === undefined) return false;
+    const range = document.createRange();
+    try {
+      range.setStart(node, offset);
+      range.collapse(true);
+    } catch {
+      return false;
+    }
+    const rect = range.getBoundingClientRect();
+    if (rect.x === 0 && rect.y === 0 && rect.height === 0) return false;
+    const y = rect.top + rect.height / 2;
+    return y >= line.top - 1 && y <= line.bottom + 1;
+  }
+
+  private nearestCaretOnLine(x: number, line: { top: number; bottom: number }) {
+    let nearest: { node: Text; offset: number; distance: number } | undefined;
+    let textOffset = 0;
+    const walker = document.createTreeWalker(this, NodeFilter.SHOW_TEXT);
+    let current: Node | null;
+    while ((current = walker.nextNode())) {
+      const text = current as Text;
+      for (let offset = 0; offset <= text.length;) {
+        const range = document.createRange();
+        range.setStart(text, offset);
+        range.collapse(true);
+        const rect = range.getBoundingClientRect();
+        const y = rect.top + rect.height / 2;
+        const logicalOffset = textOffset + offset;
+        if (
+          logicalOffset <= this.nodeView!.content.length &&
+          !(rect.x === 0 && rect.y === 0 && rect.height === 0) &&
+          y >= line.top - 1 &&
+          y <= line.bottom + 1
+        ) {
+          const distance = Math.abs(rect.x - x);
+          if (!nearest || distance < nearest.distance) {
+            nearest = { node: text, offset, distance };
+          }
+        }
+        if (offset === text.length) break;
+        const codePoint = text.data.codePointAt(offset)!;
+        offset += codePoint > 0xffff ? 2 : 1;
+      }
+      textOffset += text.length;
+    }
+    return nearest;
+  }
+
+  private setCaret(node: Node, offset: number) {
+    const selection = this.nativeSelection();
+    if (!selection) return false;
+    try {
+      selection.collapse(node, offset);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   onKeyDown = (e: KeyboardEvent) => {
     if (this.recovery || this.holdRecoveryInputs) {
       e.preventDefault();

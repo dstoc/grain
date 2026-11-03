@@ -476,6 +476,14 @@ export class SelectionController {
         ? 'word'
         : 'character';
     const originalSelection = inline.getTextSelection();
+    const visualX =
+      !event.shiftKey &&
+      !context.hasSelection &&
+      granularity === 'line' &&
+      originalSelection &&
+      originalSelection.anchor === originalSelection.focus
+        ? inline.getCaretPosition().x
+        : undefined;
     const result = context.hasSelection
       ? 0
       : inline.moveCaret(event.shiftKey ? 'extend' : 'move', direction, granularity);
@@ -503,6 +511,7 @@ export class SelectionController {
       direction,
       origin,
       event,
+      visualX,
     );
     if (moved) return;
     if (event.shiftKey) {
@@ -512,7 +521,7 @@ export class SelectionController {
     }
 
     context.clearSelection();
-    await this.moveOutOfTransclusion(inline, context, direction, event);
+    await this.moveOutOfTransclusion(inline, context, direction, event, visualX);
   }
 
   private async moveToSibling(
@@ -523,6 +532,7 @@ export class SelectionController {
     direction: 'backward' | 'forward',
     origin: InlineMarkdownNodeView,
     event: KeyboardEvent,
+    visualX?: number,
   ): Promise<boolean> {
     const step = direction === 'backward' ? -1 : 1;
     for (
@@ -538,6 +548,7 @@ export class SelectionController {
         direction,
         origin,
         event,
+        visualX,
       );
       if (!moved) continue;
 
@@ -553,6 +564,7 @@ export class SelectionController {
     direction: 'backward' | 'forward',
     origin: InlineMarkdownNodeView,
     event: KeyboardEvent,
+    visualX?: number,
   ): Promise<boolean> {
     const transclusion = getRenderedTransclusion(renderer.shadowRoot!, candidate);
     if (transclusion) {
@@ -563,7 +575,7 @@ export class SelectionController {
         else context.setSelection(from, to);
         return true;
       }
-      const moved = await transclusion.focusEdge(direction);
+      const moved = await transclusion.focusEdge(direction, visualX);
       if (moved) context.clearSelection();
       return moved;
     }
@@ -600,11 +612,19 @@ export class SelectionController {
 
     if (anchor) {
       await this.restoreAnchors(anchor, anchor, false, event.shiftKey, context);
+      if (visualX !== undefined) {
+        const focusedInline = [
+          ...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
+        ].find((element) => element.nodeView === candidate);
+        if (focusedInline?.setCaretAtVisualX(visualX, direction)) this.captureSelection();
+      }
       return true;
     }
 
+    await targetInline.updateComplete;
     targetInline.focus();
     targetInline.setSelectionOffsets(offset, offset);
+    if (visualX !== undefined) targetInline.setCaretAtVisualX(visualX, direction);
     return true;
   }
 
@@ -613,6 +633,7 @@ export class SelectionController {
     context: HostContext,
     direction: 'backward' | 'forward',
     event: KeyboardEvent,
+    visualX?: number,
   ): Promise<void> {
     if (event.shiftKey) return;
     let boundary: Element = inline;
@@ -636,6 +657,7 @@ export class SelectionController {
             direction,
             parentNode,
             event,
+            visualX,
           );
           if (moved) {
             currentContext.clearSelection();
