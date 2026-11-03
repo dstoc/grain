@@ -6,6 +6,7 @@ import type { NodeId } from '../semantic/types.js';
 import type {
   ActionFocus,
   Bookmark,
+  CanonicalSelectionAnchors,
   CanonicalTextAnchor,
   PendingHistoryCommit,
   StructuralPatch,
@@ -25,7 +26,7 @@ export interface HistoryEntry {
   structuralPatch: StructuralPatch;
   focus?: ActionFocus;
   focusAnchors?: ActionFocusAnchors;
-  selectionAnchors?: { readonly anchor: CanonicalTextAnchor; readonly focus: CanonicalTextAnchor };
+  selectionAnchors?: CanonicalSelectionAnchors;
   manager?: Y.UndoManager;
   sealed: boolean;
   noEffect: boolean;
@@ -115,10 +116,7 @@ export interface HistoryReservation {
   readonly structuralPatch: StructuralPatch;
   readonly focus?: ActionFocus;
   readonly focusAnchors?: ActionFocusAnchors;
-  readonly selectionAnchors?: {
-    readonly anchor: CanonicalTextAnchor;
-    readonly focus: CanonicalTextAnchor;
-  };
+  readonly selectionAnchors?: CanonicalSelectionAnchors;
 }
 
 export interface PendingHistoryRecord {
@@ -131,10 +129,7 @@ export interface PendingHistoryRecord {
   readonly textChanged: boolean;
   readonly focus?: Bookmark;
   readonly focusAnchor?: CanonicalTextAnchor;
-  readonly selectionAnchors?: {
-    readonly anchor: CanonicalTextAnchor;
-    readonly focus: CanonicalTextAnchor;
-  };
+  readonly selectionAnchors?: CanonicalSelectionAnchors;
   readonly update: Uint8Array;
 }
 

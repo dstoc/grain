@@ -39,12 +39,21 @@ export interface CanonicalTextAnchor {
   readonly nextNodeId?: NodeId;
 }
 
+export interface CanonicalSelectionAnchors {
+  readonly anchor: CanonicalTextAnchor;
+  readonly focus: CanonicalTextAnchor;
+  /** Text selections restore as native ranges; the default selection is a block range. */
+  readonly kind?: 'block' | 'text';
+}
+
 export interface ActionFocus {
   readonly start?: Bookmark;
   readonly end?: Bookmark;
   readonly selection?: {
     readonly anchor: Bookmark;
     readonly focus: Bookmark;
+    /** Defaults to a block selection for existing command history. */
+    readonly kind?: 'block' | 'text';
     /** Restore this identity-preserving structural selection after redo as well. */
     readonly restoreOnRedo?: boolean;
   };
@@ -268,10 +277,7 @@ export interface HistoryResult {
   readonly textChanged?: boolean;
   readonly focus?: Bookmark;
   readonly focusAnchor?: CanonicalTextAnchor;
-  readonly selectionAnchors?: {
-    readonly anchor: CanonicalTextAnchor;
-    readonly focus: CanonicalTextAnchor;
-  };
+  readonly selectionAnchors?: CanonicalSelectionAnchors;
   readonly reason?:
     | 'structural-history-pending'
     | 'resource-conflict'
@@ -289,10 +295,7 @@ export interface PendingHistoryCommit {
   readonly textChanged: boolean;
   readonly focus?: Bookmark;
   readonly focusAnchor?: CanonicalTextAnchor;
-  readonly selectionAnchors?: {
-    readonly anchor: CanonicalTextAnchor;
-    readonly focus: CanonicalTextAnchor;
-  };
+  readonly selectionAnchors?: CanonicalSelectionAnchors;
   /** Returns a defensive copy for persistence before publication. */
   readonly update: Uint8Array;
 }

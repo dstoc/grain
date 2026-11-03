@@ -266,6 +266,7 @@ export class CanonicalEditor extends LitElement {
     insert: string,
     isolated = false,
     hostContext?: HostContext,
+    selectionBefore?: { readonly anchor: number; readonly focus: number },
   ) {
     this.sessionRunner.runTextInput(
       node.sharedId,
@@ -277,6 +278,7 @@ export class CanonicalEditor extends LitElement {
       (caretOffset) => {
         this.selectionController.expectInputSelection(node.sharedId, caretOffset);
       },
+      selectionBefore,
     );
   }
 
@@ -298,6 +300,11 @@ export class CanonicalEditor extends LitElement {
     if (!node || !document) return;
     const selection = this.selectionController.currentBlockSelection(hostContext);
     const intent = translateInlineInput(event.detail, selection.length > 0);
+    const selectionBefore =
+      node.type === 'code-block' &&
+      ['insertFromPaste', 'insertReplacementText'].includes(event.detail.inputEvent.inputType)
+        ? inline.getTextSelection()
+        : undefined;
     if (intent.type === 'ignored') return;
     if (intent.type === 'delete-blocks') {
       this.deleteBlocks(selection, hostContext);
@@ -352,7 +359,7 @@ export class CanonicalEditor extends LitElement {
     const insert = intent.type === 'delete-word-backward' ? '' : intent.insert;
     const isolated = intent.type === 'delete-word-backward' || intent.isolated;
     hostContext?.clearSelection();
-    this.runTextInput(node, from, to, insert, isolated, hostContext);
+    this.runTextInput(node, from, to, insert, isolated, hostContext, selectionBefore);
   };
 
   private replaceBlocks(
@@ -487,9 +494,10 @@ export class CanonicalEditor extends LitElement {
       void this.selectionController.restoreAnchors(
         result.selectionAnchors.anchor,
         result.selectionAnchors.focus,
-        true,
+        result.selectionAnchors.kind !== 'text',
         false,
         hostContext,
+        result.selectionAnchors.kind === 'text',
       );
       return;
     }
@@ -562,9 +570,10 @@ export class CanonicalEditor extends LitElement {
         node,
         Math.min(native.anchor, native.focus),
         Math.max(native.anchor, native.focus),
-        text.replace(/\n/g, ' '),
+        node.type === 'code-block' ? text : text.replace(/\n/g, ' '),
         true,
         hostContext,
+        node.type === 'code-block' ? native : undefined,
       );
   };
 }

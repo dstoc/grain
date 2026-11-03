@@ -149,6 +149,7 @@ export class BrowserSessionRunner {
     isolated: boolean,
     callbacks: SessionActionCallbacks,
     onPrepared: (caretOffset: number) => void,
+    selectionBefore?: { readonly anchor: number; readonly focus: number },
   ): void {
     const document = this.document;
     const writer = this.writer;
@@ -156,12 +157,39 @@ export class BrowserSessionRunner {
     const group = this.inputHistoryGroup(nodeId, isolated);
     const start = { nodeId, offset: from, affinity: 'left' as const };
     const end = { nodeId, offset: from + insert.length, affinity: 'right' as const };
+    const focus = {
+      start,
+      end,
+      ...(selectionBefore
+        ? {
+            selection: {
+              anchor: {
+                nodeId,
+                offset: selectionBefore.anchor,
+                affinity:
+                  selectionBefore.anchor <= selectionBefore.focus
+                    ? ('left' as const)
+                    : ('right' as const),
+              },
+              focus: {
+                nodeId,
+                offset: selectionBefore.focus,
+                affinity:
+                  selectionBefore.focus >= selectionBefore.anchor
+                    ? ('right' as const)
+                    : ('left' as const),
+              },
+              kind: 'text' as const,
+            },
+          }
+        : {}),
+    };
     onPrepared(end.offset);
     try {
       const request = writer.prepareTextInput(
         nodeId,
         { from, to, insert },
-        { ...this.options(group), focus: { start, end } },
+        { ...this.options(group), focus },
       );
       callbacks.withLocalCommit(() => {
         const result = writer.apply(request, {
