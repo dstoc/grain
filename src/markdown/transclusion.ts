@@ -19,6 +19,8 @@ import type {
   ReadonlyCodeBlockNodeView,
   ReadonlyMarkdownNodeView,
 } from './node-view.js';
+import type { MarkdownRenderer } from './block-render.js';
+import type { MarkdownInline } from './inline-render.js';
 import { consume } from '@lit/context';
 import { HostContext, hostContext, invalidateNodeView } from './host-context.js';
 
@@ -38,7 +40,7 @@ export class MarkdownTransclusion extends LitElement {
   accessor root: ReadonlyMarkdownNodeView | undefined;
 
   @query('md-block-render')
-  private accessor markdownRenderer!: LitElement & { hostContext: HostContext };
+  private accessor markdownRenderer!: MarkdownRenderer;
 
   override render() {
     return this.root
@@ -81,6 +83,64 @@ export class MarkdownTransclusion extends LitElement {
     this.hostContext.focusOffset = undefined;
     if (node) invalidateNodeView(node);
   }
+
+  async focusEdge(direction: 'forward' | 'backward'): Promise<boolean> {
+    if (!this.isConnected || !this.root) return false;
+    await this.updateComplete;
+    if (!this.isConnected) return false;
+    await this.markdownRenderer.updateComplete;
+    const candidates = renderedInlines(this.markdownRenderer.shadowRoot!);
+    const inline = direction === 'forward' ? candidates[0] : candidates.at(-1);
+    if (!inline?.nodeView?.connected) return false;
+
+    inline.hostContext?.clearSelection();
+    const offset = direction === 'forward' ? 0 : inline.nodeView.content.length;
+    inline.focus();
+    inline.setSelectionOffsets(offset, offset);
+    return true;
+  }
+}
+
+export function getContainingTransclusion(element: Element): MarkdownTransclusion | undefined {
+  const rendererRoot = element.getRootNode();
+  if (!(rendererRoot instanceof ShadowRoot)) return;
+  const renderer = rendererRoot.host;
+  if (renderer.localName !== 'md-block-render') return;
+  const transclusionRoot = renderer.getRootNode();
+  if (!(transclusionRoot instanceof ShadowRoot)) return;
+  const transclusion = transclusionRoot.host;
+  return transclusion instanceof MarkdownTransclusion ? transclusion : undefined;
+}
+
+export function getRenderedTransclusion(
+  root: ParentNode,
+  node: InlineMarkdownNodeView,
+): MarkdownTransclusion | undefined {
+  return [...root.querySelectorAll('md-transclusion')].find(
+    (element): element is MarkdownTransclusion =>
+      element instanceof MarkdownTransclusion && element.node === node,
+  );
+}
+
+function renderedInlines(root: ShadowRoot): MarkdownInline[] {
+  const inlines: MarkdownInline[] = [];
+  const visit = (node: Node) => {
+    if (node instanceof HTMLSlotElement) {
+      const assigned = node.assignedNodes({ flatten: true });
+      for (const child of assigned.length ? assigned : node.childNodes) visit(child);
+      return;
+    }
+    if (node instanceof Element && node.localName === 'md-inline') {
+      inlines.push(node as MarkdownInline);
+    }
+    if (node instanceof Element && node.shadowRoot) {
+      for (const child of node.shadowRoot.childNodes) visit(child);
+      return;
+    }
+    for (const child of node.childNodes) visit(child);
+  };
+  for (const child of root.childNodes) visit(child);
+  return inlines;
 }
 
 function firstInlineNode(root: ReadonlyMarkdownNodeView): InlineMarkdownNodeView | undefined {

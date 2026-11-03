@@ -63,6 +63,19 @@ describe('M6 review browser contracts', () => {
   function inlines() {
     return [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')];
   }
+  function dispatchMarkdownPaste(inline: MarkdownInline, markdown: string) {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', markdown);
+    clipboardData.setData('text/markdown', markdown);
+    const event = new ClipboardEvent('paste', {
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+      clipboardData,
+    });
+    inline.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  }
   function expectBlockSelection(
     context: HostContext,
     anchorId: CanonicalNode['sharedId'],
@@ -405,6 +418,213 @@ describe('M6 review browser contracts', () => {
     await settle();
     expect(model.root.children.map((node) => node.content)).toEqual(['target']);
   });
+  test('structured paste replaces the empty root target and restores it through undo and redo', async () => {
+    const inline = await mount('');
+    inline.focus();
+    inline.setSelectionOffsets(0, 0);
+    dispatchMarkdownPaste(inline, 'Alpha\n\nBeta\n\nGamma\n');
+    await settle();
+
+    expect(model.root.children.map((node) => node.content)).toEqual(['Alpha', 'Beta', 'Gamma']);
+    expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Gamma');
+    expect(model.validate()).toEqual({ valid: true, errors: [] });
+    const pasted = JSON.stringify(model.exportMarkdownTree());
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual(['']);
+    expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('');
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(JSON.stringify(model.exportMarkdownTree())).toBe(pasted);
+    expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Gamma');
+  });
+  test('structured paste replaces an Enter-created root paragraph', async () => {
+    const first = await mount('Gamma');
+    first.focus();
+    first.setSelectionOffsets(5, 5);
+    await userEvent.keyboard('{Enter}');
+    await settle();
+    const emptyTarget = inlines().at(-1)!;
+    emptyTarget.focus();
+    emptyTarget.setSelectionOffsets(0, 0);
+
+    dispatchMarkdownPaste(emptyTarget, 'Alpha\n\nBeta');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual(['Gamma', 'Alpha', 'Beta']);
+    expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Beta');
+    const pasted = JSON.stringify(model.exportMarkdownTree());
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual(['Gamma', '']);
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(JSON.stringify(model.exportMarkdownTree())).toBe(pasted);
+    expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Beta');
+  });
+  test('structured paste consumes only the Enter-created target inside a quote', async () => {
+    const first = await mount('> target\n\noutside');
+    first.focus();
+    first.setSelectionOffsets(6, 6);
+    await userEvent.keyboard('{Enter}');
+    await settle();
+    const emptyTarget = inlines().find((item) => item.nodeView?.content === '')!;
+    emptyTarget.focus();
+    emptyTarget.setSelectionOffsets(0, 0);
+
+    dispatchMarkdownPaste(emptyTarget, 'Alpha\n\nBeta');
+    await settle();
+    const quote = model.root.children[0]!;
+    expect(quote.type).toBe('block-quote');
+    expect(quote.children.map((node) => node.content)).toEqual(['target', 'Alpha', 'Beta']);
+    expect(model.root.children[1]!.content).toBe('outside');
+    expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Beta');
+    const pasted = JSON.stringify(model.exportMarkdownTree());
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(quote.children.map((node) => node.content)).toEqual(['target', '']);
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(JSON.stringify(model.exportMarkdownTree())).toBe(pasted);
+    expect(model.validate()).toEqual({ valid: true, errors: [] });
+  });
+  test('structured paste consumes the Enter-created list item and keeps current grouping', async () => {
+    await mount('* Alpha\n* Beta\n* Gamma');
+    const beta = inlines()[1]!;
+    beta.focus();
+    beta.setSelectionOffsets(4, 4);
+    await userEvent.keyboard('{Enter}');
+    await settle();
+    const emptyTarget = inlines().find((item) => item.nodeView?.content === '')!;
+    emptyTarget.focus();
+    emptyTarget.setSelectionOffsets(0, 0);
+
+    dispatchMarkdownPaste(emptyTarget, 'Alpha\n\nBeta\n\nGamma');
+    await settle();
+    const list = model.root.children[0]!;
+    expect(list.type).toBe('list');
+    expect(list.children.map((item) => item.children.map((child) => child.content))).toEqual([
+      ['Alpha'],
+      ['Beta'],
+      ['Alpha', 'Beta', 'Gamma'],
+      ['Gamma'],
+    ]);
+    expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Gamma');
+    const pasted = JSON.stringify(model.exportMarkdownTree());
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(list.children.map((item) => item.children.map((child) => child.content))).toEqual([
+      ['Alpha'],
+      ['Beta'],
+      [''],
+      ['Gamma'],
+    ]);
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(JSON.stringify(model.exportMarkdownTree())).toBe(pasted);
+    expect(model.validate()).toEqual({ valid: true, errors: [] });
+  });
+  test.each([
+    {
+      name: 'numbered first item',
+      source: '5. <!-- -->\n6. tail',
+      enterAtStart: false,
+      marker: '5. ',
+      checked: null,
+    },
+    {
+      name: 'numbered first item created by Enter',
+      source: '5. seed\n6. tail',
+      enterAtStart: true,
+      marker: '5. ',
+      checked: null,
+    },
+    {
+      name: 'unchecked task item',
+      source: '* [ ] <!-- -->\n* tail',
+      enterAtStart: false,
+      marker: '* ',
+      checked: false,
+    },
+    {
+      name: 'checked task item',
+      source: '* [x] <!-- -->\n* tail',
+      enterAtStart: false,
+      marker: '* ',
+      checked: true,
+    },
+  ])(
+    'structured paste preserves metadata on $name',
+    async ({ source, enterAtStart, marker, checked }) => {
+      const inline = await mount(source);
+      inline.focus();
+      inline.setSelectionOffsets(0, 0);
+      if (enterAtStart) {
+        await userEvent.keyboard('{Enter}');
+        await settle();
+      }
+      const target = inlines().find((item) => item.nodeView?.content === '')!;
+      target.focus();
+      target.setSelectionOffsets(0, 0);
+      const before = JSON.stringify(model.exportMarkdownTree());
+      const listBefore = model.root.children[0]!;
+      if (listBefore.type !== 'list') throw new Error('expected a list before paste');
+      const targetItem = listBefore.children[0]!;
+      if (targetItem.type !== 'list-item') throw new Error('expected a list item before paste');
+
+      dispatchMarkdownPaste(target, 'Alpha\n\nBeta\n\nGamma');
+      await settle();
+
+      const listAfter = model.root.children[0]!;
+      if (listAfter.type !== 'list') throw new Error('expected a list after paste');
+      const replacedItem = listAfter.children[0]!;
+      if (replacedItem.type !== 'list-item') throw new Error('expected a list item after paste');
+      expect(replacedItem.sharedId).toBe(targetItem.sharedId);
+      expect(replacedItem.marker).toBe(marker);
+      expect(replacedItem.checked ?? null).toBe(checked);
+      expect(replacedItem.children.map((child) => child.content)).toEqual([
+        'Alpha',
+        'Beta',
+        'Gamma',
+      ]);
+      expect(
+        listAfter.children.slice(1).map((item) => item.children.map((child) => child.content)),
+      ).toEqual(enterAtStart ? [['seed'], ['tail']] : [['tail']]);
+      expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Gamma');
+      expect(model.validate()).toEqual({ valid: true, errors: [] });
+      const pasted = JSON.stringify(model.exportMarkdownTree());
+
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(JSON.stringify(model.exportMarkdownTree())).toBe(before);
+
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle();
+      expect(JSON.stringify(model.exportMarkdownTree())).toBe(pasted);
+      expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Gamma');
+      expect(model.validate()).toEqual({ valid: true, errors: [] });
+    },
+  );
+  test('structured paste preserves unrelated and pasted empty paragraph sentinels', async () => {
+    await mount('<!-- -->\n\nGamma');
+    const target = inlines()[1]!;
+    target.focus();
+    target.setSelectionOffsets(5, 5);
+    await userEvent.keyboard('{Enter}');
+    await settle();
+    const emptyTarget = inlines().at(-1)!;
+    emptyTarget.focus();
+    emptyTarget.setSelectionOffsets(0, 0);
+
+    dispatchMarkdownPaste(emptyTarget, '<!-- -->\n\nAlpha');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual(['', 'Gamma', '', 'Alpha']);
+    expect(model.validate()).toEqual({ valid: true, errors: [] });
+  });
   test('plain-text clipboard paste replaces the inline selection and undo restores it', async () => {
     const inline = await mount('hello world');
     inline.focus();
@@ -471,7 +691,7 @@ describe('M6 review browser contracts', () => {
     emptyInline.focus();
     await userEvent.keyboard('{Control>}v{/Control}');
     await settle();
-    expect(model.root.children.map((node) => node.content)).toEqual(['', 'hello', 'world']);
+    expect(model.root.children.map((node) => node.content)).toEqual(['hello', 'world']);
 
     await userEvent.keyboard('{Control>}z{/Control}');
     await settle();
@@ -484,7 +704,7 @@ describe('M6 review browser contracts', () => {
     expect(model.root.children.map((node) => node.content)).toEqual(['']);
     await userEvent.keyboard('{Control>}y{/Control}');
     await settle();
-    expect(model.root.children.map((node) => node.content)).toEqual(['', 'hello', 'world']);
+    expect(model.root.children.map((node) => node.content)).toEqual(['hello', 'world']);
   });
   test.each(['alpha', 'alpha\n', 'alpha\n\n', 'alpha\nbeta\n', ''])(
     'trusted Ctrl+A promotes code selection without changing content %j',

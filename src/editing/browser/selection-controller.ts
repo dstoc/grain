@@ -10,10 +10,15 @@ import type { CanonicalTextAnchor } from '../../markdown/canonical-selection.js'
 import type { MarkdownInline } from '../../markdown/inline-render.js';
 import type { MarkdownRenderer } from '../../markdown/block-render.js';
 import type { HostContext } from '../../markdown/host-context.js';
-import { asInlineMarkdownNodeView } from '../../markdown/node-view.js';
+import {
+  asInlineMarkdownNodeView,
+  type InlineMarkdownNodeView,
+  type ReadonlyMarkdownNodeView,
+} from '../../markdown/node-view.js';
 import type { EditSelection } from '../../markdown/semantic/selection.js';
 import type { NodeId } from '../../markdown/semantic/types.js';
 import { BrowserSessionRunner } from './session-runner.js';
+import { getContainingTransclusion, getRenderedTransclusion } from '../../markdown/transclusion.js';
 
 interface NativeSelectionSnapshot {
   readonly nodeId: NodeId;
@@ -79,15 +84,24 @@ export class SelectionController {
   }
 
   visibleInlineNodes(root = this.host.document()?.root): CanonicalNode[] {
+    return this.visibleInlineNodeViews(root).filter(
+      (node) => node instanceof CanonicalNodeProjection,
+    ) as CanonicalNode[];
+  }
+
+  visibleInlineNodeViews(root?: ReadonlyMarkdownNodeView): InlineMarkdownNodeView[] {
     if (!root) return [];
-    const result: CanonicalNode[] = [];
+    const result: InlineMarkdownNodeView[] = [];
     const pending = [root];
     while (pending.length) {
       const node = pending.pop()!;
-      if (node.type === 'paragraph' || node.type === 'section' || node.type === 'code-block') {
-        result.push(node);
+      if (
+        (node.type === 'paragraph' || node.type === 'section' || node.type === 'code-block') &&
+        typeof node.content === 'string'
+      ) {
+        result.push(asInlineMarkdownNodeView(node));
       }
-      pending.push(...[...node.children].reverse());
+      pending.push(...[...(node.children ?? [])].reverse());
     }
     return result;
   }
@@ -301,7 +315,11 @@ export class SelectionController {
     };
   }
 
-  moveAcrossBlocks(inline: MarkdownInline, node: CanonicalNode, event: KeyboardEvent): void {
+  async moveAcrossBlocks(
+    inline: MarkdownInline,
+    node: InlineMarkdownNodeView,
+    event: KeyboardEvent,
+  ): Promise<void> {
     const context = inline.hostContext ?? this.host.renderer()?.hostContext;
     const document = this.host.document();
     if (!context || !document?.root) return;
@@ -312,38 +330,172 @@ export class SelectionController {
       : event.ctrlKey || event.metaKey
         ? 'word'
         : 'character';
+    const originalSelection = inline.getTextSelection();
     const result = context.hasSelection
       ? 0
       : inline.moveCaret(event.shiftKey ? 'extend' : 'move', direction, granularity);
     if (result === true) {
       if (!event.shiftKey) context.clearSelection();
-      this.captureSelection();
+      if (node instanceof CanonicalNodeProjection) this.captureSelection();
       return;
     }
-    const root =
-      context.root instanceof CanonicalNodeProjection ? (context.root as CanonicalNode) : undefined;
-    const visible = this.visibleInlineNodes(root);
-    const index = visible.findIndex((candidate) => candidate.sharedId === node.sharedId);
-    const next = visible[index + (direction === 'backward' ? -1 : 1)];
-    if (!next) return;
-    const offset = direction === 'backward' ? (next.content ?? '').length : 0;
+    const rootRenderer = this.rendererForContext(context) ?? this.host.renderer();
+    const visible = this.visibleInlineNodeViews(context.root);
+    const index = visible.indexOf(node);
+    if (index < 0 || !rootRenderer?.shadowRoot) {
+      if (originalSelection)
+        inline.setSelectionOffsets(originalSelection.anchor, originalSelection.focus);
+      return;
+    }
+
+    const moved = await this.moveToSibling(
+      rootRenderer,
+      context,
+      visible,
+      index,
+      direction,
+      node,
+      event,
+    );
+    if (moved) return;
     if (event.shiftKey) {
-      const from = asInlineMarkdownNodeView(node);
-      const to = asInlineMarkdownNodeView(next);
-      if (context.selectionAnchor && context.selectionFocus) {
-        context.extendSelection(from, to);
-      } else {
-        context.setSelection(from, to);
+      if (originalSelection)
+        inline.setSelectionOffsets(originalSelection.anchor, originalSelection.focus);
+      return;
+    }
+
+    context.clearSelection();
+    await this.moveOutOfTransclusion(inline, context, direction, event);
+  }
+
+  private async moveToSibling(
+    renderer: MarkdownRenderer,
+    context: HostContext,
+    visible: readonly InlineMarkdownNodeView[],
+    index: number,
+    direction: 'backward' | 'forward',
+    origin: InlineMarkdownNodeView,
+    event: KeyboardEvent,
+  ): Promise<boolean> {
+    const step = direction === 'backward' ? -1 : 1;
+    for (
+      let candidateIndex = index + step;
+      candidateIndex >= 0 && candidateIndex < visible.length;
+      candidateIndex += step
+    ) {
+      const candidate = visible[candidateIndex]!;
+      const transclusion = getRenderedTransclusion(renderer.shadowRoot!, candidate);
+      if (transclusion && event.shiftKey) return false;
+      const moved = await this.focusCandidate(
+        renderer,
+        context,
+        candidate,
+        direction,
+        origin,
+        event,
+      );
+      if (!moved) continue;
+
+      return true;
+    }
+    return false;
+  }
+
+  private async focusCandidate(
+    renderer: MarkdownRenderer,
+    context: HostContext,
+    candidate: InlineMarkdownNodeView,
+    direction: 'backward' | 'forward',
+    origin: InlineMarkdownNodeView,
+    event: KeyboardEvent,
+  ): Promise<boolean> {
+    const transclusion = getRenderedTransclusion(renderer.shadowRoot!, candidate);
+    if (transclusion) {
+      if (event.shiftKey) return false;
+      const moved = await transclusion.focusEdge(direction);
+      if (moved) context.clearSelection();
+      return moved;
+    }
+
+    const targetInline = [
+      ...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
+    ].find((element) => element.nodeView === candidate);
+    if (!targetInline) return false;
+    const offset = direction === 'backward' ? candidate.content.length : 0;
+    let anchor: CanonicalTextAnchor | undefined;
+
+    if (candidate instanceof CanonicalNodeProjection) {
+      const document = this.host.document();
+      if (!document || !candidate.connected) return false;
+      try {
+        anchor = createCanonicalTextAnchor(document, {
+          nodeId: candidate.sharedId,
+          offset,
+          affinity: direction === 'backward' ? 'left' : 'right',
+        });
+      } catch {
+        return false;
       }
+    }
+
+    if (event.shiftKey) {
+      const from = asInlineMarkdownNodeView(origin);
+      const to = asInlineMarkdownNodeView(candidate);
+      if (context.selectionAnchor && context.selectionFocus) context.extendSelection(from, to);
+      else context.setSelection(from, to);
     } else {
       context.clearSelection();
     }
-    const anchor = createCanonicalTextAnchor(document, {
-      nodeId: next.sharedId,
-      offset,
-      affinity: direction === 'backward' ? 'left' : 'right',
-    });
-    void this.restoreAnchors(anchor, anchor, false, event.shiftKey, context);
+
+    if (anchor) {
+      await this.restoreAnchors(anchor, anchor, false, event.shiftKey, context);
+      return true;
+    }
+
+    targetInline.focus();
+    targetInline.setSelectionOffsets(offset, offset);
+    return true;
+  }
+
+  private async moveOutOfTransclusion(
+    inline: MarkdownInline,
+    context: HostContext,
+    direction: 'backward' | 'forward',
+    event: KeyboardEvent,
+  ): Promise<void> {
+    if (event.shiftKey) return;
+    let boundary: Element = inline;
+    let currentContext = context;
+    while (true) {
+      const transclusion = getContainingTransclusion(boundary);
+      if (!transclusion) return;
+      const parentContext = transclusion.hostContext;
+      const parentRenderer =
+        parentContext && (this.rendererForContext(parentContext) ?? this.host.renderer());
+      const parentNode = transclusion.node;
+      if (parentContext && parentRenderer?.shadowRoot && parentNode) {
+        const visible = this.visibleInlineNodeViews(parentContext.root);
+        const index = visible.indexOf(parentNode);
+        if (index >= 0) {
+          const moved = await this.moveToSibling(
+            parentRenderer,
+            parentContext,
+            visible,
+            index,
+            direction,
+            parentNode,
+            event,
+          );
+          if (moved) {
+            currentContext.clearSelection();
+            return;
+          }
+        }
+      }
+      currentContext.clearSelection();
+      currentContext = parentContext ?? currentContext;
+      boundary = transclusion;
+    }
   }
 
   setBlockSelection(

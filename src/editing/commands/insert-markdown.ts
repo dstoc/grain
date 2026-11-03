@@ -14,10 +14,15 @@ function containsSection(nodes: readonly MarkdownNode[]): boolean {
 export interface InsertMarkdownInput {
   readonly contextId: NodeId;
   readonly markdown: string;
+  /** Replace an empty active paragraph when paste came from a collapsed caret. */
+  readonly replaceActiveEmptyTarget?: boolean;
 }
 
 /** Parses clipboard Markdown into copied semantic nodes at the active block. */
-export const insertMarkdown: Edit<InsertMarkdownInput> = (context, { contextId, markdown }) => {
+export const insertMarkdown: Edit<InsertMarkdownInput> = (
+  context,
+  { contextId, markdown, replaceActiveEmptyTarget = false },
+) => {
   const { draft, scopeRoot } = context;
   assertScopedTarget(draft, scopeRoot, contextId);
   requireInline(draft, contextId);
@@ -26,8 +31,15 @@ export const insertMarkdown: Edit<InsertMarkdownInput> = (context, { contextId, 
   if (!nodes.length) return NOT_APPLICABLE;
 
   const current = draft.node(contextId);
+  const hasPastedContent = nodes.some((node) => node.type !== 'paragraph' || node.content !== '');
+  const replaceTarget =
+    replaceActiveEmptyTarget &&
+    hasPastedContent &&
+    current.type === 'paragraph' &&
+    current.content === '';
   let parentId: NodeId | undefined;
   let beforeId: NodeId | null = null;
+  let targetDetached = false;
   let attachAfter:
     | { readonly id: NodeId; readonly parent: NodeId; readonly before: NodeId | null }
     | undefined;
@@ -50,8 +62,25 @@ export const insertMarkdown: Edit<InsertMarkdownInput> = (context, { contextId, 
       if (item !== scopeRoot && list) {
         parentId = list;
         beforeId = draft.nextSiblingOf(item) ?? null;
+        const itemNode = draft.node(item);
+        const pastedList = nodes.length === 1 && nodes[0]!.type === 'list';
+        if (replaceTarget && itemNode.children.length === 1) {
+          if (!pastedList) {
+            parentId = item;
+            beforeId = null;
+          } else if (
+            itemNode.type === 'list-item' &&
+            itemNode.marker === '* ' &&
+            itemNode.checked == null
+          ) {
+            draft.detach(contextId);
+            draft.detach(item);
+            targetDetached = true;
+          }
+        }
       }
     }
+    if (replaceTarget && !targetDetached) draft.detach(contextId);
   }
 
   const scopeDestination = attachAfter?.parent ?? parentId;
