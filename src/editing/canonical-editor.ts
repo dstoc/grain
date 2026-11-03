@@ -511,13 +511,19 @@ export class CanonicalEditor extends LitElement {
     const node = this.activeInline(inline);
     if (!node || !event.clipboardData) return;
     const hostContext = inline.hostContext;
+    const blockSelection = this.selectionController.currentBlockSelection(hostContext);
     const { markdown, text } = readClipboardPayload(event.clipboardData);
     if (markdown) {
       event.preventDefault();
       const native = inline.getTextSelection();
       this.runEdit(
         insertMarkdown,
-        { contextId: node.sharedId, markdown },
+        {
+          contextId: node.sharedId,
+          markdown,
+          replaceActiveEmptyTarget:
+            blockSelection.length === 0 && native !== undefined && native.anchor === native.focus,
+        },
         native
           ? this.textSelectionBefore(node.sharedId, inline, native.anchor, native.focus)
           : undefined,
@@ -526,9 +532,8 @@ export class CanonicalEditor extends LitElement {
       return;
     }
     event.preventDefault();
-    const selection = this.selectionController.currentBlockSelection(hostContext);
-    if (selection.length) {
-      this.replaceBlocks(selection, text, hostContext);
+    if (blockSelection.length) {
+      this.replaceBlocks(blockSelection, text, hostContext);
       return;
     }
     const native = inline.getTextSelection();
