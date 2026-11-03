@@ -3,7 +3,6 @@ import * as Y from 'yjs';
 import { CanonicalIndexes } from './indexes.js';
 import { deepCopy, stableJson } from './util.js';
 import {
-  currentActive,
   metaMap,
   nodeCell,
   nodeMap,
@@ -44,14 +43,9 @@ import {
 import type { NativeMutationEvidence } from './native-execution.js';
 import { CanonicalReplicas } from './replicas.js';
 import {
-  addHistoryTapesToScope,
-  closeHistoryEntry,
-  destroyHistoryEntry,
   historyFocus,
   historyFocusAnchor,
   historySelectionAnchors,
-  historyScope,
-  makeTextHistoryManager,
   updateRevisionsAfterHistory,
 } from './history.js';
 import type {
@@ -59,8 +53,8 @@ import type {
   HistoryEntry,
   HistoryReservation,
   PendingHistoryRecord,
-  SessionHistory,
 } from './history.js';
+import { CanonicalHistoryCoordinator } from './history/coordinator.js';
 import {
   RoutedNativeTextHistoryCapture,
   type NativeTextHistoryCapture,
@@ -681,12 +675,12 @@ export class CanonicalWriter {
   private readonly unsubscribeAcceptedUpdates: () => void;
   private readonly indexes: CanonicalIndexes;
   private readonly historyCapture: NativeTextHistoryCapture;
+  private readonly history: CanonicalHistoryCoordinator;
   private readonly replicas: CanonicalReplicas;
-  private readonly sessions = new Map<string, SessionHistory>();
+  private readonly sessionSequences = new Map<string, number>();
   private readonly acceptedRequests = new Map<string, CachedActionResponse>();
   private readonly listeners = new Set<WriterListener>();
   private readonly localQueue: QueuedLocalEdit[] = [];
-  private readonly maxHistoryGroups: number;
   private readonly verifyWithFullClone: boolean;
   private fullStateCloneCount = 0;
   private literalTextInputCount = 0;
@@ -698,7 +692,6 @@ export class CanonicalWriter {
   private closed = false;
   private pending?: PendingRecord;
   private pendingHistory?: PendingHistoryRecord;
-  private sequenceOrdinal = 0;
 
   constructor(
     private readonly document: CanonicalDocument,
@@ -711,11 +704,16 @@ export class CanonicalWriter {
     this.indexes = new CanonicalIndexes(this.state);
     this.historyCapture = new RoutedNativeTextHistoryCapture(this.state);
     this.replicas = new CanonicalReplicas(this.state, this.indexes, () => this.cloneState());
-    this.maxHistoryGroups = options.maxHistoryGroups ?? 500;
+    const maxHistoryGroups = options.maxHistoryGroups ?? 500;
     this.verifyWithFullClone = options.verifyWithFullClone ?? false;
     assert(
-      Number.isSafeInteger(this.maxHistoryGroups) && this.maxHistoryGroups > 0,
+      Number.isSafeInteger(maxHistoryGroups) && maxHistoryGroups > 0,
       'history limit must be a positive integer',
+    );
+    this.history = new CanonicalHistoryCoordinator(
+      this.state,
+      this.historyCapture,
+      maxHistoryGroups,
     );
     activeWriters.set(document, this);
     this.unsubscribeAcceptedUpdates = this.access.observeAcceptedUpdates(
@@ -765,14 +763,8 @@ export class CanonicalWriter {
     );
     if (this.closed) return;
     this.unsubscribeAcceptedUpdates();
-    for (const session of this.sessions.values()) {
-      for (const entry of session.all) destroyHistoryEntry(entry, this.historyCapture);
-      session.all.clear();
-      session.undo.length = 0;
-      session.redo.length = 0;
-      session.current = undefined;
-    }
-    this.sessions.clear();
+    this.history.close();
+    this.sessionSequences.clear();
     this.replicas.close();
     this.acceptedRequests.clear();
     this.acceptedResponseBytes = 0;
@@ -799,7 +791,7 @@ export class CanonicalWriter {
   admitSession(sessionId: string): void {
     assert(!this.closed, 'canonical writer is closed');
     assert(sessionId.length > 0, 'session ID cannot be empty');
-    if (this.sessions.has(sessionId)) return;
+    if (this.history.hasSession(sessionId)) return;
     const epoch = metaMap(this.state).get('authorityEpoch') as string;
     const watermark =
       sessionWatermarkMap(this.state).get(sessionWatermarkKey(epoch, sessionId)) ?? 0;
@@ -807,7 +799,8 @@ export class CanonicalWriter {
       Number.isSafeInteger(watermark) && watermark >= 0,
       'stored session watermark is invalid',
     );
-    this.sessions.set(sessionId, { sequence: watermark, undo: [], redo: [], all: new Set() });
+    this.sessionSequences.set(sessionId, watermark);
+    this.history.admit(sessionId);
   }
 
   prepareCommand(options: ActionOptions, callback: DraftCommand): ActionRequest {
@@ -1040,7 +1033,7 @@ export class CanonicalWriter {
     );
     const updates: Uint8Array[] = [];
     const collect = (update: Uint8Array) => updates.push(Uint8Array.from(update));
-    this.activateHistoryReservation(reservation);
+    this.history.activate(reservation);
     this.access.beginPending();
     this.state.on('update', collect);
     try {
@@ -1048,7 +1041,7 @@ export class CanonicalWriter {
         Y.applyUpdate(this.state, Uint8Array.from(request.textUpdate), reservation.entry.origin);
       }
       applyPlan(this.state, plan, reservation.entry.origin, nextRevision, liveMutations, () =>
-        addHistoryTapesToScope(this.state, reservation.entry, prepared.historyTapeIds),
+        this.history.addTapesToScope(reservation.entry, prepared.historyTapeIds),
       );
       this.state.transact(
         () =>
@@ -1190,7 +1183,7 @@ export class CanonicalWriter {
       liveBefore?.destroy();
       this.replicas.discardValidationReplica();
       this.replicas.discardAuthorReplica(request.sessionId);
-      this.cancelHistoryReservation(reservation);
+      this.history.cancel(reservation);
       this.poisoned = true;
       this.access.poison();
       throw new Error(
@@ -1273,7 +1266,7 @@ export class CanonicalWriter {
         })
       : undefined;
     const snapshot = captureTouchedResources(this.state, EMPTY_PLAN, changedTapeIds);
-    const reservation = this.reserveHistory(
+    const reservation = this.history.reserve(
       request.sessionId,
       request.historyGroupId,
       noEffect,
@@ -1347,16 +1340,16 @@ export class CanonicalWriter {
       request.sessionSequence,
     );
     const hash = requestHash(request);
-    const session = this.sessions.get(sessionId);
-    if (!session) return reject('wrong-session');
-    if (request.sessionSequence <= session.sequence) {
+    const sessionSequence = this.sessionSequences.get(sessionId);
+    if (sessionSequence === undefined) return reject('wrong-session');
+    if (request.sessionSequence <= sessionSequence) {
       const prior = this.acceptedRequests.get(key);
       if (!prior) return reject('receipt-expired/resync-required');
       return prior.hash === hash
         ? { status: 'duplicate', accepted: copyAcceptedAction(prior.accepted) }
         : reject('retry-payload-conflict');
     }
-    if (request.sessionSequence !== session.sequence + 1) return reject('wrong-sequence');
+    if (request.sessionSequence !== sessionSequence + 1) return reject('wrong-sequence');
     const revision = metaMap(this.state).get('acceptedRevision') as number;
     if (request.baseRevision > revision) return reject('future-base-revision');
     if (
@@ -1572,7 +1565,7 @@ export class CanonicalWriter {
           })
         : undefined;
       const snapshot = captureTouchedResources(this.state, plan, finalChangedTapes);
-      const actionReservation = this.reserveHistory(
+      const actionReservation = this.history.reserve(
         sessionId,
         request.historyGroupId,
         noEffect,
@@ -1606,7 +1599,7 @@ export class CanonicalWriter {
       if (this.poisoned) throw error;
       candidateMutations?.close();
       candidate?.destroy();
-      if (reservation) this.cancelHistoryReservation(reservation);
+      if (reservation) this.history.cancel(reservation);
       this.replicas.discardValidationReplica();
       this.replicas.rejectPreparedAuthor(request);
       return { status: 'rejected', reason: 'invalid-operation' };
@@ -1620,8 +1613,8 @@ export class CanonicalWriter {
       record && record.publicValue === pending,
       'pending commit does not belong to this writer',
     );
-    this.finishHistory(record.reservation);
-    this.sessions.get(record.context.sessionId)!.sequence = record.context.sessionSequence;
+    this.history.finish(record.reservation);
+    this.sessionSequences.set(record.context.sessionId, record.context.sessionSequence);
     this.replicas.applyAcceptedUpdate(pending.update, {
       sessionId: record.context.sessionId,
       actionId: record.request.actionId,
@@ -1707,11 +1700,11 @@ export class CanonicalWriter {
   }
 
   canUndo(sessionId = 'local', scopeRoot?: NodeId): boolean {
-    return this.historySelection(sessionId, 'undo', scopeRoot).index !== undefined;
+    return this.history.select(sessionId, 'undo', scopeRoot).index !== undefined;
   }
 
   canRedo(sessionId = 'local', scopeRoot?: NodeId): boolean {
-    return this.historySelection(sessionId, 'redo', scopeRoot).index !== undefined;
+    return this.history.select(sessionId, 'redo', scopeRoot).index !== undefined;
   }
 
   undo(sessionId = 'local', scopeRoot?: NodeId): HistoryResult {
@@ -1743,17 +1736,7 @@ export class CanonicalWriter {
       record && record.publicValue === pending,
       'pending history commit does not belong to this writer',
     );
-    const session = this.sessions.get(record.sessionId);
-    assert(session, `missing history session ${record.sessionId}`);
-    const source = record.direction === 'undo' ? session.undo : session.redo;
-    const destination = record.direction === 'undo' ? session.redo : session.undo;
-    assert(
-      source[record.sourceIndex] === record.entry,
-      'pending history entry is no longer current',
-    );
-    source.splice(record.sourceIndex, 1);
-    destination.push(record.entry);
-    if (session.current === record.entry) session.current = undefined;
+    this.history.moveSelected(record.sessionId, record.direction, record.sourceIndex, record.entry);
     this.replicas.applyAcceptedUpdate(record.publicValue.update);
     this.pendingHistory = undefined;
     this.publishing = true;
@@ -1802,179 +1785,7 @@ export class CanonicalWriter {
   }
 
   sealTextGroup(sessionId = 'local'): void {
-    const session = this.sessions.get(sessionId);
-    if (!session?.current) return;
-    closeHistoryEntry(session.current);
-    session.current = undefined;
-  }
-
-  private reserveHistory(
-    sessionId: string,
-    groupId: string,
-    noEffect: boolean,
-    structuralEffect: boolean,
-    textTapes: readonly TapeId[],
-    receipt: ActionReceipt,
-    structuralPatch: StructuralPatch,
-    focusAnchors?: ActionFocusAnchors,
-    selectionAnchors?: {
-      readonly anchor: CanonicalTextAnchor;
-      readonly focus: CanonicalTextAnchor;
-    },
-  ): HistoryReservation {
-    const session = this.getSession(sessionId);
-    const current = session.current;
-    const sameTextTarget =
-      current?.touchedNodeIds.length === 1 &&
-      receipt.touchedNodeIds.length === 1 &&
-      current.touchedNodeIds[0] === receipt.touchedNodeIds[0];
-    const canJoin =
-      !noEffect &&
-      !structuralEffect &&
-      textTapes.length > 0 &&
-      current?.groupId === groupId &&
-      !current.sealed &&
-      sameTextTarget;
-    if (canJoin) {
-      const entry = session.current!;
-      return {
-        sessionId,
-        entry,
-        isNew: false,
-        managerExisted: !!entry.manager,
-        nextCurrent: true,
-        noEffect,
-        structuralEffect,
-        textTapes,
-        structuralPatch,
-        ...(receipt.focus ? { focus: receipt.focus } : {}),
-        ...(focusAnchors ? { focusAnchors } : {}),
-        ...(selectionAnchors ? { selectionAnchors } : {}),
-      };
-    }
-    const entryId = noEffect
-      ? `${groupId}:noop:${receipt.requestId}`
-      : `${groupId}:${receipt.requestId}`;
-    const base = {
-      id: entryId,
-      sessionId,
-      groupId,
-      createdSequence: this.sequenceOrdinal,
-      origin: Object.freeze({ entryId }),
-      textTapes: new Set(textTapes),
-      touchedNodeIds: receipt.touchedNodeIds,
-      touchedTapeIds: receipt.touchedTapeIds,
-      structuralPatch,
-      ...(receipt.focus ? { focus: receipt.focus } : {}),
-      ...(focusAnchors ? { focusAnchors } : {}),
-      ...(selectionAnchors ? { selectionAnchors } : {}),
-      sealed: noEffect || structuralEffect,
-      noEffect,
-      structuralEffect,
-      actionCount: 0,
-    };
-    const entry: HistoryEntry = { ...base };
-    return {
-      sessionId,
-      entry,
-      isNew: true,
-      managerExisted: false,
-      nextCurrent: !noEffect && !structuralEffect && textTapes.length > 0,
-      noEffect,
-      structuralEffect,
-      textTapes,
-      structuralPatch,
-      ...(receipt.focus ? { focus: receipt.focus } : {}),
-      ...(focusAnchors ? { focusAnchors } : {}),
-      ...(selectionAnchors ? { selectionAnchors } : {}),
-    };
-  }
-
-  private activateHistoryReservation(reservation: HistoryReservation): void {
-    const entry = reservation.entry;
-    if (!reservation.textTapes.length) return;
-    if (!entry.manager) {
-      const tapeIds = [...new Set([...entry.textTapes, ...reservation.textTapes])];
-      entry.manager = makeTextHistoryManager(this.state, entry, tapeIds, this.historyCapture);
-    } else if (!reservation.isNew) {
-      addHistoryTapesToScope(this.state, entry, reservation.textTapes);
-    }
-  }
-
-  private cancelHistoryReservation(reservation: HistoryReservation): void {
-    if (reservation.isNew || !reservation.managerExisted) {
-      destroyHistoryEntry(reservation.entry, this.historyCapture);
-    }
-  }
-
-  private finishHistory(reservation: HistoryReservation): void {
-    const session = this.getSession(reservation.sessionId);
-    for (const redo of session.redo.splice(0)) {
-      session.all.delete(redo);
-      destroyHistoryEntry(redo, this.historyCapture);
-    }
-    const entry = reservation.entry;
-    if (reservation.isNew) {
-      if (session.current && session.current !== entry) closeHistoryEntry(session.current);
-      if (session.current !== entry) session.current = undefined;
-      this.sequenceOrdinal++;
-      session.undo.push(entry);
-      session.all.add(entry);
-    }
-    if (!reservation.isNew && reservation.focus) {
-      entry.focus = Object.freeze({
-        ...((entry.focus?.start ?? reservation.focus.start)
-          ? { start: entry.focus?.start ?? reservation.focus.start }
-          : {}),
-        ...(reservation.focus.end ? { end: reservation.focus.end } : {}),
-      });
-    }
-    if (!reservation.isNew && reservation.focusAnchors) {
-      entry.focusAnchors = Object.freeze({
-        ...((entry.focusAnchors?.start ?? reservation.focusAnchors.start)
-          ? { start: entry.focusAnchors?.start ?? reservation.focusAnchors.start }
-          : {}),
-        ...(reservation.focusAnchors.end ? { end: reservation.focusAnchors.end } : {}),
-      });
-    }
-    if (reservation.selectionAnchors) entry.selectionAnchors = reservation.selectionAnchors;
-    for (const tapeId of reservation.textTapes) entry.textTapes.add(tapeId);
-    entry.noEffect &&= reservation.noEffect;
-    entry.structuralEffect ||= reservation.structuralEffect;
-    entry.actionCount++;
-    if (reservation.nextCurrent) session.current = entry;
-    else {
-      if (session.current === entry) session.current = undefined;
-      closeHistoryEntry(entry);
-    }
-    for (const [otherSessionId, other] of this.sessions.entries()) {
-      if (otherSessionId !== reservation.sessionId && other.current) {
-        closeHistoryEntry(other.current);
-        other.current = undefined;
-      }
-    }
-    this.trimHistory(session);
-  }
-
-  private historySelection(
-    sessionId: string,
-    direction: 'undo' | 'redo',
-    scopeRoot?: NodeId,
-  ): { readonly index?: number; readonly reason?: 'invalid-scope' | 'mixed-scope' } {
-    const session = this.sessions.get(sessionId);
-    if (!session) return {};
-    const source = direction === 'undo' ? session.undo : session.redo;
-    if (scopeRoot !== undefined && !currentActive(this.state, scopeRoot)) {
-      return { reason: 'invalid-scope' };
-    }
-    for (let index = source.length - 1; index >= 0; index--) {
-      if (scopeRoot === undefined) return { index };
-      const scope = historyScope(this.state, source[index]!, scopeRoot);
-      if (scope === 'outside') continue;
-      if (scope === 'mixed') return { reason: 'mixed-scope' };
-      return { index };
-    }
-    return {};
+    this.history.sealTextGroup(sessionId);
   }
 
   private prepareHistory(
@@ -1986,15 +1797,11 @@ export class CanonicalWriter {
       return { status: 'blocked', reason: 'structural-history-pending' };
     if (this.pending || this.pendingHistory || this.preparing || this.publishing)
       return { status: 'blocked', reason: 'structural-history-pending' };
-    const session = this.sessions.get(sessionId);
-    if (!session) return this.consumeHistoryReset();
-    const source = direction === 'undo' ? session.undo : session.redo;
-    const destination = direction === 'undo' ? session.redo : session.undo;
-    const selection = this.historySelection(sessionId, direction, scopeRoot);
+    const selection = this.history.select(sessionId, direction, scopeRoot);
     if (selection.reason) return { status: 'blocked', reason: selection.reason };
     const sourceIndex = selection.index;
-    if (sourceIndex === undefined) return this.consumeHistoryReset();
-    const entry = source[sourceIndex]!;
+    const entry = selection.entry;
+    if (sourceIndex === undefined || !entry) return this.consumeHistoryReset();
     const patchError = structuralPatchError(this.state, entry.structuralPatch, direction);
     if (patchError) return { status: 'blocked', reason: patchError };
 
@@ -2019,9 +1826,7 @@ export class CanonicalWriter {
       entry.structuralPatch.childLists.length > 0 ||
       entry.structuralPatch.births.length > 0;
     if (!canReplayText && !structuralEffect) {
-      source.splice(sourceIndex, 1);
-      destination.push(entry);
-      if (session.current === entry) session.current = undefined;
+      this.history.moveSelected(sessionId, direction, sourceIndex, entry);
       this.publishing = true;
       let callbackErrors: readonly unknown[];
       try {
@@ -2087,9 +1892,7 @@ export class CanonicalWriter {
       const update = updates.length ? Y.mergeUpdates(updates) : undefined;
       const textChanged = updated.changed.length > 0;
       if (!textChanged && !structuralEffect) {
-        source.splice(sourceIndex, 1);
-        destination.push(entry);
-        if (session.current === entry) session.current = undefined;
+        this.history.moveSelected(sessionId, direction, sourceIndex, entry);
         this.publishing = true;
         try {
           const callbackErrors = [...this.access.publish([])];
@@ -2185,27 +1988,9 @@ export class CanonicalWriter {
     return { status: 'history-reset' };
   }
 
-  private trimHistory(session: SessionHistory): void {
-    while (session.all.size > this.maxHistoryGroups) {
-      const oldest = [...session.all].sort((a, b) => a.createdSequence - b.createdSequence)[0];
-      if (!oldest) return;
-      session.all.delete(oldest);
-      session.undo.splice(session.undo.indexOf(oldest), session.undo.includes(oldest) ? 1 : 0);
-      session.redo.splice(session.redo.indexOf(oldest), session.redo.includes(oldest) ? 1 : 0);
-      if (session.current === oldest) session.current = undefined;
-      destroyHistoryEntry(oldest, this.historyCapture);
-    }
-  }
-
-  private getSession(sessionId: string): SessionHistory {
-    const session = this.sessions.get(sessionId);
-    assert(session, `session ${sessionId} has not been admitted by the host`);
-    return session;
-  }
-
   private nextSequence(sessionId: string): number {
-    const session = this.sessions.get(sessionId);
-    if (session) return session.sequence + 1;
+    const sessionSequence = this.sessionSequences.get(sessionId);
+    if (sessionSequence !== undefined) return sessionSequence + 1;
     const epoch = metaMap(this.state).get('authorityEpoch') as string;
     return (sessionWatermarkMap(this.state).get(sessionWatermarkKey(epoch, sessionId)) ?? 0) + 1;
   }

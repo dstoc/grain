@@ -97,7 +97,6 @@ export function historyScope(state: Y.Doc, entry: HistoryEntry, scopeRoot: NodeI
 }
 
 export interface SessionHistory {
-  sequence: number;
   readonly undo: HistoryEntry[];
   readonly redo: HistoryEntry[];
   readonly all: Set<HistoryEntry>;
