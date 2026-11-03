@@ -1,17 +1,9 @@
 import * as Y from 'yjs';
 
 import { CanonicalIndexes } from '../indexes.js';
+import { INLINE_KINDS, isAllowedChild } from '../schema.js';
 import { deepCopy, deepFreeze, stableJson } from '../util.js';
-import {
-  immutableCell,
-  metaMap,
-  nodeMap,
-  readCell,
-  revisionMap,
-  spanText,
-  tapeMap,
-} from '../state-access.js';
-import type { CellValue } from '../state-access.js';
+import { metaMap, nodeMap, readCell, revisionMap, spanText, tapeMap } from '../state-access.js';
 import type { Span, TapeId } from '../types.js';
 import type { NodeId, NodeKind, TextAffinity } from '../../semantic/types.js';
 import { assertTextEdit, splitsSurrogatePair } from '../../semantic/types.js';
@@ -31,145 +23,23 @@ import type {
   ParserTreeDraft,
   Transfer,
 } from '../../semantic/draft.js';
-import { mapTextEdit, mapTextEditIndexed } from '../../canonical-text.js';
-import type { NativeTextRun } from '../../canonical-text.js';
+import { mapTextEdit } from '../../canonical-text.js';
+import type { NativeTapeIndex } from '../../canonical-text.js';
+import { compilePlan } from './compiler.js';
+import { DraftFragments } from './fragments.js';
+import type {
+  DraftCompilationSnapshot,
+  DraftNodeState,
+  DraftPiece,
+  DraftSpan,
+  InsertedPiece,
+  InternalCell,
+  LowLevelPlan,
+} from './types.js';
+export type { LowLevelPlan } from './types.js';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
-}
-
-const INLINE_KINDS = new Set<NodeKind>(['paragraph', 'section', 'code-block']);
-const CONTAINER_KINDS = new Set<NodeKind>(['document', 'section', 'list-item', 'block-quote']);
-const BLOCK_KINDS = new Set<NodeKind>([
-  'paragraph',
-  'section',
-  'code-block',
-  'list',
-  'block-quote',
-]);
-
-interface InternalCell {
-  readonly token: string;
-  readonly value: unknown;
-}
-
-interface InsertionSlot {
-  readonly tapeId: TapeId;
-  readonly index: number;
-  readonly spanIndex: number;
-  readonly affinity: TextAffinity;
-  readonly order: number;
-}
-
-type InsertionSlotTarget = Omit<InsertionSlot, 'order'> & {
-  /** Preserve the source buffer gap when an edit follows a transfer. */
-  readonly parentBufferId?: string;
-  readonly parentBufferOffset?: number;
-};
-
-interface ExistingPiece {
-  readonly kind: 'existing';
-  readonly source: NodeId;
-  readonly tapeId: TapeId;
-  readonly sourceSpanIndex: number;
-  readonly from: number;
-  readonly to: number;
-  readonly text: string;
-}
-
-interface InsertedPiece {
-  readonly kind: 'inserted';
-  readonly bufferId: string;
-  readonly from: number;
-  readonly to: number;
-  readonly anchor: InsertionSlot;
-  readonly text: string;
-}
-
-interface DraftTextBuffer {
-  readonly text: string;
-  readonly anchor: InsertionSlot;
-  readonly parentBufferId?: string;
-  readonly parentBufferOffset?: number;
-}
-
-type DraftPiece = ExistingPiece | InsertedPiece;
-
-interface DraftSpan {
-  span: Span;
-  pieces: DraftPiece[];
-  readonly sourceSpanIndex?: number;
-  readonly created?: boolean;
-  /** Insertion target retained when a cut leaves this span empty. */
-  readonly insertionSlot?: InsertionSlotTarget;
-}
-
-interface DraftNodeState {
-  readonly id: NodeId;
-  type: NodeKind;
-  children: NodeId[];
-  spans: DraftSpan[];
-  marker: string | null;
-  checked: boolean | null;
-  info: string | null;
-  readonly baseCells: Map<CellField, InternalCell>;
-  readonly created: boolean;
-  textEdited: boolean;
-}
-
-interface DraftFragment {
-  readonly spans: readonly DraftSpan[];
-  readonly text: string;
-}
-
-const fragmentIds = new WeakMap<object, string>();
-
-interface PlanBoundary {
-  readonly tapeId: TapeId;
-  readonly index: number;
-  readonly boundaryId: string;
-  /** Position inside action-local text inserted at this native index. */
-  readonly insertionOffset: number;
-  readonly side: 'start' | 'end';
-  readonly order: number;
-  /** Action-local buffer that defines this transfer boundary's slot. */
-  readonly sourceBufferId?: string;
-  /** UTF-16 offset in the immutable action-local buffer. */
-  readonly sourceBufferOffset?: number;
-}
-
-interface PlanTextInsert {
-  readonly tapeId: TapeId;
-  readonly index: number;
-  readonly slotOrder: number;
-  readonly text: string;
-}
-
-interface PlanNodeAllocation {
-  readonly id: NodeId;
-  readonly type: NodeKind;
-  readonly marker: string | null;
-  readonly checked: boolean | null;
-  readonly info: string | null;
-  readonly spans: readonly Span[];
-  readonly cells: Readonly<Record<CellField, CellValue<unknown>>>;
-}
-
-export interface LowLevelPlan {
-  readonly allocations: readonly PlanNodeAllocation[];
-  readonly newTapes: readonly { readonly id: TapeId; readonly span: Span }[];
-  readonly boundaries: readonly PlanBoundary[];
-  readonly deletions: readonly NativeTextRun[];
-  readonly insertions: readonly PlanTextInsert[];
-  readonly writes: readonly {
-    readonly nodeId: NodeId;
-    readonly field: CellField;
-    readonly value: unknown;
-    readonly token: string;
-  }[];
-  readonly touchedNodes: readonly NodeId[];
-  readonly touchedTapes: readonly TapeId[];
-  readonly textTapes: readonly TapeId[];
 }
 
 function inlineContent(node: DraftNodeState): string {
@@ -235,11 +105,6 @@ function nodeStateFromRecord(state: Y.Doc, id: NodeId, indexes: CanonicalIndexes
   };
 }
 
-function allowedChild(parent: NodeKind, child: NodeKind): boolean {
-  if (parent === 'list') return child === 'list-item';
-  return CONTAINER_KINDS.has(parent) && BLOCK_KINDS.has(child);
-}
-
 function sameValue(left: unknown, right: unknown): boolean {
   return stableJson(left) === stableJson(right);
 }
@@ -291,13 +156,8 @@ export class MutableTreeDraft implements ParserTreeDraft {
   private readonly operations_: SemanticOperation[] = [];
   private readonly generatedIds = new Set<string>();
   private readonly newTapeSpans = new Map<NodeId, Span>();
-  private readonly transferBoundaries: PlanBoundary[] = [];
-  private readonly transferBoundarySlots = new Map<string, InsertionSlotTarget>();
-  private readonly textBuffers = new Map<string, DraftTextBuffer>();
-  private readonly fragments = new Map<string, DraftFragment>();
-  private readonly consumedFragments = new Set<string>();
+  private readonly fragments: DraftFragments;
   private idOrdinal = 0;
-  private insertionSlotOrder = 0;
   private compiledPlan?: LowLevelPlan;
 
   constructor(
@@ -306,6 +166,22 @@ export class MutableTreeDraft implements ParserTreeDraft {
     private readonly indexes: CanonicalIndexes,
     operations?: readonly SemanticOperation[],
   ) {
+    this.fragments = new DraftFragments({
+      allNodes: () => this.nodes.values(),
+      requireNode: (id) => this.requireNode(id),
+      ensureVisibleOrCreated: (node) => this.ensureVisibleOrCreated(node),
+      readText: (node) => this.readText(node),
+      baseSpans: (id) => this.baseSpans(id),
+      sourceText: (span) => spanText(this.state, span, this.indexes),
+      mapInsertion: (spans, offset, affinity) =>
+        mapTextEdit(spans, this.tapesFor(spans), {
+          from: offset,
+          to: offset,
+          insert: '',
+          affinity,
+        }).insertion,
+      allocateId: (role) => this.allocateId(role),
+    });
     if (operations) {
       for (const operation of operations) this.apply(operation, false);
     }
@@ -328,193 +204,114 @@ export class MutableTreeDraft implements ParserTreeDraft {
   compilePlan(): LowLevelPlan {
     this.assertActive();
     if (this.compiledPlan) return this.compiledPlan;
-    this.dropUnusedCreatedInsertionSpans();
-    assert(
-      [...this.fragments.keys()].every((id) => this.consumedFragments.has(id)),
-      'every cut fragment must be inserted before the action is compiled',
-    );
-    const allocations: PlanNodeAllocation[] = [];
-    const newTapes: { id: TapeId; span: Span }[] = [];
-    const deletions: NativeTextRun[] = [];
-    const writes: { nodeId: NodeId; field: CellField; value: unknown; token: string }[] = [];
-    const touchedNodes = new Set<NodeId>();
-    const touchedTapes = new Set<TapeId>();
-    const textTapes = new Set<TapeId>();
-    const finalTapeIds = new Set<TapeId>();
-    for (const candidate of this.nodes.values()) {
-      for (const span of candidate.spans) finalTapeIds.add(span.span.tapeId);
-    }
-    for (const node of this.nodes.values()) {
-      for (const span of node.spans) {
-        for (const piece of span.pieces) this.assertPieceSource(piece);
+    this.fragments.dropUnusedCreatedInsertionSpans(this.newTapeSpans);
+    this.fragments.assertAllConsumed();
+    this.fragments.assertPieceSources();
+    this.compiledPlan = compilePlan(this.compilationSnapshot());
+    return this.compiledPlan;
+  }
+
+  private compilationSnapshot(): DraftCompilationSnapshot {
+    const textIndexes = new Map<TapeId, NativeTapeIndex>();
+
+    const semanticPaths = new Map<NodeId, readonly number[] | undefined>();
+    const pathForNode = (id: NodeId): readonly number[] | undefined => {
+      if (semanticPaths.has(id)) return semanticPaths.get(id);
+      const path: number[] = [];
+      let current = id;
+      const root = this.rootId();
+      while (current !== root) {
+        const parentId = this.parentId(current);
+        if (!parentId) {
+          semanticPaths.set(id, undefined);
+          return undefined;
+        }
+        const parent = this.requireNode(parentId);
+        const index = parent.children.indexOf(current);
+        if (index < 0) {
+          semanticPaths.set(id, undefined);
+          return undefined;
+        }
+        path.push(index);
+        current = parentId;
       }
-      if (node.created) {
-        const spans = node.spans.map((span) => deepFreeze(deepCopy(span.span)));
-        const cells: Record<CellField, CellValue<unknown>> = {
-          kind: immutableCell(this.allocateId('cell'), node.type),
-          children: immutableCell(this.allocateId('cell'), []),
-          spans: immutableCell(this.allocateId('cell'), spans),
-          marker: immutableCell(this.allocateId('cell'), node.marker),
-          checked: immutableCell(this.allocateId('cell'), node.checked),
-          info: immutableCell(this.allocateId('cell'), node.info),
-        };
-        allocations.push({
+      path.reverse();
+      const frozen = Object.freeze(path);
+      semanticPaths.set(id, frozen);
+      return frozen;
+    };
+    for (const node of this.nodes.values()) pathForNode(node.id);
+
+    const baseTextByNode = new Map<NodeId, readonly string[]>();
+    for (const node of this.nodes.values()) {
+      if (!node.textEdited || node.created) continue;
+      const spans = node.baseCells.get('spans')!.value as readonly Span[];
+      for (const span of spans) {
+        const index = this.indexes.textIndexes.get(span.tapeId);
+        assert(index, `missing native text index for ${span.tapeId}`);
+        textIndexes.set(span.tapeId, index);
+      }
+      baseTextByNode.set(
+        node.id,
+        Object.freeze(spans.map((span) => spanText(this.state, span, this.indexes))),
+      );
+    }
+
+    const nodes = Object.freeze(
+      [...this.nodes.values()].map((node) => {
+        const baseCells = new Map(
+          [...node.baseCells].map(([field, cell]) => [
+            field,
+            Object.freeze({ token: cell.token, value: cell.value }),
+          ]),
+        );
+        const spans = Object.freeze(
+          node.spans.map((span) =>
+            Object.freeze({
+              span: Object.freeze({ ...span.span }),
+              pieces: Object.freeze(
+                span.pieces.map((piece) =>
+                  Object.freeze({
+                    ...piece,
+                    ...(piece.kind === 'inserted'
+                      ? { anchor: Object.freeze({ ...piece.anchor }) }
+                      : {}),
+                  }),
+                ),
+              ),
+            }),
+          ),
+        );
+        return Object.freeze({
           id: node.id,
           type: node.type,
+          children: Object.freeze([...node.children]),
+          spans,
           marker: node.marker,
           checked: node.checked,
           info: node.info,
-          spans,
-          cells,
+          baseCells,
+          created: node.created,
+          textEdited: node.textEdited,
         });
-        touchedNodes.add(node.id);
-        const createdSpan = this.newTapeSpans.get(node.id);
-        if (createdSpan && finalTapeIds.has(createdSpan.tapeId)) {
-          newTapes.push({ id: createdSpan.tapeId, span: createdSpan });
-          touchedTapes.add(createdSpan.tapeId);
-        }
-      }
-
-      if (node.textEdited && !node.created) {
-        const baseSpans = node.baseCells.get('spans')!.value as readonly Span[];
-        const baseStarts: number[] = [];
-        let baseLength = 0;
-        for (const span of baseSpans) {
-          baseStarts.push(baseLength);
-          baseLength += spanText(this.state, span, this.indexes).length;
-        }
-        for (let spanIndex = 0; spanIndex < baseSpans.length; spanIndex++) {
-          const baseSpan = baseSpans[spanIndex]!;
-          const baseText = spanText(this.state, baseSpan, this.indexes);
-          for (const ownerId of this.indexes.tapeOwners.get(baseSpan.tapeId) ?? []) {
-            this.requireNode(ownerId);
-          }
-          const retained = [...this.nodes.values()]
-            .flatMap((candidate) =>
-              candidate.spans.flatMap((span) =>
-                span.pieces.filter(
-                  (piece) =>
-                    piece.kind === 'existing' &&
-                    piece.source === node.id &&
-                    piece.sourceSpanIndex === spanIndex,
-                ),
-              ),
-            )
-            .map((piece) => [piece.from, piece.to] as const)
-            .sort((a, b) => a[0] - b[0]);
-          const merged: [number, number][] = [];
-          for (const [from, to] of retained) {
-            const previous = merged.at(-1);
-            if (previous && from <= previous[1]) previous[1] = Math.max(previous[1], to);
-            else merged.push([from, to]);
-          }
-          let cursor = 0;
-          for (const [from, to] of merged) {
-            if (cursor < from) {
-              const mapped = mapTextEditIndexed(baseSpans, this.indexes.textIndexes, {
-                from: baseStarts[spanIndex]! + cursor,
-                to: baseStarts[spanIndex]! + from,
-                insert: '',
-              });
-              deletions.push(...mapped.deletions);
-              for (const deletion of mapped.deletions) {
-                touchedTapes.add(deletion.tapeId);
-                textTapes.add(deletion.tapeId);
-              }
-            }
-            cursor = Math.max(cursor, to);
-          }
-          if (cursor < baseText.length) {
-            const mapped = mapTextEditIndexed(baseSpans, this.indexes.textIndexes, {
-              from: baseStarts[spanIndex]! + cursor,
-              to: baseStarts[spanIndex]! + baseText.length,
-              insert: '',
-            });
-            deletions.push(...mapped.deletions);
-            for (const deletion of mapped.deletions) {
-              touchedTapes.add(deletion.tapeId);
-              textTapes.add(deletion.tapeId);
-            }
-          }
-        }
-        touchedNodes.add(node.id);
-      }
-
-      const fields: readonly [CellField, unknown][] = [
-        ['kind', node.type],
-        ['children', node.children],
-        ['spans', node.spans.map((span) => span.span)],
-        ['marker', node.marker],
-        ['checked', node.checked],
-        ['info', node.info],
-      ];
-      for (const [field, value] of fields) {
-        if (node.created) {
-          if (field === 'children' && node.children.length) {
-            writes.push({
-              nodeId: node.id,
-              field,
-              value: [...node.children],
-              token: this.allocateId('cell'),
-            });
-            touchedNodes.add(node.id);
-          }
-          continue;
-        }
-        const previous = node.baseCells.get(field)?.value;
-        if (!sameValue(previous, value)) {
-          writes.push({
-            nodeId: node.id,
-            field,
-            value: deepFreeze(deepCopy(value)),
-            token: this.allocateId('cell'),
-          });
-          touchedNodes.add(node.id);
-          for (const span of node.spans) touchedTapes.add(span.span.tapeId);
-        }
-      }
-    }
-
-    for (const node of this.nodes.values()) {
-      for (const span of node.spans) {
-        for (const piece of span.pieces) {
-          if (piece.kind !== 'inserted' || !piece.text) continue;
-          touchedTapes.add(piece.anchor.tapeId);
-          textTapes.add(piece.anchor.tapeId);
-        }
-      }
-    }
-
-    const textProjection = this.compileTextProjection();
-    const insertions = textProjection.insertions;
-    for (const boundary of this.transferBoundaries) touchedTapes.add(boundary.tapeId);
-    const operationNodeIds = this.operations_.flatMap((operation) => {
-      switch (operation.type) {
-        case 'transferInlineRange':
-          return [operation.transfer.source, operation.transfer.destination];
-        case 'insertFragment':
-          return [operation.destination];
-        default:
-          return 'id' in operation ? [operation.id] : [];
-      }
-    });
-    for (const id of operationNodeIds) touchedNodes.add(id);
-    this.compiledPlan = Object.freeze({
-      allocations: Object.freeze(allocations),
-      newTapes: Object.freeze(newTapes),
-      boundaries: Object.freeze(
-        this.finalTransferBoundaries(textProjection.boundaryOffsets).map((item) =>
-          Object.freeze(item),
-        ),
+      }),
+    );
+    const textBuffers = new Map(this.fragments.textBufferSnapshot());
+    return Object.freeze({
+      nodes,
+      operations: Object.freeze(
+        this.operations_.map((operation) => deepFreeze(deepCopy(operation))),
       ),
-      deletions: Object.freeze(deletions.map((item) => Object.freeze({ ...item }))),
-      insertions: Object.freeze(insertions.map((item) => Object.freeze({ ...item }))),
-      writes: Object.freeze(writes.map((item) => Object.freeze({ ...item }))),
-      touchedNodes: Object.freeze([...touchedNodes]),
-      touchedTapes: Object.freeze([...touchedTapes]),
-      textTapes: Object.freeze([...textTapes]),
+      newTapeSpans: new Map(this.newTapeSpans),
+      transferBoundaries: Object.freeze(
+        this.fragments.boundaryPlans.map((boundary) => Object.freeze({ ...boundary })),
+      ),
+      textBuffers,
+      textIndexes,
+      baseTextByNode,
+      semanticPaths,
+      allocateCellToken: () => this.allocateId('cell'),
     });
-    return this.compiledPlan;
   }
 
   assertMatches(state: Y.Doc): void {
@@ -651,11 +448,7 @@ export class MutableTreeDraft implements ParserTreeDraft {
   cutInline(id: NodeId, from: number, to: number): InlineFragment {
     const fragmentId = this.allocateId('fragment');
     this.apply({ type: 'cutInline', id, from, to, fragmentId }, true);
-    const fragment = this.fragments.get(fragmentId);
-    assert(fragment, 'cut did not create a fragment');
-    const handle = Object.freeze({ text: fragment.text }) as InlineFragment;
-    fragmentIds.set(handle, fragmentId);
-    return handle;
+    return this.fragments.handleFor(fragmentId);
   }
 
   insertFragment(
@@ -664,10 +457,7 @@ export class MutableTreeDraft implements ParserTreeDraft {
     affinity: TextAffinity,
     fragment: InlineFragment,
   ): void {
-    const fragmentId = fragmentIds.get(fragment);
-    assert(fragmentId, 'fragment was not created by this draft');
-    assert(this.fragments.has(fragmentId), 'fragment does not belong to this draft');
-    assert(!this.consumedFragments.has(fragmentId), 'fragment has already been inserted');
+    const fragmentId = this.fragments.fragmentIdFor(fragment);
     this.apply({ type: 'insertFragment', destination, at, affinity, fragmentId }, true);
   }
 
@@ -754,10 +544,10 @@ export class MutableTreeDraft implements ParserTreeDraft {
         this.spliceInternal(operation.id, operation.edit);
         break;
       case 'cutInline':
-        this.cutFragmentInternal(operation.id, operation.from, operation.to, operation.fragmentId);
+        this.fragments.applyCut(operation.id, operation.from, operation.to, operation.fragmentId);
         break;
       case 'insertFragment':
-        this.insertFragmentInternal(
+        this.fragments.applyInsert(
           operation.destination,
           operation.at,
           operation.affinity,
@@ -765,7 +555,7 @@ export class MutableTreeDraft implements ParserTreeDraft {
         );
         break;
       case 'transferInlineRange':
-        this.transferInternal(operation.transfer);
+        this.fragments.transferInlineRange(operation.transfer);
         break;
       case 'convertInline':
         this.convertInternal(operation.id, operation.plan);
@@ -851,7 +641,7 @@ export class MutableTreeDraft implements ParserTreeDraft {
               },
               pieces: content
                 ? [
-                    this.makeInsertedPiece(
+                    this.fragments.createInsertedPiece(
                       {
                         tapeId: span.tapeId,
                         index: 1,
@@ -876,77 +666,6 @@ export class MutableTreeDraft implements ParserTreeDraft {
     this.nodes.set(id, state);
   }
 
-  private makeInsertedPiece(anchor: InsertionSlotTarget, text: string): InsertedPiece {
-    const { parentBufferId, parentBufferOffset, ...slot } = anchor;
-    const bufferId = this.allocateId('buffer');
-    const insertionAnchor: InsertionSlot = { ...slot, order: this.insertionSlotOrder++ };
-    assert(
-      (parentBufferId === undefined) === (parentBufferOffset === undefined),
-      'buffer insertion requires a complete parent slot',
-    );
-    if (parentBufferId !== undefined && parentBufferOffset !== undefined) {
-      const parent = this.textBuffers.get(parentBufferId);
-      assert(parent, `missing parent action-local text buffer ${parentBufferId}`);
-      assert(
-        Number.isInteger(parentBufferOffset) &&
-          parentBufferOffset >= 0 &&
-          parentBufferOffset <= parent.text.length,
-        `insertion is outside parent action-local text buffer ${parentBufferId}`,
-      );
-    }
-    this.textBuffers.set(bufferId, {
-      text,
-      anchor: insertionAnchor,
-      ...(parentBufferId === undefined ? {} : { parentBufferId }),
-      ...(parentBufferOffset === undefined ? {} : { parentBufferOffset }),
-    });
-    return {
-      kind: 'inserted',
-      bufferId,
-      from: 0,
-      to: text.length,
-      anchor: insertionAnchor,
-      text,
-    };
-  }
-
-  private assertPieceSource(piece: DraftPiece): void {
-    if (piece.kind === 'inserted') {
-      const buffer = this.textBuffers.get(piece.bufferId);
-      assert(buffer !== undefined, `missing action-local text buffer ${piece.bufferId}`);
-      assert(
-        Number.isInteger(piece.from) &&
-          Number.isInteger(piece.to) &&
-          piece.from >= 0 &&
-          piece.to >= piece.from &&
-          piece.to <= buffer.text.length,
-        `action-local text slice is outside ${piece.bufferId}`,
-      );
-      assert(
-        piece.text === buffer.text.slice(piece.from, piece.to),
-        `action-local text slice diverged from ${piece.bufferId}`,
-      );
-      return;
-    }
-
-    const sourceSpan = this.baseSpans(piece.source)[piece.sourceSpanIndex];
-    assert(sourceSpan, `missing source span ${piece.sourceSpanIndex} on ${piece.source}`);
-    assert(sourceSpan.tapeId === piece.tapeId, `source tape changed for ${piece.source}`);
-    const sourceText = spanText(this.state, sourceSpan, this.indexes);
-    assert(
-      Number.isInteger(piece.from) &&
-        Number.isInteger(piece.to) &&
-        piece.from >= 0 &&
-        piece.to >= piece.from &&
-        piece.to <= sourceText.length,
-      `existing text slice is outside ${piece.source}`,
-    );
-    assert(
-      piece.text === sourceText.slice(piece.from, piece.to),
-      `existing text slice diverged from ${piece.source}`,
-    );
-  }
-
   private placeInternal(id: NodeId, parentId: NodeId, before: NodeId | null): void {
     assert(id !== this.rootId(), 'the document root cannot be placed');
     const node = this.requireNode(id);
@@ -957,7 +676,7 @@ export class MutableTreeDraft implements ParserTreeDraft {
     this.readField(parent, 'kind');
     this.readField(parent, 'children');
     assert(
-      allowedChild(parent.type, node.type),
+      isAllowedChild(parent.type, node.type),
       `${node.type} cannot be a child of ${parent.type}`,
     );
     const oldParentId = this.parentId(id);
@@ -1006,7 +725,7 @@ export class MutableTreeDraft implements ParserTreeDraft {
     this.validateDraftEdit(content, edit);
     if (content.slice(0, edit.from) + edit.insert + content.slice(edit.to) === content) return;
     const affinity = edit.affinity ?? (edit.from === content.length ? 'left' : 'right');
-    const target = this.insertionTarget(node, edit.from, affinity);
+    const target = this.fragments.insertionTarget(node, edit.from, affinity);
 
     let start = 0;
     for (let spanIndex = 0; spanIndex < node.spans.length; spanIndex++) {
@@ -1039,7 +758,7 @@ export class MutableTreeDraft implements ParserTreeDraft {
       );
       const pieces = targetSpan.pieces;
       const inserted: InsertedPiece = {
-        ...this.makeInsertedPiece(target.anchor, edit.insert),
+        ...this.fragments.createInsertedPiece(target.anchor, edit.insert),
       };
       targetSpan.pieces = [
         ...slicePieces(pieces, 0, local),
@@ -1052,919 +771,6 @@ export class MutableTreeDraft implements ParserTreeDraft {
 
   private validateDraftEdit(content: string, edit: CanonicalTextEdit): void {
     assertTextEdit(content, edit);
-  }
-
-  private insertionTarget(
-    node: DraftNodeState,
-    offset: number,
-    affinity: TextAffinity,
-  ): { spanIndex: number; localOffset: number; anchor: InsertionSlotTarget } {
-    let global = 0;
-    const spans = node.spans.map((span, index) => {
-      const length = span.pieces.reduce((total, piece) => total + piece.text.length, 0);
-      const result = { span, index, start: global, end: global + length, length };
-      global += length;
-      return result;
-    });
-    const touching = spans.filter((span) => span.start <= offset && offset <= span.end);
-    assert(touching.length > 0, 'no insertion span contains the offset');
-    const target = affinity === 'left' ? touching[0]! : touching.at(-1)!;
-    const localOffset = offset - target.start;
-    if (!target.span.pieces.length) {
-      const insertionSlot = target.span.insertionSlot;
-      if (insertionSlot) {
-        return {
-          spanIndex: target.index,
-          localOffset,
-          anchor: { ...insertionSlot, affinity },
-        };
-      }
-      if (target.span.created) {
-        return {
-          spanIndex: target.index,
-          localOffset,
-          anchor: {
-            tapeId: target.span.span.tapeId,
-            index: 1,
-            spanIndex: target.index,
-            affinity,
-          },
-        };
-      }
-    }
-
-    let pieceStart = 0;
-    let chosen: { piece: DraftPiece; local: number } | undefined;
-    for (const piece of target.span.pieces) {
-      const end = pieceStart + piece.text.length;
-      if (pieceStart < localOffset && localOffset < end) {
-        chosen = { piece, local: localOffset - pieceStart };
-        break;
-      }
-      if (localOffset === pieceStart && affinity === 'right') {
-        chosen = { piece, local: 0 };
-        break;
-      }
-      if (localOffset === end && affinity === 'left') chosen = { piece, local: piece.text.length };
-      pieceStart = end;
-    }
-    if (!chosen) {
-      const candidate = affinity === 'left' ? target.span.pieces.at(-1) : target.span.pieces[0];
-      if (candidate) {
-        chosen = {
-          piece: candidate,
-          local: affinity === 'left' ? candidate.text.length : 0,
-        };
-      }
-    }
-    if (chosen?.piece.kind === 'inserted') {
-      return {
-        spanIndex: target.index,
-        localOffset,
-        anchor: {
-          ...chosen.piece.anchor,
-          affinity,
-          parentBufferId: chosen.piece.bufferId,
-          parentBufferOffset: chosen.piece.from + chosen.local,
-        },
-      };
-    }
-    const source = chosen?.piece;
-    if (source?.kind === 'existing') {
-      const sourceSpan = this.baseSpans(source.source)[source.sourceSpanIndex];
-      assert(sourceSpan, 'existing source span is missing');
-      const sourceOffset = source.from + chosen!.local;
-      const map = mapTextEdit([sourceSpan], this.tapesFor([sourceSpan]), {
-        from: sourceOffset,
-        to: sourceOffset,
-        insert: '',
-        affinity,
-      });
-      return { spanIndex: target.index, localOffset, anchor: map.insertion };
-    }
-    const map = mapTextEdit([target.span.span], this.tapesFor([target.span.span]), {
-      from: localOffset,
-      to: localOffset,
-      insert: '',
-      affinity,
-    });
-    return { spanIndex: target.index, localOffset, anchor: map.insertion };
-  }
-
-  private transferInternal(transfer: Transfer): void {
-    const source = this.requireNode(transfer.source);
-    const destination = this.requireNode(transfer.destination);
-    this.ensureVisibleOrCreated(source);
-    this.ensureVisibleOrCreated(destination);
-    assert(
-      INLINE_KINDS.has(source.type) && INLINE_KINDS.has(destination.type),
-      'transfers require inline nodes',
-    );
-    this.readText(source);
-    if (source.id === destination.id) {
-      this.reorderInlineRange(source, transfer);
-      return;
-    }
-    this.readText(destination);
-    const destinationContent = inlineContent(destination);
-    assert(
-      Number.isInteger(transfer.at) && transfer.at >= 0 && transfer.at <= destinationContent.length,
-      'transfer destination is out of bounds',
-    );
-    assert(
-      !splitsSurrogatePair(destinationContent, transfer.at),
-      'transfer destination splits a surrogate pair',
-    );
-    const fragmentId = this.allocateId('fragment');
-    this.cutFragmentInternal(source.id, transfer.from, transfer.to, fragmentId);
-    this.insertFragmentInternal(destination.id, transfer.at, transfer.affinity, fragmentId);
-  }
-
-  private cutFragmentInternal(id: NodeId, from: number, to: number, fragmentId: string): void {
-    assert(!this.fragments.has(fragmentId), `fragment ${fragmentId} already exists`);
-    const node = this.requireNode(id);
-    this.ensureVisibleOrCreated(node);
-    assert(INLINE_KINDS.has(node.type), `${node.type} nodes do not have inline text`);
-    this.readText(node);
-    const content = inlineContent(node);
-    assert(Number.isInteger(from) && Number.isInteger(to), 'cut offsets must be integers');
-    assert(from >= 0 && to > from && to <= content.length, 'cut range is out of bounds');
-    assert(
-      !splitsSurrogatePair(content, from) && !splitsSurrogatePair(content, to),
-      'cut range splits a surrogate pair',
-    );
-    const cut = this.cutSourceRange(node, from, to);
-    node.spans = cut.remaining;
-    this.fragments.set(fragmentId, {
-      spans: cut.moved,
-      text: cut.moved.flatMap((span) => span.pieces.map((piece) => piece.text)).join(''),
-    });
-  }
-
-  private insertFragmentInternal(
-    destinationId: NodeId,
-    at: number,
-    affinity: TextAffinity,
-    fragmentId: string,
-  ): void {
-    const fragment = this.fragments.get(fragmentId);
-    assert(fragment, `unknown fragment ${fragmentId}`);
-    assert(!this.consumedFragments.has(fragmentId), `fragment ${fragmentId} was already used`);
-    const destination = this.requireNode(destinationId);
-    this.ensureVisibleOrCreated(destination);
-    assert(INLINE_KINDS.has(destination.type), 'fragments require an inline destination');
-    this.readText(destination);
-    const content = inlineContent(destination);
-    assert(
-      Number.isInteger(at) && at >= 0 && at <= content.length,
-      'fragment target is out of bounds',
-    );
-    assert(!splitsSurrogatePair(content, at), 'fragment target splits a surrogate pair');
-    destination.spans = this.insertTransferAt(destination, at, affinity, fragment.spans);
-    this.consumedFragments.add(fragmentId);
-  }
-
-  private cutSourceRange(
-    node: DraftNodeState,
-    from: number,
-    to: number,
-  ): { remaining: DraftSpan[]; moved: DraftSpan[] } {
-    const remaining: DraftSpan[] = [];
-    const moved: DraftSpan[] = [];
-    let global = 0;
-    for (let index = 0; index < node.spans.length; index++) {
-      const current = node.spans[index]!;
-      const text = current.pieces.map((piece) => piece.text).join('');
-      const spanStart = global;
-      const spanEnd = global + text.length;
-      global = spanEnd;
-      const localFrom = Math.max(0, from - spanStart);
-      const localTo = Math.min(text.length, to - spanStart);
-      if (localFrom >= localTo) {
-        remaining.push(current);
-        continue;
-      }
-      const span = current.span;
-      const fullSpan = localFrom === 0 && localTo === text.length;
-      if (
-        fullSpan &&
-        node.spans.length > 1 &&
-        current.pieces.every((piece) => piece.kind === 'inserted')
-      ) {
-        moved.push(current);
-        continue;
-      }
-      const startBoundary =
-        localFrom === 0 && !fullSpan
-          ? span.startBoundaryId
-          : this.cutBoundary(node, current, localFrom, 'start');
-      const endBoundary =
-        localTo === text.length && !fullSpan
-          ? span.endBoundaryId
-          : this.cutBoundary(node, current, localTo, 'end');
-      if (localFrom > 0 || fullSpan) {
-        const left = { ...span, endBoundaryId: startBoundary };
-        const insertionSlot =
-          this.transferBoundarySlots.get(startBoundary) ?? current.insertionSlot;
-        remaining.push({
-          span: left,
-          sourceSpanIndex: current.sourceSpanIndex,
-          pieces: slicePieces(current.pieces, 0, localFrom),
-          created: current.created,
-          ...(insertionSlot ? { insertionSlot } : {}),
-        });
-      }
-      const insertionSlot = this.transferBoundarySlots.get(startBoundary) ?? current.insertionSlot;
-      moved.push({
-        span: { ...span, startBoundaryId: startBoundary, endBoundaryId: endBoundary },
-        sourceSpanIndex: current.sourceSpanIndex,
-        pieces: slicePieces(current.pieces, localFrom, localTo),
-        created: current.created,
-        ...(insertionSlot ? { insertionSlot } : {}),
-      });
-      if (localTo < text.length || fullSpan) {
-        const right = { ...span, startBoundaryId: endBoundary };
-        const rightInsertionSlot =
-          this.transferBoundarySlots.get(endBoundary) ?? current.insertionSlot;
-        remaining.push({
-          span: right,
-          sourceSpanIndex: current.sourceSpanIndex,
-          pieces: slicePieces(current.pieces, localTo, text.length),
-          created: current.created,
-          ...(rightInsertionSlot ? { insertionSlot: rightInsertionSlot } : {}),
-        });
-      }
-    }
-    assert(moved.length > 0, 'cut range has no source span');
-    return { remaining, moved };
-  }
-
-  private reorderInlineRange(node: DraftNodeState, transfer: Transfer): void {
-    const content = inlineContent(node);
-    assert(
-      Number.isInteger(transfer.from) &&
-        Number.isInteger(transfer.to) &&
-        transfer.from >= 0 &&
-        transfer.to > transfer.from &&
-        transfer.to <= content.length,
-      'transfer range is out of bounds',
-    );
-    assert(
-      !splitsSurrogatePair(content, transfer.from) && !splitsSurrogatePair(content, transfer.to),
-      'transfer splits a surrogate pair',
-    );
-    assert(
-      Number.isInteger(transfer.at) && transfer.at >= 0 && transfer.at <= content.length,
-      'transfer destination is out of bounds',
-    );
-    assert(
-      !splitsSurrogatePair(content, transfer.at),
-      'transfer destination splits a surrogate pair',
-    );
-    if (transfer.at === transfer.from || transfer.at === transfer.to) return;
-    assert(
-      !(transfer.from < transfer.at && transfer.at < transfer.to),
-      'same-node destination cannot be inside the transferred range',
-    );
-
-    const segments: { readonly draft: DraftSpan; readonly from: number; readonly to: number }[] =
-      [];
-    let globalStart = 0;
-    for (let spanIndex = 0; spanIndex < node.spans.length; spanIndex++) {
-      const current = node.spans[spanIndex]!;
-      const spanContent = current.pieces.map((piece) => piece.text).join('');
-      const localCuts = [transfer.from, transfer.to, transfer.at]
-        .map((cut) => cut - globalStart)
-        .filter((cut) => cut > 0 && cut < spanContent.length)
-        .sort((a, b) => a - b);
-      const boundaries = new Map<number, string>([
-        [0, current.span.startBoundaryId],
-        [spanContent.length, current.span.endBoundaryId],
-      ]);
-      for (const local of localCuts) {
-        const absolute = globalStart + local;
-        const affinity =
-          absolute === transfer.at
-            ? transfer.affinity
-            : absolute === transfer.from
-              ? 'right'
-              : 'left';
-        boundaries.set(
-          local,
-          this.cutBoundary(
-            node,
-            current,
-            local,
-            absolute === transfer.to ? 'end' : 'start',
-            affinity,
-          ),
-        );
-      }
-      const positions = [...new Set([0, ...localCuts, spanContent.length])].sort((a, b) => a - b);
-      for (let index = 0; index < positions.length - 1; index++) {
-        const from = positions[index]!;
-        const to = positions[index + 1]!;
-        const insertionSlot =
-          this.transferBoundarySlots.get(boundaries.get(from)!) ?? current.insertionSlot;
-        segments.push({
-          draft: {
-            span: {
-              ...current.span,
-              startBoundaryId: boundaries.get(from)!,
-              endBoundaryId: boundaries.get(to)!,
-            },
-            sourceSpanIndex: current.sourceSpanIndex,
-            pieces: slicePieces(current.pieces, from, to),
-            created: current.created,
-            ...(insertionSlot ? { insertionSlot } : {}),
-          },
-          from: globalStart + from,
-          to: globalStart + to,
-        });
-      }
-      globalStart += spanContent.length;
-    }
-
-    const moved = segments.filter(
-      (segment) =>
-        segment.to > segment.from && segment.from >= transfer.from && segment.to <= transfer.to,
-    );
-    assert(moved.length > 0, 'transfer range has no source span');
-    const movedSet = new Set(moved);
-    const remaining = segments.filter((segment) => !movedSet.has(segment));
-    const adjustedAt =
-      transfer.at < transfer.from ? transfer.at : transfer.at - (transfer.to - transfer.from);
-    let accumulated = 0;
-    let insertionIndex = remaining.length;
-    for (let index = 0; index < remaining.length; index++) {
-      const segment = remaining[index]!;
-      const length = segment.to - segment.from;
-      if (adjustedAt < accumulated + length) {
-        insertionIndex = index;
-        break;
-      }
-      accumulated += length;
-      if (adjustedAt === accumulated) {
-        insertionIndex = index + 1;
-        break;
-      }
-    }
-    node.spans = [
-      ...remaining.slice(0, insertionIndex).map((segment) => segment.draft),
-      ...moved.map((segment) => segment.draft),
-      ...remaining.slice(insertionIndex).map((segment) => segment.draft),
-    ];
-  }
-
-  private cutBoundary(
-    node: DraftNodeState,
-    current: DraftSpan,
-    offset: number,
-    role: 'start' | 'end',
-    affinity?: TextAffinity,
-  ): string {
-    const content = current.pieces.map((piece) => piece.text).join('');
-    assert(offset >= 0 && offset <= content.length, 'transfer boundary is outside its source span');
-    const resolvedAffinity = affinity ?? (role === 'start' ? 'right' : 'left');
-    let cursor = 0;
-    let chosen: { piece: DraftPiece; local: number } | undefined;
-    for (const piece of current.pieces) {
-      const end = cursor + piece.text.length;
-      if (cursor < offset && offset < end) {
-        chosen = { piece, local: offset - cursor };
-        break;
-      }
-      if (offset === cursor && resolvedAffinity === 'right') {
-        chosen = { piece, local: 0 };
-        break;
-      }
-      if (offset === end && resolvedAffinity === 'left') {
-        chosen = { piece, local: piece.text.length };
-      }
-      cursor = end;
-    }
-
-    let mapped: ReturnType<typeof mapTextEdit>['insertion'];
-    if (chosen?.piece.kind === 'inserted') {
-      mapped = {
-        tapeId: chosen.piece.anchor.tapeId,
-        index: chosen.piece.anchor.index,
-        spanIndex: chosen.piece.anchor.spanIndex,
-        affinity: resolvedAffinity,
-      };
-    } else if (chosen?.piece.kind === 'existing') {
-      const sourceSpan = this.baseSpans(chosen.piece.source)[chosen.piece.sourceSpanIndex];
-      assert(sourceSpan, 'existing transfer source span is missing');
-      mapped = mapTextEdit([sourceSpan], this.tapesFor([sourceSpan]), {
-        from: chosen.piece.from + chosen.local,
-        to: chosen.piece.from + chosen.local,
-        insert: '',
-        affinity: resolvedAffinity,
-      }).insertion;
-    } else {
-      mapped = mapTextEdit([current.span], this.tapesFor([current.span]), {
-        from: offset,
-        to: offset,
-        insert: '',
-        affinity: resolvedAffinity,
-      }).insertion;
-    }
-    let insertionOffset = 0;
-    let foundBoundaryPiece = false;
-    for (const span of node.spans) {
-      for (const piece of span.pieces) {
-        if (chosen && span === current && piece === chosen.piece) {
-          if (piece.kind === 'inserted') insertionOffset += chosen.local;
-          foundBoundaryPiece = true;
-          break;
-        }
-        if (
-          piece.kind === 'inserted' &&
-          piece.anchor.tapeId === mapped.tapeId &&
-          piece.anchor.index === mapped.index
-        ) {
-          insertionOffset += piece.text.length;
-        }
-      }
-      if (foundBoundaryPiece) break;
-    }
-    const boundaryId = this.allocateId('boundary');
-    const insertionSlot: InsertionSlotTarget = {
-      tapeId: mapped.tapeId,
-      index: mapped.index,
-      spanIndex: mapped.spanIndex,
-      affinity: resolvedAffinity,
-      ...(chosen?.piece.kind === 'inserted'
-        ? {
-            parentBufferId: chosen.piece.bufferId,
-            parentBufferOffset: chosen.piece.from + chosen.local,
-          }
-        : {}),
-    };
-    this.transferBoundarySlots.set(boundaryId, insertionSlot);
-    this.transferBoundaries.push({
-      tapeId: mapped.tapeId,
-      index: mapped.index,
-      boundaryId,
-      insertionOffset,
-      side: role,
-      order: this.transferBoundaries.length,
-      ...(chosen?.piece.kind === 'inserted'
-        ? {
-            sourceBufferId: chosen.piece.bufferId,
-            sourceBufferOffset: chosen.piece.from + chosen.local,
-          }
-        : {}),
-    });
-    return boundaryId;
-  }
-
-  private compileTextProjection(): {
-    readonly insertions: readonly PlanTextInsert[];
-    readonly boundaryOffsets: ReadonlyMap<string, number>;
-  } {
-    interface SemanticPosition {
-      readonly path: readonly number[];
-      readonly spanIndex: number;
-      readonly pieceIndex: number;
-      readonly subIndex: number;
-    }
-    interface ProjectionEvent {
-      readonly id: string;
-      readonly groupKey: string;
-      readonly sequence: number;
-      readonly kind: 'text' | 'boundary';
-      readonly text?: string;
-      readonly bufferId?: string;
-      readonly from?: number;
-      readonly slotKey?: readonly number[];
-      readonly boundary?: PlanBoundary;
-      position?: SemanticPosition;
-    }
-
-    const groupKey = (tapeId: TapeId, index: number): string => JSON.stringify([tapeId, index]);
-    const comparePositions = (left: SemanticPosition, right: SemanticPosition): number => {
-      const commonLength = Math.min(left.path.length, right.path.length);
-      for (let index = 0; index < commonLength; index++) {
-        const difference = left.path[index]! - right.path[index]!;
-        if (difference) return difference;
-      }
-      return (
-        left.path.length - right.path.length ||
-        left.spanIndex - right.spanIndex ||
-        left.pieceIndex - right.pieceIndex ||
-        left.subIndex - right.subIndex
-      );
-    };
-    const pathByNode = new Map<NodeId, readonly number[] | undefined>();
-    const pathForNode = (id: NodeId): readonly number[] | undefined => {
-      if (pathByNode.has(id)) return pathByNode.get(id);
-      const path: number[] = [];
-      let current = id;
-      const root = this.rootId();
-      while (current !== root) {
-        const parentId = this.parentId(current);
-        if (!parentId) {
-          pathByNode.set(id, undefined);
-          return undefined;
-        }
-        const parent = this.requireNode(parentId);
-        const index = parent.children.indexOf(current);
-        if (index < 0) {
-          pathByNode.set(id, undefined);
-          return undefined;
-        }
-        path.push(index);
-        current = parentId;
-      }
-      path.reverse();
-      pathByNode.set(id, path);
-      return path;
-    };
-
-    const referencedBoundaries = new Set<string>();
-    for (const node of this.nodes.values()) {
-      for (const span of node.spans) {
-        referencedBoundaries.add(span.span.startBoundaryId);
-        referencedBoundaries.add(span.span.endBoundaryId);
-      }
-    }
-    const boundaryPlans = new Map(
-      this.transferBoundaries
-        .filter((boundary) => referencedBoundaries.has(boundary.boundaryId))
-        .map((boundary) => [boundary.boundaryId, boundary]),
-    );
-    const splitOffsets = new Map<string, Set<number>>();
-    const addSplitOffset = (bufferId: string, offset: number): void => {
-      const offsets = splitOffsets.get(bufferId) ?? new Set<number>();
-      offsets.add(offset);
-      splitOffsets.set(bufferId, offsets);
-    };
-    for (const [bufferId, buffer] of this.textBuffers) {
-      if (buffer.parentBufferId !== undefined) {
-        const parent = this.textBuffers.get(buffer.parentBufferId);
-        assert(parent, `missing parent action-local text buffer ${buffer.parentBufferId}`);
-        assert(
-          buffer.parentBufferOffset !== undefined &&
-            Number.isInteger(buffer.parentBufferOffset) &&
-            buffer.parentBufferOffset >= 0 &&
-            buffer.parentBufferOffset <= parent.text.length,
-          `invalid parent offset for action-local text buffer ${bufferId}`,
-        );
-        addSplitOffset(buffer.parentBufferId, buffer.parentBufferOffset);
-      }
-    }
-    for (const boundary of boundaryPlans.values()) {
-      if (boundary.sourceBufferId && boundary.sourceBufferOffset !== undefined) {
-        addSplitOffset(boundary.sourceBufferId, boundary.sourceBufferOffset);
-      }
-    }
-
-    const liveRanges = new Map<string, [number, number][]>();
-    const eventsByGroup = new Map<string, Map<string, ProjectionEvent>>();
-    const eventsById = new Map<string, ProjectionEvent>();
-    const boundaryEventIds = new Map<string, string>();
-    const constraints = new Map<string, Map<string, Set<string>>>();
-    let eventSequence = 0;
-    let eventId = 0;
-
-    const addEvent = (event: ProjectionEvent): void => {
-      const events = eventsByGroup.get(event.groupKey) ?? new Map<string, ProjectionEvent>();
-      assert(!events.has(event.id), `duplicate projection event ${event.id}`);
-      events.set(event.id, event);
-      eventsById.set(event.id, event);
-      eventsByGroup.set(event.groupKey, events);
-    };
-    const slotKeyForBufferOffset = (id: string, offset: number): readonly number[] => {
-      const chain: DraftTextBuffer[] = [];
-      let currentId = id;
-      let current = this.textBuffers.get(currentId);
-      assert(current, `missing action-local text buffer ${currentId}`);
-      while (current) {
-        chain.push(current);
-        if (current.parentBufferId === undefined) break;
-        currentId = current.parentBufferId;
-        current = this.textBuffers.get(currentId);
-        assert(current, `missing parent action-local text buffer ${currentId}`);
-      }
-      chain.reverse();
-      const root = chain[0]!;
-      const key = [Number(root.anchor.affinity === 'right'), root.anchor.order];
-      for (const buffer of chain.slice(1)) {
-        key.push(
-          buffer.parentBufferOffset!,
-          0,
-          Number(buffer.anchor.affinity === 'right'),
-          buffer.anchor.order,
-        );
-      }
-      key.push(offset, 1);
-      return Object.freeze(key);
-    };
-    const boundaryEvent = (
-      boundaryId: string,
-      position: SemanticPosition | undefined,
-    ): ProjectionEvent | undefined => {
-      const boundary = boundaryPlans.get(boundaryId);
-      if (!boundary) return undefined;
-      const existingId = boundaryEventIds.get(boundaryId);
-      if (existingId) {
-        const existing = eventsById.get(existingId);
-        assert(existing, `missing projection boundary event ${existingId}`);
-        if (position && (!existing.position || comparePositions(position, existing.position) < 0)) {
-          existing.position = position;
-        }
-        return existing;
-      }
-      const event: ProjectionEvent = {
-        id: `boundary:${boundaryId}`,
-        groupKey: groupKey(boundary.tapeId, boundary.index),
-        sequence: eventSequence++,
-        kind: 'boundary',
-        boundary,
-        ...(position ? { position } : {}),
-      };
-      boundaryEventIds.set(boundaryId, event.id);
-      addEvent(event);
-      return event;
-    };
-    const addTextPiece = (
-      piece: InsertedPiece,
-      spanIndex: number,
-      pieceIndex: number,
-      path: readonly number[] | undefined,
-      spanSequence: Map<string, string[]>,
-    ): void => {
-      const ranges = liveRanges.get(piece.bufferId) ?? [];
-      ranges.push([piece.from, piece.to]);
-      liveRanges.set(piece.bufferId, ranges);
-      const buffer = this.textBuffers.get(piece.bufferId);
-      assert(buffer, `missing action-local text buffer ${piece.bufferId}`);
-      const key = groupKey(buffer.anchor.tapeId, buffer.anchor.index);
-      const offsets = [...(splitOffsets.get(piece.bufferId) ?? [])]
-        .filter((offset) => piece.from < offset && offset < piece.to)
-        .sort((a, b) => a - b);
-      const starts = [piece.from, ...offsets];
-      const ends = [...offsets, piece.to];
-      for (let chunkIndex = 0; chunkIndex < starts.length; chunkIndex++) {
-        const from = starts[chunkIndex]!;
-        const to = ends[chunkIndex]!;
-        if (from >= to) continue;
-        const event: ProjectionEvent = {
-          id: `text:${eventId++}`,
-          groupKey: key,
-          sequence: eventSequence++,
-          kind: 'text',
-          text: buffer.text.slice(from, to),
-          bufferId: piece.bufferId,
-          from,
-          slotKey: slotKeyForBufferOffset(piece.bufferId, from),
-          ...(path ? { position: { path, spanIndex, pieceIndex, subIndex: chunkIndex } } : {}),
-        };
-        addEvent(event);
-        const sequence = spanSequence.get(key) ?? [];
-        sequence.push(event.id);
-        spanSequence.set(key, sequence);
-      }
-      assert(piece.text === buffer.text.slice(piece.from, piece.to), 'text piece changed in draft');
-    };
-
-    for (const node of this.nodes.values()) {
-      const path = pathForNode(node.id);
-      for (const [spanIndex, span] of node.spans.entries()) {
-        const spanSequence = new Map<string, string[]>();
-        const startPlan = boundaryPlans.get(span.span.startBoundaryId);
-        if (startPlan) {
-          const event = boundaryEvent(
-            span.span.startBoundaryId,
-            path
-              ? {
-                  path,
-                  spanIndex,
-                  pieceIndex: -1,
-                  subIndex: 0,
-                }
-              : undefined,
-          );
-          if (event) {
-            const sequence = spanSequence.get(event.groupKey) ?? [];
-            sequence.push(event.id);
-            spanSequence.set(event.groupKey, sequence);
-          }
-        }
-        for (const [pieceIndex, piece] of span.pieces.entries()) {
-          if (piece.kind === 'inserted' && piece.text) {
-            addTextPiece(piece, spanIndex, pieceIndex, path, spanSequence);
-          }
-        }
-        const endPlan = boundaryPlans.get(span.span.endBoundaryId);
-        if (endPlan) {
-          const event = boundaryEvent(
-            span.span.endBoundaryId,
-            path
-              ? {
-                  path,
-                  spanIndex,
-                  pieceIndex: span.pieces.length,
-                  subIndex: 0,
-                }
-              : undefined,
-          );
-          if (event) {
-            const sequence = spanSequence.get(event.groupKey) ?? [];
-            sequence.push(event.id);
-            spanSequence.set(event.groupKey, sequence);
-          }
-        }
-        for (const [key, sequence] of spanSequence) {
-          const edges = constraints.get(key) ?? new Map<string, Set<string>>();
-          let previous: string | undefined;
-          for (const current of sequence) {
-            if (current === previous) continue;
-            if (previous) {
-              const successors = edges.get(previous) ?? new Set<string>();
-              successors.add(current);
-              edges.set(previous, successors);
-            }
-            previous = current;
-          }
-          constraints.set(key, edges);
-        }
-      }
-    }
-
-    for (const ranges of liveRanges.values()) {
-      ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-      let end = -1;
-      for (const [from, to] of ranges) {
-        assert(from >= end, 'action-local text buffer has overlapping final ownership');
-        end = Math.max(end, to);
-      }
-    }
-
-    const compareEvents = (left: ProjectionEvent, right: ProjectionEvent): number => {
-      if (left.position && right.position) {
-        const positionOrder = comparePositions(left.position, right.position);
-        if (positionOrder) return positionOrder;
-      } else if (left.position) return -1;
-      else if (right.position) return 1;
-
-      const tiePriority = (event: ProjectionEvent): number => {
-        if (event.kind === 'text') return 1;
-        return event.boundary?.side === 'end' ? 0 : 2;
-      };
-      const priorityOrder = tiePriority(left) - tiePriority(right);
-      if (priorityOrder) return priorityOrder;
-
-      if (left.kind === 'text' && right.kind === 'text') {
-        const leftKey = left.slotKey!;
-        const rightKey = right.slotKey!;
-        const pathLength = Math.min(leftKey.length, rightKey.length);
-        for (let index = 0; index < pathLength; index++) {
-          const difference = leftKey[index]! - rightKey[index]!;
-          if (difference) return difference;
-        }
-        if (leftKey.length !== rightKey.length) return leftKey.length - rightKey.length;
-      } else if (left.kind === 'boundary' && right.kind === 'boundary') {
-        const boundaryOrder = (left.boundary?.order ?? 0) - (right.boundary?.order ?? 0);
-        if (boundaryOrder) return boundaryOrder;
-      }
-      return left.sequence - right.sequence || left.id.localeCompare(right.id);
-    };
-
-    const boundaryOffsets = new Map<string, number>();
-    const insertions: PlanTextInsert[] = [];
-    for (const [key, events] of eventsByGroup) {
-      const graph = constraints.get(key);
-      const indegree = new Map([...events.keys()].map((id) => [id, 0]));
-      for (const [from, successors] of graph ?? []) {
-        if (!indegree.has(from)) continue;
-        for (const to of successors) {
-          if (indegree.has(to)) indegree.set(to, indegree.get(to)! + 1);
-        }
-      }
-
-      const remaining = new Set(events.keys());
-      const ordered: ProjectionEvent[] = [];
-      while (remaining.size) {
-        const ready = [...remaining]
-          .filter((id) => indegree.get(id) === 0)
-          .map((id) => events.get(id)!)
-          .sort(compareEvents);
-        assert(ready.length > 0, 'shared-gap fragment ordering contains a cycle');
-        const next = ready[0]!;
-        remaining.delete(next.id);
-        ordered.push(next);
-        for (const successor of graph?.get(next.id) ?? []) {
-          if (indegree.has(successor)) indegree.set(successor, indegree.get(successor)! - 1);
-        }
-      }
-
-      const chunks: string[] = [];
-      let laneLength = 0;
-      let slotOrder = Number.MAX_SAFE_INTEGER;
-      let tapeId: TapeId | undefined;
-      let index: number | undefined;
-      for (const event of ordered) {
-        if (event.kind === 'boundary') {
-          boundaryOffsets.set(event.boundary!.boundaryId, laneLength);
-          tapeId = event.boundary!.tapeId;
-          index = event.boundary!.index;
-          continue;
-        }
-        chunks.push(event.text!);
-        laneLength += event.text!.length;
-        const buffer = this.textBuffers.get(event.bufferId!)!;
-        tapeId = buffer.anchor.tapeId;
-        index = buffer.anchor.index;
-        slotOrder = Math.min(slotOrder, buffer.anchor.order);
-      }
-      const text = chunks.join('');
-      if (text) {
-        assert(tapeId !== undefined && index !== undefined, 'text lane has no insertion target');
-        insertions.push({ tapeId, index, slotOrder, text });
-      }
-    }
-
-    return { insertions, boundaryOffsets };
-  }
-
-  private finalTransferBoundaries(boundaryOffsets: ReadonlyMap<string, number>): PlanBoundary[] {
-    const referenced = new Set<string>();
-    for (const node of this.nodes.values()) {
-      for (const span of node.spans) {
-        referenced.add(span.span.startBoundaryId);
-        referenced.add(span.span.endBoundaryId);
-      }
-    }
-
-    return this.transferBoundaries.flatMap((boundary) => {
-      if (!referenced.has(boundary.boundaryId)) {
-        return boundary.sourceBufferId ? [] : [{ ...boundary }];
-      }
-      const insertionOffset = boundaryOffsets.get(boundary.boundaryId);
-      assert(
-        insertionOffset !== undefined,
-        `missing final position for transfer boundary ${boundary.boundaryId}`,
-      );
-      return [{ ...boundary, insertionOffset }];
-    });
-  }
-
-  private insertTransferAt(
-    node: DraftNodeState,
-    offset: number,
-    affinity: TextAffinity,
-    moved: readonly DraftSpan[],
-  ): DraftSpan[] {
-    let global = 0;
-    const location = node.spans.map((span, index) => {
-      const length = span.pieces.reduce((total, piece) => total + piece.text.length, 0);
-      const value = { span, index, start: global, end: global + length, length };
-      global += length;
-      return value;
-    });
-    const touching = location.filter((span) => span.start <= offset && offset <= span.end);
-    assert(touching.length > 0, 'transfer destination has no insertion span');
-    const target = affinity === 'left' ? touching[0]! : touching.at(-1)!;
-    const local = offset - target.start;
-    const result: DraftSpan[] = [];
-    for (let index = 0; index < node.spans.length; index++) {
-      if (index !== target.index) {
-        result.push(node.spans[index]!);
-        continue;
-      }
-      const current = target.span;
-      const content = current.pieces.map((piece) => piece.text).join('');
-      if (local === 0 && (content.length > 0 || affinity === 'right')) {
-        result.push(...moved, current);
-      } else if (local === content.length && (content.length > 0 || affinity === 'left')) {
-        result.push(current, ...moved);
-      } else {
-        const cutId = this.cutBoundary(node, current, local, affinity === 'left' ? 'end' : 'start');
-        const leftSpan = { ...current.span, endBoundaryId: cutId };
-        const rightSpan = { ...current.span, startBoundaryId: cutId };
-        const insertionSlot = this.transferBoundarySlots.get(cutId) ?? current.insertionSlot;
-        result.push(
-          {
-            span: leftSpan,
-            sourceSpanIndex: current.sourceSpanIndex,
-            pieces: slicePieces(current.pieces, 0, local),
-            created: current.created,
-            ...(insertionSlot ? { insertionSlot } : {}),
-          },
-          ...moved,
-          {
-            span: rightSpan,
-            sourceSpanIndex: current.sourceSpanIndex,
-            pieces: slicePieces(current.pieces, local, content.length),
-            created: current.created,
-            ...(insertionSlot ? { insertionSlot } : {}),
-          },
-        );
-      }
-    }
-    return result;
   }
 
   private convertInternal(id: NodeId, plan: ConversionPlan): void {
@@ -2119,35 +925,6 @@ export class MutableTreeDraft implements ParserTreeDraft {
       result.set(span.tapeId, tape);
     }
     return result;
-  }
-
-  private dropUnusedCreatedInsertionSpans(): void {
-    for (const node of this.nodes.values()) {
-      if (!node.created || !INLINE_KINDS.has(node.type)) continue;
-      const created = this.newTapeSpans.get(node.id);
-      if (!created) continue;
-      const hasOtherFinalSpan = node.spans.some((span) => span.span.tapeId !== created.tapeId);
-      if (!hasOtherFinalSpan) continue;
-
-      let hasFinalOwnerOutsideNode = false;
-      let hasActionTextOnTape = false;
-      for (const owner of this.nodes.values()) {
-        for (const span of owner.spans) {
-          if (span.span.tapeId === created.tapeId && owner.id !== node.id) {
-            hasFinalOwnerOutsideNode = true;
-          }
-          for (const piece of span.pieces) {
-            if (piece.kind !== 'inserted' || !piece.text) continue;
-            const buffer = this.textBuffers.get(piece.bufferId);
-            if (buffer?.anchor.tapeId === created.tapeId) hasActionTextOnTape = true;
-          }
-        }
-      }
-      if (hasFinalOwnerOutsideNode || hasActionTextOnTape) continue;
-      node.spans = node.spans.filter(
-        (span) => span.span.tapeId !== created.tapeId || !span.created,
-      );
-    }
   }
 
   private allocateId(role: string): string {
