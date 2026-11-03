@@ -369,9 +369,10 @@ export class CanonicalEditor extends LitElement {
     const node = projectedNode as unknown as CanonicalNode;
     const document = this.document;
     const writer = this.writer;
-    if (!(node instanceof CanonicalNode) || !document || !writer) return;
+    if (!document || !writer) return;
     const selected = this.selectionController.currentBlockSelection(hostContext);
     if (
+      node instanceof CanonicalNode &&
       node.type === 'code-block' &&
       selected.length === 0 &&
       keyboardEvent.key === 'Enter' &&
@@ -396,16 +397,19 @@ export class CanonicalEditor extends LitElement {
       return;
     }
     const intent = translateInlineKey(keyboardEvent, selected.length > 0);
+    if (intent.type === 'move-caret') {
+      this.sealTypingGroup();
+      if (inline.nodeView) {
+        void this.selectionController.moveAcrossBlocks(inline, inline.nodeView, keyboardEvent);
+      }
+      return;
+    }
+    if (!(node instanceof CanonicalNode)) return;
     if (intent.type === 'history') {
       keyboardEvent.preventDefault();
       const result =
         intent.direction === 'undo' ? this.sessionRunner.undo() : this.sessionRunner.redo();
       if (result) this.restoreHistoryFocus(result, hostContext);
-      return;
-    }
-    if (intent.type === 'move-caret') {
-      this.sealTypingGroup();
-      this.selectionController.moveAcrossBlocks(inline, node, keyboardEvent);
       return;
     }
     if (intent.type === 'delete-block-selection') {
