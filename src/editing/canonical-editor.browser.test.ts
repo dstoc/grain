@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { userEvent } from 'vitest/browser';
 
 import { CanonicalWriter } from '../markdown/canonical-actions.js';
-import type { TreeDraft } from '../markdown/canonical-actions.js';
+import type { AcceptedAction, TreeDraft } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, CanonicalNode } from '../markdown/canonical-model.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
 import { insertParagraph, joinWithPrevious } from './canonical-edits.js';
@@ -146,6 +146,71 @@ describe('CanonicalEditor in Chromium', () => {
 
     expect(document.root.children[0]!.content).toBe('alpha!');
     expect(inline.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
+  });
+
+  test.fails('attributes a checkbox action to the configured nondefault session', async () => {
+    const mounted = await mount('1. [ ] task', 'review-custom-session');
+    const listItem = document!.root.children[0]!.children[0]!;
+    if (listItem.type !== 'list-item') throw new Error('expected a parsed list item');
+    const listItemBlock = [...mounted.renderer.shadowRoot!.querySelectorAll('md-block')].find(
+      (block) =>
+        (block as unknown as { node?: CanonicalNode }).node?.sharedId === listItem.sharedId,
+    );
+    const button = listItemBlock?.shadowRoot
+      ?.querySelector('md-list-item-ui')
+      ?.shadowRoot?.querySelector('button');
+
+    expect(button).toBeDefined();
+    await userEvent.click(button!);
+    await nextTask();
+
+    expect(listItem.checked).toBe(true);
+    expect({
+      configuredSession: writer!.canUndo('review-custom-session', document!.root.sharedId),
+      defaultSession: writer!.canUndo('local', document!.root.sharedId),
+    }).toEqual({ configuredSession: true, defaultSession: false });
+  });
+
+  test.fails('seals typing after an accepted child-list-only structural effect', async () => {
+    const mounted = await mount('alpha\n\nbeta');
+    const first = document!.root.children[0]!;
+    if (first.type !== 'paragraph') throw new Error('expected a parsed paragraph');
+    mounted.inline.focus();
+    mounted.inline.setSelectionOffsets(first.content!.length, first.content!.length);
+    await userEvent.keyboard('!');
+    await nextTask();
+
+    const replica = CanonicalDocument.open(document!.checkpoint());
+    const replicaWriter = new CanonicalWriter(replica);
+    let accepted: AcceptedAction;
+    try {
+      const result = replicaWriter.edit(
+        { actionId: 'child-list-only-effect', sessionId: 'remote' },
+        (draft) => draft.place(replica.root.children[0]!.sharedId, replica.root.sharedId, null),
+      );
+      if (!('receipt' in result)) throw new Error('expected a child-list-only accepted action');
+      accepted = result;
+      expect(accepted.receipt.structuralPatch.childLists.length).toBeGreaterThan(0);
+      expect(accepted.receipt.structuralPatch.cells).toHaveLength(0);
+      expect(accepted.receipt.structuralPatch.births).toHaveLength(0);
+    } finally {
+      replicaWriter.close();
+      replica.close();
+    }
+
+    // Keep the active document unchanged while sending a real child-list-only receipt through the handler.
+    const accept = (editor as unknown as { onAccepted(action: AcceptedAction): void }).onAccepted;
+    accept.call(editor, accepted);
+    await nextTask();
+    mounted.inline.focus();
+    mounted.inline.setSelectionOffsets(first.content!.length, first.content!.length);
+    await userEvent.keyboard('?');
+    await nextTask();
+    expect(first.content).toBe('alpha!?');
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await nextTask();
+    expect(first.content).toBe('alpha!');
   });
 
   test('preserves a reversed text selection while replacing it and restores caret on undo', async () => {

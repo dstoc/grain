@@ -1,0 +1,29 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/main.ts!",
+    "src/markdown/block-parser/api.ts!",
+    "src/markdown/inline-parser/index.ts!",
+    "src/markdown/canonical-actions.ts!",
+    "src/markdown/canonical-model.ts!",
+    "src/editing/canonical-editor.ts!",
+    "src/editing/mobile-keyboard-toolbar.ts!",
+    "src/markdown/block-render.ts!",
+    "src/markdown/inline-render.ts!",
+    "src/markdown/block-ui.ts!",
+    "src/markdown/transclusion.ts!",
+    "src/**/*.test.ts",
+    "benchmarks/**/*.mjs",
+    "benchmarks/**/*.ts"
+  ],
+  "project": [
+    "src/**/*.ts!",
+    "benchmarks/**/*.mjs",
+    "benchmarks/**/*.ts",
+    "index.html",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "!src/**/*.test.ts!"
+  ],
+  "includeEntryExports": true
+}

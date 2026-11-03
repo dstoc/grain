@@ -21,6 +21,23 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
+test('registers the application custom-element surface', () => {
+  const elements = [
+    'md-dev-harness',
+    'md-canonical-editor',
+    'md-mobile-keyboard-toolbar',
+    'md-transclusion',
+    'md-inline',
+    'md-span',
+    'md-block',
+    'md-block-render',
+    'md-section-ui',
+    'md-list-item-ui',
+  ];
+
+  expect(elements.filter((name) => !customElements.get(name))).toEqual([]);
+});
+
 test('Enter replaces selected text in Render and updates Source and Serialize', async () => {
   const harness = document.createElement('md-dev-harness') as LitElement;
   document.body.append(harness);
