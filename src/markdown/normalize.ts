@@ -1,6 +1,6 @@
 import type { MarkdownTree } from './view-model.js';
 import { MarkdownTreeDraft } from './semantic-tree-draft.js';
-import { normalizeSemanticTree, type SemanticNormalizeOptions } from './semantic-normalize.js';
+import { normalizeSemanticTree, type SemanticNormalizeOptions } from './semantic/normalize.js';
 
 export interface NormalizeTreeOptions extends SemanticNormalizeOptions {
   readonly force?: boolean;

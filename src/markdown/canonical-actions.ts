@@ -1,4 +1,8 @@
 import * as Y from 'yjs';
+
+import { CanonicalIndexes } from './canonical/indexes.js';
+import { stableJson } from './canonical/util.js';
+import { diffChildSplices } from './canonical/plan/child-splices.js';
 import {
   RoutedNativeTextHistoryCapture,
   type NativeTextHistoryCapture,
@@ -11,31 +15,106 @@ import {
   canonicalWriterAccess,
   validateCanonicalState,
 } from './canonical-model.js';
+import type { ResourceToken, Span, TapeId } from './canonical-model.js';
+import type { BoundaryEmbed } from './canonical-model.js';
+import {
+  META,
+  NODES,
+  SESSION_WATERMARKS,
+  TAPES,
+  TAPE_REVISIONS,
+  readSchemaCell,
+  schemaMap,
+} from './canonical/schema.js';
+import type { NodeId, NodeKind, TextAffinity, TextEdit } from './semantic/types.js';
+import { assertTextEdit, splitsSurrogatePair } from './semantic/types.js';
 import type {
-  BoundaryEmbed,
-  NodeId,
-  NodeKind,
-  ResourceToken,
-  Span,
-  TapeId,
-} from './canonical-model.js';
+  DraftNode,
+  DraftTextPiece,
+  InlineFragment,
+  ParserTreeDraft,
+  Transfer,
+  ConversionPlan,
+} from './semantic/draft.js';
+import type {
+  ActionFocus,
+  ActionOptions,
+  ActionReceipt,
+  ActionRequest,
+  AcceptedAction,
+  AdmittedContext,
+  ApplyResult,
+  Bookmark,
+  CellField,
+  DraftCommand,
+  HistoryPreparationResult,
+  HistoryResult,
+  PendingCommit,
+  PendingHistoryCommit,
+  ReadPrecondition,
+  RejectionReason,
+  SemanticOperation,
+  StructuralBirth,
+  StructuralCellPatch,
+  StructuralCellValue,
+  StructuralChildListPatch,
+  StructuralPatch,
+  StructuralVisibility,
+  WriterEvent,
+  WriterListener,
+  WriterOperationCounts,
+  WriterOptions,
+  NodeSpec,
+  CanonicalTextEdit,
+} from './canonical/action-types.js';
+export type {
+  ActionFocus,
+  ActionOptions,
+  ActionReceipt,
+  ActionRequest,
+  AcceptedAction,
+  AdmittedContext,
+  ApplyResult,
+  Bookmark,
+  CellField,
+  DraftCommand,
+  DraftNode,
+  DraftTextPiece,
+  HistoryPreparationResult,
+  HistoryResult,
+  InlineFragment,
+  NodeSpec,
+  ParserTreeDraft,
+  PendingCommit,
+  PendingHistoryCommit,
+  ReadPrecondition,
+  RejectionReason,
+  SemanticOperation,
+  StructuralBirth,
+  StructuralCellPatch,
+  StructuralCellValue,
+  StructuralChildListPatch,
+  StructuralChildSplice,
+  StructuralPatch,
+  StructuralVisibility,
+  TreeDraft,
+  Transfer,
+  ConversionPlan,
+  WriterEvent,
+  WriterListener,
+  WriterOperationCounts,
+  WriterOptions,
+  CanonicalTextEdit,
+  CanonicalTreeDraft,
+} from './canonical/action-types.js';
 import {
   indexNativeTape,
-  indexProjectedSpans,
-  mapProjectedTextEdit,
   mapTextEdit,
   mapTextEditIndexed,
   spanTextFromIndex,
 } from './canonical-text.js';
-import type {
-  NativeTapeIndex,
-  NativeTextRun,
-  ProjectedTextIndex,
-  TextAffinity,
-  TextEdit,
-} from './canonical-text.js';
-import { normalizeCanonicalDraft } from './canonical-normalize.js';
-import type { SemanticNormalizationDraft } from './semantic-normalize.js';
+import type { NativeTapeIndex, NativeTextRun } from './canonical-text.js';
+import { normalizeSemanticTree as normalizeCanonicalDraft } from './semantic/normalize.js';
 import { classifyInlineInput, parseBlocks } from './block-parser/api.js';
 import type { ParserConversionPlan } from './block-parser/api.js';
 import { applyParserConversion } from './canonical-promotion.js';
@@ -44,11 +123,6 @@ import {
   type CanonicalTextAnchor,
 } from './canonical-selection.js';
 
-const META = 'meta';
-const NODES = 'nodes';
-const TAPES = 'tapes';
-const TAPE_REVISIONS = 'tapeRevisions';
-const SESSION_WATERMARKS = 'sessionWatermarks';
 const MAX_CACHED_RESPONSES = 256;
 const MAX_CACHED_RESPONSE_BYTES = 4 * 1024 * 1024;
 const INLINE_KINDS = new Set<NodeKind>(['paragraph', 'section', 'code-block']);
@@ -63,296 +137,6 @@ const BLOCK_KINDS = new Set<NodeKind>([
 
 type RecordMap = Y.Map<unknown>;
 type CellValue<T> = { readonly token: ResourceToken; readonly value: T };
-export type CellField = 'kind' | 'children' | 'spans' | 'marker' | 'checked' | 'info';
-
-export interface NodeSpec {
-  readonly type: NodeKind;
-  readonly content?: string;
-  readonly children?: readonly NodeId[];
-  readonly marker?: string;
-  readonly checked?: boolean | null;
-  readonly info?: string | null;
-}
-
-export interface DraftNode {
-  readonly id: NodeId;
-  readonly type: NodeKind;
-  readonly children: readonly NodeId[];
-  readonly spans: readonly Span[];
-  readonly content?: string;
-  readonly marker: string | null;
-  readonly checked: boolean | null;
-  readonly info: string | null;
-}
-
-export interface Transfer {
-  readonly source: NodeId;
-  readonly from: number;
-  readonly to: number;
-  readonly destination: NodeId;
-  readonly at: number;
-  readonly affinity: TextAffinity;
-}
-
-/** A move-only handle to text and insertion gaps removed from a draft inline. */
-export interface InlineFragment {
-  readonly text: string;
-}
-
-export interface ConversionPlan {
-  readonly type: 'paragraph' | 'section' | 'code-block';
-  readonly marker?: string;
-  readonly info?: string | null;
-  readonly content?:
-    | { readonly mode: 'preserve' }
-    | { readonly mode: 'replace'; readonly text: string };
-}
-
-export interface Bookmark {
-  readonly nodeId: NodeId;
-  readonly offset: number;
-  readonly affinity: TextAffinity;
-  readonly spanIndex?: number;
-}
-
-export interface ActionFocus {
-  readonly start?: Bookmark;
-  readonly end?: Bookmark;
-  readonly selection?: {
-    readonly anchor: Bookmark;
-    readonly focus: Bookmark;
-    /** Restore this identity-preserving structural selection after redo as well. */
-    readonly restoreOnRedo?: boolean;
-  };
-}
-
-export type DraftCommand = (draft: TreeDraft) => void | ActionFocus;
-
-export interface TreeDraft extends SemanticNormalizationDraft {
-  node(id: NodeId): DraftNode;
-  parentOf(id: NodeId): NodeId | undefined;
-  previousSiblingOf(id: NodeId): NodeId | undefined;
-  nextSiblingOf(id: NodeId): NodeId | undefined;
-  create(spec: NodeSpec): NodeId;
-  place(id: NodeId, parent: NodeId, before: NodeId | null): void;
-  detach(id: NodeId): void;
-  spliceText(id: NodeId, edit: TextEdit): void;
-  cutInline(id: NodeId, from: number, to: number): InlineFragment;
-  insertFragment(
-    destination: NodeId,
-    at: number,
-    affinity: TextAffinity,
-    fragment: InlineFragment,
-  ): void;
-  transferInlineRange(transfer: Transfer): void;
-  convertInline(id: NodeId, plan: ConversionPlan): void;
-  setMarker(id: NodeId, marker: string | null): void;
-  setChecked(id: NodeId, checked: boolean | null): void;
-  setInfo(id: NodeId, info: string | null): void;
-  bookmark(id: NodeId, offset: number, affinity: TextAffinity, spanIndex?: number): Bookmark;
-}
-
-export interface DraftTextPiece {
-  /** Half-open UTF-16 coordinates in the current draft string. */
-  readonly from: number;
-  readonly to: number;
-  readonly kind: 'existing' | 'inserted';
-}
-
-/** Parser conversion reads the draft's own source mapping before changing ownership. */
-export interface ParserTreeDraft extends TreeDraft {
-  sourcePieces(id: NodeId): readonly DraftTextPiece[];
-}
-
-export type ReadPrecondition =
-  | {
-      readonly kind: 'cell';
-      readonly nodeId: NodeId;
-      readonly field: CellField;
-      readonly token: string;
-    }
-  | { readonly kind: 'tape'; readonly tapeId: TapeId; readonly revision: number };
-
-export type SemanticOperation =
-  | { readonly type: 'create'; readonly id: NodeId; readonly spec: NodeSpec; readonly span?: Span }
-  | {
-      readonly type: 'place';
-      readonly id: NodeId;
-      readonly parent: NodeId;
-      readonly before: NodeId | null;
-    }
-  | { readonly type: 'detach'; readonly id: NodeId }
-  | { readonly type: 'spliceText'; readonly id: NodeId; readonly edit: TextEdit }
-  | {
-      readonly type: 'cutInline';
-      readonly id: NodeId;
-      readonly from: number;
-      readonly to: number;
-      readonly fragmentId: string;
-    }
-  | {
-      readonly type: 'insertFragment';
-      readonly destination: NodeId;
-      readonly at: number;
-      readonly affinity: TextAffinity;
-      readonly fragmentId: string;
-    }
-  | { readonly type: 'transferInlineRange'; readonly transfer: Transfer }
-  | { readonly type: 'convertInline'; readonly id: NodeId; readonly plan: ConversionPlan }
-  | { readonly type: 'setMarker'; readonly id: NodeId; readonly marker: string | null }
-  | { readonly type: 'setChecked'; readonly id: NodeId; readonly checked: boolean | null }
-  | { readonly type: 'setInfo'; readonly id: NodeId; readonly info: string | null };
-
-export interface ActionRequest {
-  readonly mode: 'text-input' | 'command';
-  readonly documentId: string;
-  readonly authorityEpoch: string;
-  readonly sessionId: string;
-  readonly sessionSequence: number;
-  readonly actionId: string;
-  readonly baseRevision: number;
-  readonly historyGroupId: string;
-  readonly preconditions: readonly ReadPrecondition[];
-  /** Internal trusted Grain-engine input; not an arbitrary-update security filter. */
-  readonly textUpdate?: Uint8Array;
-  readonly operations: readonly SemanticOperation[];
-  readonly focus?: ActionFocus;
-  readonly promotionTarget?: {
-    readonly nodeId: NodeId;
-    readonly kindToken: ResourceToken;
-    readonly spansToken: ResourceToken;
-  };
-}
-
-export interface ActionOptions {
-  readonly sessionId?: string;
-  /** Unique across the lifetime of the canonical document's authority. */
-  readonly actionId: string;
-  readonly historyGroupId?: string;
-  readonly sessionSequence?: number;
-  readonly focus?: ActionFocus;
-}
-
-export interface AdmittedContext {
-  readonly sessionId: string;
-  readonly authorityEpoch: string;
-  readonly sessionSequence: number;
-}
-
-export interface AcceptedAction {
-  readonly actionId: string;
-  readonly sessionId: string;
-  readonly authorityEpoch: string;
-  readonly revision: number;
-  readonly update: Uint8Array;
-  readonly receipt: ActionReceipt;
-  readonly callbackErrors: readonly unknown[];
-}
-
-export interface ActionReceipt {
-  readonly requestId: string;
-  readonly historyGroupId: string;
-  readonly touchedNodeIds: readonly NodeId[];
-  readonly touchedTapeIds: readonly TapeId[];
-  readonly structuralPatch: StructuralPatch;
-  readonly focus?: ActionFocus;
-  readonly noEffect: boolean;
-  readonly promotionSkipped?: 'ownershipChanged';
-}
-
-export interface StructuralCellValue {
-  readonly token: ResourceToken;
-  readonly value: unknown;
-}
-
-export interface StructuralCellPatch {
-  readonly nodeId: NodeId;
-  readonly field: CellField;
-  readonly before: StructuralCellValue;
-  readonly after: StructuralCellValue;
-}
-
-export interface StructuralChildSplice {
-  /** Index in the child list immediately before this splice. */
-  readonly index: number;
-  readonly removedIds: readonly NodeId[];
-  readonly insertedIds: readonly NodeId[];
-}
-
-export interface StructuralChildListPatch {
-  readonly nodeId: NodeId;
-  readonly beforeToken: ResourceToken;
-  readonly afterToken: ResourceToken;
-  readonly splices: readonly StructuralChildSplice[];
-}
-
-export interface StructuralBirth {
-  readonly nodeId: NodeId;
-  readonly cells: Readonly<Record<CellField, StructuralCellValue>>;
-}
-
-export interface StructuralVisibility {
-  readonly nodeId: NodeId;
-  readonly before: boolean;
-  readonly after: boolean;
-}
-
-export interface StructuralPatch {
-  readonly cells: readonly StructuralCellPatch[];
-  readonly childLists: readonly StructuralChildListPatch[];
-  readonly births: readonly StructuralBirth[];
-  readonly visibility: readonly StructuralVisibility[];
-  readonly bornTapes: readonly { readonly tapeId: TapeId; readonly sharedTypeId: string }[];
-  readonly bornMarkers: readonly {
-    readonly tapeId: TapeId;
-    readonly boundaryId: string;
-    readonly itemId: string;
-  }[];
-}
-
-export interface PendingCommit {
-  readonly actionId: string;
-  readonly revision: number;
-  readonly update: Uint8Array;
-  readonly receipt: ActionReceipt;
-}
-
-export type ApplyResult =
-  | { readonly status: 'pending'; readonly pending: PendingCommit }
-  | { readonly status: 'rejected'; readonly reason: RejectionReason }
-  | { readonly status: 'duplicate'; readonly accepted: AcceptedAction }
-  | { readonly status: 'queued'; readonly actionId: string };
-
-export type RejectionReason =
-  | 'pending-commit'
-  | 'poisoned-writer'
-  | 'closed-writer'
-  | 'wrong-document'
-  | 'wrong-authority-epoch'
-  | 'wrong-session'
-  | 'wrong-sequence'
-  | 'future-base-revision'
-  | 'stale-precondition'
-  | 'duplicate-action-id'
-  | 'retry-payload-conflict'
-  | 'receipt-expired/resync-required'
-  | 'invalid-request'
-  | 'invalid-operation'
-  | 'invalid-text-update'
-  | 'publication-order';
-
-export interface WriterOptions {
-  readonly maxHistoryGroups?: number;
-  /** Full-document before/after validation retained as an opt-in test reference. */
-  readonly verifyWithFullClone?: boolean;
-}
-
-export interface WriterOperationCounts {
-  readonly fullStateClones: number;
-  readonly authorReplicaCreations: number;
-  readonly validationReplicaCreations: number;
-  readonly literalTextInputs: number;
-}
 
 interface InternalCell {
   readonly token: string;
@@ -661,42 +445,28 @@ function immutableCell<T>(token: string, value: T): CellValue<T> {
 }
 
 function readCell<T>(record: RecordMap, field: CellField): CellValue<T> {
-  if (field === 'children') {
-    const children = record.get('children');
-    if (children instanceof Y.Array) {
-      const token = record.get('childrenToken');
-      assert(typeof token === 'string' && token.length > 0, 'node children token is invalid');
-      return immutableCell(token, children.toArray()) as CellValue<T>;
-    }
-  }
-  const value = record.get(field);
-  assert(value !== null && typeof value === 'object', `node cell ${field} is missing`);
-  const cell = value as InternalCell;
-  assert(
-    typeof cell.token === 'string' && Object.hasOwn(cell, 'value'),
-    `node cell ${field} is invalid`,
-  );
-  return cell as CellValue<T>;
+  const cell = readSchemaCell<T>(record, field);
+  return immutableCell(cell.token, cell.value);
 }
 
 function nodeMap(state: Y.Doc): Y.Map<RecordMap> {
-  return state.getMap<RecordMap>(NODES);
+  return schemaMap<RecordMap>(state, NODES);
 }
 
 function tapeMap(state: Y.Doc): Y.Map<Y.Text> {
-  return state.getMap<Y.Text>(TAPES);
+  return schemaMap<Y.Text>(state, TAPES);
 }
 
 function revisionMap(state: Y.Doc): Y.Map<number> {
-  return state.getMap<number>(TAPE_REVISIONS);
+  return schemaMap<number>(state, TAPE_REVISIONS);
 }
 
 function metaMap(state: Y.Doc): Y.Map<unknown> {
-  return state.getMap<unknown>(META);
+  return schemaMap<unknown>(state, META);
 }
 
 function sessionWatermarkMap(state: Y.Doc): Y.Map<number> {
-  return state.getMap<number>(SESSION_WATERMARKS);
+  return schemaMap<number>(state, SESSION_WATERMARKS);
 }
 
 function sessionWatermarkKey(epoch: string, sessionId: string): string {
@@ -737,181 +507,6 @@ function spanText(state: Y.Doc, span: Span, indexes?: CanonicalIndexes): string 
 }
 
 /** Reconstructible lookups over canonical resources; text indexes are revision scoped. */
-class CanonicalIndexes {
-  readonly nodeIds = new Set<NodeId>();
-  readonly tapeIds = new Set<TapeId>();
-  readonly boundaryIds = new Set<string>();
-  readonly parentByChild = new Map<NodeId, NodeId>();
-  readonly activeNodes = new Set<NodeId>();
-  readonly visibleInlineNodeIds: NodeId[] = [];
-  private readonly visibleInlinePosition = new Map<NodeId, number>();
-  readonly activeTapeOwners = new Map<TapeId, Set<NodeId>>();
-  readonly tapeOwners = new Map<TapeId, Set<NodeId>>();
-  readonly boundaryLocations = new Map<
-    string,
-    { readonly tapeId: TapeId; readonly index: number }
-  >();
-  readonly boundaryIdsByTape = new Map<TapeId, Set<string>>();
-  readonly textIndexes = new Map<TapeId, NativeTapeIndex>();
-  private readonly projectedByNode = new Map<
-    NodeId,
-    { readonly signature: string; readonly index: ProjectedTextIndex }
-  >();
-
-  constructor(private readonly state: Y.Doc) {
-    this.rebuild();
-  }
-
-  rebuild(): void {
-    this.nodeIds.clear();
-    this.tapeIds.clear();
-    this.boundaryIds.clear();
-    this.parentByChild.clear();
-    this.activeNodes.clear();
-    this.visibleInlineNodeIds.length = 0;
-    this.visibleInlinePosition.clear();
-    this.activeTapeOwners.clear();
-    this.tapeOwners.clear();
-    this.boundaryLocations.clear();
-    this.boundaryIdsByTape.clear();
-    this.textIndexes.clear();
-    this.projectedByNode.clear();
-
-    const nodes = nodeMap(this.state);
-    for (const [id, record] of nodes) {
-      this.nodeIds.add(id);
-      for (const child of readCell<readonly NodeId[]>(record, 'children').value) {
-        this.parentByChild.set(child, id);
-      }
-    }
-    const rootId = metaMap(this.state).get('rootId') as NodeId;
-    const pending = [rootId];
-    while (pending.length) {
-      const id = pending.pop()!;
-      if (this.activeNodes.has(id)) continue;
-      this.activeNodes.add(id);
-      const record = nodes.get(id);
-      if (record) {
-        if (INLINE_KINDS.has(readCell<NodeKind>(record, 'kind').value)) {
-          this.visibleInlinePosition.set(id, this.visibleInlineNodeIds.length);
-          this.visibleInlineNodeIds.push(id);
-        }
-        const children = readCell<readonly NodeId[]>(record, 'children').value;
-        for (let index = children.length - 1; index >= 0; index--) {
-          pending.push(children[index]!);
-        }
-      }
-    }
-
-    for (const [id, record] of nodes) {
-      const ownerActive = this.activeNodes.has(id);
-      for (const span of readCell<readonly Span[]>(record, 'spans').value) {
-        const owners = this.tapeOwners.get(span.tapeId) ?? new Set<NodeId>();
-        owners.add(id);
-        this.tapeOwners.set(span.tapeId, owners);
-        if (ownerActive) {
-          const activeOwners = this.activeTapeOwners.get(span.tapeId) ?? new Set<NodeId>();
-          activeOwners.add(id);
-          this.activeTapeOwners.set(span.tapeId, activeOwners);
-        }
-      }
-    }
-
-    for (const [tapeId, tape] of tapeMap(this.state)) {
-      this.tapeIds.add(tapeId);
-      const index = indexNativeTape(tapeId, tape);
-      this.textIndexes.set(tapeId, index);
-      for (const [boundaryId, indexPosition] of index.boundaries) {
-        this.boundaryIds.add(boundaryId);
-        this.boundaryLocations.set(boundaryId, { tapeId, index: indexPosition });
-        const ids = this.boundaryIdsByTape.get(tapeId) ?? new Set<string>();
-        ids.add(boundaryId);
-        this.boundaryIdsByTape.set(tapeId, ids);
-      }
-    }
-  }
-
-  isActive(id: NodeId): boolean {
-    return this.activeNodes.has(id);
-  }
-
-  parent(id: NodeId): NodeId | undefined {
-    return this.parentByChild.get(id);
-  }
-
-  tape(tapeId: TapeId): NativeTapeIndex {
-    const index = this.textIndexes.get(tapeId);
-    assert(index, `missing tape index ${tapeId}`);
-    return index;
-  }
-
-  content(nodeId: NodeId): string {
-    return this.projected(nodeId).index.text;
-  }
-
-  projectedText(nodeId: NodeId): ProjectedTextIndex {
-    return this.projected(nodeId).index;
-  }
-
-  visibleInlineNeighbors(nodeId: NodeId): {
-    readonly previousNodeId?: NodeId;
-    readonly nextNodeId?: NodeId;
-  } {
-    const index = this.visibleInlinePosition.get(nodeId);
-    if (index === undefined) return {};
-    return {
-      ...(index > 0 ? { previousNodeId: this.visibleInlineNodeIds[index - 1]! } : {}),
-      ...(index + 1 < this.visibleInlineNodeIds.length
-        ? { nextNodeId: this.visibleInlineNodeIds[index + 1]! }
-        : {}),
-    };
-  }
-
-  mapTextEdit(nodeId: NodeId, spans: readonly Span[], edit: TextEdit) {
-    const indexed = this.projected(nodeId, spans);
-    return mapProjectedTextEdit(indexed.index, edit);
-  }
-
-  private projected(nodeId: NodeId, knownSpans?: readonly Span[]) {
-    const record = nodeMap(this.state).get(nodeId);
-    assert(record, `unknown node ${nodeId}`);
-    const spansCell = readCell<readonly Span[]>(record, 'spans');
-    const spans = knownSpans ?? spansCell.value;
-    const signature = stableJson([
-      spansCell.token,
-      ...spans.map((span) => [span.tapeId, revisionMap(this.state).get(span.tapeId)]),
-    ]);
-    const cached = this.projectedByNode.get(nodeId);
-    if (cached?.signature === signature) return cached;
-    const index = indexProjectedSpans(spans, this.textIndexes);
-    const result = { signature, index };
-    this.projectedByNode.set(nodeId, result);
-    return result;
-  }
-
-  refreshText(tapeIds: Iterable<TapeId>): void {
-    const tapes = tapeMap(this.state);
-    for (const tapeId of tapeIds) {
-      const tape = tapes.get(tapeId);
-      if (!tape) continue;
-      const index = indexNativeTape(tapeId, tape);
-      this.textIndexes.set(tapeId, index);
-      for (const boundaryId of this.boundaryIdsByTape.get(tapeId) ?? []) {
-        this.boundaryLocations.delete(boundaryId);
-        this.boundaryIds.delete(boundaryId);
-      }
-      const boundaryIds = new Set<string>();
-      for (const [boundaryId, indexPosition] of index.boundaries) {
-        this.boundaryIds.add(boundaryId);
-        boundaryIds.add(boundaryId);
-        this.boundaryLocations.set(boundaryId, { tapeId, index: indexPosition });
-      }
-      this.boundaryIdsByTape.set(tapeId, boundaryIds);
-      for (const ownerId of this.tapeOwners.get(tapeId) ?? []) this.projectedByNode.delete(ownerId);
-    }
-  }
-}
-
 function assertTextMutationOnly(
   evidence: NativeMutationEvidence,
   state: Y.Doc,
@@ -1024,77 +619,6 @@ function sameValue(left: unknown, right: unknown): boolean {
 }
 
 /** LCS for unique child IDs via an LIS over the destination positions. */
-function diffChildSplices(
-  before: readonly NodeId[],
-  after: readonly NodeId[],
-): readonly StructuralChildSplice[] {
-  const destination = new Map(after.map((id, index) => [id, index]));
-  const candidates: { readonly beforeIndex: number; readonly afterIndex: number }[] = [];
-  before.forEach((id, beforeIndex) => {
-    const afterIndex = destination.get(id);
-    if (afterIndex !== undefined) candidates.push({ beforeIndex, afterIndex });
-  });
-
-  const tails: number[] = [];
-  const tailsAt: number[] = [];
-  const previous = Array.from({ length: candidates.length }, () => -1);
-  for (let index = 0; index < candidates.length; index++) {
-    const value = candidates[index]!.afterIndex;
-    let low = 0;
-    let high = tails.length;
-    while (low < high) {
-      const middle = (low + high) >>> 1;
-      if (tails[middle]! < value) low = middle + 1;
-      else high = middle;
-    }
-    if (low > 0) previous[index] = tailsAt[low - 1]!;
-    tails[low] = value;
-    tailsAt[low] = index;
-  }
-
-  const matches: { readonly beforeIndex: number; readonly afterIndex: number }[] = [];
-  let cursor = tailsAt.at(-1) ?? -1;
-  while (cursor >= 0) {
-    matches.push(candidates[cursor]!);
-    cursor = previous[cursor]!;
-  }
-  matches.reverse();
-
-  const splices: StructuralChildSplice[] = [];
-  let beforeCursor = 0;
-  let afterCursor = 0;
-  let liveIndex = 0;
-  for (const match of matches) {
-    const removedIds = before.slice(beforeCursor, match.beforeIndex);
-    const insertedIds = after.slice(afterCursor, match.afterIndex);
-    if (removedIds.length || insertedIds.length) {
-      splices.push(
-        Object.freeze({
-          index: liveIndex,
-          removedIds: Object.freeze([...removedIds]),
-          insertedIds: Object.freeze([...insertedIds]),
-        }),
-      );
-      liveIndex += insertedIds.length;
-    }
-    liveIndex++;
-    beforeCursor = match.beforeIndex + 1;
-    afterCursor = match.afterIndex + 1;
-  }
-  const removedIds = before.slice(beforeCursor);
-  const insertedIds = after.slice(afterCursor);
-  if (removedIds.length || insertedIds.length) {
-    splices.push(
-      Object.freeze({
-        index: liveIndex,
-        removedIds: Object.freeze([...removedIds]),
-        insertedIds: Object.freeze([...insertedIds]),
-      }),
-    );
-  }
-  return Object.freeze(splices);
-}
-
 function slicePiece(piece: DraftPiece, from: number, to: number): DraftPiece | undefined {
   if (from >= to) return undefined;
   if (piece.kind === 'existing') {
@@ -1130,29 +654,6 @@ function slicePieces(pieces: readonly DraftPiece[], from: number, to: number): D
     cursor = next;
   }
   return result;
-}
-
-function splitSurrogateBoundary(value: string, offset: number): boolean {
-  return (
-    offset > 0 &&
-    offset < value.length &&
-    value.charCodeAt(offset - 1) >= 0xd800 &&
-    value.charCodeAt(offset - 1) <= 0xdbff &&
-    value.charCodeAt(offset) >= 0xdc00 &&
-    value.charCodeAt(offset) <= 0xdfff
-  );
-}
-
-function stableJson(value: unknown): string {
-  if (value instanceof Uint8Array) return JSON.stringify(Array.from(value));
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value) ?? 'undefined';
 }
 
 class MutableTreeDraft implements ParserTreeDraft {
@@ -1447,14 +948,6 @@ class MutableTreeDraft implements ParserTreeDraft {
           enumerable: true,
           get: () => read('children', () => Object.freeze([...state.children])),
         },
-        spans: {
-          enumerable: true,
-          get: () =>
-            read('spans', () => {
-              if (INLINE_KINDS.has(state.type)) this.readText(state);
-              return Object.freeze(state.spans.map((part) => Object.freeze({ ...part.span })));
-            }),
-        },
         content: {
           enumerable: true,
           get: () => {
@@ -1525,7 +1018,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     this.apply({ type: 'detach', id }, true);
   }
 
-  spliceText(id: NodeId, edit: TextEdit): void {
+  spliceText(id: NodeId, edit: CanonicalTextEdit): void {
     this.apply({ type: 'spliceText', id, edit: deepFreeze(deepCopy(edit)) }, true);
   }
 
@@ -1534,7 +1027,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     this.apply({ type: 'cutInline', id, from, to, fragmentId }, true);
     const fragment = this.fragments.get(fragmentId);
     assert(fragment, 'cut did not create a fragment');
-    const handle = Object.freeze({ text: fragment.text });
+    const handle = Object.freeze({ text: fragment.text }) as InlineFragment;
     fragmentIds.set(handle, fragmentId);
     return handle;
   }
@@ -1587,7 +1080,7 @@ class MutableTreeDraft implements ParserTreeDraft {
       Number.isInteger(offset) && offset >= 0 && offset <= content.length,
       'bookmark offset is out of bounds',
     );
-    assert(!splitSurrogateBoundary(content, offset), 'bookmark splits a surrogate pair');
+    assert(!splitsSurrogatePair(content, offset), 'bookmark splits a surrogate pair');
     if (spanIndex !== undefined) {
       assert(
         spanIndex >= 0 && spanIndex < node.spans.length,
@@ -1678,19 +1171,23 @@ class MutableTreeDraft implements ParserTreeDraft {
 
   private createWithId(operation: Extract<SemanticOperation, { type: 'create' }>): void {
     const { id, spec, span } = operation;
+    const untypedSpec = spec as unknown as {
+      readonly type: NodeKind;
+      readonly children?: readonly NodeId[];
+    };
     assert(!this.indexes.nodeIds.has(id) && !this.nodes.has(id), `node ID ${id} already exists`);
     this.reserveId(id);
     this.generatedIds.add(id);
-    assert(spec.type !== 'document', 'a draft cannot create another document root');
+    assert(untypedSpec.type !== 'document', 'a draft cannot create another document root');
     assert(
-      !spec.children?.length,
+      !untypedSpec.children?.length,
       'create nodes without children, then place each child explicitly',
     );
     if (INLINE_KINDS.has(spec.type)) assert(span, 'inline node creation requires tape markers');
     else assert(!span, 'non-inline node cannot allocate an inline tape');
-    const content = spec.content ?? '';
+    const content = ('content' in spec ? spec.content : undefined) ?? '';
     assert(
-      INLINE_KINDS.has(spec.type) || spec.content === undefined,
+      INLINE_KINDS.has(spec.type) || !('content' in spec) || spec.content === undefined,
       'non-inline nodes cannot have content',
     );
     assert(typeof content === 'string', 'inline content must be text');
@@ -1703,7 +1200,7 @@ class MutableTreeDraft implements ParserTreeDraft {
       this.newTapeSpans.set(id, span);
     }
     const marker =
-      spec.marker ??
+      ('marker' in spec ? spec.marker : undefined) ??
       (spec.type === 'section'
         ? '#'
         : spec.type === 'list-item'
@@ -1714,7 +1211,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     const state: DraftNodeState = {
       id,
       type: spec.type,
-      children: [...(spec.children ?? [])],
+      children: [],
       spans: span
         ? [
             {
@@ -1743,7 +1240,7 @@ class MutableTreeDraft implements ParserTreeDraft {
           ]
         : [],
       marker,
-      checked: spec.checked ?? null,
+      checked: ('checked' in spec ? spec.checked : undefined) ?? null,
       info: spec.type === 'code-block' ? (spec.info ?? null) : null,
       baseCells: new Map(),
       created: true,
@@ -1874,7 +1371,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     this.parentOverlay.set(id, null);
   }
 
-  private spliceInternal(id: NodeId, edit: TextEdit): void {
+  private spliceInternal(id: NodeId, edit: CanonicalTextEdit): void {
     const node = this.requireNode(id);
     this.ensureVisibleOrCreated(node);
     assert(INLINE_KINDS.has(node.type), `${node.type} nodes do not have inline text`);
@@ -1927,35 +1424,8 @@ class MutableTreeDraft implements ParserTreeDraft {
     node.textEdited ||= content !== inlineContent(node);
   }
 
-  private validateDraftEdit(content: string, edit: TextEdit): void {
-    assert(
-      Number.isInteger(edit.from) && Number.isInteger(edit.to),
-      'text range offsets must be integers',
-    );
-    assert(
-      edit.from >= 0 && edit.to >= edit.from && edit.to <= content.length,
-      'text range is out of bounds',
-    );
-    assert(
-      !splitSurrogateBoundary(content, edit.from) && !splitSurrogateBoundary(content, edit.to),
-      'text range splits a surrogate pair',
-    );
-    for (let index = 0; index < edit.insert.length; index++) {
-      const unit = edit.insert.charCodeAt(index);
-      if (unit >= 0xd800 && unit <= 0xdbff) {
-        const next = edit.insert.charCodeAt(index + 1);
-        assert(
-          next >= 0xdc00 && next <= 0xdfff,
-          'inserted text contains an unpaired high surrogate',
-        );
-        index++;
-      } else {
-        assert(
-          !(unit >= 0xdc00 && unit <= 0xdfff),
-          'inserted text contains an unpaired low surrogate',
-        );
-      }
-    }
+  private validateDraftEdit(content: string, edit: CanonicalTextEdit): void {
+    assertTextEdit(content, edit);
   }
 
   private insertionTarget(
@@ -2076,7 +1546,7 @@ class MutableTreeDraft implements ParserTreeDraft {
       'transfer destination is out of bounds',
     );
     assert(
-      !splitSurrogateBoundary(destinationContent, transfer.at),
+      !splitsSurrogatePair(destinationContent, transfer.at),
       'transfer destination splits a surrogate pair',
     );
     const fragmentId = this.allocateId('fragment');
@@ -2094,7 +1564,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     assert(Number.isInteger(from) && Number.isInteger(to), 'cut offsets must be integers');
     assert(from >= 0 && to > from && to <= content.length, 'cut range is out of bounds');
     assert(
-      !splitSurrogateBoundary(content, from) && !splitSurrogateBoundary(content, to),
+      !splitsSurrogatePair(content, from) && !splitsSurrogatePair(content, to),
       'cut range splits a surrogate pair',
     );
     const cut = this.cutSourceRange(node, from, to);
@@ -2123,7 +1593,7 @@ class MutableTreeDraft implements ParserTreeDraft {
       Number.isInteger(at) && at >= 0 && at <= content.length,
       'fragment target is out of bounds',
     );
-    assert(!splitSurrogateBoundary(content, at), 'fragment target splits a surrogate pair');
+    assert(!splitsSurrogatePair(content, at), 'fragment target splits a surrogate pair');
     destination.spans = this.insertTransferAt(destination, at, affinity, fragment.spans);
     this.consumedFragments.add(fragmentId);
   }
@@ -2214,8 +1684,7 @@ class MutableTreeDraft implements ParserTreeDraft {
       'transfer range is out of bounds',
     );
     assert(
-      !splitSurrogateBoundary(content, transfer.from) &&
-        !splitSurrogateBoundary(content, transfer.to),
+      !splitsSurrogatePair(content, transfer.from) && !splitsSurrogatePair(content, transfer.to),
       'transfer splits a surrogate pair',
     );
     assert(
@@ -2223,7 +1692,7 @@ class MutableTreeDraft implements ParserTreeDraft {
       'transfer destination is out of bounds',
     );
     assert(
-      !splitSurrogateBoundary(content, transfer.at),
+      !splitsSurrogatePair(content, transfer.at),
       'transfer destination splits a surrogate pair',
     );
     if (transfer.at === transfer.from || transfer.at === transfer.to) return;
@@ -4119,54 +3588,6 @@ function assertResolvedUpdate(state: Y.Doc): void {
   assert(!state.store.pendingStructs, 'text update has unresolved struct dependencies');
   assert(!state.store.pendingDs, 'text update has unresolved delete dependencies');
 }
-
-export interface HistoryResult {
-  readonly status: 'applied' | 'no-effect' | 'blocked' | 'empty' | 'history-reset' | 'queued';
-  readonly revision?: number;
-  readonly update?: Uint8Array;
-  readonly textChanged?: boolean;
-  readonly focus?: Bookmark;
-  readonly focusAnchor?: CanonicalTextAnchor;
-  readonly selectionAnchors?: {
-    readonly anchor: CanonicalTextAnchor;
-    readonly focus: CanonicalTextAnchor;
-  };
-  readonly reason?:
-    | 'structural-history-pending'
-    | 'resource-conflict'
-    | 'visibility-conflict'
-    | 'invalid-inverse'
-    | 'mixed-scope'
-    | 'invalid-scope';
-  readonly callbackErrors?: readonly unknown[];
-}
-
-export interface PendingHistoryCommit {
-  readonly sessionId: string;
-  readonly direction: 'undo' | 'redo';
-  readonly revision: number;
-  readonly textChanged: boolean;
-  readonly focus?: Bookmark;
-  readonly focusAnchor?: CanonicalTextAnchor;
-  readonly selectionAnchors?: {
-    readonly anchor: CanonicalTextAnchor;
-    readonly focus: CanonicalTextAnchor;
-  };
-  /** Returns a defensive copy for persistence before publication. */
-  readonly update: Uint8Array;
-}
-
-export type HistoryPreparationResult =
-  | { readonly status: 'pending'; readonly pending: PendingHistoryCommit }
-  | HistoryResult;
-
-export interface WriterEvent {
-  readonly type: 'commit' | 'history';
-  readonly actionId?: string;
-  readonly revision?: number;
-}
-
-export type WriterListener = (event: WriterEvent) => void;
 
 const activeWriters = new WeakMap<CanonicalDocument, CanonicalWriter>();
 

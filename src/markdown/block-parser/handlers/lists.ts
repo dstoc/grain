@@ -49,7 +49,6 @@ export function appendListItem(
     type: 'list-item',
     marker,
     checked,
-    children: [],
   }) as ListItemViewModelNode;
   placeSemanticNode(state, item, list);
   state.sourceMarkerWidths.set(item, marker.length);
@@ -101,7 +100,6 @@ export function parseInitialContainerContent(
       type: 'section',
       marker: '#'.repeat(atxHeading.level),
       content: atxHeading.content,
-      children: [],
     }) as SectionViewModelNode;
     placeSemanticNode(state, section, parent);
     if (mapped) {

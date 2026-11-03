@@ -1,17 +1,10 @@
 import * as Y from 'yjs';
 
 import type { BoundaryEmbed, Span, TapeId } from './canonical-model.js';
-
-export type TextAffinity = 'left' | 'right';
-
-export interface TextEdit {
-  readonly from: number;
-  readonly to: number;
-  readonly insert: string;
-  readonly affinity?: TextAffinity;
-  /** Select an otherwise empty span when a bookmark resolves to one explicitly. */
-  readonly spanIndex?: number;
-}
+import type { CanonicalTextEdit } from './canonical/action-types.js';
+import type { TextAffinity } from './semantic/types.js';
+export type { TextAffinity, TextEdit } from './semantic/types.js';
+export type { CanonicalTextEdit } from './canonical/action-types.js';
 
 export interface NativeTextRun {
   readonly tapeId: TapeId;
@@ -300,7 +293,7 @@ function insertionIndex(
 export function mapTextEdit(
   spans: readonly Span[],
   tapes: ReadonlyMap<TapeId, Y.Text>,
-  edit: TextEdit,
+  edit: CanonicalTextEdit,
 ): MappedTextEdit {
   const indexedTapes = new Map<TapeId, NativeTapeIndex>();
   for (const span of spans) {
@@ -315,7 +308,7 @@ export function mapTextEdit(
 export function mapTextEditIndexed(
   spans: readonly Span[],
   tapes: ReadonlyMap<TapeId, NativeTapeIndex>,
-  edit: TextEdit,
+  edit: CanonicalTextEdit,
 ): MappedTextEdit {
   return mapProjectedTextEdit(indexProjectedSpans(spans, tapes), edit);
 }
@@ -343,7 +336,7 @@ export function indexProjectedSpans(
 
 export function mapProjectedTextEdit(
   projected: ProjectedTextIndex,
-  edit: TextEdit,
+  edit: CanonicalTextEdit,
 ): MappedTextEdit {
   const indexed = projected.spans;
   const projectedText = projected.text;

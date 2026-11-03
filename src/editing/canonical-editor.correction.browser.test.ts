@@ -69,12 +69,16 @@ for (const mode of ['legacy', 'canonical']) {
     await nextTask();
     await nextTask();
     expect(renderer.hostContext.selection.size).toBe(3);
-    const destination = window.document.createElement('textarea');
-    window.document.body.append(destination);
-    await userEvent.keyboard('{Control>}c{/Control}');
-    destination.focus();
-    await userEvent.keyboard('{Control>}v{/Control}');
-    const copied = parseBlocks(destination.value).node;
+    const clipboardData = new DataTransfer();
+    const copy = new ClipboardEvent('copy', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      clipboardData,
+    });
+    inlines[0]!.dispatchEvent(copy);
+    expect(copy.defaultPrevented).toBe(true);
+    const copied = parseBlocks(clipboardData.getData('text/plain')).node;
     expect(copied.children![0]).toMatchObject({ type: 'code-block', content: '# title\nliteral' });
   });
 

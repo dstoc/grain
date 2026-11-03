@@ -1,14 +1,8 @@
 import { isInlineNode, type InlineNode, type MarkdownNode } from './node.js';
 import type { ParserConversionPlan } from './block-parser/types.js';
-import type { NodeId } from './canonical-model.js';
-import type {
-  Bookmark,
-  DraftNode,
-  DraftTextPiece,
-  NodeSpec,
-  ParserTreeDraft,
-  TreeDraft,
-} from './canonical-actions.js';
+import type { Bookmark } from './canonical/action-types.js';
+import type { DraftNode, DraftTextPiece, ParserTreeDraft, TreeDraft } from './semantic/draft.js';
+import type { CreateNodeSpec as NodeSpec, NodeId } from './semantic/types.js';
 
 interface TextEvent {
   readonly from: number;
@@ -128,16 +122,22 @@ function sourceBoundaryBefore(pieces: readonly ComposedPiece[], index: number): 
 }
 
 function specFor(node: MarkdownNode, content = ''): NodeSpec {
-  const spec: NodeSpec = {
-    type: node.type,
-    ...(isInlineNode(node) ? { content } : {}),
-    ...(node.type === 'section' || node.type === 'list-item' || node.type === 'block-quote'
-      ? { marker: node.marker }
-      : {}),
-    ...(node.type === 'list-item' ? { checked: node.checked ?? null } : {}),
-    ...(node.type === 'code-block' ? { info: node.info } : {}),
-  };
-  return spec;
+  switch (node.type) {
+    case 'document':
+      throw new Error('a semantic draft cannot create another root');
+    case 'paragraph':
+      return { type: 'paragraph', content };
+    case 'section':
+      return { type: 'section', content, marker: node.marker };
+    case 'code-block':
+      return { type: 'code-block', content, info: node.info };
+    case 'list':
+      return { type: 'list' };
+    case 'list-item':
+      return { type: 'list-item', marker: node.marker, checked: node.checked ?? null };
+    case 'block-quote':
+      return { type: 'block-quote', marker: node.marker };
+  }
 }
 
 function validateTextPieces(

@@ -1,13 +1,13 @@
 import { viewModel } from '../view-model-node.js';
 import type { ViewModelNode } from '../view-model-node.js';
 import type { BlockParseState, ListItemViewModelNode, BlockQuoteViewModelNode } from './types.js';
-import type { NodeSpec } from '../canonical-actions.js';
+import type { CreateNodeSpec } from '../semantic/types.js';
 
 export function isBlankLine(line: string): boolean {
   return /^\s*$/.test(line);
 }
 
-export function createSemanticNode(state: BlockParseState, spec: NodeSpec): ViewModelNode {
+export function createSemanticNode(state: BlockParseState, spec: CreateNodeSpec): ViewModelNode {
   return state.draft.createNode(spec);
 }
 
@@ -20,8 +20,8 @@ export function placeSemanticNode(
   state.draft.placeNodes(node, parent, before);
 }
 
-export function detachSemanticNode(state: BlockParseState, node: ViewModelNode): void {
-  state.draft.detachNode(node);
+export function detachSemanticNodeIfAttached(state: BlockParseState, node: ViewModelNode): void {
+  state.draft.detachNodeIfAttached(node);
 }
 
 export function editSemanticText(

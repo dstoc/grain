@@ -1,15 +1,14 @@
 import type {
-  Bookmark,
   ConversionPlan,
   DraftNode,
   InlineFragment,
-  NodeSpec,
   TreeDraft,
   Transfer,
-} from './canonical-actions.js';
-import type { NodeId } from './canonical-model.js';
+} from './semantic/draft.js';
+import type { CreateNodeSpec, NodeId, TextAffinity, TextEdit } from './semantic/types.js';
+import { assertTextEdit, assertTextPoint, assertTextRange } from './semantic/types.js';
+import type { TextPoint } from './semantic/selection.js';
 import type { MarkdownNode } from './node.js';
-import type { TextAffinity, TextEdit } from './canonical-text.js';
 import { isInlineViewModelNode, viewModel, type ViewModelNode } from './view-model-node.js';
 import { MarkdownTree } from './view-model.js';
 
@@ -20,6 +19,7 @@ import { MarkdownTree } from './view-model.js';
 export class MarkdownTreeDraft implements TreeDraft {
   private readonly ids = new WeakMap<ViewModelNode, NodeId>();
   private readonly nodes = new Map<NodeId, ViewModelNode>();
+  private readonly views = new Map<NodeId, DraftNode>();
   private readonly fragments = new WeakMap<object, { readonly text: string }>();
   private readonly consumedFragments = new WeakSet<object>();
   private nextId = 0;
@@ -45,7 +45,7 @@ export class MarkdownTreeDraft implements TreeDraft {
   }
 
   /** Parser convenience that still records creation through the draft API. */
-  createNode(spec: NodeSpec): ViewModelNode {
+  createNode(spec: CreateNodeSpec): ViewModelNode {
     return this.view(this.create(spec));
   }
 
@@ -58,24 +58,64 @@ export class MarkdownTreeDraft implements TreeDraft {
     this.detach(this.idOf(node));
   }
 
+  /** Parser cleanup that intentionally tolerates an unattached node. */
+  detachNodeIfAttached(node: ViewModelNode): void {
+    const id = this.idOf(node);
+    if (this.parentOf(id) !== undefined) this.detach(id);
+  }
+
   editNode(node: ViewModelNode, from: number, to: number, insert: string): void {
     this.spliceText(this.idOf(node), { from, to, insert });
   }
 
   node(id: NodeId): DraftNode {
-    const node = this.view(id);
-    return Object.freeze({
-      id,
-      type: node.type,
-      children: Object.freeze(
-        (node.children ?? []).map((child) => this.idOf(child as ViewModelNode)),
-      ),
-      spans: Object.freeze([]),
-      ...(isInlineViewModelNode(node) ? { content: node.content } : {}),
-      marker: 'marker' in node ? node.marker : null,
-      checked: node.type === 'list-item' ? (node.checked ?? null) : null,
-      info: node.type === 'code-block' ? node.info : null,
-    });
+    const cached = this.views.get(id);
+    if (cached) return cached;
+    this.view(id);
+    const view = Object.defineProperties(
+      { id },
+      {
+        type: { enumerable: true, get: () => this.view(id).type },
+        children: {
+          enumerable: true,
+          get: () =>
+            Object.freeze(
+              [...(this.view(id).children ?? [])].map((child) => this.idOf(child as ViewModelNode)),
+            ),
+        },
+        content: {
+          enumerable: true,
+          get: () => {
+            const current = this.view(id);
+            return isInlineViewModelNode(current) ? current.content : undefined;
+          },
+        },
+        marker: {
+          enumerable: true,
+          get: () => {
+            const current = this.view(id);
+            return 'marker' in current ? current.marker : null;
+          },
+        },
+        checked: {
+          enumerable: true,
+          get: () => {
+            const current = this.view(id);
+            return current.type === 'list-item' ? (current.checked ?? null) : null;
+          },
+        },
+        info: {
+          enumerable: true,
+          get: () => {
+            const current = this.view(id);
+            return current.type === 'code-block' ? current.info : null;
+          },
+        },
+      },
+    ) as DraftNode;
+    Object.freeze(view);
+    this.views.set(id, view);
+    return view;
   }
 
   parentOf(id: NodeId): NodeId | undefined {
@@ -93,8 +133,16 @@ export class MarkdownTreeDraft implements TreeDraft {
     return sibling ? this.idOf(sibling) : undefined;
   }
 
-  create(spec: NodeSpec): NodeId {
-    expect(spec.type !== 'document', 'a semantic draft cannot create another root');
+  create(spec: CreateNodeSpec): NodeId {
+    const untypedSpec = spec as unknown as {
+      readonly type: string;
+      readonly children?: readonly NodeId[];
+    };
+    expect(untypedSpec.type !== 'document', 'a semantic draft cannot create another root');
+    expect(
+      !untypedSpec.children?.length,
+      'create nodes without children, then place each child explicitly',
+    );
     const node = this.tree.add(nodeFromSpec(spec));
     return this.idOf(node);
   }
@@ -108,20 +156,15 @@ export class MarkdownTreeDraft implements TreeDraft {
 
   detach(id: NodeId): void {
     const node = this.view(id);
-    if (node[viewModel].parent) node[viewModel].remove();
+    expect(node !== this.tree.root, 'the document root cannot be detached');
+    expect(node[viewModel].parent, `node ${id} is already detached`);
+    node[viewModel].remove();
   }
 
   spliceText(id: NodeId, edit: TextEdit): void {
     const node = this.view(id);
     expect(isInlineViewModelNode(node), `${node.type} has no inline text`);
-    expect(
-      Number.isInteger(edit.from) &&
-        Number.isInteger(edit.to) &&
-        edit.from >= 0 &&
-        edit.to >= edit.from &&
-        edit.to <= node.content.length,
-      'text edit is outside the inline node',
-    );
+    assertTextEdit(node.content, edit);
     node[viewModel].edit(
       {
         startIndex: edit.from,
@@ -136,8 +179,9 @@ export class MarkdownTreeDraft implements TreeDraft {
   cutInline(id: NodeId, from: number, to: number): InlineFragment {
     const node = this.view(id);
     expect(isInlineViewModelNode(node), `${node.type} has no inline text`);
-    expect(from >= 0 && to >= from && to <= node.content.length, 'cut range is outside the inline');
-    const fragment = Object.freeze({ text: node.content.slice(from, to) });
+    assertTextRange(node.content, from, to, 'cut range');
+    expect(to > from, 'cut range must contain text');
+    const fragment = Object.freeze({ text: node.content.slice(from, to) }) as InlineFragment;
     this.fragments.set(fragment, fragment);
     this.spliceText(id, { from, to, insert: '' });
     return fragment;
@@ -152,11 +196,30 @@ export class MarkdownTreeDraft implements TreeDraft {
     const owned = this.fragments.get(fragment);
     expect(owned, 'fragment was not created by this semantic draft');
     expect(!this.consumedFragments.has(fragment), 'fragment has already been inserted');
-    this.consumedFragments.add(fragment);
+    const target = this.view(destination);
+    expect(isInlineViewModelNode(target), `${target.type} has no inline text`);
+    assertTextPoint(target.content, at, 'fragment target');
     this.spliceText(destination, { from: at, to: at, insert: owned.text });
+    this.consumedFragments.add(fragment);
   }
 
   transferInlineRange(transfer: Transfer): void {
+    const source = this.view(transfer.source);
+    const destination = this.view(transfer.destination);
+    expect(isInlineViewModelNode(source), `${source.type} has no inline text`);
+    expect(isInlineViewModelNode(destination), `${destination.type} has no inline text`);
+    assertTextRange(source.content, transfer.from, transfer.to, 'transfer range');
+    expect(transfer.to > transfer.from, 'transfer range must contain text');
+    const destinationText =
+      transfer.source === transfer.destination ? source.content : destination.content;
+    assertTextPoint(destinationText, transfer.at, 'transfer destination');
+    if (transfer.source === transfer.destination) {
+      if (transfer.at === transfer.from || transfer.at === transfer.to) return;
+      expect(
+        !(transfer.from < transfer.at && transfer.at < transfer.to),
+        'same-node destination cannot be inside the transferred range',
+      );
+    }
     const fragment = this.cutInline(transfer.source, transfer.from, transfer.to);
     const at =
       transfer.source === transfer.destination && transfer.at > transfer.from
@@ -196,19 +259,11 @@ export class MarkdownTreeDraft implements TreeDraft {
     node[viewModel].updateInfo(info);
   }
 
-  bookmark(id: NodeId, offset: number, affinity: TextAffinity, spanIndex?: number): Bookmark {
+  bookmark(id: NodeId, offset: number, affinity: TextAffinity): TextPoint {
     const node = this.view(id);
     expect(isInlineViewModelNode(node), `${node.type} has no text bookmarks`);
-    expect(
-      Number.isInteger(offset) && offset >= 0 && offset <= node.content.length,
-      'bookmark is outside the inline',
-    );
-    return Object.freeze({
-      nodeId: id,
-      offset,
-      affinity,
-      ...(spanIndex === undefined ? {} : { spanIndex }),
-    });
+    assertTextPoint(node.content, offset, 'bookmark offset');
+    return Object.freeze({ nodeId: id, offset, affinity });
   }
 }
 
@@ -216,10 +271,12 @@ function expect(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-function nodeFromSpec(spec: NodeSpec): MarkdownNode {
+function nodeFromSpec(spec: CreateNodeSpec): MarkdownNode {
+  expect(
+    (spec as unknown as { readonly type: string }).type !== 'document',
+    'a semantic draft cannot create another root',
+  );
   switch (spec.type) {
-    case 'document':
-      throw new Error('a semantic draft cannot create another root');
     case 'paragraph':
       return { type: 'paragraph', content: spec.content ?? '' };
     case 'section':
