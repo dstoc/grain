@@ -2,6 +2,7 @@ import type { InlineInput } from '../../markdown/inline-render.js';
 
 export type InlineInputIntent =
   | { readonly type: 'replace-blocks'; readonly text: string }
+  | { readonly type: 'delete-blocks' }
   | {
       readonly type: 'command';
       readonly command: 'insert-paragraph' | 'insert-line-break' | 'delete-backward-at-start';
@@ -50,7 +51,7 @@ export function translateInlineInput(
     hasBlockSelection &&
     ['deleteContentBackward', 'deleteContentForward', 'deleteByCut'].includes(inputEvent.inputType)
   ) {
-    return { type: 'replace-blocks', text: '' };
+    return { type: 'delete-blocks' };
   }
   if (inputEvent.inputType === 'insertParagraph') {
     if (detail.node.type === 'code-block') {

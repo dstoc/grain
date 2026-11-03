@@ -237,11 +237,13 @@ describe('M6 review browser contracts', () => {
     expect(context.selectionFocus).toBeUndefined();
     const redoInline = renderer.getInlineSelection().inline!;
     const redoFocus = redoInline.nodeView as unknown as CanonicalNode;
-    expect(redoFocus.sharedId).toBe(first!.sharedId);
+    expect(redoFocus.sharedId).not.toBe(first!.sharedId);
+    expect(redoFocus.type).toBe('paragraph');
+    expect(redoFocus.content).toBe('');
     expect(redoFocus.connected).toBe(true);
     expect(redoInline.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
   });
-  test('deleteContentBackward input replaces the active block selection', async () => {
+  test('deleteContentBackward removes the block selection and focuses the empty-document sentinel', async () => {
     const inline = await mount('alpha\n\nbeta');
     const context = renderer.hostContext;
     const [first, last] = model.root.children;
@@ -263,6 +265,12 @@ describe('M6 review browser contracts', () => {
 
     expect(input.defaultPrevented).toBe(true);
     expect(model.root.children.map((node) => node.content)).toEqual(['']);
+    const deletionFocus = renderer.getInlineSelection().inline!;
+    const emptySentinel = deletionFocus.nodeView as unknown as CanonicalNode;
+    expect(emptySentinel.sharedId).not.toBe(first!.sharedId);
+    expect(emptySentinel.type).toBe('paragraph');
+    expect(emptySentinel.content).toBe('');
+    expect(deletionFocus.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
     await userEvent.keyboard('{Control>}z{/Control}');
     await settle();
     expect(model.root.children.map((node) => node.content)).toEqual(['alpha', 'beta']);
@@ -827,8 +835,9 @@ describe('M6 review browser contracts', () => {
     await settle();
     expect(code.content).toBe('');
   });
-  test('cutting all blocks keeps focus and restores through undo and redo', async () => {
+  test('cutting all blocks keeps the empty-document sentinel through undo and redo', async () => {
     const inline = await mount('hello\n\nworld');
+    const [hello, world] = model.root.children;
     inline.focus();
     inline.setSelectionOffsets(0, 0);
     await userEvent.keyboard('{Control>}a{/Control}{Control>}a{/Control}{Control>}a{/Control}');
@@ -851,10 +860,19 @@ describe('M6 review browser contracts', () => {
     await userEvent.keyboard('{Control>}z{/Control}');
     await settle();
     expect(model.root.children.map((node) => node.content)).toEqual(['hello', 'world']);
+    expectBlockSelection(renderer.hostContext!, hello!.sharedId, world!.sharedId, [
+      hello!.sharedId,
+      world!.sharedId,
+    ]);
     await userEvent.keyboard('{Control>}y{/Control}');
     await settle();
     expect(model.root.children.map((node) => node.content)).toEqual(['']);
-    expect(renderer.getInlineSelection().inline).toBeDefined();
+    const emptyInline = renderer.getInlineSelection().inline!;
+    const emptyNode = emptyInline.nodeView as unknown as CanonicalNode;
+    expect(emptyNode.type).toBe('paragraph');
+    expect(emptyNode.content).toBe('');
+    expect(emptyNode.connected).toBe(true);
+    expect(emptyInline.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
     await userEvent.keyboard('again');
     await settle();
     expect(model.root.children.map((node) => node.content)).toEqual(['again']);

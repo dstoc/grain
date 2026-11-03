@@ -191,7 +191,7 @@ describe('CanonicalEditor in Chromium', () => {
     },
   );
 
-  test('Shift+Up selection deletes both blocks and undo and redo restore the range and result', async () => {
+  test('Backspace removes the selected edge blocks and focuses the next block through undo and redo', async () => {
     const mounted = await mount('Alpha\n\nBeta\n\nGamma');
     const [alpha, beta, gamma] = document!.root.children as CanonicalNode[];
     const context = mounted.renderer.hostContext;
@@ -203,7 +203,13 @@ describe('CanonicalEditor in Chromium', () => {
 
     await userEvent.keyboard('{Backspace}');
     await settle(mounted);
-    expect(document!.root.children.map((node) => node.content)).toEqual(['', 'Gamma']);
+    expect(document!.root.children.map((node) => node.content)).toEqual(['Gamma']);
+    expect(alpha!.connected).toBe(false);
+    expect(beta!.connected).toBe(false);
+    expect(gamma!.connected).toBe(true);
+    let focused = mounted.renderer.getInlineSelection().inline!;
+    expect((focused.nodeView as unknown as CanonicalNode).sharedId).toBe(gamma!.sharedId);
+    expect(focused.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
 
     await userEvent.keyboard('{Control>}z{/Control}');
     await settle(mounted);
@@ -212,9 +218,174 @@ describe('CanonicalEditor in Chromium', () => {
 
     await userEvent.keyboard('{Control>}y{/Control}');
     await settle(mounted);
-    expect(document!.root.children.map((node) => node.content)).toEqual(['', 'Gamma']);
+    expect(document!.root.children.map((node) => node.content)).toEqual(['Gamma']);
     expect(context.selection.size).toBe(0);
+    focused = mounted.renderer.getInlineSelection().inline!;
+    expect((focused.nodeView as unknown as CanonicalNode).sharedId).toBe(gamma!.sharedId);
+    expect(focused.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
     expect(gamma!.connected).toBe(true);
+  });
+
+  test('Delete removes a middle range and restores its direction and predecessor caret', async () => {
+    const mounted = await mount('Alpha\n\nBeta\n\nGamma\n\nDelta');
+    const [alpha, beta, gamma, delta] = document!.root.children as CanonicalNode[];
+    const context = mounted.renderer.hostContext;
+    const betaView = asInlineMarkdownNodeView(beta!);
+    const gammaView = asInlineMarkdownNodeView(gamma!);
+    context.selection.add(betaView);
+    context.selection.add(gammaView);
+    context.selectionAnchor = betaView;
+    context.selectionFocus = gammaView;
+    inlineFor(mounted.renderer, gamma!).focus();
+
+    await userEvent.keyboard('{Delete}');
+    await settle(mounted);
+    expect(document!.root.children.map((node) => node.content)).toEqual(['Alpha', 'Delta']);
+    expect(alpha!.connected).toBe(true);
+    expect(beta!.connected).toBe(false);
+    expect(gamma!.connected).toBe(false);
+    expect(delta!.connected).toBe(true);
+    let focused = mounted.renderer.getInlineSelection().inline!;
+    expect((focused.nodeView as unknown as CanonicalNode).sharedId).toBe(alpha!.sharedId);
+    expect(focused.getTextSelection()).toEqual({ anchor: 5, focus: 5 });
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle(mounted);
+    expect(document!.root.children.map((node) => node.content)).toEqual([
+      'Alpha',
+      'Beta',
+      'Gamma',
+      'Delta',
+    ]);
+    expectBlockSelection(context, beta!, gamma!, [beta!, gamma!]);
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle(mounted);
+    expect(document!.root.children.map((node) => node.content)).toEqual(['Alpha', 'Delta']);
+    focused = mounted.renderer.getInlineSelection().inline!;
+    expect((focused.nodeView as unknown as CanonicalNode).sharedId).toBe(alpha!.sharedId);
+    expect(focused.getTextSelection()).toEqual({ anchor: 5, focus: 5 });
+  });
+
+  test('cut removes selected blocks, focuses the next block, and restores the reversed range on undo', async () => {
+    const mounted = await mount('Alpha\n\nBeta\n\nGamma');
+    const [alpha, beta, gamma] = document!.root.children as CanonicalNode[];
+    const context = mounted.renderer.hostContext;
+    const alphaView = asInlineMarkdownNodeView(alpha!);
+    const betaView = asInlineMarkdownNodeView(beta!);
+    context.selection.add(alphaView);
+    context.selection.add(betaView);
+    context.selectionAnchor = betaView;
+    context.selectionFocus = alphaView;
+    const alphaInline = inlineFor(mounted.renderer, alpha!);
+    alphaInline.focus();
+    const clipboardData = new DataTransfer();
+
+    alphaInline.dispatchEvent(
+      new ClipboardEvent('cut', {
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+        clipboardData,
+      }),
+    );
+    await settle(mounted);
+    expect(clipboardData.getData('text/plain')).toBe('Alpha\n\nBeta\n');
+    expect(document!.root.children.map((node) => node.content)).toEqual(['Gamma']);
+    expect(alpha!.connected).toBe(false);
+    expect(beta!.connected).toBe(false);
+    let focused = mounted.renderer.getInlineSelection().inline!;
+    expect((focused.nodeView as unknown as CanonicalNode).sharedId).toBe(gamma!.sharedId);
+    expect(focused.getTextSelection()).toEqual({ anchor: 0, focus: 0 });
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle(mounted);
+    expectBlockSelection(context, beta!, alpha!, [alpha!, beta!]);
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle(mounted);
+    expect(document!.root.children.map((node) => node.content)).toEqual(['Gamma']);
+    focused = mounted.renderer.getInlineSelection().inline!;
+    expect((focused.nodeView as unknown as CanonicalNode).sharedId).toBe(gamma!.sharedId);
+  });
+
+  test('deletes nested list blocks without disturbing their surrounding empty block or identities', async () => {
+    const mounted = await mount('* First\n* Alpha\n* Beta\n* <!-- -->\n* Last\n\nOutside');
+    const list = document!.root.children[0]!;
+    expect(list.type).toBe('list');
+    const [firstItem, alphaItem, betaItem, emptyItem, lastItem] = list.children as CanonicalNode[];
+    const [first] = firstItem!.children as CanonicalNode[];
+    const [alpha] = alphaItem!.children as CanonicalNode[];
+    const [beta] = betaItem!.children as CanonicalNode[];
+    const [empty] = emptyItem!.children as CanonicalNode[];
+    const [last] = lastItem!.children as CanonicalNode[];
+    const context = mounted.renderer.hostContext;
+    const alphaView = asInlineMarkdownNodeView(alpha!);
+    const betaView = asInlineMarkdownNodeView(beta!);
+    context.selection.add(alphaView);
+    context.selection.add(betaView);
+    context.selectionAnchor = betaView;
+    context.selectionFocus = alphaView;
+    inlineFor(mounted.renderer, beta!).focus();
+
+    await userEvent.keyboard('{Backspace}');
+    await settle(mounted);
+    expect(list.children).toHaveLength(3);
+    expect(list.children.map((item) => item.children[0]!.content)).toEqual(['First', '', 'Last']);
+    expect(list.children[0]!.children[0]).toBe(first);
+    expect(list.children[1]!.children[0]).toBe(empty);
+    expect(list.children[2]!.children[0]).toBe(last);
+    expect(alpha!.connected).toBe(false);
+    expect(beta!.connected).toBe(false);
+    const focused = mounted.renderer.getInlineSelection().inline!;
+    expect((focused.nodeView as unknown as CanonicalNode).sharedId).toBe(first!.sharedId);
+    expect(focused.getTextSelection()).toEqual({ anchor: 5, focus: 5 });
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle(mounted);
+    expectBlockSelection(context, beta!, alpha!, [alpha!, beta!]);
+    expect(list.children[3]!.children[0]).toBe(empty);
+    expect(list.children[4]!.children[0]).toBe(last);
+  });
+
+  test('deleting a section heading promotes its children and focuses surviving content', async () => {
+    const mounted = await mount('Before\n\n# Title\n\nBody\n\n# Later\n\nAfter');
+    const [before, section, after] = document!.root.children as CanonicalNode[];
+    expect(section!.type).toBe('section');
+    const [body] = section!.children as CanonicalNode[];
+    const context = mounted.renderer.hostContext;
+    const sectionView = asInlineMarkdownNodeView(section!);
+    context.selection.add(sectionView);
+    context.selectionAnchor = sectionView;
+    context.selectionFocus = sectionView;
+    inlineFor(mounted.renderer, section!).focus();
+
+    await userEvent.keyboard('{Backspace}');
+    await settle(mounted);
+    expect(document!.root.children.map((node) => [node.type, node.content])).toEqual([
+      ['paragraph', 'Before'],
+      ['paragraph', 'Body'],
+      ['section', 'Later'],
+    ]);
+    expect(before!.connected).toBe(true);
+    expect(section!.connected).toBe(false);
+    expect(body!.connected).toBe(true);
+    expect(after!.connected).toBe(true);
+    expect(document!.root.children[1]).toBe(body);
+    let focused = mounted.renderer.getInlineSelection().inline!;
+    expect((focused.nodeView as unknown as CanonicalNode).sharedId).toBe(before!.sharedId);
+    expect(focused.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle(mounted);
+    expectBlockSelection(context, section!, section!, [section!]);
+    expect(section!.children[0]).toBe(body);
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle(mounted);
+    expect(document!.root.children[1]).toBe(body);
+    focused = mounted.renderer.getInlineSelection().inline!;
+    expect((focused.nodeView as unknown as CanonicalNode).sharedId).toBe(before!.sharedId);
   });
 
   test('Shift+Up selection replacement is undone and redone with the correct block range', async () => {

@@ -21,6 +21,7 @@ import { insertLineBreak } from './commands/insert-line-break.js';
 import { insertMarkdown } from './commands/insert-markdown.js';
 import { insertParagraph } from './commands/insert-paragraph.js';
 import { replaceBlocks as replaceBlocksCommand } from './commands/replace-blocks.js';
+import { deleteBlocks as deleteBlocksCommand } from './commands/delete-blocks.js';
 import type { Edit } from './outcomes.js';
 import type { EditSelection } from '../markdown/semantic/selection.js';
 import { BrowserSessionRunner } from './browser/session-runner.js';
@@ -298,6 +299,10 @@ export class CanonicalEditor extends LitElement {
     const selection = this.selectionController.currentBlockSelection(hostContext);
     const intent = translateInlineInput(event.detail, selection.length > 0);
     if (intent.type === 'ignored') return;
+    if (intent.type === 'delete-blocks') {
+      this.deleteBlocks(selection, hostContext);
+      return;
+    }
     if (intent.type === 'replace-blocks') {
       this.replaceBlocks(selection, intent.text, hostContext);
       return;
@@ -363,6 +368,15 @@ export class CanonicalEditor extends LitElement {
     );
   }
 
+  private deleteBlocks(selection: readonly CanonicalNode[], hostContext?: HostContext) {
+    this.runEdit(
+      deleteBlocksCommand,
+      { nodeIds: selection.map((node) => node.sharedId) },
+      this.blockSelectionBefore(selection, hostContext),
+      hostContext,
+    );
+  }
+
   private onInlineKeyDown = (event: CustomEvent<InlineKeyDown>) => {
     const { inline, node: projectedNode, keyboardEvent } = event.detail;
     const hostContext = inline.hostContext;
@@ -414,7 +428,7 @@ export class CanonicalEditor extends LitElement {
     }
     if (intent.type === 'delete-block-selection') {
       keyboardEvent.preventDefault();
-      this.replaceBlocks(selected, '', hostContext);
+      this.deleteBlocks(selected, hostContext);
       return;
     }
     if (intent.type === 'indent') {
@@ -502,7 +516,7 @@ export class CanonicalEditor extends LitElement {
     }
     const written = writeMarkdownClipboard(event, serializeBlockSelection(document, selection));
     if (!written) return;
-    if (event.type === 'cut') this.replaceBlocks(selection, '', hostContext);
+    if (event.type === 'cut') this.deleteBlocks(selection, hostContext);
   };
 
   private onPaste = (event: ClipboardEvent) => {
