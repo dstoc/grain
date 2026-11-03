@@ -1,13 +1,40 @@
 import * as Y from 'yjs';
 
-import type { NodeId } from '../semantic/types.js';
+import type { NodeId, NodeKind } from '../semantic/types.js';
+import type { Span } from './types.js';
 
 export const META = 'meta';
 export const NODES = 'nodes';
 export const TAPES = 'tapes';
 export const TAPE_REVISIONS = 'tapeRevisions';
 export const SESSION_WATERMARKS = 'sessionWatermarks';
+export const SCHEMA_VERSION = 2;
+export const NORMALIZATION_VERSION = 1;
 export const NODE_FIELDS = ['kind', 'spans', 'marker', 'checked', 'info'] as const;
+
+export const NODE_KINDS = new Set<NodeKind>([
+  'document',
+  'paragraph',
+  'section',
+  'code-block',
+  'list',
+  'list-item',
+  'block-quote',
+]);
+export const INLINE_KINDS = new Set<NodeKind>(['paragraph', 'section', 'code-block']);
+export const CONTAINER_KINDS = new Set<NodeKind>([
+  'document',
+  'section',
+  'list-item',
+  'block-quote',
+]);
+export const BLOCK_KINDS = new Set<NodeKind>([
+  'paragraph',
+  'section',
+  'code-block',
+  'list',
+  'block-quote',
+]);
 
 export type NodeDataField = (typeof NODE_FIELDS)[number];
 export type CanonicalRecord = Y.Map<unknown>;
@@ -85,6 +112,30 @@ export function readSchemaCell<T>(
 
 export function readSchemaField<T>(record: CanonicalRecord, field: NodeDataField | 'children'): T {
   return readSchemaCell<T>(record, field).value;
+}
+
+export function nodeCell<T = unknown>(
+  record: CanonicalRecord,
+  field: NodeDataField | 'children',
+): T {
+  return readSchemaField<T>(record, field);
+}
+
+export function readSpans(record: CanonicalRecord): readonly Span[] {
+  const value = nodeCell(record, 'spans');
+  assert(Array.isArray(value), 'spans cell must contain an array');
+  return value as readonly Span[];
+}
+
+export function nodeKind(record: CanonicalRecord): NodeKind {
+  const kind = nodeCell(record, 'kind');
+  assert(typeof kind === 'string' && NODE_KINDS.has(kind as NodeKind), 'node kind is illegal');
+  return kind as NodeKind;
+}
+
+export function isAllowedChild(parent: NodeKind, child: NodeKind): boolean {
+  if (parent === 'list') return child === 'list-item';
+  return CONTAINER_KINDS.has(parent) && BLOCK_KINDS.has(child);
 }
 
 function assert(condition: unknown, message: string): asserts condition {

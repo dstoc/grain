@@ -60,13 +60,9 @@ import {
   type NativeTextHistoryCapture,
 } from '../canonical-history-capture.js';
 
-import {
-  CanonicalDocument,
-  assertRetainedResources,
-  assertTapeRevisions,
-  canonicalWriterAccess,
-  validateCanonicalState,
-} from './document.js';
+import { CanonicalDocument, canonicalWriterAccess } from './document.js';
+import { validateCanonicalState } from './validation.js';
+import { assertRetainedResources, assertTapeRevisions } from './accepted-update.js';
 import type { Span, TapeId } from './types.js';
 import type { NodeId, NodeKind, TextEdit } from '../semantic/types.js';
 import type {
@@ -85,7 +81,6 @@ import type {
   PendingHistoryCommit,
   ReadPrecondition,
   RejectionReason,
-  StructuralBirth,
   StructuralPatch,
   WriterEvent,
   WriterListener,
@@ -138,10 +133,7 @@ import { normalizeSemanticTree as normalizeCanonicalDraft } from '../semantic/no
 import { classifyInlineInput, parseBlocks } from '../block-parser/api.js';
 import type { ParserConversionPlan } from '../block-parser/api.js';
 import { applyParserConversion } from '../canonical-promotion.js';
-import {
-  createCanonicalTextAnchorFromIndexes,
-  type CanonicalTextAnchor,
-} from '../canonical-selection.js';
+import { createCanonicalTextAnchorFromIndexes } from '../canonical-selection.js';
 
 const INLINE_KINDS = new Set<NodeKind>(['paragraph', 'section', 'code-block']);
 
