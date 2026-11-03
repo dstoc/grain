@@ -4,6 +4,7 @@ import { userEvent } from 'vitest/browser';
 import { CanonicalWriter } from '../markdown/canonical-actions.js';
 import type { AcceptedAction, ActionRequest } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, CanonicalNode } from '../markdown/canonical-model.js';
+import type { HostContext } from '../markdown/host-context.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
 import { asInlineMarkdownNodeView } from '../markdown/node-view.js';
 import { insertParagraph } from './commands/insert-paragraph.js';
@@ -82,6 +83,165 @@ describe('CanonicalEditor in Chromium', () => {
     await editor!.shadowRoot!.querySelector('md-block-render')!.updateComplete;
     await nextTask();
   }
+
+  async function settle(mounted: Awaited<ReturnType<typeof mount>>) {
+    await nextTask();
+    await mounted.editor.updateComplete;
+    await mounted.renderer.updateComplete;
+    await Promise.all(
+      [...mounted.renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].map(
+        (inline) => inline.updateComplete,
+      ),
+    );
+    await nextTask();
+  }
+
+  function inlineFor(renderer: HTMLElement, node: CanonicalNode): MarkdownInline {
+    const inline = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
+      (candidate) =>
+        (candidate.nodeView as unknown as CanonicalNode | undefined)?.sharedId === node.sharedId,
+    );
+    if (!inline) throw new Error(`no inline renderer for ${node.sharedId}`);
+    return inline;
+  }
+
+  function expectBlockSelection(
+    context: HostContext,
+    anchor: CanonicalNode,
+    focus: CanonicalNode,
+    selected: readonly CanonicalNode[],
+  ) {
+    expect((context.selectionAnchor as unknown as CanonicalNode | undefined)?.sharedId).toBe(
+      anchor.sharedId,
+    );
+    expect((context.selectionFocus as unknown as CanonicalNode | undefined)?.sharedId).toBe(
+      focus.sharedId,
+    );
+    expect(
+      [...context.selection].map((node) => (node as unknown as CanonicalNode).sharedId).sort(),
+    ).toEqual(selected.map((node) => node.sharedId).sort());
+    expect(
+      [...context.selection].every((node) => (node as unknown as CanonicalNode).connected),
+    ).toBe(true);
+  }
+
+  async function shiftArrow(
+    key: 'ArrowUp' | 'ArrowDown',
+    mounted: Awaited<ReturnType<typeof mount>>,
+  ) {
+    await userEvent.keyboard(`{Shift>}{${key}}{/Shift}`);
+    await settle(mounted);
+  }
+
+  test.each(['backward', 'forward'] as const)(
+    'Shift+Arrow %s initializes an inclusive range and preserves its anchor while extending and contracting',
+    async (direction) => {
+      const mounted = await mount('Alpha\n\nBeta\n\nGamma\n\nDelta');
+      const [alpha, beta, gamma, delta] = document!.root.children as CanonicalNode[];
+      const context = mounted.renderer.hostContext;
+      const start = direction === 'backward' ? gamma! : beta!;
+      const startInline = inlineFor(mounted.renderer, start);
+      const offset = direction === 'backward' ? 0 : (start.content ?? '').length;
+      startInline.focus();
+      startInline.setSelectionOffsets(offset, offset);
+
+      const initialKey = direction === 'backward' ? 'ArrowUp' : 'ArrowDown';
+      const oppositeKey = direction === 'backward' ? 'ArrowDown' : 'ArrowUp';
+      await shiftArrow(initialKey, mounted);
+      expectBlockSelection(
+        context,
+        direction === 'backward' ? gamma! : beta!,
+        direction === 'backward' ? beta! : gamma!,
+        [beta!, gamma!],
+      );
+      expect(inlineFor(mounted.renderer, beta!).selected).toBe(true);
+      expect(inlineFor(mounted.renderer, gamma!).selected).toBe(true);
+
+      await shiftArrow(initialKey, mounted);
+      expectBlockSelection(
+        context,
+        direction === 'backward' ? gamma! : beta!,
+        direction === 'backward' ? alpha! : delta!,
+        direction === 'backward' ? [alpha!, beta!, gamma!] : [beta!, gamma!, delta!],
+      );
+
+      await shiftArrow(oppositeKey, mounted);
+      expectBlockSelection(
+        context,
+        direction === 'backward' ? gamma! : beta!,
+        direction === 'backward' ? beta! : gamma!,
+        [beta!, gamma!],
+      );
+
+      await shiftArrow(oppositeKey, mounted);
+      expectBlockSelection(
+        context,
+        direction === 'backward' ? gamma! : beta!,
+        direction === 'backward' ? gamma! : beta!,
+        [direction === 'backward' ? gamma! : beta!],
+      );
+
+      await shiftArrow(initialKey, mounted);
+      expectBlockSelection(
+        context,
+        direction === 'backward' ? gamma! : beta!,
+        direction === 'backward' ? beta! : gamma!,
+        [beta!, gamma!],
+      );
+    },
+  );
+
+  test('Shift+Up selection deletes both blocks and undo and redo restore the range and result', async () => {
+    const mounted = await mount('Alpha\n\nBeta\n\nGamma');
+    const [alpha, beta, gamma] = document!.root.children as CanonicalNode[];
+    const context = mounted.renderer.hostContext;
+    const betaInline = inlineFor(mounted.renderer, beta!);
+    betaInline.focus();
+    betaInline.setSelectionOffsets(2, 2);
+    await shiftArrow('ArrowUp', mounted);
+    expectBlockSelection(context, beta!, alpha!, [alpha!, beta!]);
+
+    await userEvent.keyboard('{Backspace}');
+    await settle(mounted);
+    expect(document!.root.children.map((node) => node.content)).toEqual(['', 'Gamma']);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle(mounted);
+    expect(document!.root.children.map((node) => node.content)).toEqual(['Alpha', 'Beta', 'Gamma']);
+    expectBlockSelection(context, beta!, alpha!, [alpha!, beta!]);
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle(mounted);
+    expect(document!.root.children.map((node) => node.content)).toEqual(['', 'Gamma']);
+    expect(context.selection.size).toBe(0);
+    expect(gamma!.connected).toBe(true);
+  });
+
+  test('Shift+Up selection replacement is undone and redone with the correct block range', async () => {
+    const mounted = await mount('Alpha\n\nBeta\n\nGamma');
+    const [alpha, beta, gamma] = document!.root.children as CanonicalNode[];
+    const context = mounted.renderer.hostContext;
+    const betaInline = inlineFor(mounted.renderer, beta!);
+    betaInline.focus();
+    betaInline.setSelectionOffsets(2, 2);
+    await shiftArrow('ArrowUp', mounted);
+    expectBlockSelection(context, beta!, alpha!, [alpha!, beta!]);
+
+    await userEvent.keyboard('X');
+    await settle(mounted);
+    expect(document!.root.children.map((node) => node.content)).toEqual(['X', 'Gamma']);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle(mounted);
+    expect(document!.root.children.map((node) => node.content)).toEqual(['Alpha', 'Beta', 'Gamma']);
+    expectBlockSelection(context, beta!, alpha!, [alpha!, beta!]);
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle(mounted);
+    expect(document!.root.children.map((node) => node.content)).toEqual(['X', 'Gamma']);
+    expect(context.selection.size).toBe(0);
+    expect(gamma!.connected).toBe(true);
+  });
 
   test('routes browser text, undo and redo through the canonical session coordinator', async () => {
     const mounted = await mount('alpha');

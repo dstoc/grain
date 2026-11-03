@@ -328,7 +328,13 @@ export class SelectionController {
     if (!next) return;
     const offset = direction === 'backward' ? (next.content ?? '').length : 0;
     if (event.shiftKey) {
-      context.extendSelection(asInlineMarkdownNodeView(node), asInlineMarkdownNodeView(next));
+      const from = asInlineMarkdownNodeView(node);
+      const to = asInlineMarkdownNodeView(next);
+      if (context.selectionAnchor && context.selectionFocus) {
+        context.extendSelection(from, to);
+      } else {
+        context.setSelection(from, to);
+      }
     } else {
       context.clearSelection();
     }
