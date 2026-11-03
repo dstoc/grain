@@ -1215,6 +1215,7 @@ export class CanonicalWriter {
             receipt.focus.selection.focus,
             this.indexes,
           ),
+          ...(receipt.focus.selection.kind ? { kind: receipt.focus.selection.kind } : {}),
         })
       : undefined;
     const snapshot = captureTouchedResources(this.state, EMPTY_PLAN, changedTapeIds);
@@ -1514,6 +1515,7 @@ export class CanonicalWriter {
               receipt.focus.selection.focus,
               this.indexes,
             ),
+            ...(receipt.focus.selection.kind ? { kind: receipt.focus.selection.kind } : {}),
           })
         : undefined;
       const snapshot = captureTouchedResources(this.state, plan, finalChangedTapes);

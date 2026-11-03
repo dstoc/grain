@@ -225,6 +225,7 @@ export class SelectionController {
     restoreAsBlockSelection = false,
     preserveBlockSelection = false,
     hostContext?: HostContext,
+    restoreNativeTextSelection = false,
   ): Promise<void> {
     const document = this.host.document();
     const rootRenderer = this.host.renderer();
@@ -288,6 +289,8 @@ export class SelectionController {
         await inline.updateComplete;
         if (!this.session.isCurrentGeneration(generation)) return;
         inline.focus();
+        if (restoreNativeTextSelection) await inline.maybeSetFocus();
+        if (!this.session.isCurrentGeneration(generation)) return;
         inline.setSelectionOffsets(start.offset, end.offset);
         this.lastNativeSelection = {
           nodeId: target.sharedId,
@@ -360,6 +363,8 @@ export class SelectionController {
       await inline.updateComplete;
       if (!this.session.isCurrentGeneration(generation)) return;
       inline.focus();
+      if (restoreNativeTextSelection) await inline.maybeSetFocus();
+      if (!this.session.isCurrentGeneration(generation)) return;
       inline.setSelectionOffsets(
         focusParentHostNeighbor ? focusOffset : start.offset,
         focusParentHostNeighbor ? focusOffset : end.offset,

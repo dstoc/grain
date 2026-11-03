@@ -3,10 +3,11 @@ import { userEvent, cdp } from 'vitest/browser';
 import { html } from 'lit';
 import { CanonicalWriter, type ActionRequest } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, type CanonicalNode } from '../markdown/canonical-model.js';
+import { parseBlocks } from '../markdown/block-parser/api.js';
 import { serializeToString } from '../markdown/block-serializer.js';
 import type { HostContext } from '../markdown/host-context.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
-import type { DocumentNode } from '../markdown/node.js';
+import type { DocumentNode, MarkdownNode } from '../markdown/node.js';
 import type { MarkdownRenderDelegate } from '../markdown/render-delegate.js';
 import { CanonicalEditor } from './canonical-editor.js';
 import { insertParagraph } from './commands/insert-paragraph.js';
@@ -76,6 +77,37 @@ describe('M6 review browser contracts', () => {
     });
     inline.dispatchEvent(event);
     expect(event.defaultPrevented).toBe(true);
+  }
+  function dispatchPlainTextPaste(inline: MarkdownInline, text: string) {
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', text);
+    const event = new ClipboardEvent('paste', {
+      bubbles: true,
+      composed: true,
+      cancelable: true,
+      clipboardData,
+    });
+    inline.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  }
+  async function writeNativePlainText(text: string) {
+    const source = window.document.createElement('textarea');
+    source.value = text;
+    window.document.body.append(source);
+    source.focus();
+    source.select();
+    await userEvent.keyboard('{Control>}c{/Control}');
+    source.remove();
+  }
+  function findCodeBlock(
+    node: MarkdownNode,
+  ): Extract<MarkdownNode, { type: 'code-block' }> | undefined {
+    if (node.type === 'code-block') return node;
+    for (const child of node.children ?? []) {
+      const found = findCodeBlock(child);
+      if (found) return found;
+    }
+    return undefined;
   }
   function expectBlockSelection(
     context: HostContext,
@@ -981,6 +1013,291 @@ describe('M6 review browser contracts', () => {
     await userEvent.keyboard('{Control>}z{/Control}');
     await settle();
     expect(model.root.children[0]!.content).toBe('hello world');
+  });
+  test('trusted Ctrl+V preserves plain-text line breaks in code and restores its caret history', async () => {
+    const inline = await mountTree({
+      type: 'document',
+      children: [{ type: 'code-block', info: 'js', content: 'abc' }],
+    });
+    const code = model.root.children[0]!;
+    await writeNativePlainText('One\nTwo');
+    inline.focus();
+    inline.setSelectionOffsets(3, 3);
+
+    let observedPaste: { trusted: boolean; types: string[]; text: string } | undefined;
+    inline.addEventListener(
+      'paste',
+      (event) => {
+        const clipboard = (event as ClipboardEvent).clipboardData!;
+        observedPaste = {
+          trusted: event.isTrusted,
+          types: [...clipboard.types],
+          text: clipboard.getData('text/plain'),
+        };
+      },
+      { once: true },
+    );
+    await userEvent.keyboard('{Control>}v{/Control}');
+    await settle();
+
+    expect(observedPaste).toEqual({ trusted: true, types: ['text/plain'], text: 'One\nTwo' });
+    expect(code.content).toBe('abcOne\nTwo');
+    expect(inline.textContent).toBe('abcOne\nTwo');
+    expect(inline.getTextSelection()).toEqual({ anchor: 10, focus: 10 });
+    const serialized = serializeToString(model.exportMarkdownTree());
+    expect(findCodeBlock(parseBlocks(serialized).node)?.content).toBe('abcOne\nTwo');
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(code.content).toBe('abc');
+    expect(inline.getTextSelection()).toEqual({ anchor: 3, focus: 3 });
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(code.content).toBe('abcOne\nTwo');
+    expect(inline.getTextSelection()).toEqual({ anchor: 10, focus: 10 });
+  });
+  test.each([
+    ['collapsed', 3, 3, { anchor: 9, focus: 9 }, 'REMOTEabc!DEFtail'],
+    ['reverse', 6, 3, { anchor: 12, focus: 9 }, 'REMOTEabc!tail'],
+  ] as const)(
+    'trusted code paste undo resolves the %s selection after a remote prepend',
+    async (_label, anchor, focus, expectedSelection, expectedAfterTyping) => {
+      const inline = await mountTree({
+        type: 'document',
+        children: [{ type: 'code-block', info: 'js', content: 'abcDEFtail' }],
+      });
+      const code = model.root.children[0]!;
+      await writeNativePlainText('One\nTwo');
+      inline.focus();
+      inline.setSelectionOffsets(anchor, focus);
+
+      let trustedPaste = false;
+      inline.addEventListener(
+        'paste',
+        (event) => {
+          trustedPaste = event.isTrusted;
+        },
+        { once: true },
+      );
+      await userEvent.keyboard('{Control>}v{/Control}');
+      await settle();
+      expect(trustedPaste).toBe(true);
+      expect(code.content).toBe(anchor === focus ? 'abcOne\nTwoDEFtail' : 'abcOne\nTwotail');
+
+      await remote((_replica, other) =>
+        other.prepareTextInput(
+          code.sharedId,
+          { from: 0, to: 0, insert: 'REMOTE' },
+          { actionId: 'remote-prefix', sessionId: 'remote' },
+        ),
+      );
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+
+      expect(code.content).toBe('REMOTEabcDEFtail');
+      expect(inline.getTextSelection()).toEqual(expectedSelection);
+      await userEvent.keyboard('!');
+      await settle();
+      expect(code.content).toBe(expectedAfterTyping);
+    },
+  );
+  test.each([
+    ['CRLF, blank lines and whitespace', 'One\r\nTwo\n\n  Three\t '],
+    ['lone CR and trailing whitespace', 'One\rTwo  \t'],
+    ['backticks requiring a longer fence', 'One\n```js\nTwo'],
+  ] as const)('code paste preserves %s through serialization and reparse', async (_label, text) => {
+    const inline = await mountTree({
+      type: 'document',
+      children: [{ type: 'code-block', info: 'js', content: 'abc' }],
+    });
+    const code = model.root.children[0]!;
+    inline.focus();
+    inline.setSelectionOffsets(3, 3);
+    dispatchPlainTextPaste(inline, text);
+    await settle();
+
+    const expected = `abc${text}`;
+    expect(code.content).toBe(expected);
+    expect(inline.textContent).toBe(expected);
+    expect(inline.getTextSelection()).toEqual({
+      anchor: expected.length,
+      focus: expected.length,
+    });
+    const serialized = serializeToString(model.exportMarkdownTree());
+    expect(findCodeBlock(parseBlocks(serialized).node)?.content).toBe(expected);
+    if (text.includes('```')) expect(serialized.startsWith('````js\n')).toBe(true);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(code.content).toBe('abc');
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(code.content).toBe(expected);
+    expect(inline.getTextSelection()).toEqual({
+      anchor: expected.length,
+      focus: expected.length,
+    });
+  });
+  test.each([
+    ['forward', 3, 6],
+    ['reverse', 6, 3],
+  ] as const)(
+    'code paste keeps the suffix seam and restores a %s native selection on undo',
+    async (_direction, anchor, focus) => {
+      const inline = await mountTree({
+        type: 'document',
+        children: [{ type: 'code-block', info: 'js', content: 'abcDEFtail' }],
+      });
+      const code = model.root.children[0]!;
+      await writeNativePlainText('One\nTwo');
+      inline.focus();
+      inline.setSelectionOffsets(anchor, focus);
+      let selectionAtPaste: { anchor: number; focus: number } | undefined;
+      inline.addEventListener(
+        'paste',
+        () => {
+          selectionAtPaste = inline.getTextSelection();
+        },
+        { once: true },
+      );
+      await userEvent.keyboard('{Control>}v{/Control}');
+      await settle();
+
+      expect(selectionAtPaste).toEqual({ anchor, focus });
+      expect(code.content).toBe('abcOne\nTwotail');
+      expect(inline.getTextSelection()).toEqual({ anchor: 10, focus: 10 });
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(code.content).toBe('abcDEFtail');
+      expect(inline.getTextSelection()).toEqual({ anchor, focus });
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle();
+      expect(code.content).toBe('abcOne\nTwotail');
+      expect(inline.getTextSelection()).toEqual({ anchor: 10, focus: 10 });
+    },
+  );
+  test('insertReplacementText preserves code newlines and restores its native selection on undo', async () => {
+    const inline = await mountTree({
+      type: 'document',
+      children: [{ type: 'code-block', info: 'js', content: 'abcDEFtail' }],
+    });
+    const code = model.root.children[0]!;
+    inline.focus();
+    inline.setSelectionOffsets(6, 3);
+    const clipboardData = new DataTransfer();
+    clipboardData.setData('text/plain', 'One\nTwo');
+    const event = new InputEvent('beforeinput', {
+      inputType: 'insertReplacementText',
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: clipboardData,
+    });
+    inline.dispatchEvent(event);
+    await settle();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(code.content).toBe('abcOne\nTwotail');
+    expect(inline.getTextSelection()).toEqual({ anchor: 10, focus: 10 });
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(code.content).toBe('abcDEFtail');
+    expect(inline.getTextSelection()).toEqual({ anchor: 6, focus: 3 });
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(code.content).toBe('abcOne\nTwotail');
+    expect(inline.getTextSelection()).toEqual({ anchor: 10, focus: 10 });
+  });
+  const nestedCodeTrees: [string, DocumentNode][] = [
+    [
+      'list',
+      {
+        type: 'document',
+        children: [
+          {
+            type: 'list',
+            children: [
+              {
+                type: 'list-item',
+                marker: '- ',
+                children: [{ type: 'code-block', info: 'js', content: 'abc' }],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    [
+      'quote',
+      {
+        type: 'document',
+        children: [
+          {
+            type: 'block-quote',
+            marker: '>',
+            children: [{ type: 'code-block', info: 'js', content: 'abc' }],
+          },
+        ],
+      },
+    ],
+  ];
+  test.each(nestedCodeTrees)(
+    'nested %s code paste survives save and reparse',
+    async (_context, tree) => {
+      await mountTree(tree);
+      const codeInline = inlines().find((item) => item.nodeView?.type === 'code-block')!;
+      codeInline.focus();
+      codeInline.setSelectionOffsets(3, 3);
+      dispatchPlainTextPaste(codeInline, 'One\n\nTwo\t ');
+      await settle();
+
+      expect(codeInline.nodeView?.content).toBe('abcOne\n\nTwo\t ');
+      const serialized = serializeToString(model.exportMarkdownTree());
+      expect(findCodeBlock(parseBlocks(serialized).node)?.content).toBe('abcOne\n\nTwo\t ');
+      expect(model.validate()).toEqual({ valid: true, errors: [] });
+    },
+  );
+  test('code paste stays isolated from immediate typing before and after it', async () => {
+    const inline = await mountTree({
+      type: 'document',
+      children: [{ type: 'code-block', info: 'js', content: 'abc' }],
+    });
+    const code = model.root.children[0]!;
+    await writeNativePlainText('One\nTwo');
+    inline.focus();
+    inline.setSelectionOffsets(3, 3);
+    await userEvent.keyboard('!');
+    await settle();
+    expect(code.content).toBe('abc!');
+
+    inline.focus();
+    inline.setSelectionOffsets(4, 4);
+    await userEvent.keyboard('{Control>}v{/Control}');
+    await settle();
+    expect(code.content).toBe('abc!One\nTwo');
+    expect(inline.getTextSelection()).toEqual({ anchor: 11, focus: 11 });
+
+    await userEvent.keyboard('?');
+    await settle();
+    expect(code.content).toBe('abc!One\nTwo?');
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(code.content).toBe('abc!One\nTwo');
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(code.content).toBe('abc!');
+    expect(inline.getTextSelection()).toEqual({ anchor: 4, focus: 4 });
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(code.content).toBe('abc');
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(code.content).toBe('abc!');
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(code.content).toBe('abc!One\nTwo');
+    expect(inline.getTextSelection()).toEqual({ anchor: 11, focus: 11 });
   });
   test.each([
     ['supplementary character', 'a😀', 3, 3, 'a'],

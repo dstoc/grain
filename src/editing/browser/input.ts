@@ -75,10 +75,8 @@ export function translateInlineInput(
       break;
     case 'insertReplacementText':
     case 'insertFromPaste':
-      insert = (inputEvent.dataTransfer?.getData('text/plain') ?? inputEvent.data ?? '').replace(
-        /\n/g,
-        ' ',
-      );
+      insert = inputEvent.dataTransfer?.getData('text/plain') ?? inputEvent.data ?? '';
+      if (detail.node.type !== 'code-block') insert = insert.replace(/\n/g, ' ');
       break;
     case 'deleteByCut':
       insert = '';

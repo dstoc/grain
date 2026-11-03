@@ -65,7 +65,7 @@ export function copyActionFocus(value: unknown): ActionFocus | undefined {
   if (focus.selection !== undefined) {
     assert(
       Object.keys(focus.selection).every(
-        (key) => key === 'anchor' || key === 'focus' || key === 'restoreOnRedo',
+        (key) => key === 'anchor' || key === 'focus' || key === 'kind' || key === 'restoreOnRedo',
       ),
       'focus selection contains an unsupported field',
     );
@@ -77,9 +77,16 @@ export function copyActionFocus(value: unknown): ActionFocus | undefined {
         typeof focus.selection.restoreOnRedo === 'boolean',
       'focus selection redo flag is invalid',
     );
+    assert(
+      focus.selection.kind === undefined ||
+        focus.selection.kind === 'block' ||
+        focus.selection.kind === 'text',
+      'focus selection kind is invalid',
+    );
     selection = Object.freeze({
       anchor,
       focus: selectionFocus,
+      ...(focus.selection.kind ? { kind: focus.selection.kind } : {}),
       ...(focus.selection.restoreOnRedo ? { restoreOnRedo: true } : {}),
     });
   }

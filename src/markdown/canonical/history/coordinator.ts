@@ -16,7 +16,7 @@ import type {
 import { currentActive } from '../state-access.js';
 import type { TapeId } from '../types.js';
 import type { NativeTextHistoryCapture } from '../../canonical-history-capture.js';
-import type { ActionReceipt, CanonicalTextAnchor, StructuralPatch } from '../action-types.js';
+import type { ActionReceipt, CanonicalSelectionAnchors, StructuralPatch } from '../action-types.js';
 import type { NodeId } from '../../semantic/types.js';
 
 export interface HistorySelection {
@@ -73,10 +73,7 @@ export class CanonicalHistoryCoordinator {
     receipt: ActionReceipt,
     structuralPatch: StructuralPatch,
     focusAnchors?: ActionFocusAnchors,
-    selectionAnchors?: {
-      readonly anchor: CanonicalTextAnchor;
-      readonly focus: CanonicalTextAnchor;
-    },
+    selectionAnchors?: CanonicalSelectionAnchors,
   ): HistoryReservation {
     const session = this.getSession(sessionId);
     const current = session.current;
