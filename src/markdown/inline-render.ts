@@ -474,23 +474,20 @@ export class MarkdownInline extends LitElement {
   }
 
   private visualLine(direction: 'backward' | 'forward') {
-    const range = document.createRange();
-    range.selectNodeContents(this);
-    const rects = [...range.getClientRects()]
-      .filter((rect) => rect.width > 0 && rect.height > 0)
-      .sort((left, right) => left.top - right.top || left.left - right.left);
-    const lines: Array<{ top: number; bottom: number }> = [];
-    for (const rect of rects) {
-      const line = lines.at(-1);
-      if (line && rect.top < line.bottom) {
-        line.top = Math.min(line.top, rect.top);
-        line.bottom = Math.max(line.bottom, rect.bottom);
-      } else {
-        lines.push({ top: rect.top, bottom: rect.bottom });
-      }
+    const textNodes: Text[] = [];
+    const walker = document.createTreeWalker(this, NodeFilter.SHOW_TEXT);
+    let current: Node | null;
+    while ((current = walker.nextNode())) textNodes.push(current as Text);
+    if (direction === 'backward') textNodes.reverse();
+
+    for (const text of textNodes) {
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      const rects = [...range.getClientRects()].filter((rect) => rect.width > 0 && rect.height > 0);
+      const rect = direction === 'backward' ? rects.at(-1) : rects[0];
+      if (rect) return { top: rect.top, bottom: rect.bottom, y: (rect.top + rect.bottom) / 2 };
     }
-    const line = direction === 'backward' ? lines.at(-1) : lines[0];
-    return line ? { ...line, y: (line.top + line.bottom) / 2 } : undefined;
+    return undefined;
   }
 
   private shadowRoots(): ShadowRoot[] {

@@ -80,45 +80,34 @@ function caretRect(inline: MarkdownInline): DOMRect {
   return selection.getRangeAt(0).getBoundingClientRect();
 }
 
-function visualLines(inline: MarkdownInline) {
-  const range = document.createRange();
-  range.selectNodeContents(inline);
-  const rects = [...range.getClientRects()]
-    .filter((rect) => rect.width > 0 && rect.height > 0)
-    .sort((left, right) => left.top - right.top || left.left - right.left);
-  const lines: Array<{ top: number; bottom: number }> = [];
-  for (const rect of rects) {
-    const line = lines.at(-1);
-    if (line && rect.top < line.bottom) {
-      line.top = Math.min(line.top, rect.top);
-      line.bottom = Math.max(line.bottom, rect.bottom);
-    } else {
-      lines.push({ top: rect.top, bottom: rect.bottom });
-    }
-  }
-  return lines;
-}
-
-function nearestCaretDistance(inline: MarkdownInline, visualX: number, direction: 'up' | 'down') {
+function nearestCaretOnEdgeLine(inline: MarkdownInline, visualX: number, direction: 'up' | 'down') {
+  const saved = inline.getTextSelection();
   inline.focus();
-  const lines = visualLines(inline);
-  const line = direction === 'up' ? lines.at(-1) : lines[0];
-  if (!line) throw new Error(`no rendered ${direction} target line`);
-  const candidates: number[] = [];
+  const positions: Array<{ offset: number; x: number; y: number }> = [];
   for (let offset = 0; offset <= inline.nodeView!.content.length; offset++) {
     inline.setSelectionOffsets(offset, offset);
     const rect = caretRect(inline);
-    const centerY = rect.top + rect.height / 2;
-    if (
-      !(rect.x === 0 && rect.y === 0 && rect.height === 0) &&
-      centerY >= line.top - 1 &&
-      centerY <= line.bottom + 1
-    ) {
-      candidates.push(Math.abs(rect.x - visualX));
+    if (rect.height > 0 && !(rect.x === 0 && rect.y === 0 && rect.height === 0)) {
+      positions.push({ offset, x: rect.x, y: rect.top + rect.height / 2 });
     }
   }
-  if (!candidates.length) throw new Error(`no caret positions on target ${direction} line`);
-  return { distance: Math.min(...candidates), line, lineCount: lines.length };
+  if (saved) inline.setSelectionOffsets(saved.anchor, saved.focus);
+
+  if (!positions.length)
+    throw new Error(`no measurable caret positions in target ${direction} line`);
+  const lineY =
+    direction === 'up'
+      ? Math.max(...positions.map((point) => point.y))
+      : Math.min(...positions.map((point) => point.y));
+  const line = positions.filter((point) => Math.abs(point.y - lineY) <= 1);
+  if (!line.length) throw new Error(`no caret positions on target ${direction} line`);
+  const lineYs = positions.map((point) => point.y).sort((left, right) => left - right);
+  const lineCount = lineYs.filter((y, index) => index === 0 || y - lineYs[index - 1]! > 1).length;
+  const distance = Math.min(...line.map((point) => Math.abs(point.x - visualX)));
+  const nearestOffsets = line
+    .filter((point) => Math.abs(Math.abs(point.x - visualX) - distance) <= 0.01)
+    .map((point) => point.offset);
+  return { distance, line: { top: lineY - 1, bottom: lineY + 1 }, lineCount, nearestOffsets };
 }
 
 async function expectVerticalCrossing(options: {
@@ -141,7 +130,7 @@ async function expectVerticalCrossing(options: {
   await userEvent.keyboard(`{${edge}}`);
   await settle();
   const visualX = sourceInline.getCaretPosition().x;
-  const expected = nearestCaretDistance(targetInline, visualX, direction);
+  const expected = nearestCaretOnEdgeLine(targetInline, visualX, direction);
   if (wrapped) expect(expected.lineCount).toBeGreaterThan(1);
 
   sourceInline.focus();
@@ -157,6 +146,7 @@ async function expectVerticalCrossing(options: {
   expect(actualCenterY).toBeGreaterThanOrEqual(expected.line.top - 1);
   expect(actualCenterY).toBeLessThanOrEqual(expected.line.bottom + 1);
   expect(Math.abs(actualRect.x - visualX)).toBeLessThanOrEqual(expected.distance + 1);
+  expect(expected.nearestOffsets).toContain(selection.focus);
 
   const targetNode = targetInline.nodeView as CanonicalNode;
   const original = targetNode.content!;
@@ -204,6 +194,22 @@ test('uses proportional caret geometry on the first wrapped destination line', a
   });
 });
 
+test.each([
+  { direction: 'down' as const, edge: 'End' as const },
+  { direction: 'up' as const, edge: 'Home' as const },
+])(
+  'keeps the nearest x on the correct wrapped inline-code line moving $direction',
+  async ({ direction, edge }) =>
+    expectVerticalCrossing({
+      source: 'WWWWWW',
+      target: '`code text repeated here and again and again`',
+      edge,
+      direction,
+      width: 140,
+      wrapped: true,
+    }),
+);
+
 test('keeps rendered x when crossing into a differently indented nested list item', async () => {
   await mount('- parentwide\n  - child narrow', 280);
   const source = inlineWithText('parentwide');
@@ -212,7 +218,7 @@ test('keeps rendered x when crossing into a differently indented nested list ite
   await userEvent.keyboard('{End}');
   await settle();
   const visualX = source.getCaretPosition().x;
-  const expected = nearestCaretDistance(target, visualX, 'down');
+  const expected = nearestCaretOnEdgeLine(target, visualX, 'down');
   source.focus();
   await userEvent.keyboard('{End}');
   await userEvent.keyboard('{ArrowDown}');
@@ -220,6 +226,7 @@ test('keeps rendered x when crossing into a differently indented nested list ite
   expect(target.matches(':focus')).toBe(true);
   expect(target.getTextSelection()!.anchor).toBe(target.getTextSelection()!.focus);
   expect(Math.abs(caretRect(target).x - visualX)).toBeLessThanOrEqual(expected.distance + 1);
+  expect(expected.nearestOffsets).toContain(target.getTextSelection()!.focus);
 });
 
 test('keeps the existing edge fallback for an empty destination paragraph', async () => {
