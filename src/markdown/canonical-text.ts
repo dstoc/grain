@@ -1,17 +1,8 @@
 import * as Y from 'yjs';
 
 import type { BoundaryEmbed, Span, TapeId } from './canonical-model.js';
-
-export type TextAffinity = 'left' | 'right';
-
-export interface TextEdit {
-  readonly from: number;
-  readonly to: number;
-  readonly insert: string;
-  readonly affinity?: TextAffinity;
-  /** Select an otherwise empty span when a bookmark resolves to one explicitly. */
-  readonly spanIndex?: number;
-}
+import type { TextAffinity, TextEdit } from './semantic/types.js';
+export type { TextAffinity, TextEdit } from './semantic/types.js';
 
 export interface NativeTextRun {
   readonly tapeId: TapeId;

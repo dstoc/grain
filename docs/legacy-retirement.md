@@ -4,6 +4,14 @@ This ledger records the R0 compatibility boundary from the Grain Yjs refactor pr
 
 R0 establishes the baseline. It does not authorize broad deletion. Keep each candidate until its production consumers and test cases have a named disposition.
 
+## R1 extraction boundary
+
+R1 places neutral node and draft contracts, selection types, tracked queries, and the shared normalizer under `src/markdown/semantic/`. `canonical-actions.ts` keeps the supported writer surface and re-exports its existing action and receipt types from `canonical/action-types.ts`. The ordinary `DraftNode` no longer exposes canonical spans.
+
+`canonical/schema.ts` owns the shared schema readers. `canonical/indexes.ts` owns the accepted-state indexes. `canonical/plan/child-splices.ts` owns the pure child-list splice compiler. Semantic edits and parser helpers import neutral contracts directly; the parser still uses `MarkdownTree` until R4.
+
+Both draft backends now provide live node views, immutable child snapshots, strict detach, UTF-16 range checks, and draft-local move-only fragments. Parser cleanup uses the explicitly tolerant `detachSemanticNodeIfAttached` helper. The canonical backend retains lazy cell and tape dependency tracking.
+
 ## Import and parser contracts
 
 `package.json` declares the package `private` and has no `exports`, `main`, `module`, or `types` entry. Grain has no declared npm package import surface. The paths below are current direct source imports used by the demo host and repository consumers. Preserve their behavior during R0, but do not promise compatibility for arbitrary deep imports from external consumers.
@@ -13,7 +21,7 @@ R0 establishes the baseline. It does not authorize broad deletion. Keep each can
 | `src/markdown/block-parser/api.ts`    | `createBlockParser`, `parseBlocks`, `parseMarkdownTree`, `isLiteralParagraphInput`, `classifyInlineInput`, and parser types | The active host imports `createBlockParser` and `parseMarkdownTree`. Tests and preview flows use the other helpers. |
 | `src/markdown/inline-parser/index.ts` | `parse`, `parser`, and inline-tree types                                                                                    | `parse(text)` returns an `InlineTree`; `parser.parse` is the same function.                                         |
 | `src/markdown/canonical-model.ts`     | `CanonicalDocument`, `CanonicalNode`                                                                                        | The active host creates canonical documents and passes their nodes to the editor and renderer.                      |
-| `src/markdown/canonical-actions.ts`   | `CanonicalWriter`, `TreeDraft`, action and receipt types                                                                    | The active editor and host use the writer and draft contracts directly.                                             |
+| `src/markdown/canonical-actions.ts`   | `CanonicalWriter`, `TreeDraft`, action and receipt types                                                                    | The active editor and host use the writer directly. Supported draft and action types remain compatibility exports.  |
 | `src/markdown/block-serializer.ts`    | `serializeToString`                                                                                                         | The host serializes parser and canonical projections through this module.                                           |
 | `src/markdown/node.ts`                | `DocumentNode` and Markdown node types                                                                                      | The parser and host use these structural return types.                                                              |
 

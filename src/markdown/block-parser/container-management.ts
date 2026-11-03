@@ -39,7 +39,6 @@ export function syncQuoteStack(
     const quote = createSemanticNode(state, {
       type: 'block-quote',
       marker: '> ',
-      children: [],
     }) as BlockQuoteViewModelNode;
     placeSemanticNode(state, quote, parent);
     state.currentQuoteStack.push(quote);
@@ -66,7 +65,6 @@ export function ensureListContainer(
 
   const list = createSemanticNode(state, {
     type: 'list',
-    children: [],
   }) as ListViewModelNode;
   placeSemanticNode(state, list, parent);
   state.currentList = list;

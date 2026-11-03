@@ -9,7 +9,7 @@ import {
 import {
   createSemanticNode,
   currentSectionContainer,
-  detachSemanticNode,
+  detachSemanticNodeIfAttached,
   placeSemanticNode,
 } from '../utils.js';
 import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from '../cleanup.js';
@@ -58,12 +58,11 @@ export function promoteParagraphToSection(
     type: 'section',
     marker: '#'.repeat(level),
     content: paragraph.content,
-    children: [],
   }) as SectionViewModelNode;
   placeSemanticNode(state, section, container, nextSibling);
   const pieces = state.inlinePieces.get(paragraph);
   if (pieces) state.inlinePieces.set(section, pieces);
-  detachSemanticNode(state, paragraph);
+  detachSemanticNodeIfAttached(state, paragraph);
   state.inlinePieces.delete(paragraph);
   state.sectionStack.push(section);
   state.sawContent = true;
@@ -94,7 +93,6 @@ export function openSection(
     type: 'section',
     marker: '#'.repeat(level),
     content,
-    children: [],
   }) as SectionViewModelNode;
   placeSemanticNode(state, section, parent);
   if (mapped) state.inlinePieces.set(section, mapped.pieces);

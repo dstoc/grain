@@ -1,24 +1,14 @@
-import type { ActionFocus, Bookmark, TreeDraft } from '../markdown/canonical-actions.js';
-import type { NodeSpec } from '../markdown/canonical-actions.js';
-import type { NodeId, NodeKind } from '../markdown/canonical-model.js';
-import { isInlineNode, type MarkdownNode } from '../markdown/node.js';
+import type { TreeDraft } from '../markdown/semantic/draft.js';
+import type { CreateNodeSpec, NodeId } from '../markdown/semantic/types.js';
+import { isInlineNodeKind } from '../markdown/semantic/types.js';
+import type { EditFocus, TextPoint } from '../markdown/semantic/selection.js';
+import {
+  nearestAncestor,
+  requireInline as inline,
+  walkSemanticTree as walk,
+} from '../markdown/semantic/queries.js';
+import type { MarkdownNode } from '../markdown/node.js';
 import { parseBlocks } from '../markdown/block-parser/api.js';
-
-const INLINE_KINDS = new Set<NodeKind>(['paragraph', 'section', 'code-block']);
-
-function walk(draft: TreeDraft, root: NodeId): NodeId[] {
-  const result: NodeId[] = [];
-  const pending = [root];
-  const seen = new Set<NodeId>();
-  while (pending.length) {
-    const id = pending.pop()!;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    result.push(id);
-    pending.push(...draft.node(id).children.toReversed());
-  }
-  return result;
-}
 
 function parentOf(draft: TreeDraft, root: NodeId, child: NodeId): NodeId | undefined {
   void root;
@@ -48,42 +38,19 @@ function placeBefore(
   draft.place(id, parent, before);
 }
 
-function inline(draft: TreeDraft, id: NodeId) {
-  const node = draft.node(id);
-  if (!INLINE_KINDS.has(node.type) || node.content === undefined)
-    throw new Error(`${node.type} is not an inline node`);
-  return node;
-}
-
 function focus(
   draft: TreeDraft,
   nodeId: NodeId,
   offset: number,
   affinity: 'left' | 'right' = 'right',
 ) {
-  const content = inline(draft, nodeId).content ?? '';
+  const content = inline(draft, nodeId).content;
   const clamped = Math.max(0, Math.min(content.length, offset));
   return draft.bookmark(nodeId, clamped, affinity);
 }
 
-function focusResult(start: Bookmark | undefined, end: Bookmark | undefined): ActionFocus {
+function focusResult(start: TextPoint | undefined, end: TextPoint | undefined): EditFocus {
   return Object.freeze({ ...(start ? { start } : {}), ...(end ? { end } : {}) });
-}
-
-function nearestAncestor(
-  draft: TreeDraft,
-  root: NodeId,
-  start: NodeId,
-  types: readonly NodeKind[],
-): NodeId | undefined {
-  let current = start;
-  while (current !== root) {
-    const parent = parentOf(draft, root, current);
-    if (!parent) return undefined;
-    if (types.includes(draft.node(parent).type)) return parent;
-    current = parent;
-  }
-  return undefined;
 }
 
 function descendantsAfter(
@@ -390,7 +357,7 @@ export function insertParagraph(
   nodeId: NodeId,
   start: number,
   end = start,
-): ActionFocus | undefined {
+): EditFocus | undefined {
   const node = inline(draft, nodeId);
   const length = node.content!.length;
   if (
@@ -453,7 +420,7 @@ export function insertLineBreak(
   nodeId: NodeId,
   start: number,
   end = start,
-): ActionFocus | undefined {
+): EditFocus | undefined {
   const node = inline(draft, nodeId);
   if (node.type !== 'code-block') {
     const result = splitSiblingParagraph(draft, root, nodeId, start, start);
@@ -481,7 +448,7 @@ export function insertLineBreak(
 }
 
 function previousInline(draft: TreeDraft, root: NodeId, nodeId: NodeId): NodeId | undefined {
-  const editable = walk(draft, root).filter((id) => INLINE_KINDS.has(draft.node(id).type));
+  const editable = walk(draft, root).filter((id) => isInlineNodeKind(draft.node(id).type));
   const index = editable.indexOf(nodeId);
   return index > 0 ? editable[index - 1] : undefined;
 }
@@ -491,7 +458,7 @@ function previousInlineWithin(
   containerId: NodeId,
   nodeId: NodeId,
 ): NodeId | undefined {
-  const editable = walk(draft, containerId).filter((id) => INLINE_KINDS.has(draft.node(id).type));
+  const editable = walk(draft, containerId).filter((id) => isInlineNodeKind(draft.node(id).type));
   const index = editable.indexOf(nodeId);
   return index > 0 ? editable[index - 1] : undefined;
 }
@@ -522,7 +489,7 @@ export function deleteContentBackwards(
   draft: TreeDraft,
   root: NodeId,
   nodeId: NodeId,
-): ActionFocus | undefined {
+): EditFocus | undefined {
   const node = inline(draft, nodeId);
   const startBookmark = focus(draft, nodeId, 0, 'left');
 
@@ -596,7 +563,7 @@ export function editIndent(
   nodeId: NodeId,
   mode: 'indent' | 'unindent',
   selection: readonly NodeId[] = [],
-): ActionFocus | undefined {
+): EditFocus | undefined {
   const target = selection.length ? selection : [nodeId];
   const start = focus(draft, nodeId, 0, 'left');
   for (const id of target) {
@@ -611,7 +578,7 @@ export function wrapInline(
   root: NodeId,
   nodeId: NodeId,
   wrapper: 'block-quote' | 'list-item',
-): ActionFocus | undefined {
+): EditFocus | undefined {
   const node = inline(draft, nodeId);
   const start = focus(draft, nodeId, 0, 'left');
   const parent = parentOf(draft, root, nodeId);
@@ -633,7 +600,7 @@ export function wrapInline(
 function documentOrderSelection(draft: TreeDraft, root: NodeId, selection: Iterable<NodeId>) {
   const selected = new Set(selection);
   return walk(draft, root).filter(
-    (id) => selected.has(id) && INLINE_KINDS.has(draft.node(id).type),
+    (id) => selected.has(id) && isInlineNodeKind(draft.node(id).type),
   );
 }
 
@@ -642,24 +609,35 @@ export function replaceSelectedBlocks(
   root: NodeId,
   selection: Iterable<NodeId>,
   text: string,
-): ActionFocus | undefined {
+): EditFocus | undefined {
   const [first, ...rest] = documentOrderSelection(draft, root, selection);
   if (!first) return undefined;
   const firstNode = inline(draft, first);
   const start = focus(draft, first, 0, 'left');
-  draft.spliceText(first, { from: 0, to: firstNode.content!.length, insert: text });
+  draft.spliceText(first, { from: 0, to: firstNode.content.length, insert: text });
   for (const id of rest) removeNodePreservingChildren(draft, root, id);
   return focusResult(start, focus(draft, first, text.length));
 }
 
 function createParsedNode(draft: TreeDraft, node: MarkdownNode): NodeId {
-  const spec: NodeSpec = {
-    type: node.type,
-    ...(isInlineNode(node) ? { content: node.content } : {}),
-    ...('marker' in node ? { marker: node.marker } : {}),
-    ...(node.type === 'list-item' ? { checked: node.checked ?? null } : {}),
-    ...(node.type === 'code-block' ? { info: node.info } : {}),
-  };
+  const spec: CreateNodeSpec = (() => {
+    switch (node.type) {
+      case 'document':
+        throw new Error('a semantic draft cannot create another root');
+      case 'paragraph':
+        return { type: 'paragraph', content: node.content };
+      case 'section':
+        return { type: 'section', content: node.content, marker: node.marker };
+      case 'code-block':
+        return { type: 'code-block', content: node.content, info: node.info };
+      case 'list':
+        return { type: 'list' };
+      case 'list-item':
+        return { type: 'list-item', marker: node.marker, checked: node.checked ?? null };
+      case 'block-quote':
+        return { type: 'block-quote', marker: node.marker };
+    }
+  })();
   const id = draft.create(spec);
   for (const child of node.children ?? []) {
     draft.place(createParsedNode(draft, child), id, null);
@@ -673,7 +651,7 @@ export function insertMarkdownBlocks(
   root: NodeId,
   contextId: NodeId,
   markdown: string,
-): ActionFocus | undefined {
+): EditFocus | undefined {
   const parsed = parseBlocks(markdown + '\n').node;
   let nodes = [...(parsed.children ?? [])];
   if (!nodes.length) return undefined;
@@ -721,7 +699,7 @@ export function insertMarkdownBlocks(
     const id = createParsedNode(draft, node);
     draft.place(id, parentId, before);
     for (const nested of walk(draft, id)) {
-      if (INLINE_KINDS.has(draft.node(nested).type)) lastInline = nested;
+      if (isInlineNodeKind(draft.node(nested).type)) lastInline = nested;
     }
   }
   if (attachAfter) draft.place(attachAfter.id, attachAfter.parent, attachAfter.before);
@@ -737,7 +715,7 @@ export function joinWithPrevious(
   draft: TreeDraft,
   root: NodeId,
   nodeId: NodeId,
-): ActionFocus | undefined {
+): EditFocus | undefined {
   inline(draft, nodeId);
   const target = previousInline(draft, root, nodeId);
   if (!target) return undefined;

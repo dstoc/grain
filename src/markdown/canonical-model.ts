@@ -1,5 +1,19 @@
 import * as Y from 'yjs';
 
+import {
+  META,
+  NODES,
+  NODE_FIELDS,
+  TAPES,
+  TAPE_REVISIONS,
+  readChildren,
+  readChildrenToken,
+  readNodeCell,
+  readSchemaField,
+  schemaMap,
+} from './canonical/schema.js';
+import type { NodeId, NodeKind } from './semantic/types.js';
+export type { NodeId, NodeKind } from './semantic/types.js';
 import type { DocumentNode, MarkdownNode } from './node.js';
 import { parser as inlineParser, type InlineTree, type InlineTreeNode } from './inline-parser.js';
 import { createSyntaxNode, createTree } from './parser-tree.js';
@@ -8,11 +22,9 @@ import { MarkdownTree } from './view-model.js';
 import { parseBlocks } from './block-parser/api.js';
 import { batch, signal } from '../signals.js';
 
-export type NodeId = string;
 export type TapeId = string;
 export type BoundaryId = string;
 export type ResourceToken = string;
-export type NodeKind = MarkdownNode['type'];
 
 export interface Cell<T> {
   readonly token: ResourceToken;
@@ -95,11 +107,6 @@ export interface ValidationResult {
 
 const SCHEMA_VERSION = 2;
 const NORMALIZATION_VERSION = 1;
-const META = 'meta';
-const NODES = 'nodes';
-const TAPES = 'tapes';
-const TAPE_REVISIONS = 'tapeRevisions';
-const NODE_FIELDS = ['kind', 'spans', 'marker', 'checked', 'info'] as const;
 const NODE_KINDS = new Set<NodeKind>([
   'document',
   'paragraph',
@@ -227,36 +234,15 @@ function cell<T extends JsonValue>(token: ResourceToken, value: T): Cell<T> {
 }
 
 function cellValue<T>(record: RecordMap, field: (typeof NODE_FIELDS)[number]): Cell<T> {
-  const value = record.get(field);
-  assert(
-    value !== null && typeof value === 'object' && 'token' in value && 'value' in value,
-    `node field ${field} is not a cell`,
-  );
-  const item = value as Cell<T>;
-  assert(
-    typeof item.token === 'string' && item.token.length > 0,
-    `node field ${field} has an invalid token`,
-  );
-  return item;
+  return readNodeCell<T>(record, field) as Cell<T>;
 }
 
 function childrenToken(record: RecordMap): ResourceToken {
-  const children = record.get('children');
-  if (children instanceof Y.Array) {
-    const token = record.get('childrenToken');
-    assert(typeof token === 'string' && token.length > 0, 'children token is invalid');
-    return token;
-  }
-  const legacy = children as Cell<unknown> | undefined;
-  assert(
-    legacy !== null && typeof legacy === 'object' && typeof legacy.token === 'string',
-    'children cell is missing',
-  );
-  return legacy.token;
+  return readChildrenToken(record);
 }
 
 function ymap<T>(document: Y.Doc, name: string): Y.Map<T> {
-  return document.getMap(name) as Y.Map<T>;
+  return schemaMap<T>(document, name);
 }
 
 function yjsItemId(item: YjsItemLike): string {
@@ -532,26 +518,7 @@ function nodeCell<T = unknown>(
   record: RecordMap,
   field: (typeof NODE_FIELDS)[number] | 'children',
 ): T {
-  if (field === 'children') return readChildren(record) as T;
-  return cellValue<T>(record, field).value;
-}
-
-function readChildren(record: RecordMap): readonly NodeId[] {
-  const shared = record.get('children');
-  if (shared instanceof Y.Array) {
-    const value = shared.toArray();
-    assert(
-      value.every((id) => typeof id === 'string'),
-      'children array must contain node IDs',
-    );
-    return value;
-  }
-  const value = (shared as Cell<unknown> | undefined)?.value;
-  assert(
-    Array.isArray(value) && value.every((id) => typeof id === 'string'),
-    'children cell must contain node IDs',
-  );
-  return value as readonly NodeId[];
+  return readSchemaField<T>(record, field);
 }
 
 function addChildIds(target: Set<NodeId>, value: unknown): void {

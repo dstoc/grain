@@ -2,17 +2,10 @@ import * as Y from 'yjs';
 
 import { canonicalWriterAccess, CanonicalDocument, CanonicalNode } from './canonical-model.js';
 import type { NodeId, Span, TapeId } from './canonical-model.js';
-import type { Bookmark } from './canonical-actions.js';
+import type { Bookmark, CanonicalTextAnchor } from './canonical/action-types.js';
+export type { CanonicalTextAnchor } from './canonical/action-types.js';
 import { mapProjectedTextEdit, mapTextEdit } from './canonical-text.js';
 import type { ProjectedTextIndex } from './canonical-text.js';
-
-export interface CanonicalTextAnchor {
-  readonly bookmark: Bookmark;
-  readonly tapeId: TapeId;
-  readonly relativePosition: readonly number[];
-  readonly previousNodeId?: NodeId;
-  readonly nextNodeId?: NodeId;
-}
 
 interface IndexedSpan {
   readonly start: number;
