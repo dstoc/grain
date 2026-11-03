@@ -300,19 +300,24 @@ describe('M6 review browser contracts', () => {
       last!.sharedId,
     ]);
   });
-  test('block clipboard preserves Markdown structure', async () => {
+  test('block copy preserves Markdown structure', async () => {
     const inline = await mount('# title\n\n- child');
     inline.focus();
     inline.setSelectionOffsets(5, 5);
     await userEvent.keyboard('{Control>}a{/Control}{Control>}a{/Control}{Control>}a{/Control}');
     await settle();
     expect(renderer.hostContext.selection.size).toBe(2);
-    const destination = window.document.createElement('textarea');
-    window.document.body.append(destination);
-    await userEvent.keyboard('{Control>}c{/Control}');
-    destination.focus();
-    await userEvent.keyboard('{Control>}v{/Control}');
-    expect(destination.value).toBe('# title\n\n- child\n');
+    const clipboardData = new DataTransfer();
+    const copy = new ClipboardEvent('copy', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      clipboardData,
+    });
+    inline.dispatchEvent(copy);
+    expect(copy.defaultPrevented).toBe(true);
+    expect(clipboardData.getData('text/plain')).toBe('# title\n\n- child\n');
+    expect(clipboardData.getData('text/markdown')).toBe('# title\n\n- child\n');
   });
   test('Markdown clipboard paste constructs canonical block structure', async () => {
     const inline = await mount('target');
