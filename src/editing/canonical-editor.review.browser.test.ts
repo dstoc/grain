@@ -394,6 +394,165 @@ describe('M6 review browser contracts', () => {
     expect(clipboardData.getData('text/plain')).toBe('# title\n\n- child\n');
     expect(clipboardData.getData('text/markdown')).toBe('# title\n\n- child\n');
   });
+  test('trusted Ctrl+A expands nested list ancestors and deletes through undo and redo', async () => {
+    await mount('* 1\n  * 2\n    * 3');
+    const [one, two, three] = inlines().map((candidate) => candidate.nodeView as CanonicalNode);
+    const leaf = inlines().find((candidate) => candidate.nodeView?.content === '3')!;
+    const context = renderer.hostContext!;
+    const originalTree = model.exportMarkdownTree();
+
+    leaf.focus();
+    leaf.setSelectionOffsets(0, 0);
+    await userEvent.keyboard('{Control>}a{/Control}');
+    await settle();
+    expect(leaf.getTextSelection()).toEqual({ anchor: 0, focus: 1 });
+    expect(context.selection.size).toBe(0);
+
+    await userEvent.keyboard('{Control>}a{/Control}');
+    await settle();
+    expectBlockSelection(context, three!.sharedId, three!.sharedId, [three!.sharedId]);
+
+    await userEvent.keyboard('{Control>}a{/Control}');
+    await settle();
+    expectBlockSelection(context, two!.sharedId, three!.sharedId, [two!.sharedId, three!.sharedId]);
+
+    await userEvent.keyboard('{Control>}c{/Control}');
+    const destination = window.document.createElement('textarea');
+    window.document.body.append(destination);
+    destination.focus();
+    await userEvent.keyboard('{Control>}v{/Control}');
+    expect(destination.value).toBe('* 2\n  * 3\n');
+    destination.remove();
+
+    leaf.focus();
+    await userEvent.keyboard('{Backspace}');
+    await settle();
+    expect(inlines().map((candidate) => candidate.nodeView?.content)).toEqual(['1']);
+    expect(one!.connected).toBe(true);
+    expect(two!.connected).toBe(false);
+    expect(three!.connected).toBe(false);
+    expect(context.selection.size).toBe(0);
+    let focused = renderer.getInlineSelection().inline!;
+    expect((focused.nodeView as unknown as CanonicalNode).sharedId).toBe(one!.sharedId);
+    expect(focused.getTextSelection()).toEqual({ anchor: 1, focus: 1 });
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.exportMarkdownTree()).toEqual(originalTree);
+    expectBlockSelection(context, two!.sharedId, three!.sharedId, [two!.sharedId, three!.sharedId]);
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(inlines().map((candidate) => candidate.nodeView?.content)).toEqual(['1']);
+    expect(two!.connected).toBe(false);
+    expect(three!.connected).toBe(false);
+    expect(context.selection.size).toBe(0);
+    focused = renderer.getInlineSelection().inline!;
+    expect((focused.nodeView as unknown as CanonicalNode).sharedId).toBe(one!.sharedId);
+    expect(focused.getTextSelection()).toEqual({ anchor: 1, focus: 1 });
+  });
+  test('trusted Ctrl+A ancestor expansion stays inside a transclusion root', async () => {
+    let listRoot: CanonicalNode | undefined;
+    await mountTree(
+      {
+        type: 'document',
+        children: [
+          { type: 'code-block', info: 'nested', content: 'host' },
+          {
+            type: 'list',
+            children: [
+              {
+                type: 'list-item',
+                marker: '*',
+                children: [
+                  { type: 'paragraph', content: '1' },
+                  {
+                    type: 'list',
+                    children: [
+                      {
+                        type: 'list-item',
+                        marker: '*',
+                        children: [
+                          { type: 'paragraph', content: '2' },
+                          {
+                            type: 'list',
+                            children: [
+                              {
+                                type: 'list-item',
+                                marker: '*',
+                                children: [{ type: 'paragraph', content: '3' }],
+                              },
+                            ],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+          { type: 'paragraph', content: 'outside' },
+        ],
+      },
+      (canonical) => {
+        listRoot = canonical.root.children.find((node) => node.type === 'list');
+        return {
+          renderCodeBlock: ({ node }) =>
+            node.info === 'nested'
+              ? html`<md-transclusion .node=${node} .root=${listRoot}></md-transclusion>`
+              : undefined,
+        };
+      },
+    );
+    const codeBlock = [...renderer.shadowRoot!.querySelectorAll('md-block')].find(
+      (block) => block.node?.type === 'code-block',
+    )!;
+    const transclusion = codeBlock.querySelector('md-transclusion')!;
+    await transclusion.updateComplete;
+    const nestedRenderer = transclusion.shadowRoot!.querySelector('md-block-render')!;
+    const nestedInlines = () => [
+      ...nestedRenderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
+    ];
+    await nestedRenderer.updateComplete;
+    await Promise.all(nestedInlines().map((candidate) => candidate.updateComplete));
+    const scopedContext = nestedRenderer.hostContext!;
+    const [one, two, three] = nestedInlines().map(
+      (candidate) => candidate.nodeView as CanonicalNode,
+    );
+    const leaf = nestedInlines().find((candidate) => candidate.nodeView?.content === '3')!;
+    const outside = model.root.children.find((node) => node.content === 'outside')!;
+    const settleNested = async () => {
+      await settle();
+      await nestedRenderer.updateComplete;
+      await Promise.all(nestedInlines().map((candidate) => candidate.updateComplete));
+      await nextTask();
+    };
+
+    expect(scopedContext.root).toBe(listRoot);
+    leaf.focus();
+    leaf.setSelectionOffsets(0, 0);
+    await userEvent.keyboard('{Control>}a{/Control}{Control>}a{/Control}{Control>}a{/Control}');
+    await settleNested();
+    expectBlockSelection(scopedContext, two!.sharedId, three!.sharedId, [
+      two!.sharedId,
+      three!.sharedId,
+    ]);
+
+    await userEvent.keyboard('{Control>}a{/Control}');
+    await settleNested();
+    expectBlockSelection(scopedContext, one!.sharedId, three!.sharedId, [
+      one!.sharedId,
+      two!.sharedId,
+      three!.sharedId,
+    ]);
+    expect(
+      [...scopedContext.selection].some(
+        (node) => (node as unknown as CanonicalNode).sharedId === outside.sharedId,
+      ),
+    ).toBe(false);
+    expect(renderer.hostContext!.selection.size).toBe(0);
+  });
   test('Markdown clipboard paste constructs canonical block structure', async () => {
     const inline = await mount('target');
     inline.focus();

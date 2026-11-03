@@ -119,6 +119,48 @@ export class SelectionController {
     return this.visibleInlineNodes(root).filter((node) => selected.has(node.sharedId));
   }
 
+  expandBlockSelection(
+    selected: readonly CanonicalNode[],
+    context = this.host.renderer()?.hostContext,
+  ): CanonicalNode[] {
+    if (!context || !selected.length) return [...selected];
+    const root =
+      context.root instanceof CanonicalNodeProjection
+        ? (context.root as CanonicalNode)
+        : this.host.document()?.root;
+    if (!root) return [...selected];
+
+    const selectedIds = new Set(selected.map((node) => node.sharedId));
+    const visited = new Set<NodeId>();
+    const additions = new Set<NodeId>();
+    let seeds = [
+      ...new Set(
+        selected.map((node) =>
+          node.type === 'section' && node.children.length ? node.children[0]! : node,
+        ),
+      ),
+    ];
+
+    while (!additions.size && seeds.length) {
+      const next: CanonicalNode[] = [];
+      for (const node of seeds) {
+        const parent = node.parent;
+        if (!parent || parent.sharedId === root.parent?.sharedId) continue;
+        if (visited.has(parent.sharedId)) continue;
+        visited.add(parent.sharedId);
+        next.push(parent);
+        for (const candidate of this.visibleInlineNodes(parent)) {
+          if (!selectedIds.has(candidate.sharedId)) additions.add(candidate.sharedId);
+        }
+      }
+      seeds = next;
+    }
+
+    return this.visibleInlineNodes(root).filter(
+      (node) => selectedIds.has(node.sharedId) || additions.has(node.sharedId),
+    );
+  }
+
   captureSelection(sealChangedGroup = false): void {
     if (this.restoring || !this.host.document()) return;
     const { inline } = this.host.renderer()?.getInlineSelection() ?? {};
