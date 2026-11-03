@@ -4,6 +4,7 @@ import { customElement, property, query } from 'lit/decorators.js';
 import type { CanonicalWriter } from '../markdown/canonical/writer.js';
 import { hasStructuralEffects } from '../markdown/canonical/action-types.js';
 import type { AcceptedAction, HistoryResult } from '../markdown/canonical/action-types.js';
+import type { AcceptedUpdate } from '../markdown/canonical/document-types.js';
 import { CanonicalNode } from '../markdown/canonical/node-projection.js';
 import type { CanonicalDocument } from '../markdown/canonical/document.js';
 import '../markdown/block-render.js';
@@ -37,6 +38,11 @@ import type { TaskStateIntent } from '../markdown/render-intents.js';
 import { cycleTaskState } from './commands/cycle-task-state.js';
 import './mobile-keyboard-toolbar.js';
 
+export type AcceptedUpdateRelay = (
+  envelope: AcceptedUpdate | undefined,
+  callbackErrors: readonly unknown[],
+) => boolean;
+
 /** Browser editing over the canonical Yjs model and its single history coordinator. */
 @customElement('md-canonical-editor')
 export class CanonicalEditor extends LitElement {
@@ -44,6 +50,8 @@ export class CanonicalEditor extends LitElement {
   @property({ attribute: false }) accessor writer: CanonicalWriter | undefined;
   @property({ attribute: false }) accessor renderDelegate: MarkdownRenderDelegate | undefined;
   @property({ type: String, attribute: 'session-id' }) accessor sessionId = 'local';
+  @property({ attribute: false }) accessor acceptedUpdateRelay: AcceptedUpdateRelay | undefined;
+  @property({ type: Boolean, reflect: true }) accessor disabled = false;
 
   @query('md-block-render') private accessor renderer!: MarkdownRenderer;
 
@@ -86,11 +94,13 @@ export class CanonicalEditor extends LitElement {
       this.runTextInput(node, from, to, insert, isolated, hostContext),
   });
   private localCommit = false;
+  private focusIntentEpoch = 0;
 
   override render() {
     const root = this.document?.root;
     if (!root) return html``;
     return html`<md-block-render
+      ?inert=${this.disabled}
       .block=${root}
       .renderDelegate=${this.renderDelegate}
       @inline-input=${this.onInlineInput}
@@ -129,7 +139,12 @@ export class CanonicalEditor extends LitElement {
         }
         if (!this.localCommit) this.sealTypingGroup();
         if (this.localCommit || !this.selectionController.selectionAnchor) return;
-        void this.selectionController.restoreSavedSelection();
+        if (!this.acceptedUpdateRelay) {
+          void this.selectionController.restoreSavedSelection();
+          return;
+        }
+        if (!this.focusedInline()) return;
+        void this.selectionController.restoreSavedSelection(undefined, this.focusRestoreGuard());
       });
     }
     const context = this.renderer?.hostContext;
@@ -140,11 +155,17 @@ export class CanonicalEditor extends LitElement {
 
   override connectedCallback() {
     super.connectedCallback();
+    this.ownerDocument.addEventListener('focusin', this.onFocusIntent, true);
+    this.ownerDocument.addEventListener('pointerdown', this.onFocusIntent, true);
+    this.ownerDocument.addEventListener('keydown', this.onFocusIntent, true);
     this.sessionRunner.bind(this.document, this.writer, this.sessionId);
     this.selectionController.connect(this.ownerDocument);
   }
 
   override disconnectedCallback() {
+    this.ownerDocument.removeEventListener('focusin', this.onFocusIntent, true);
+    this.ownerDocument.removeEventListener('pointerdown', this.onFocusIntent, true);
+    this.ownerDocument.removeEventListener('keydown', this.onFocusIntent, true);
     this.unsubscribeProjection?.();
     this.unsubscribeProjection = undefined;
     this.selectionController.disconnect();
@@ -176,13 +197,29 @@ export class CanonicalEditor extends LitElement {
     hostContext?: HostContext,
   ) {
     this.selectionController.captureSelection();
+    const shouldRestoreFocus = this.acceptedUpdateRelay ? this.focusRestoreGuard() : undefined;
+    if (
+      !this.relayAcceptedUpdate(
+        { revision: accepted.revision, update: accepted.update },
+        accepted.callbackErrors,
+      )
+    )
+      return;
     if (hasStructuralEffects(accepted.receipt.structuralPatch)) this.sealTypingGroup();
     const selection = accepted.receipt.focus?.selection;
     if (selectionIntent?.type === 'preserve-block-selection' && selection && this.document) {
       try {
         const anchor = createCanonicalTextAnchor(this.document, selection.anchor);
         const focus = createCanonicalTextAnchor(this.document, selection.focus);
-        void this.selectionController.restoreAnchors(anchor, focus, true, false, hostContext);
+        void this.selectionController.restoreAnchors(
+          anchor,
+          focus,
+          true,
+          false,
+          hostContext,
+          false,
+          shouldRestoreFocus,
+        );
         return;
       } catch {
         // A selection endpoint can be hidden by the structural action.
@@ -190,9 +227,67 @@ export class CanonicalEditor extends LitElement {
     }
     if (selectionIntent?.type === 'clear') (hostContext ?? this.hostContext)?.clearSelection();
     const focus = accepted.receipt.focus?.end;
-    if (focus) void this.selectionController.focusBookmark(focus, hostContext);
-    else void this.selectionController.restoreSavedSelection(hostContext);
+    if (focus) void this.selectionController.focusBookmark(focus, hostContext, shouldRestoreFocus);
+    else void this.selectionController.restoreSavedSelection(hostContext, shouldRestoreFocus);
   }
+
+  private relayAcceptedUpdate(
+    envelope: AcceptedUpdate | undefined,
+    callbackErrors: readonly unknown[] = [],
+  ): boolean {
+    if (!this.acceptedUpdateRelay) return true;
+    const previousLocalCommit = this.localCommit;
+    this.localCommit = true;
+    try {
+      return this.acceptedUpdateRelay(envelope, callbackErrors);
+    } catch (error) {
+      this.disabled = true;
+      this.dispatchEditError(error);
+      return false;
+    } finally {
+      this.localCommit = previousLocalCommit;
+    }
+  }
+
+  private focusedInline(): MarkdownInline | undefined {
+    let active = this.shadowRoot?.activeElement ?? null;
+    while (active instanceof HTMLElement && active.shadowRoot?.activeElement) {
+      active = active.shadowRoot.activeElement;
+    }
+    return active instanceof MarkdownInline ? active : undefined;
+  }
+
+  private focusRestoreGuard(): () => boolean {
+    const originalInline = this.focusedInline();
+    const focusIntentEpoch = this.focusIntentEpoch;
+    return () => {
+      if (this.focusIntentEpoch !== focusIntentEpoch) return false;
+      const currentInline = this.focusedInline();
+      if (currentInline) {
+        return (
+          currentInline === originalInline || (!!originalInline && !originalInline.isConnected)
+        );
+      }
+      let active = this.ownerDocument.activeElement;
+      while (active instanceof HTMLElement && active.shadowRoot?.activeElement) {
+        active = active.shadowRoot.activeElement;
+      }
+      let current: Node | null = active;
+      while (current && current !== this) {
+        if (current.parentNode) current = current.parentNode;
+        else {
+          const root = current.getRootNode();
+          current = root instanceof ShadowRoot ? root.host : null;
+        }
+      }
+      if (current === this) return true;
+      return active === this.ownerDocument.body && !!originalInline && !originalInline.isConnected;
+    };
+  }
+
+  private onFocusIntent = () => {
+    this.focusIntentEpoch++;
+  };
 
   private sessionCallbacks(hostContext?: HostContext): SessionActionCallbacks {
     return {
@@ -210,6 +305,7 @@ export class CanonicalEditor extends LitElement {
   }
 
   private onTaskStateIntent = (event: CustomEvent<TaskStateIntent>) => {
+    if (this.disabled) return;
     if (event.detail.operation !== 'cycle') return;
     const document = this.document;
     const node = event.detail.node;
@@ -230,6 +326,7 @@ export class CanonicalEditor extends LitElement {
     selectionBefore?: EditSelection,
     hostContext?: HostContext,
   ) {
+    if (this.disabled) return;
     this.sessionRunner.runCommand(
       command,
       input,
@@ -268,6 +365,7 @@ export class CanonicalEditor extends LitElement {
     hostContext?: HostContext,
     selectionBefore?: { readonly anchor: number; readonly focus: number },
   ) {
+    if (this.disabled) return;
     this.sessionRunner.runTextInput(
       node.sharedId,
       from,
@@ -293,6 +391,7 @@ export class CanonicalEditor extends LitElement {
   }
 
   private onInlineInput = (event: CustomEvent<InlineInput>) => {
+    if (this.disabled) return;
     const { inline } = event.detail;
     const hostContext = inline.hostContext;
     const node = this.activeInline(inline);
@@ -387,6 +486,10 @@ export class CanonicalEditor extends LitElement {
 
   private onInlineKeyDown = (event: CustomEvent<InlineKeyDown>) => {
     const { inline, node: projectedNode, keyboardEvent } = event.detail;
+    if (this.disabled) {
+      keyboardEvent.preventDefault();
+      return;
+    }
     const hostContext = inline.hostContext;
     const node = projectedNode as unknown as CanonicalNode;
     const document = this.document;
@@ -479,6 +582,14 @@ export class CanonicalEditor extends LitElement {
   };
 
   private restoreHistoryFocus(result: HistoryResult, hostContext?: HostContext) {
+    if (this.acceptedUpdateRelay && result.status === 'applied')
+      this.selectionController.captureSelection();
+    const shouldRestoreFocus = this.acceptedUpdateRelay ? this.focusRestoreGuard() : undefined;
+    const envelope =
+      result.revision !== undefined && result.update
+        ? { revision: result.revision, update: result.update }
+        : undefined;
+    if (!this.relayAcceptedUpdate(envelope, result.callbackErrors ?? [])) return;
     if (result.status === 'history-reset') {
       this.sealTypingGroup();
       this.dispatchEvent(
@@ -499,14 +610,24 @@ export class CanonicalEditor extends LitElement {
         false,
         hostContext,
         result.selectionAnchors.kind === 'text',
+        shouldRestoreFocus,
       );
       return;
     }
     const anchor = result.focusAnchor;
     if (anchor)
-      void this.selectionController.restoreAnchors(anchor, anchor, false, false, hostContext);
-    else if (result.focus) void this.selectionController.focusBookmark(result.focus, hostContext);
-    else void this.selectionController.restoreSavedSelection(hostContext);
+      void this.selectionController.restoreAnchors(
+        anchor,
+        anchor,
+        false,
+        false,
+        hostContext,
+        false,
+        shouldRestoreFocus,
+      );
+    else if (result.focus)
+      void this.selectionController.focusBookmark(result.focus, hostContext, shouldRestoreFocus);
+    else void this.selectionController.restoreSavedSelection(hostContext, shouldRestoreFocus);
   }
 
   private onCompositionStart = (event: CustomEvent<{ inline: MarkdownInline }>) => {
@@ -520,6 +641,10 @@ export class CanonicalEditor extends LitElement {
   };
 
   private onClipboard = (event: ClipboardEvent) => {
+    if (this.disabled && event.type !== 'copy') {
+      event.preventDefault();
+      return;
+    }
     const inline = event.composedPath().find((target) => target instanceof MarkdownInline);
     const hostContext = inline instanceof MarkdownInline ? inline.hostContext : undefined;
     const selection = this.selectionController.currentBlockSelection(hostContext);
@@ -535,6 +660,10 @@ export class CanonicalEditor extends LitElement {
   };
 
   private onPaste = (event: ClipboardEvent) => {
+    if (this.disabled) {
+      event.preventDefault();
+      return;
+    }
     const inline = event.composedPath().find((target) => target instanceof MarkdownInline);
     if (!(inline instanceof MarkdownInline)) return;
     const node = this.activeInline(inline);

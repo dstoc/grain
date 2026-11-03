@@ -212,11 +212,14 @@ export class SelectionController {
     }
   }
 
-  async restoreSavedSelection(hostContext?: HostContext): Promise<void> {
+  async restoreSavedSelection(
+    hostContext?: HostContext,
+    shouldRestoreFocus?: () => boolean,
+  ): Promise<void> {
     const anchor = this.anchor;
     const focus = this.focus ?? anchor;
     if (!anchor || !focus) return;
-    await this.restoreAnchors(anchor, focus, false, false, hostContext);
+    await this.restoreAnchors(anchor, focus, false, false, hostContext, false, shouldRestoreFocus);
   }
 
   async restoreAnchors(
@@ -226,6 +229,7 @@ export class SelectionController {
     preserveBlockSelection = false,
     hostContext?: HostContext,
     restoreNativeTextSelection = false,
+    shouldRestoreFocus?: () => boolean,
   ): Promise<void> {
     const document = this.host.document();
     const rootRenderer = this.host.renderer();
@@ -233,7 +237,13 @@ export class SelectionController {
       ? (this.rendererForContext(hostContext) ?? rootRenderer)
       : rootRenderer;
     const generation = this.session.generation;
-    if (!document || !renderer || !this.host.isConnected()) return;
+    if (
+      !document ||
+      !renderer ||
+      !this.host.isConnected() ||
+      (shouldRestoreFocus && !shouldRestoreFocus())
+    )
+      return;
     if (!this.session.isCurrentGeneration(generation)) return;
     let start: Bookmark;
     let end: Bookmark;
@@ -274,22 +284,38 @@ export class SelectionController {
       !!context.renderDelegate?.renderCodeBlock &&
       !targetInlineBeforeUpdate;
     if (!deferFocusForRenderDelegate) {
-      context.focusNode = asInlineMarkdownNodeView(target);
-      context.focusOffset = end.offset;
+      if (!shouldRestoreFocus) {
+        context.focusNode = asInlineMarkdownNodeView(target);
+        context.focusOffset = end.offset;
+      }
       this.restoring = true;
       this.host.requestUpdate();
       try {
         await this.host.updateComplete();
+        if (shouldRestoreFocus && !shouldRestoreFocus()) return;
         await renderer.updateComplete;
-        if (!this.host.isConnected() || !this.session.isCurrentGeneration(generation)) return;
+        if (
+          !this.host.isConnected() ||
+          !this.session.isCurrentGeneration(generation) ||
+          (shouldRestoreFocus && !shouldRestoreFocus())
+        )
+          return;
         const inline = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
           (candidate) => candidate.nodeView === target,
         );
         if (!inline || !inline.isConnected) return;
         await inline.updateComplete;
-        if (!this.session.isCurrentGeneration(generation)) return;
+        if (
+          !this.session.isCurrentGeneration(generation) ||
+          (shouldRestoreFocus && !shouldRestoreFocus())
+        )
+          return;
+        if (shouldRestoreFocus) {
+          context.focusNode = asInlineMarkdownNodeView(target);
+          context.focusOffset = end.offset;
+        }
         inline.focus();
-        if (restoreNativeTextSelection) await inline.maybeSetFocus();
+        if (restoreNativeTextSelection && !shouldRestoreFocus) await inline.maybeSetFocus();
         if (!this.session.isCurrentGeneration(generation)) return;
         inline.setSelectionOffsets(start.offset, end.offset);
         this.lastNativeSelection = {
@@ -302,6 +328,7 @@ export class SelectionController {
         }
         this.anchor = createCanonicalTextAnchor(document, start);
         this.focus = createCanonicalTextAnchor(document, end);
+        if (shouldRestoreFocus) this.clearFocusHintSoon(context, target);
       } finally {
         this.restoring = false;
       }
@@ -313,8 +340,14 @@ export class SelectionController {
     this.host.requestUpdate();
     try {
       await this.host.updateComplete();
+      if (shouldRestoreFocus && !shouldRestoreFocus()) return;
       await renderer.updateComplete;
-      if (!this.host.isConnected() || !this.session.isCurrentGeneration(generation)) return;
+      if (
+        !this.host.isConnected() ||
+        !this.session.isCurrentGeneration(generation) ||
+        (shouldRestoreFocus && !shouldRestoreFocus())
+      )
+        return;
       const visible = this.visibleInlineNodeViews(context.root);
       const renderedInlines = [
         ...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
@@ -357,13 +390,23 @@ export class SelectionController {
         inline = inlineFor(asInlineMarkdownNodeView(focusNode));
       }
       if (!inline || !inline.isConnected) return;
-      context.focusNode = asInlineMarkdownNodeView(focusNode);
-      context.focusOffset = focusOffset;
+      if (!shouldRestoreFocus) {
+        context.focusNode = asInlineMarkdownNodeView(focusNode);
+        context.focusOffset = focusOffset;
+      }
       inline.requestUpdate();
       await inline.updateComplete;
-      if (!this.session.isCurrentGeneration(generation)) return;
+      if (
+        !this.session.isCurrentGeneration(generation) ||
+        (shouldRestoreFocus && !shouldRestoreFocus())
+      )
+        return;
+      if (shouldRestoreFocus) {
+        context.focusNode = asInlineMarkdownNodeView(focusNode);
+        context.focusOffset = focusOffset;
+      }
       inline.focus();
-      if (restoreNativeTextSelection) await inline.maybeSetFocus();
+      if (restoreNativeTextSelection && !shouldRestoreFocus) await inline.maybeSetFocus();
       if (!this.session.isCurrentGeneration(generation)) return;
       inline.setSelectionOffsets(
         focusParentHostNeighbor ? focusOffset : start.offset,
@@ -380,20 +423,41 @@ export class SelectionController {
       }
       this.anchor = createCanonicalTextAnchor(document, start);
       this.focus = createCanonicalTextAnchor(document, end);
+      if (shouldRestoreFocus) this.clearFocusHintSoon(context, focusNode);
     } finally {
       this.restoring = false;
     }
   }
 
-  async focusBookmark(bookmark: Bookmark | undefined, hostContext?: HostContext): Promise<void> {
+  async focusBookmark(
+    bookmark: Bookmark | undefined,
+    hostContext?: HostContext,
+    shouldRestoreFocus?: () => boolean,
+  ): Promise<void> {
     const document = this.host.document();
     if (!document || !bookmark) return;
     try {
       const anchor = createCanonicalTextAnchor(document, bookmark);
-      await this.restoreAnchors(anchor, anchor, false, false, hostContext);
+      await this.restoreAnchors(
+        anchor,
+        anchor,
+        false,
+        false,
+        hostContext,
+        false,
+        shouldRestoreFocus,
+      );
     } catch {
-      await this.restoreSavedSelection(hostContext);
+      await this.restoreSavedSelection(hostContext, shouldRestoreFocus);
     }
+  }
+
+  private clearFocusHintSoon(context: HostContext, node: CanonicalNode): void {
+    window.setTimeout(() => {
+      if (context.focusNode !== node) return;
+      context.focusNode = undefined;
+      context.focusOffset = undefined;
+    }, 0);
   }
 
   textSelectionBefore(
