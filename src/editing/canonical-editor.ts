@@ -449,9 +449,13 @@ export class CanonicalEditor extends LitElement {
       const selected = this.selectionController.currentBlockSelection(hostContext);
       const textSelection = inline.getTextSelection();
       if (selected.length) {
-        const root = hostContext?.root instanceof CanonicalNode ? hostContext.root : undefined;
-        const all = this.selectionController.visibleInlineNodes(root);
-        this.selectionController.setBlockSelection(all, all[0], all.at(-1), hostContext);
+        const expanded = this.selectionController.expandBlockSelection(selected, hostContext);
+        this.selectionController.setBlockSelection(
+          expanded,
+          expanded[0],
+          expanded.at(-1),
+          hostContext,
+        );
       } else if (
         textSelection &&
         Math.min(textSelection.anchor, textSelection.focus) === 0 &&
