@@ -203,7 +203,7 @@ Both `npm run analyze:unused` and `npm run analyze:unused:production` complete w
 
 CI runs `npm run check:boundaries` and Oxlint's `import/no-cycle` rule. The boundary checker scans static imports, re-exports, literal dynamic imports, and type-only edges. It checks parser/core dependencies and browser globals, editing and parser paths against canonical implementation modules, renderer paths against canonical mutation surfaces, canonical paths against editor and renderer modules, and imports from retired paths. It reports runtime strongly connected components separately.
 
-At the R5 implementation head, the checker reports 111 production TypeScript modules, 585 static import/re-export/dynamic edges, 275 type-only edges, 51 external edges, and 0 runtime cycles. The counts are structural observations. The file and line removals do not establish a performance improvement.
+At the R5 implementation head, the checker reports 111 production TypeScript modules, 586 static import/re-export/dynamic edges, 275 type-only edges, 51 external edges, and 0 runtime cycles. The counts are structural observations. The file and line removals do not establish a performance improvement.
 
 ### Removed paths and preserved coverage
 
