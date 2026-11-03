@@ -6,8 +6,7 @@ import { insertParagraph } from '../editing/commands/insert-paragraph.js';
 import type { Edit } from '../editing/outcomes.js';
 import { runCommand } from '../editing/test/run-command.js';
 import type { EditSelection } from './semantic/selection.js';
-import { viewModel, type InlineViewModelNode } from './view-model-node.js';
-import { MarkdownTree } from './view-model.js';
+import { ConstructionTree } from './semantic/construction-tree.js';
 import { parseBlocks } from './block-parser/api.js';
 import { serializeToString } from './block-serializer.js';
 import { CanonicalDocument } from './canonical-model.js';
@@ -136,21 +135,21 @@ function plainDocumentMeasurements(markdown: string) {
     const canonicalProjection: number[] = [];
 
     for (let sample = 0; sample < sampleCount; sample++) {
-      const standalone = new MarkdownTree(parseBlocks(markdown).node);
-      const standaloneNode = standalone.root.children![paragraphCount - 1]! as InlineViewModelNode;
+      const standalone = new ConstructionTree(parseBlocks(markdown).node);
+      const standaloneNode = standalone.root.children[paragraphCount - 1]!;
+      if (standaloneNode.type !== 'paragraph') throw new Error('benchmark fixture lost paragraph');
       const offset = Math.floor(standaloneNode.content.length * relativeOffset);
       const oldEndIndex = offset < standaloneNode.content.length ? offset + 1 : offset;
       standaloneEdit.push(
         elapsed(() =>
-          standalone.edit(() => {
-            standaloneNode[viewModel].edit({
-              startIndex: offset,
-              oldEndIndex,
-              newEndIndex: offset + 1,
-              newText: 'Z',
+          (() => {
+            standalone.draft.spliceText(standaloneNode.id, {
+              from: offset,
+              to: oldEndIndex,
+              insert: 'Z',
             });
-            return {};
-          }),
+            standalone.normalize();
+          })(),
         ),
       );
       standaloneProjection.push(

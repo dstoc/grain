@@ -1,5 +1,4 @@
-import { viewModel } from '../view-model-node.js';
-import type { ViewModelNode } from '../view-model-node.js';
+import type { ConstructionNode } from '../semantic/construction-tree.js';
 import type {
   BlockParseState,
   MappedText,
@@ -56,7 +55,7 @@ export function parseLine(state: BlockParseState, line: string, mapped?: MappedT
   if (quotedListContinuation) {
     syncQuoteStack(state, quotedListContinuation.quoteBase, quotedListContinuation.quoteDepth);
     state.currentListPath = quotedListContinuation.listPath;
-    const parentBlock = state.currentListPath.at(-1)?.[viewModel].parent;
+    const parentBlock = state.currentListPath.at(-1)?.parent;
     state.currentList = parentBlock?.type === 'list' ? parentBlock : undefined;
     if (quotedListContinuation.content === '') {
       closeParagraph(state);
@@ -146,7 +145,7 @@ export function projectPendingLine(
   if (quotedListContinuation) {
     syncQuoteStack(state, quotedListContinuation.quoteBase, quotedListContinuation.quoteDepth);
     state.currentListPath = quotedListContinuation.listPath;
-    const parentBlock = state.currentListPath.at(-1)?.[viewModel].parent;
+    const parentBlock = state.currentListPath.at(-1)?.parent;
     state.currentList = parentBlock?.type === 'list' ? parentBlock : undefined;
     return projectPendingResolvedContent(
       state,
@@ -216,11 +215,11 @@ function expandCurrentListPathFromTree(state: BlockParseState) {
       .reverse()
       .find((child) => child.type === 'list');
     if (!nestedList?.children?.length) return;
-    const nestedItem = nestedList.children.at(-1) as ViewModelNode | undefined;
+    const nestedItem = nestedList.children.at(-1) as ConstructionNode | undefined;
     if (nestedItem?.type !== 'list-item') return;
     if (state.currentListPath.includes(nestedItem)) return;
     state.currentListPath = [...state.currentListPath, nestedItem];
-    const parentBlock = nestedItem[viewModel].parent;
+    const parentBlock = nestedItem.parent;
     state.currentList = parentBlock?.type === 'list' ? parentBlock : state.currentList;
   }
 }
@@ -228,7 +227,7 @@ function expandCurrentListPathFromTree(state: BlockParseState) {
 function shouldRestartQuotedListBranch(state: BlockParseState, line: string): boolean {
   return (
     line.trimStart().startsWith('>') &&
-    state.currentParagraph?.[viewModel].parent?.type === 'block-quote' &&
+    state.currentParagraph?.parent?.type === 'block-quote' &&
     state.currentListPath.length > 0 &&
     state.currentQuoteStack.length > 0
   );
@@ -236,7 +235,7 @@ function shouldRestartQuotedListBranch(state: BlockParseState, line: string): bo
 
 function parseResolvedContainerContent(
   state: BlockParseState,
-  container: ViewModelNode,
+  container: ConstructionNode,
   content: string,
   mapped?: MappedText,
 ) {
@@ -328,7 +327,7 @@ function parseResolvedContainerContent(
 
 function canContinueListParagraph(
   state: BlockParseState,
-  container: ViewModelNode,
+  container: ConstructionNode,
   line: string,
 ): boolean {
   if (!state.currentListPath.length) return false;

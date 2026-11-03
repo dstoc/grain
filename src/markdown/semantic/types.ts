@@ -9,6 +9,21 @@ export function isInlineNodeKind(kind: NodeKind): kind is InlineNodeKind {
   return kind === 'paragraph' || kind === 'section' || kind === 'code-block';
 }
 
+export function isAllowedSemanticChild(parent: NodeKind, child: NodeKind): boolean {
+  if (parent === 'list') return child === 'list-item';
+  return (
+    (parent === 'document' ||
+      parent === 'section' ||
+      parent === 'list-item' ||
+      parent === 'block-quote') &&
+    (child === 'paragraph' ||
+      child === 'section' ||
+      child === 'code-block' ||
+      child === 'list' ||
+      child === 'block-quote')
+  );
+}
+
 export interface TextEdit {
   readonly from: number;
   readonly to: number;

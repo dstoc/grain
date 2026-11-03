@@ -8,7 +8,8 @@ import { CanonicalWriter } from './markdown/canonical-actions.js';
 import './main.js';
 
 interface HarnessInternals {
-  readonly parser: object;
+  readonly parser: { getTree(): object };
+  readonly preview: { readonly tree: object };
   readonly canonicalDocument?: CanonicalDocument;
   readonly canonicalWriter?: CanonicalWriter;
   readonly treeJson: string;
@@ -86,6 +87,24 @@ test('Source appends update Tree and Serialize without a full reparse', async ()
   tabs[1]!.click();
   await harness.updateComplete;
   expect(harness.shadowRoot!.querySelector('.serialized')!.textContent).toBe('alphaBETA\n');
+});
+
+test('Source replacement resets the parser and its construction preview together', async () => {
+  const { harness, source } = await createSettledHarness('alpha');
+  const internals = harness as unknown as HarnessInternals;
+  const originalParser = internals.parser;
+  const originalPreview = internals.preview;
+
+  source.setRangeText('beta', 0, source.value.length, 'end');
+  source.dispatchEvent(new Event('input', { bubbles: true }));
+  await settleHarness(harness);
+
+  expect(internals.parser !== originalParser).toBe(true);
+  expect(internals.preview !== originalPreview).toBe(true);
+  expect(internals.preview.tree === internals.parser.getTree()).toBe(true);
+  expect(source.value).toBe('beta');
+  expect(currentEditorInlines(harness).map((inline) => inline.textContent)).toEqual(['beta']);
+  harness.remove();
 });
 
 test('coalesces canonical exports and flushes the latest source before copy', async () => {
@@ -943,7 +962,7 @@ test('toolbar actions are inert during projection recovery and held recovery eve
   finishRecovery();
   await recovery;
   const current = currentEditorInlines(harness).find(
-    (candidate) => candidate.node === recoveredInline.node,
+    (candidate) => candidate.nodeView === recoveredInline.nodeView,
   )!;
   current.focus();
   expect(current.mobileToolbarInputReady).toBe(true);

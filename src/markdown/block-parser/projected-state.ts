@@ -1,11 +1,10 @@
-import { viewModel } from '../view-model-node.js';
-import type { ViewModelNode } from '../view-model-node.js';
+import type { ConstructionNode } from '../semantic/construction-tree.js';
 import type {
   BlockParseState,
   ProjectedPendingState,
-  ParagraphViewModelNode,
-  SectionViewModelNode,
-  ListItemViewModelNode,
+  ConstructionParagraphNode,
+  ConstructionSectionNode,
+  ConstructionListItemNode,
 } from './types.js';
 import {
   pruneDetachedState,
@@ -25,7 +24,7 @@ import {
 
 export function projectPendingResolvedContent(
   state: BlockParseState,
-  container: ViewModelNode,
+  container: ConstructionNode,
   content: string,
   line: string,
 ): ProjectedPendingState | undefined {
@@ -124,7 +123,7 @@ function discardProjectedCodeBlock(state: BlockParseState, text: string) {
 function discardProjectedCodeBlockOpen(state: BlockParseState) {
   const node = state.currentCodeBlock;
   if (node?.content !== '') return;
-  const parent = node[viewModel].parent;
+  const parent = node.parent;
   detachSemanticNodeIfAttached(state, node);
   state.currentCodeBlock = undefined;
   state.currentCodeFence = undefined;
@@ -136,7 +135,7 @@ function discardProjectedCodeBlockOpen(state: BlockParseState) {
 function discardProjectedQuoteOpen(state: BlockParseState) {
   const quote = state.currentQuoteStack.at(-1);
   if (!quote || quote.children?.length) return;
-  const parent = quote[viewModel].parent;
+  const parent = quote.parent;
   if (!parent) {
     pruneDetachedState(state);
     return;
@@ -149,13 +148,13 @@ function discardProjectedQuoteOpen(state: BlockParseState) {
 function discardProjectedListItem(state: BlockParseState) {
   const item = state.currentListPath.at(-1);
   if (!item) return;
-  const list = item[viewModel].parent;
+  const list = item.parent;
   detachSemanticNodeIfAttached(state, item);
   state.sourceMarkerWidths.delete(item);
   state.currentParagraph = undefined;
   state.currentListPath.pop();
   if (list?.type === 'list' && !list.children?.length) {
-    const parent = list[viewModel].parent;
+    const parent = list.parent;
     detachSemanticNodeIfAttached(state, list);
     pruneEmptyContainerChain(state, parent);
   }
@@ -164,18 +163,18 @@ function discardProjectedListItem(state: BlockParseState) {
 
 function appendPendingParagraphText(
   state: BlockParseState,
-  container: ViewModelNode,
+  container: ConstructionNode,
   line: string,
 ): string {
   ensurePlaceholderRemoved(state);
   let prefix = '';
-  if (state.currentParagraph?.[viewModel].parent !== container) {
+  if (state.currentParagraph?.parent !== container) {
     const paragraph = createSemanticNode(state, {
       type: 'paragraph',
       content: '',
     });
     placeSemanticNode(state, paragraph, container);
-    state.currentParagraph = paragraph as ParagraphViewModelNode;
+    state.currentParagraph = paragraph as ConstructionParagraphNode;
     state.sawContent = true;
   } else if (state.currentParagraph.content !== '') {
     prefix = '\n';
@@ -187,7 +186,7 @@ function appendPendingParagraphText(
 
 function projectPendingSectionText(
   state: BlockParseState,
-  container: ViewModelNode,
+  container: ConstructionNode,
   level: number,
   content: string,
 ) {
@@ -196,7 +195,7 @@ function projectPendingSectionText(
     type: 'section',
     marker: '#'.repeat(level),
     content,
-  }) as SectionViewModelNode;
+  }) as ConstructionSectionNode;
   placeSemanticNode(state, section, container);
   state.sectionStack.push(section);
   state.sawContent = true;
@@ -204,7 +203,7 @@ function projectPendingSectionText(
 
 function projectPendingListItem(
   state: BlockParseState,
-  parent: ViewModelNode,
+  parent: ConstructionNode,
   marker: string,
   checked: boolean | undefined,
   content: string,
@@ -216,7 +215,7 @@ function projectPendingListItem(
     type: 'list-item',
     marker,
     checked,
-  }) as ListItemViewModelNode;
+  }) as ConstructionListItemNode;
   placeSemanticNode(state, item, list);
   state.sourceMarkerWidths.set(item, marker.length);
   state.currentListPath = buildListPath(state, parent, item);
@@ -226,7 +225,7 @@ function projectPendingListItem(
 
 function projectPendingCodeBlockOpen(
   state: BlockParseState,
-  parent: ViewModelNode,
+  parent: ConstructionNode,
   marker: string,
   info: string | null,
 ) {
@@ -235,7 +234,11 @@ function projectPendingCodeBlockOpen(
   openCodeBlock(state, parent, marker, info);
 }
 
-function removeTrailingText(state: BlockParseState, node: ParagraphViewModelNode, count: number) {
+function removeTrailingText(
+  state: BlockParseState,
+  node: ConstructionParagraphNode,
+  count: number,
+) {
   const startIndex = node.content.length - count;
   editSemanticText(state, node, startIndex, node.content.length, '');
 }
@@ -244,13 +247,13 @@ export function canProjectPendingParagraph(line: string): boolean {
   return !parseFenceStart(line);
 }
 
-function pruneEmptyContainerChain(state: BlockParseState, node?: ViewModelNode) {
+function pruneEmptyContainerChain(state: BlockParseState, node?: ConstructionNode) {
   while (
-    node?.[viewModel].parent &&
-    !node[viewModel].firstChild &&
+    node?.parent &&
+    !node.children[0] &&
     ['list-item', 'list', 'block-quote'].includes(node.type)
   ) {
-    const parent = node[viewModel].parent;
+    const parent = node.parent;
     detachSemanticNodeIfAttached(state, node);
     node = parent;
   }

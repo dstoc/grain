@@ -1,46 +1,40 @@
+import type { DocumentNode } from '../node.js';
 import type {
-  BlockQuoteNode,
-  CodeBlockNode,
-  DocumentNode,
-  ListItemNode,
-  MarkdownNode,
-  ParagraphNode,
-  SectionNode,
-} from '../node.js';
-import { MarkdownTree } from '../view-model.js';
-import type { ViewModelNode } from '../view-model-node.js';
-import type { MarkdownTreeDraft } from '../semantic-tree-draft.js';
+  ConstructionNode,
+  ConstructionTree,
+  ConstructionTreeDraft,
+} from '../semantic/construction-tree.js';
 
-export type ParagraphViewModelNode = ParagraphNode & ViewModelNode;
-export type SectionViewModelNode = SectionNode & ViewModelNode;
-export type ListViewModelNode = Extract<MarkdownNode, { type: 'list' }> & ViewModelNode;
-export type ListItemViewModelNode = ListItemNode & ViewModelNode;
-export type BlockQuoteViewModelNode = BlockQuoteNode & ViewModelNode;
-export type CodeBlockViewModelNode = CodeBlockNode & ViewModelNode;
+export type ConstructionParagraphNode = Extract<ConstructionNode, { type: 'paragraph' }>;
+export type ConstructionSectionNode = Extract<ConstructionNode, { type: 'section' }>;
+export type ConstructionListNode = Extract<ConstructionNode, { type: 'list' }>;
+export type ConstructionListItemNode = Extract<ConstructionNode, { type: 'list-item' }>;
+export type ConstructionBlockQuoteNode = Extract<ConstructionNode, { type: 'block-quote' }>;
+export type ConstructionCodeBlockNode = Extract<ConstructionNode, { type: 'code-block' }>;
 
 export interface BlockParseState {
-  tree: MarkdownTree;
-  draft: MarkdownTreeDraft;
-  root: DocumentNode & ViewModelNode;
+  tree: ConstructionTree;
+  draft: ConstructionTreeDraft;
+  root: Extract<ConstructionNode, { type: 'document' }>;
   sawContent: boolean;
   // A parsed root sentinel must not be mistaken for the synthetic empty document.
   hasExplicitRootParagraph: boolean;
-  currentParagraph?: ParagraphViewModelNode;
-  currentList?: ListViewModelNode;
-  currentListPath: ListItemViewModelNode[];
+  currentParagraph?: ConstructionParagraphNode;
+  currentList?: ConstructionListNode;
+  currentListPath: ConstructionListItemNode[];
   // Source indentation remains stable when document markers are normalized.
-  sourceMarkerWidths: Map<ListItemViewModelNode, number>;
-  currentQuoteBase?: ViewModelNode;
-  currentQuoteStack: BlockQuoteViewModelNode[];
-  currentCodeBlock?: CodeBlockViewModelNode;
+  sourceMarkerWidths: Map<ConstructionListItemNode, number>;
+  currentQuoteBase?: ConstructionNode;
+  currentQuoteStack: ConstructionBlockQuoteNode[];
+  currentCodeBlock?: ConstructionCodeBlockNode;
   currentCodeFence?: string;
   currentCodeHasLines?: boolean;
-  sectionStack: SectionViewModelNode[];
+  sectionStack: ConstructionSectionNode[];
   sourceTracking: boolean;
   sourceOffset: number;
   receivedSourceLength: number;
   sourceBreakBefore?: Extract<OutputPiece, { kind: 'retain' }>;
-  inlinePieces: Map<ViewModelNode, readonly OutputPiece[]>;
+  inlinePieces: Map<ConstructionNode, readonly OutputPiece[]>;
 }
 
 export type SourceRange = { readonly from: number; readonly to: number };
@@ -87,9 +81,9 @@ export interface ProjectedPendingState {
 }
 
 export interface BlockParser {
-  push(text: string): MarkdownTree;
-  finish(): MarkdownTree;
-  getTree(): MarkdownTree;
+  push(text: string): ConstructionTree;
+  finish(): ConstructionTree;
+  getTree(): ConstructionTree;
   getPendingText(): string;
   getConversionPlan(source: string): ParserConversionPlan;
   snapshot(): BlockParserSnapshot;

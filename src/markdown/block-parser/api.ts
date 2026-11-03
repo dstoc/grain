@@ -1,5 +1,5 @@
-import { isInlineNode, type DocumentNode } from '../node.js';
-import { MarkdownTree } from '../view-model.js';
+import type { DocumentNode } from '../node.js';
+import { ConstructionTree, type ConstructionNode } from '../semantic/construction-tree.js';
 
 export {
   type BlockParser,
@@ -23,8 +23,6 @@ import type {
   ParserConversionPlan,
   SourceRange,
 } from './types.js';
-import type { ViewModelNode } from '../view-model-node.js';
-
 import type { BlockParser, BlockParserSnapshot } from './types.js';
 
 function withoutTrailingHighSurrogate(text: string): string {
@@ -50,7 +48,8 @@ export function createBlockParser(
   const root =
     snapshot?.root ??
     ({ type: 'document', children: [{ type: 'paragraph', content: '' }] } as DocumentNode);
-  const tree = new MarkdownTree(root);
+  const tree = new ConstructionTree(root);
+  tree.normalize();
   const state = snapshot ? restoreState(tree, snapshot) : createInitialState(tree);
   state.sourceTracking = sourceTracking;
   state.sourceOffset = snapshot?.sourceOffset ?? 0;
@@ -86,53 +85,37 @@ export function createBlockParser(
 
       pendingText += text;
       if (state.sourceTracking) state.receivedSourceLength += text.length;
-      tree.edit(
-        () => {
-          discardProjectedPendingLine(state, projectedPending);
-          projectedPending = undefined;
+      const revision = tree.revision;
+      discardProjectedPendingLine(state, projectedPending);
+      projectedPending = undefined;
 
-          const lines = pendingText.split('\n');
-          pendingText = lines.pop() ?? '';
-          for (const line of lines) {
-            parseSettledLine(state, line);
-          }
+      const lines = pendingText.split('\n');
+      pendingText = lines.pop() ?? '';
+      for (const line of lines) {
+        parseSettledLine(state, line);
+      }
 
-          // A stream may end between the two UTF-16 units of a valid code point.
-          // Keep the unmatched high surrogate in pendingText/snapshots, but do
-          // not place it in the strict canonical construction draft until its
-          // low surrogate arrives.
-          projectedPending = projectPendingLine(state, withoutTrailingHighSurrogate(pendingText));
-          cleanupInactiveEmptyBlocks(state);
-          return {};
-        },
-        false,
-        { preserveEmptyBlocks: true },
-        undefined,
-        'construction',
-      );
+      // A stream may end between the two UTF-16 units of a valid code point.
+      // Keep the unmatched high surrogate in pendingText/snapshots, but do
+      // not place it in the strict construction draft until its low surrogate arrives.
+      projectedPending = projectPendingLine(state, withoutTrailingHighSurrogate(pendingText));
+      cleanupInactiveEmptyBlocks(state);
+      if (tree.revision !== revision) tree.normalize({ preserveEmptyBlocks: true });
       return tree;
     },
     finish() {
       if (finished) {
         return tree;
       }
-      tree.edit(
-        () => {
-          if (pendingText !== '') {
-            discardProjectedPendingLine(state, projectedPending);
-            projectedPending = undefined;
-            parseSettledLine(state, pendingText, false);
-            pendingText = '';
-          }
-          closeLeafBlocks(state);
-          removeEmptyRootParagraph(state);
-          return {};
-        },
-        false,
-        { force: true },
-        undefined,
-        'construction',
-      );
+      if (pendingText !== '') {
+        discardProjectedPendingLine(state, projectedPending);
+        projectedPending = undefined;
+        parseSettledLine(state, pendingText, false);
+        pendingText = '';
+      }
+      closeLeafBlocks(state);
+      removeEmptyRootParagraph(state);
+      tree.normalize();
       finished = true;
       return tree;
     },
@@ -201,12 +184,17 @@ export function createBlockParser(
 }
 
 function completeEmptyInlineMappings(
-  root: ViewModelNode,
-  pieces: Map<ViewModelNode, readonly OutputPiece[]>,
+  root: ConstructionNode,
+  pieces: Map<ConstructionNode, readonly OutputPiece[]>,
 ): void {
-  const visit = (node: ViewModelNode) => {
-    if (isInlineNode(node) && node.content === '' && !pieces.has(node)) pieces.set(node, []);
-    for (const child of (node.children ?? []) as ViewModelNode[]) visit(child);
+  const visit = (node: ConstructionNode) => {
+    if (
+      (node.type === 'paragraph' || node.type === 'section' || node.type === 'code-block') &&
+      node.content === '' &&
+      !pieces.has(node)
+    )
+      pieces.set(node, []);
+    for (const child of (node.children ?? []) as ConstructionNode[]) visit(child);
   };
   visit(root);
 }
@@ -277,7 +265,7 @@ function isDefinitelyLiteralSingleLine(markdown: string): boolean {
   return true;
 }
 
-export function parseMarkdownTree(markdown: string): MarkdownTree {
+export function parseMarkdownTree(markdown: string): ConstructionTree {
   const parser = createBlockParser();
   parser.push(markdown);
   return parser.finish();
@@ -304,15 +292,19 @@ function parseSettledLine(
 
 function conversionPlan(
   output: DocumentNode,
-  root: ViewModelNode,
-  sourcePieces: ReadonlyMap<ViewModelNode, readonly OutputPiece[]>,
+  root: ConstructionNode,
+  sourcePieces: ReadonlyMap<ConstructionNode, readonly OutputPiece[]>,
   source: string,
 ): ParserConversionPlan {
   const inlinePieces: Record<string, readonly OutputPiece[]> = {};
   const retained: { from: number; to: number }[] = [];
   let previousRetainedEnd = 0;
-  const walk = (node: ViewModelNode, path: number[]) => {
-    if (isInlineNode(node)) {
+  const walk = (node: ConstructionNode, path: number[]) => {
+    const content =
+      node.type === 'paragraph' || node.type === 'section' || node.type === 'code-block'
+        ? node.content
+        : undefined;
+    if (content !== undefined) {
       const pieces = sourcePieces.get(node);
       if (!pieces)
         throw new Error(`missing parser provenance for inline node at ${path.join('.')}`);
@@ -334,7 +326,7 @@ function conversionPlan(
           return source.slice(piece.sourceFrom, piece.sourceTo);
         })
         .join('');
-      if (reconstructed !== node.content) {
+      if (reconstructed !== content) {
         throw new Error(`parser provenance does not reconstruct inline node at ${path.join('.')}`);
       }
       inlinePieces[path.join('.') || 'root'] = Object.freeze(
@@ -342,7 +334,7 @@ function conversionPlan(
       );
     }
     for (const [index, child] of (node.children ?? []).entries()) {
-      walk(child as ViewModelNode, [...path, index]);
+      walk(child as ConstructionNode, [...path, index]);
     }
   };
   walk(root, []);

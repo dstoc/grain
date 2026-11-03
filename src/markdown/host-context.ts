@@ -2,7 +2,7 @@ import { createContext } from '@lit/context';
 
 import { cast } from '../asserts.js';
 import type { MarkdownRenderDelegate } from './render-delegate.js';
-import { compareDocumentOrder } from './view-model-util.js';
+import { compareDocumentOrder } from './node-view-utils.js';
 import type { InlineMarkdownNodeView, ReadonlyMarkdownNodeView } from './node-view.js';
 
 export class HostContext {

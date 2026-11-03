@@ -67,10 +67,22 @@ export class CanonicalEditor extends LitElement {
     isConnected: () => this.isConnected,
     session: this.sessionRunner,
     selection: this.selectionController,
-    blockSelection: () => this.selectionController.currentBlockSelection(),
-    replaceBlocks: (selection, text) => this.replaceBlocks(selection, text),
-    runTextInput: (node, from, to, insert, isolated) =>
-      this.runTextInput(node, from, to, insert, isolated),
+    blockSelection: (inline) => {
+      const selectedIds = new Set(
+        [...(inline.hostContext?.selection ?? [])]
+          .filter((node) => node instanceof CanonicalNode)
+          .map((node) => node.sharedId),
+      );
+      return this.selectionController
+        .visibleInlineNodes(
+          inline.hostContext?.root instanceof CanonicalNode ? inline.hostContext.root : undefined,
+        )
+        .filter((node) => selectedIds.has(node.sharedId));
+    },
+    replaceBlocks: (selection, text, hostContext) =>
+      this.replaceBlocks(selection, text, hostContext),
+    runTextInput: (node, from, to, insert, isolated, hostContext) =>
+      this.runTextInput(node, from, to, insert, isolated, hostContext),
   });
   private localCommit = false;
 
@@ -160,6 +172,7 @@ export class CanonicalEditor extends LitElement {
   private onAccepted(
     accepted: AcceptedAction,
     selectionIntent?: import('../markdown/semantic/selection.js').SelectionIntent,
+    hostContext?: HostContext,
   ) {
     this.selectionController.captureSelection();
     if (hasStructuralEffects(accepted.receipt.structuralPatch)) this.sealTypingGroup();
@@ -168,21 +181,21 @@ export class CanonicalEditor extends LitElement {
       try {
         const anchor = createCanonicalTextAnchor(this.document, selection.anchor);
         const focus = createCanonicalTextAnchor(this.document, selection.focus);
-        void this.selectionController.restoreAnchors(anchor, focus, true);
+        void this.selectionController.restoreAnchors(anchor, focus, true, false, hostContext);
         return;
       } catch {
         // A selection endpoint can be hidden by the structural action.
       }
     }
-    if (selectionIntent?.type === 'clear') this.hostContext?.clearSelection();
+    if (selectionIntent?.type === 'clear') (hostContext ?? this.hostContext)?.clearSelection();
     const focus = accepted.receipt.focus?.end;
-    if (focus) void this.selectionController.focusBookmark(focus);
-    else void this.selectionController.restoreSavedSelection();
+    if (focus) void this.selectionController.focusBookmark(focus, hostContext);
+    else void this.selectionController.restoreSavedSelection(hostContext);
   }
 
-  private sessionCallbacks(): SessionActionCallbacks {
+  private sessionCallbacks(hostContext?: HostContext): SessionActionCallbacks {
     return {
-      onAccepted: (accepted, selection) => this.onAccepted(accepted, selection),
+      onAccepted: (accepted, selection) => this.onAccepted(accepted, selection, hostContext),
       onRejected: (error) => this.dispatchEditError(error),
       withLocalCommit: (action) => {
         this.localCommit = true;
@@ -210,8 +223,18 @@ export class CanonicalEditor extends LitElement {
     this.runEdit(cycleTaskState, { nodeId: node.sharedId });
   };
 
-  private runEdit<Input>(command: Edit<Input>, input: Input, selectionBefore?: EditSelection) {
-    this.sessionRunner.runCommand(command, input, selectionBefore, this.sessionCallbacks());
+  private runEdit<Input>(
+    command: Edit<Input>,
+    input: Input,
+    selectionBefore?: EditSelection,
+    hostContext?: HostContext,
+  ) {
+    this.sessionRunner.runCommand(
+      command,
+      input,
+      selectionBefore,
+      this.sessionCallbacks(hostContext),
+    );
   }
 
   private textSelectionBefore(
@@ -228,8 +251,11 @@ export class CanonicalEditor extends LitElement {
     );
   }
 
-  private blockSelectionBefore(selection: readonly CanonicalNode[]): EditSelection | undefined {
-    return this.selectionController.blockSelectionBefore(selection);
+  private blockSelectionBefore(
+    selection: readonly CanonicalNode[],
+    hostContext?: HostContext,
+  ): EditSelection | undefined {
+    return this.selectionController.blockSelectionBefore(selection, hostContext);
   }
 
   private runTextInput(
@@ -238,6 +264,7 @@ export class CanonicalEditor extends LitElement {
     to: number,
     insert: string,
     isolated = false,
+    hostContext?: HostContext,
   ) {
     this.sessionRunner.runTextInput(
       node.sharedId,
@@ -245,7 +272,7 @@ export class CanonicalEditor extends LitElement {
       to,
       insert,
       isolated,
-      this.sessionCallbacks(),
+      this.sessionCallbacks(hostContext),
       (caretOffset) => {
         this.selectionController.expectInputSelection(node.sharedId, caretOffset);
       },
@@ -264,14 +291,15 @@ export class CanonicalEditor extends LitElement {
 
   private onInlineInput = (event: CustomEvent<InlineInput>) => {
     const { inline } = event.detail;
+    const hostContext = inline.hostContext;
     const node = this.activeInline(inline);
     const document = this.document;
     if (!node || !document) return;
-    const selection = this.selectionController.currentBlockSelection();
+    const selection = this.selectionController.currentBlockSelection(hostContext);
     const intent = translateInlineInput(event.detail, selection.length > 0);
     if (intent.type === 'ignored') return;
     if (intent.type === 'replace-blocks') {
-      this.replaceBlocks(selection, intent.text);
+      this.replaceBlocks(selection, intent.text, hostContext);
       return;
     }
     if (intent.type === 'command') {
@@ -280,12 +308,14 @@ export class CanonicalEditor extends LitElement {
           deleteBackwardAtStart,
           { nodeId: node.sharedId },
           this.textSelectionBefore(node.sharedId, inline, 0, 0),
+          hostContext,
         );
       } else {
         this.runEdit(
           intent.command === 'insert-paragraph' ? insertParagraph : insertLineBreak,
           { nodeId: node.sharedId, from: intent.from, to: intent.to },
           this.textSelectionBefore(node.sharedId, inline, intent.from, intent.to),
+          hostContext,
         );
       }
       return;
@@ -301,6 +331,7 @@ export class CanonicalEditor extends LitElement {
         deleteBackwardAtStart,
         { nodeId: node.sharedId },
         this.textSelectionBefore(node.sharedId, inline, 0, 0),
+        hostContext,
       );
       return;
     }
@@ -309,36 +340,67 @@ export class CanonicalEditor extends LitElement {
         deleteBackwardAtStart,
         { nodeId: node.sharedId },
         this.textSelectionBefore(node.sharedId, inline, 0, 0),
+        hostContext,
       );
       return;
     }
     const insert = intent.type === 'delete-word-backward' ? '' : intent.insert;
     const isolated = intent.type === 'delete-word-backward' || intent.isolated;
-    this.hostContext?.clearSelection();
-    this.runTextInput(node, from, to, insert, isolated);
+    hostContext?.clearSelection();
+    this.runTextInput(node, from, to, insert, isolated, hostContext);
   };
 
-  private replaceBlocks(selection: readonly CanonicalNode[], text: string) {
+  private replaceBlocks(
+    selection: readonly CanonicalNode[],
+    text: string,
+    hostContext?: HostContext,
+  ) {
     this.runEdit(
       replaceBlocksCommand,
       { nodeIds: selection.map((node) => node.sharedId), text },
-      this.blockSelectionBefore(selection),
+      this.blockSelectionBefore(selection, hostContext),
+      hostContext,
     );
   }
 
   private onInlineKeyDown = (event: CustomEvent<InlineKeyDown>) => {
     const { inline, node: projectedNode, keyboardEvent } = event.detail;
+    const hostContext = inline.hostContext;
     const node = projectedNode as unknown as CanonicalNode;
     const document = this.document;
     const writer = this.writer;
     if (!(node instanceof CanonicalNode) || !document || !writer) return;
-    const selected = this.selectionController.currentBlockSelection();
+    const selected = this.selectionController.currentBlockSelection(hostContext);
+    if (
+      node.type === 'code-block' &&
+      selected.length === 0 &&
+      keyboardEvent.key === 'Enter' &&
+      !keyboardEvent.shiftKey &&
+      !keyboardEvent.ctrlKey &&
+      !keyboardEvent.metaKey &&
+      !keyboardEvent.altKey &&
+      !keyboardEvent.isComposing
+    ) {
+      keyboardEvent.preventDefault();
+      const selection = inline.getTextSelection();
+      if (selection) {
+        this.runTextInput(
+          node,
+          Math.min(selection.anchor, selection.focus),
+          Math.max(selection.anchor, selection.focus),
+          '\n',
+          true,
+          hostContext,
+        );
+      }
+      return;
+    }
     const intent = translateInlineKey(keyboardEvent, selected.length > 0);
     if (intent.type === 'history') {
       keyboardEvent.preventDefault();
       const result =
         intent.direction === 'undo' ? this.sessionRunner.undo() : this.sessionRunner.redo();
-      if (result) this.restoreHistoryFocus(result);
+      if (result) this.restoreHistoryFocus(result, hostContext);
       return;
     }
     if (intent.type === 'move-caret') {
@@ -348,7 +410,7 @@ export class CanonicalEditor extends LitElement {
     }
     if (intent.type === 'delete-block-selection') {
       keyboardEvent.preventDefault();
-      this.replaceBlocks(selected, '');
+      this.replaceBlocks(selected, '', hostContext);
       return;
     }
     if (intent.type === 'indent') {
@@ -357,21 +419,25 @@ export class CanonicalEditor extends LitElement {
       this.runEdit(
         command,
         { nodeId: node.sharedId, nodeIds: selected.map((item) => item.sharedId) },
-        this.blockSelectionBefore(selected),
+        this.blockSelectionBefore(selected, hostContext),
+        hostContext,
       );
       return;
     }
     if (intent.type === 'select-all') {
       keyboardEvent.preventDefault();
-      const selected = this.selectionController.currentBlockSelection();
+      const selected = this.selectionController.currentBlockSelection(hostContext);
+      const textSelection = inline.getTextSelection();
       if (selected.length) {
-        const all = this.selectionController.visibleInlineNodes();
-        this.selectionController.setBlockSelection(all, all[0], all.at(-1));
+        const root = hostContext?.root instanceof CanonicalNode ? hostContext.root : undefined;
+        const all = this.selectionController.visibleInlineNodes(root);
+        this.selectionController.setBlockSelection(all, all[0], all.at(-1), hostContext);
       } else if (
-        inline.getTextSelection()?.anchor === 0 &&
-        inline.getTextSelection()?.focus === node.content?.length
+        textSelection &&
+        Math.min(textSelection.anchor, textSelection.focus) === 0 &&
+        Math.max(textSelection.anchor, textSelection.focus) === node.content?.length
       ) {
-        this.selectionController.setBlockSelection([node], node, node);
+        this.selectionController.setBlockSelection([node], node, node, hostContext);
       } else {
         inline.setSelectionOffsets(0, node.content?.length ?? 0);
       }
@@ -380,7 +446,7 @@ export class CanonicalEditor extends LitElement {
     if (intent.type === 'seal-typing') this.sealTypingGroup();
   };
 
-  private restoreHistoryFocus(result: HistoryResult) {
+  private restoreHistoryFocus(result: HistoryResult, hostContext?: HostContext) {
     if (result.status === 'history-reset') {
       this.sealTypingGroup();
       this.dispatchEvent(
@@ -398,13 +464,16 @@ export class CanonicalEditor extends LitElement {
         result.selectionAnchors.anchor,
         result.selectionAnchors.focus,
         true,
+        false,
+        hostContext,
       );
       return;
     }
     const anchor = result.focusAnchor;
-    if (anchor) void this.selectionController.restoreAnchors(anchor, anchor);
-    else if (result.focus) void this.selectionController.focusBookmark(result.focus);
-    else void this.selectionController.restoreSavedSelection();
+    if (anchor)
+      void this.selectionController.restoreAnchors(anchor, anchor, false, false, hostContext);
+    else if (result.focus) void this.selectionController.focusBookmark(result.focus, hostContext);
+    else void this.selectionController.restoreSavedSelection(hostContext);
   }
 
   private onCompositionStart = (event: CustomEvent<{ inline: MarkdownInline }>) => {
@@ -418,11 +487,18 @@ export class CanonicalEditor extends LitElement {
   };
 
   private onClipboard = (event: ClipboardEvent) => {
-    const selection = this.selectionController.currentBlockSelection();
+    const inline = event.composedPath().find((target) => target instanceof MarkdownInline);
+    const hostContext = inline instanceof MarkdownInline ? inline.hostContext : undefined;
+    const selection = this.selectionController.currentBlockSelection(hostContext);
     const document = this.document;
-    if (!selection.length || !event.clipboardData || !document) return;
-    writeMarkdownClipboard(event, serializeBlockSelection(document, selection));
-    if (event.type === 'cut') this.replaceBlocks(selection, '');
+    if (!selection.length) return;
+    if (!document) {
+      event.preventDefault();
+      return;
+    }
+    const written = writeMarkdownClipboard(event, serializeBlockSelection(document, selection));
+    if (!written) return;
+    if (event.type === 'cut') this.replaceBlocks(selection, '', hostContext);
   };
 
   private onPaste = (event: ClipboardEvent) => {
@@ -430,6 +506,7 @@ export class CanonicalEditor extends LitElement {
     if (!(inline instanceof MarkdownInline)) return;
     const node = this.activeInline(inline);
     if (!node || !event.clipboardData) return;
+    const hostContext = inline.hostContext;
     const { markdown, text } = readClipboardPayload(event.clipboardData);
     if (markdown) {
       event.preventDefault();
@@ -440,13 +517,14 @@ export class CanonicalEditor extends LitElement {
         native
           ? this.textSelectionBefore(node.sharedId, inline, native.anchor, native.focus)
           : undefined,
+        hostContext,
       );
       return;
     }
     event.preventDefault();
-    const selection = this.selectionController.currentBlockSelection();
+    const selection = this.selectionController.currentBlockSelection(hostContext);
     if (selection.length) {
-      this.replaceBlocks(selection, text);
+      this.replaceBlocks(selection, text, hostContext);
       return;
     }
     const native = inline.getTextSelection();
@@ -457,6 +535,7 @@ export class CanonicalEditor extends LitElement {
         Math.max(native.anchor, native.focus),
         text.replace(/\n/g, ' '),
         true,
+        hostContext,
       );
   };
 }

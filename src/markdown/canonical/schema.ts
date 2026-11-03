@@ -1,6 +1,6 @@
 import * as Y from 'yjs';
 
-import type { NodeId, NodeKind } from '../semantic/types.js';
+import { isAllowedSemanticChild, type NodeId, type NodeKind } from '../semantic/types.js';
 import type { Span } from './types.js';
 
 export const META = 'meta';
@@ -134,8 +134,7 @@ export function nodeKind(record: CanonicalRecord): NodeKind {
 }
 
 export function isAllowedChild(parent: NodeKind, child: NodeKind): boolean {
-  if (parent === 'list') return child === 'list-item';
-  return CONTAINER_KINDS.has(parent) && BLOCK_KINDS.has(child);
+  return isAllowedSemanticChild(parent, child);
 }
 
 function assert(condition: unknown, message: string): asserts condition {

@@ -53,7 +53,15 @@ export function translateInlineInput(
     return { type: 'replace-blocks', text: '' };
   }
   if (inputEvent.inputType === 'insertParagraph') {
-    return { type: 'command', command: 'insert-paragraph', from, to };
+    if (detail.node.type === 'code-block') {
+      return { type: 'text', from, to, insert: '\n', isolated: true };
+    }
+    return {
+      type: 'command',
+      command: 'insert-paragraph',
+      from,
+      to,
+    };
   }
   if (inputEvent.inputType === 'insertLineBreak') {
     return { type: 'command', command: 'insert-line-break', from, to };

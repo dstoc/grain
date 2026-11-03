@@ -1,14 +1,15 @@
 import { describe, expect, test } from 'vitest';
-import './editing/editor.js';
 import { parseMarkdownTree } from './markdown/block-parser/api.js';
+import { ConstructionPreviewAdapter } from './markdown/construction-preview.js';
 import { HostContext } from './markdown/host-context.js';
+import './markdown/block-render.js';
+import './markdown/inline-render.js';
 import { MarkdownBlock, MarkdownRenderer } from './markdown/block-render.js';
 import { MarkdownSpan } from './markdown/inline-render.js';
 
 describe('standard decorator behavior', () => {
   test('registers components, reflects properties, and resolves queries after update', async () => {
     for (const name of [
-      'md-editor',
       'md-block-render',
       'md-block',
       'md-inline',
@@ -19,30 +20,18 @@ describe('standard decorator behavior', () => {
     ]) {
       expect(customElements.get(name)).toBeDefined();
     }
-    const editor = document.createElement('md-editor');
-    document.body.append(editor);
-    editor.status = 'loaded';
-    await editor.updateComplete;
-    expect(editor.getAttribute('status')).toBe('loaded');
-    editor.setAttribute('status', 'error');
-    await editor.updateComplete;
-    expect(editor.status).toBe('error');
-    expect((editor as unknown as { markdownRenderer: MarkdownRenderer }).markdownRenderer).toBe(
-      editor.shadowRoot!.querySelector('md-block-render'),
-    );
     const span = document.createElement('md-span') as MarkdownSpan;
     const child = document.createElement('md-span');
     span.append(child);
     document.body.append(span);
     await span.updateComplete;
     expect(Array.from(span.spans)).toEqual([child]);
-    editor.remove();
     span.remove();
   });
 
   test('delivers and updates subscribed context on mounted application components', async () => {
     const renderer = document.createElement('md-block-render') as MarkdownRenderer;
-    renderer.block = parseMarkdownTree('hello').root;
+    renderer.block = new ConstructionPreviewAdapter(parseMarkdownTree('hello')).root;
     document.body.append(renderer);
     await renderer.updateComplete;
     const block = renderer.shadowRoot!.querySelector('md-block') as MarkdownBlock;

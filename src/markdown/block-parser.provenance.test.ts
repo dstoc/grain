@@ -193,13 +193,15 @@ describe('block parser provenance', () => {
     );
   });
 
-  it('keeps provisional parser construction out of user undo history', () => {
+  it('keeps construction records free of user history controls', () => {
     const parser = createBlockParser(undefined, { provenance: true });
     parser.push('>');
     parser.push(' - [x] body\n');
     const tree = parser.finish();
 
-    expect(tree.canUndo(tree.root)).toBe(false);
-    expect(tree.canRedo(tree.root)).toBe(false);
+    expect('undo' in tree).toBe(false);
+    expect('redo' in tree).toBe(false);
+    expect('canUndo' in tree).toBe(false);
+    expect('canRedo' in tree).toBe(false);
   });
 });

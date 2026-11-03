@@ -4,7 +4,6 @@ import { describe, expect, it } from 'vitest';
 import { CanonicalDocument } from './canonical-model.js';
 import type { CanonicalCheckpoint } from './canonical-model.js';
 import type { DocumentNode } from './node.js';
-import { viewModel } from './view-model-node.js';
 
 function applyToAuthority(
   checkpoint: CanonicalCheckpoint,
@@ -224,7 +223,11 @@ describe('CanonicalDocument', () => {
     const paragraphId = paragraph.sharedId;
     expect(paragraph.id).toBeTypeOf('number');
     expect(paragraph.inlineTree).toBeDefined();
-    expect(viewModel in paragraph).toBe(false);
+    expect(
+      Object.getOwnPropertySymbols(paragraph).some((symbol) =>
+        String(symbol).includes('viewModel'),
+      ),
+    ).toBe(false);
     const checkpoint = document.checkpoint();
     const detached = applyToAuthority(checkpoint, 1, (authority) => {
       const rootRecord = nodeRecord(authority, root.sharedId);

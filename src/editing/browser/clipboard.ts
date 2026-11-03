@@ -104,16 +104,21 @@ export function serializeBlockSelection(
     : '';
 }
 
-export function writeMarkdownClipboard(event: ClipboardEvent, markdown: string): void {
+export function writeMarkdownClipboard(event: ClipboardEvent, markdown: string): boolean {
   event.preventDefault();
   const clipboard = event.clipboardData;
-  if (!clipboard) return;
-  clipboard.setData('text/plain', markdown);
+  if (!clipboard) return false;
+  try {
+    clipboard.setData('text/plain', markdown);
+  } catch {
+    return false;
+  }
   try {
     clipboard.setData('text/markdown', markdown);
   } catch {
     // Plain text is sufficient when the browser rejects custom clipboard data.
   }
+  return true;
 }
 
 export function readClipboardPayload(clipboard: ClipboardEvent['clipboardData']): ClipboardPayload {

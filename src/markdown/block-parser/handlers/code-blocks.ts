@@ -1,8 +1,7 @@
-import { viewModel } from '../../view-model-node.js';
-import type { ViewModelNode } from '../../view-model-node.js';
+import type { ConstructionNode } from '../../semantic/construction-tree.js';
 import {
   type BlockParseState,
-  type CodeBlockViewModelNode,
+  type ConstructionCodeBlockNode,
   type MappedText,
   type OutputPiece,
 } from '../types.js';
@@ -26,7 +25,7 @@ export function parseFenceStart(line: string): { marker: string; info: string | 
 
 export function openCodeBlock(
   state: BlockParseState,
-  parent: ViewModelNode,
+  parent: ConstructionNode,
   marker: string,
   info: string | null,
 ) {
@@ -35,7 +34,7 @@ export function openCodeBlock(
     type: 'code-block',
     info,
     content: '',
-  }) as CodeBlockViewModelNode;
+  }) as ConstructionCodeBlockNode;
   placeSemanticNode(state, node, parent);
   if (state.sourceTracking) state.inlinePieces.set(node, []);
   state.currentCodeBlock = node;
@@ -73,11 +72,11 @@ export function stripActiveCodeBlockContinuation(
   line: string,
 ): { readonly content: string; readonly contentFrom: number } {
   const originalLength = line.length;
-  const ancestors: ViewModelNode[] = [];
-  let parent = state.currentCodeBlock?.[viewModel].parent;
+  const ancestors: ConstructionNode[] = [];
+  let parent = state.currentCodeBlock?.parent;
   while (parent) {
     if (parent.type === 'list-item' || parent.type === 'block-quote') ancestors.unshift(parent);
-    parent = parent[viewModel].parent;
+    parent = parent.parent;
   }
   for (const ancestor of ancestors) {
     if (ancestor.type === 'block-quote') {

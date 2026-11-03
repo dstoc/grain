@@ -1,11 +1,10 @@
-import { viewModel } from '../../view-model-node.js';
-import type { ViewModelNode } from '../../view-model-node.js';
+import type { ConstructionNode } from '../../semantic/construction-tree.js';
 import {
   type BlockParseState,
   type MappedText,
-  type ListItemViewModelNode,
-  type ParagraphViewModelNode,
-  type SectionViewModelNode,
+  type ConstructionListItemNode,
+  type ConstructionParagraphNode,
+  type ConstructionSectionNode,
 } from '../types.js';
 import {
   ensureListContainer,
@@ -36,7 +35,7 @@ export function parseListItem(
 
 export function appendListItem(
   state: BlockParseState,
-  parent: ViewModelNode,
+  parent: ConstructionNode,
   marker: string,
   checked: boolean | undefined,
   content: string,
@@ -49,7 +48,7 @@ export function appendListItem(
     type: 'list-item',
     marker,
     checked,
-  }) as ListItemViewModelNode;
+  }) as ConstructionListItemNode;
   placeSemanticNode(state, item, list);
   state.sourceMarkerWidths.set(item, marker.length);
   state.currentListPath = buildListPath(state, parent, item);
@@ -59,7 +58,7 @@ export function appendListItem(
 
 export function parseInitialListItemContent(
   state: BlockParseState,
-  item: ListItemViewModelNode,
+  item: ConstructionListItemNode,
   content: string,
   mapped?: MappedText,
 ) {
@@ -68,7 +67,7 @@ export function parseInitialListItemContent(
 
 export function parseInitialContainerContent(
   state: BlockParseState,
-  parent: ViewModelNode,
+  parent: ConstructionNode,
   content: string,
   mapped?: MappedText,
 ) {
@@ -76,7 +75,7 @@ export function parseInitialContainerContent(
     const paragraph = createSemanticNode(state, {
       type: 'paragraph',
       content: '',
-    }) as ParagraphViewModelNode;
+    }) as ConstructionParagraphNode;
     placeSemanticNode(state, paragraph, parent);
     state.currentParagraph = paragraph;
     if (mapped) state.inlinePieces.set(paragraph, []);
@@ -87,7 +86,7 @@ export function parseInitialContainerContent(
     const paragraph = createSemanticNode(state, {
       type: 'paragraph',
       content: '',
-    }) as ParagraphViewModelNode;
+    }) as ConstructionParagraphNode;
     placeSemanticNode(state, paragraph, parent);
     state.currentParagraph = paragraph;
     if (mapped) state.inlinePieces.set(paragraph, []);
@@ -100,7 +99,7 @@ export function parseInitialContainerContent(
       type: 'section',
       marker: '#'.repeat(atxHeading.level),
       content: atxHeading.content,
-    }) as SectionViewModelNode;
+    }) as ConstructionSectionNode;
     placeSemanticNode(state, section, parent);
     if (mapped) {
       state.inlinePieces.set(
@@ -149,14 +148,14 @@ export function parseInitialContainerContent(
   const paragraph = createSemanticNode(state, {
     type: 'paragraph',
     content,
-  }) as ParagraphViewModelNode;
+  }) as ConstructionParagraphNode;
   placeSemanticNode(state, paragraph, parent);
   state.currentParagraph = paragraph;
   if (mapped) state.inlinePieces.set(paragraph, mapped.pieces);
 }
 
 export function closeList(state: BlockParseState) {
-  if (state.currentParagraph?.[viewModel].parent?.type === 'list-item') {
+  if (state.currentParagraph?.parent?.type === 'list-item') {
     state.currentParagraph = undefined;
   }
   state.currentList = undefined;

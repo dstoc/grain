@@ -4,7 +4,7 @@ import { createBlockParser, parseBlocks } from './block-parser/api.js';
 import { serializeToString } from './block-serializer.js';
 import { CanonicalDocument } from './canonical-model.js';
 import type { DocumentNode, MarkdownNode } from './node.js';
-import type { ViewModelNode } from './view-model-node.js';
+import type { ConstructionNode } from './semantic/construction-tree.js';
 
 function expectCharByCharAppendMatchesFullParse(source: string) {
   const full = parseBlocks(source).node;
@@ -46,16 +46,15 @@ describe('parseBlocks', () => {
     }
   });
 
-  it('exposes parser nodes as read-only render views without serializing projection fields', () => {
+  it('uses parser-local construction records without serializing temporary identity', () => {
     const parser = createBlockParser();
     parser.push('plain text');
     const tree = parser.finish();
-    const paragraph = tree.root.children![0] as ViewModelNode;
+    const paragraph = tree.root.children[0] as ConstructionNode;
 
-    expect(paragraph.id).toBeTypeOf('number');
-    expect(paragraph.connected).toBe(true);
-    expect(paragraph.inlineTree).toBeDefined();
-    expect(Object.getOwnPropertyDescriptor(paragraph, 'renderSignal')?.enumerable).toBe(false);
+    expect(paragraph.id).toMatch(/^construction:/);
+    expect(paragraph.parent).toBe(tree.root);
+    expect('renderSignal' in paragraph).toBe(false);
     expect(tree.serialize().children?.[0]).toEqual({ type: 'paragraph', content: 'plain text' });
   });
 

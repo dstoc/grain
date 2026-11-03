@@ -43,14 +43,19 @@ interface CompositionEnvironment {
   isConnected(): boolean;
   readonly session: BrowserSessionRunner;
   readonly selection: SelectionController;
-  blockSelection(): readonly CanonicalNode[];
-  replaceBlocks(selection: readonly CanonicalNode[], text: string): void;
+  blockSelection(inline: MarkdownInline): readonly CanonicalNode[];
+  replaceBlocks(
+    selection: readonly CanonicalNode[],
+    text: string,
+    hostContext?: MarkdownInline['hostContext'],
+  ): void;
   runTextInput(
     node: CanonicalNode,
     from: number,
     to: number,
     insert: string,
     isolated: boolean,
+    hostContext?: MarkdownInline['hostContext'],
   ): void;
 }
 
@@ -73,7 +78,7 @@ export class CompositionController {
     ) {
       return;
     }
-    const blockSelection = this.environment.blockSelection().map((item) => item.sharedId);
+    const blockSelection = this.environment.blockSelection(inline).map((item) => item.sharedId);
     const selectionAnchor = createCanonicalTextAnchor(document, {
       nodeId: node.sharedId,
       offset: selection.anchor,
@@ -98,7 +103,6 @@ export class CompositionController {
     };
     this.composition = session;
     inline.addEventListener('composition-invalidated', session.invalidate);
-    this.environment.session.sealTypingGroup();
   }
 
   end(inline: MarkdownInline, event: CompositionEvent): void {
@@ -128,15 +132,16 @@ export class CompositionController {
       return;
     }
     const nativeText = inline.textContent ?? '';
-    let from: number;
-    let to: number;
-    let insert: string;
     if (session.blockSelection?.length) {
       const document = this.environment.document()!;
       const selected = session.blockSelection
         .map((id) => document.node(id))
         .filter((node) => node.connected);
       if (!selected.length || selected.length !== session.blockSelection.length) {
+        this.recoverAndReplay(session, inline, session.selection);
+        return;
+      }
+      if (!data) {
         this.recoverAndReplay(session, inline, session.selection);
         return;
       }
@@ -147,60 +152,50 @@ export class CompositionController {
             this.finishRecovery(recovery, false);
             return;
           }
-          this.environment.replaceBlocks(selected, data ?? '');
-          const replayed = await this.replayQueuedInputs(session.node.sharedId, recovery);
+          this.environment.replaceBlocks(selected, data, recovery.source.hostContext);
+          recovery.source.hostContext?.clearSelection();
+          const replayed = await this.replayQueuedInputs(
+            session.blockSelection?.[0] ?? session.node.sharedId,
+            recovery,
+            recovery.source.hostContext,
+            true,
+          );
           this.finishRecovery(recovery, !replayed);
         })
         .catch(() => this.finishRecovery(recovery, false));
       return;
     }
-    if (nativeText === session.content && data) {
-      from = Math.min(session.selection.anchor, session.selection.focus);
-      to = Math.max(session.selection.anchor, session.selection.focus);
-      insert = data;
-    } else {
-      let prefix = 0;
-      while (
-        prefix < session.content.length &&
-        prefix < nativeText.length &&
-        session.content[prefix] === nativeText[prefix]
-      ) {
-        prefix++;
-      }
-      let suffix = 0;
-      while (
-        suffix < session.content.length - prefix &&
-        suffix < nativeText.length - prefix &&
-        session.content[session.content.length - 1 - suffix] ===
-          nativeText[nativeText.length - 1 - suffix]
-      ) {
-        suffix++;
-      }
-      while (
-        prefix > 0 &&
-        (!isUtf16Boundary(session.content, prefix) || !isUtf16Boundary(nativeText, prefix))
-      ) {
-        prefix--;
-      }
-      while (
-        suffix > 0 &&
-        (!isUtf16Boundary(session.content, session.content.length - suffix) ||
-          !isUtf16Boundary(nativeText, nativeText.length - suffix))
-      ) {
-        suffix--;
-      }
-      from = prefix;
-      to = session.content.length - suffix;
-      insert = nativeText.slice(prefix, nativeText.length - suffix);
-    }
+    const replacement = data
+      ? findCompositionEnvelope(session.content, nativeText, data, session.selection)
+      : undefined;
     if (
-      !data ||
+      !replacement ||
       !session.node.connected ||
       session.node.version !== session.version ||
-      session.node.content !== session.content ||
-      session.content.slice(0, from) + insert + session.content.slice(to) !== nativeText
+      session.node.content !== session.content
     ) {
       this.recoverAndReplay(session, inline, session.selection);
+      return;
+    }
+    const { from, to } = replacement;
+    const insert = replacement.insert;
+    if (session.content.slice(0, from) + insert + session.content.slice(to) === session.content) {
+      const caret = from + insert.length;
+      const recovery = this.beginRecovery(session, inline);
+      void this.recoverProjection(recovery, { anchor: caret, focus: caret })
+        .then(async (current) => {
+          if (!current) {
+            this.finishRecovery(recovery, false);
+            return;
+          }
+          const replayed = await this.replayQueuedInputs(
+            session.node.sharedId,
+            recovery,
+            recovery.source.hostContext,
+          );
+          this.finishRecovery(recovery, !replayed);
+        })
+        .catch(() => this.finishRecovery(recovery, false));
       return;
     }
     const recovery = this.beginRecovery(session, inline);
@@ -210,7 +205,14 @@ export class CompositionController {
           this.finishRecovery(recovery, false);
           return;
         }
-        this.environment.runTextInput(session.node, from, to, insert, true);
+        this.environment.runTextInput(
+          session.node,
+          from,
+          to,
+          insert,
+          true,
+          recovery.source.hostContext,
+        );
         const replayed = await this.replayQueuedInputs(session.node.sharedId, recovery);
         this.finishRecovery(recovery, !replayed);
       })
@@ -285,7 +287,12 @@ export class CompositionController {
     this.finishRecovery(recovery, !replayed);
   }
 
-  private async replayQueuedInputs(nodeId: NodeId, recovery: PendingRecovery): Promise<boolean> {
+  private async replayQueuedInputs(
+    nodeId: NodeId,
+    recovery: PendingRecovery,
+    hostContext?: MarkdownInline['hostContext'],
+    focusAtEnd = false,
+  ): Promise<boolean> {
     const renderer = this.environment.renderer();
     const document = this.environment.document();
     const writer = this.environment.writer();
@@ -306,17 +313,34 @@ export class CompositionController {
     ) {
       return false;
     }
-    const recovered = this.findInline(nodeId);
-    const target = renderer.getInlineSelection().inline;
-    if (recovered) this.trackRecoveryInline(recovery, recovered);
-    if (target) this.trackRecoveryInline(recovery, target);
-    if (recovered && target && recovered !== target) {
-      target.holdRecoveryEventsFrom(recovered.takeRecoveryEvents());
+    const recovered = this.findInline(nodeId, hostContext);
+    const target = (hostContext && recovered) || renderer.getInlineSelection().inline || recovered;
+    const participants = new Set(recovery.inlines);
+    if (recovered) participants.add(recovered);
+    if (target) participants.add(target);
+    for (const participant of participants) this.trackRecoveryInline(recovery, participant);
+    if (!this.isRecoveryCurrent(recovery)) return false;
+    const pending = [...participants].flatMap((participant) => participant.takeRecoveryEvents());
+    const replayTarget = target?.isConnected
+      ? target
+      : recovered?.isConnected
+        ? recovered
+        : undefined;
+    const isCurrent = () =>
+      this.isRecoveryCurrent(recovery) &&
+      this.environment.session.isCurrent(recovery.session.generation, document, writer, sessionId);
+    if (pending.length && replayTarget) {
+      if (focusAtEnd) {
+        await replayTarget.updateComplete;
+        if (!replayTarget.isConnected || !isCurrent()) return false;
+        replayTarget.focus();
+        if (!isCurrent()) return false;
+        const offset = replayTarget.nodeView?.content?.length ?? 0;
+        replayTarget.setSelectionOffsets(offset, offset);
+      }
+      if (!replayTarget.isConnected || !isCurrent()) return false;
+      replayTarget.replayRecoveryEvents(pending);
     }
-    if (!this.isRecoveryCurrent(recovery)) return false;
-    target?.replayRecoveryEvents();
-    if (!this.isRecoveryCurrent(recovery)) return false;
-    recovered?.replayRecoveryEvents();
     return this.isRecoveryCurrent(recovery);
   }
 
@@ -379,13 +403,38 @@ export class CompositionController {
     this.pendingRecoveries.delete(recovery);
   }
 
-  private findInline(nodeId: NodeId): MarkdownInline | undefined {
+  private findInline(
+    nodeId: NodeId,
+    hostContext?: MarkdownInline['hostContext'],
+  ): MarkdownInline | undefined {
     const renderer = this.environment.renderer();
-    return [...(renderer?.shadowRoot?.querySelectorAll<MarkdownInline>('md-inline') ?? [])].find(
-      (candidate) =>
-        candidate.nodeView instanceof CanonicalNodeProjection &&
-        candidate.nodeView.sharedId === nodeId,
-    );
+    const root = renderer?.shadowRoot;
+    if (!hostContext) {
+      return [...(root?.querySelectorAll<MarkdownInline>('md-inline') ?? [])].find(
+        (candidate) =>
+          candidate.nodeView instanceof CanonicalNodeProjection &&
+          candidate.nodeView.sharedId === nodeId,
+      );
+    }
+    if (!root) return;
+    const pending: Node[] = [...root.childNodes].reverse();
+    while (pending.length) {
+      const current = pending.pop()!;
+      if (current instanceof HTMLElement && current.localName === 'md-inline') {
+        const candidate = current as MarkdownInline;
+        if (
+          candidate.hostContext === hostContext &&
+          candidate.nodeView instanceof CanonicalNodeProjection &&
+          candidate.nodeView.sharedId === nodeId
+        ) {
+          return candidate;
+        }
+      }
+      if (current instanceof Element && current.shadowRoot) {
+        pending.push(...[...current.shadowRoot.childNodes].reverse());
+      }
+      pending.push(...[...current.childNodes].reverse());
+    }
   }
 
   private isCurrent(session: CompositionDraft): boolean {
@@ -407,4 +456,78 @@ function isUtf16Boundary(text: string, offset: number): boolean {
   const before = text.charCodeAt(offset - 1);
   const after = text.charCodeAt(offset);
   return !(before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff);
+}
+
+// Find an envelope containing the original selection whose native text includes the full payload.
+function findCompositionEnvelope(
+  content: string,
+  nativeText: string,
+  data: string,
+  selection: { readonly anchor: number; readonly focus: number },
+): { readonly from: number; readonly to: number; readonly insert: string } | undefined {
+  const selectionFrom = Math.min(selection.anchor, selection.focus);
+  const selectionTo = Math.max(selection.anchor, selection.focus);
+  let commonPrefix = 0;
+  while (
+    commonPrefix < content.length &&
+    commonPrefix < nativeText.length &&
+    content[commonPrefix] === nativeText[commonPrefix]
+  ) {
+    commonPrefix++;
+  }
+  let commonSuffix = 0;
+  while (
+    commonSuffix < content.length &&
+    commonSuffix < nativeText.length &&
+    content[content.length - 1 - commonSuffix] === nativeText[nativeText.length - 1 - commonSuffix]
+  ) {
+    commonSuffix++;
+  }
+
+  let replacement:
+    | { from: number; to: number; insert: string; score: number; leftExpansion: number }
+    | undefined;
+  for (
+    let dataFrom = nativeText.indexOf(data);
+    dataFrom >= 0;
+    dataFrom = nativeText.indexOf(data, dataFrom + 1)
+  ) {
+    const outputTo = dataFrom + data.length;
+    for (
+      let from = dataFrom;
+      from >= 0 && /^\s*$/u.test(nativeText.slice(from, dataFrom));
+      from--
+    ) {
+      const insert = nativeText.slice(from, outputTo);
+      const leadingText = insert.slice(0, insert.length - data.length);
+      if (leadingText && !/^\s*$/u.test(leadingText)) break;
+      const suffixLength = nativeText.length - outputTo;
+      const to = content.length - suffixLength;
+      if (
+        from > selectionFrom ||
+        to < selectionTo ||
+        from > to ||
+        from > commonPrefix ||
+        suffixLength > commonSuffix ||
+        !isUtf16Boundary(content, from) ||
+        !isUtf16Boundary(content, to) ||
+        !isUtf16Boundary(nativeText, from) ||
+        !isUtf16Boundary(nativeText, outputTo) ||
+        content.slice(0, from) + insert + content.slice(to) !== nativeText
+      ) {
+        continue;
+      }
+      const leftExpansion = selectionFrom - from;
+      const rightExpansion = to - selectionTo;
+      const score = Math.max(leftExpansion, rightExpansion);
+      if (
+        !replacement ||
+        score < replacement.score ||
+        (score === replacement.score && leftExpansion < replacement.leftExpansion)
+      ) {
+        replacement = { from, to, insert, score, leftExpansion };
+      }
+    }
+  }
+  return replacement;
 }

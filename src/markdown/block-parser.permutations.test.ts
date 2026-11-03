@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest';
 import { createBlockParser, parseBlocks } from './block-parser/api.js';
 import { serializeToString } from './block-serializer.js';
 import type { DocumentNode, MarkdownNode } from './node.js';
-import { MarkdownTree } from './view-model.js';
-import { viewModel } from './view-model-node.js';
+import { ConstructionTree, type ConstructionNode } from './semantic/construction-tree.js';
+import { FROZEN_GENERATED_CORPUS } from './block-parser.permutations.corpus.js';
 import { DEFAULT_UNSUPPORTED_GENERATED_CASE_NAMES } from './block-parser.permutations.default-skips.js';
 
 type ChainToken = 'section' | 'quote' | 'bullet' | 'ordered';
@@ -39,6 +39,34 @@ const RUN_EXTENSIVE_SMOKE =
   ).process?.env?.MARKDOWN_EXTENSIVE_SMOKE_TESTS === '1';
 
 type GeneratedMode = 'default' | 'extensive-smoke' | 'extensive';
+type FrozenCorpusMode = 'default' | 'extensive';
+
+function decodeBase64(encoded: string): Uint8Array {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0;
+  const bytes = new Uint8Array(Math.floor((encoded.length * 3) / 4) - padding);
+  let accumulator = 0;
+  let bitCount = 0;
+  let offset = 0;
+  for (const character of encoded) {
+    if (character === '=') break;
+    const value = alphabet.indexOf(character);
+    if (value < 0) throw new Error(`Invalid base64 character ${character}`);
+    accumulator = (accumulator << 6) | value;
+    bitCount += 6;
+    if (bitCount >= 8) {
+      bitCount -= 8;
+      bytes[offset++] = (accumulator >>> bitCount) & 0xff;
+      accumulator &= (1 << bitCount) - 1;
+    }
+  }
+  return bytes;
+}
+
+const frozenCorpusMembership = {
+  default: decodeBase64(FROZEN_GENERATED_CORPUS.default.membership),
+  extensive: decodeBase64(FROZEN_GENERATED_CORPUS.extensive.membership),
+} satisfies Record<FrozenCorpusMode, Uint8Array>;
 
 interface GeneratedCase {
   chain: ChainToken[];
@@ -55,7 +83,7 @@ interface NamedGeneratedCase extends GeneratedCase {
 type VisibleContentNodeType = 'paragraph' | 'code-block' | 'section';
 
 interface VisibleContentSnapshot {
-  nodeId: number;
+  nodeId: string;
   identity: string;
   path: string;
   type: VisibleContentNodeType;
@@ -356,16 +384,6 @@ function supportsStableQuoteIncrementalShapes(
   return true;
 }
 
-function canonicalizeGeneratedDocument(doc: DocumentNode): DocumentNode {
-  const tree = new MarkdownTree(structuredClone(doc));
-  tree.edit(() => ({}), false, { force: true });
-  return tree.serialize() as DocumentNode;
-}
-
-function isCanonicalGeneratedDocument(doc: DocumentNode): boolean {
-  return JSON.stringify(canonicalizeGeneratedDocument(doc)) === JSON.stringify(doc);
-}
-
 function augmentationPermutationsForMode(
   chain: ChainToken[],
   mode: GeneratedMode,
@@ -608,26 +626,48 @@ function selectExtensiveSmokeCases(extensiveCases: NamedGeneratedCase[]): NamedG
   return smokeCases;
 }
 
+function frozenCorpusMode(mode: GeneratedMode): FrozenCorpusMode {
+  return mode === 'default' ? 'default' : 'extensive';
+}
+
+function isFrozenCorpusMember(mode: FrozenCorpusMode, index: number): boolean {
+  const byte = frozenCorpusMembership[mode][index >>> 3];
+  return byte !== undefined && (byte & (1 << (index & 7))) !== 0;
+}
+
+function frozenMembershipHash(membership: Uint8Array): string {
+  let hash = 0x811c9dc5;
+  for (const byte of membership) hash = Math.imul(hash ^ byte, 0x01000193) >>> 0;
+  return `fnv1a32:${hash.toString(16).padStart(8, '0')}`;
+}
+
 function generatedCanonicalCasesForMode(mode: GeneratedMode): NamedGeneratedCase[] {
   const seenMarkdown = new Set<string>();
   const cases: NamedGeneratedCase[] = [];
+  const corpusMode = frozenCorpusMode(mode);
   const chains = [...chainPermutations(2), ...chainPermutations(3)];
   const leaves: LeafToken[] = ['paragraph', 'code-block'];
+  let candidateIndex = 0;
 
   for (const chain of chains) {
     for (const leaf of leaves) {
       for (const augmentations of augmentationPermutationsForMode(chain, mode)) {
+        const member = isFrozenCorpusMember(corpusMode, candidateIndex++);
+        if (!member) continue;
         if (!supportsGeneratedRoundtrip(chain, leaf, augmentations)) {
-          continue;
+          throw new Error(
+            `Frozen fixture no longer satisfies roundtrip constraints: ${generatedCaseName(chain, leaf, augmentations)}`,
+          );
         }
-        const candidate = buildRoundtripDocument(chain, leaf, augmentations);
-        if (!isCanonicalGeneratedDocument(candidate)) {
-          continue;
-        }
-        const expected = canonicalizeGeneratedDocument(candidate);
+        // The fixture builder creates the expected tree as plain DTO data. Keep
+        // that independent value as the expectation; test admission must not
+        // depend on the construction backend under test.
+        const expected = buildRoundtripDocument(chain, leaf, augmentations);
         const markdown = serializeToString(expected);
         if (seenMarkdown.has(markdown)) {
-          continue;
+          throw new Error(
+            `Frozen corpus contains duplicate Markdown: ${generatedCaseName(chain, leaf, augmentations)}`,
+          );
         }
         seenMarkdown.add(markdown);
         cases.push({
@@ -640,6 +680,22 @@ function generatedCanonicalCasesForMode(mode: GeneratedMode): NamedGeneratedCase
         });
       }
     }
+  }
+
+  const frozenCorpus = FROZEN_GENERATED_CORPUS[corpusMode];
+  expect(candidateIndex).toBe(frozenCorpus.candidateCount);
+  expect(cases).toHaveLength(frozenCorpus.caseCount);
+  expect(frozenMembershipHash(frozenCorpusMembership[corpusMode])).toBe(
+    frozenCorpus.membershipHash,
+  );
+  if (corpusMode === 'extensive') {
+    const sectionCases = cases.filter(({ chain }) => chain.includes('section'));
+    const codeCases = cases.filter(({ leaf }) => leaf === 'code-block');
+    expect(sectionCases).toHaveLength(21_298);
+    expect(codeCases).toHaveLength(45_554);
+  } else {
+    expect(cases.some(({ chain }) => chain.includes('section'))).toBe(true);
+    expect(cases.some(({ leaf }) => leaf === 'code-block')).toBe(true);
   }
 
   if (mode === 'extensive-smoke') {
@@ -673,17 +729,12 @@ function describeAugmentation(augmentation: Augmentation): string {
   }
 }
 
-function collectVisibleContentSnapshots(tree: MarkdownTree): VisibleContentSnapshot[] {
+function collectVisibleContentSnapshots(tree: ConstructionTree): VisibleContentSnapshot[] {
   const snapshots: VisibleContentSnapshot[] = [];
 
-  function visit(node: MarkdownNode, path: string): void {
+  function visit(node: ConstructionNode, path: string): void {
     if (node.type === 'paragraph' || node.type === 'code-block' || node.type === 'section') {
-      const nodeId =
-        (
-          node as MarkdownNode & {
-            [viewModel]?: { id: number };
-          }
-        )[viewModel]?.id ?? -1;
+      const nodeId = node.id;
       snapshots.push({
         nodeId,
         identity: `${path}:${node.type}`,
@@ -1040,7 +1091,7 @@ function getVisibleContentStartIndex(markdown: string, lineStart: number): numbe
 
 describe('block parser content growth heuristic helpers', () => {
   it('collects visible content-bearing nodes with path-based identities in document order', () => {
-    const tree = new MarkdownTree({
+    const tree = new ConstructionTree({
       type: 'document',
       children: [
         {
@@ -1061,45 +1112,46 @@ describe('block parser content growth heuristic helpers', () => {
         { type: 'paragraph', content: 'ee' },
       ],
     });
+    tree.normalize();
 
     expect(collectVisibleContentSnapshots(tree)).toEqual([
       {
-        nodeId: expect.any(Number) as number,
+        nodeId: expect.stringMatching(/^construction:/) as unknown as string,
         identity: 'document/0:section',
         path: 'document/0',
         type: 'section',
         contentLength: 4,
       },
       {
-        nodeId: expect.any(Number) as number,
+        nodeId: expect.any(String) as string,
         identity: 'document/0/0:paragraph',
         path: 'document/0/0',
         type: 'paragraph',
         contentLength: 1,
       },
       {
-        nodeId: expect.any(Number) as number,
+        nodeId: expect.any(String) as string,
         identity: 'document/0/1:code-block',
         path: 'document/0/1',
         type: 'code-block',
         contentLength: 2,
       },
       {
-        nodeId: expect.any(Number) as number,
+        nodeId: expect.any(String) as string,
         identity: 'document/0/2:section',
         path: 'document/0/2',
         type: 'section',
         contentLength: 3,
       },
       {
-        nodeId: expect.any(Number) as number,
+        nodeId: expect.any(String) as string,
         identity: 'document/0/2/0:paragraph',
         path: 'document/0/2/0',
         type: 'paragraph',
         contentLength: 4,
       },
       {
-        nodeId: expect.any(Number) as number,
+        nodeId: expect.any(String) as string,
         identity: 'document/0/2/1:paragraph',
         path: 'document/0/2/1',
         type: 'paragraph',
@@ -1111,7 +1163,7 @@ describe('block parser content growth heuristic helpers', () => {
   it('accepts the expected visible-content growth progression', () => {
     const previousSnapshot: VisibleContentSnapshot[] = [
       {
-        nodeId: 1,
+        nodeId: 'construction:1',
         identity: 'document/0:paragraph',
         path: 'document/0',
         type: 'paragraph',
@@ -1120,21 +1172,21 @@ describe('block parser content growth heuristic helpers', () => {
     ];
     const currentSnapshot: VisibleContentSnapshot[] = [
       {
-        nodeId: 1,
+        nodeId: 'construction:1',
         identity: 'document/0:paragraph',
         path: 'document/0',
         type: 'paragraph',
         contentLength: 2,
       },
       {
-        nodeId: 2,
+        nodeId: 'construction:2',
         identity: 'document/1:code-block',
         path: 'document/1',
         type: 'code-block',
         contentLength: 1,
       },
       {
-        nodeId: 3,
+        nodeId: 'construction:3',
         identity: 'document/2:section',
         path: 'document/2',
         type: 'section',
@@ -1150,7 +1202,7 @@ describe('block parser content growth heuristic helpers', () => {
   it('rejects newly visible content-bearing nodes that start above length one', () => {
     const previousSnapshot: VisibleContentSnapshot[] = [
       {
-        nodeId: 1,
+        nodeId: 'construction:1',
         identity: 'document/0:paragraph',
         path: 'document/0',
         type: 'paragraph',
@@ -1159,14 +1211,14 @@ describe('block parser content growth heuristic helpers', () => {
     ];
     const currentSnapshot: VisibleContentSnapshot[] = [
       {
-        nodeId: 1,
+        nodeId: 'construction:1',
         identity: 'document/0:paragraph',
         path: 'document/0',
         type: 'paragraph',
         contentLength: 1,
       },
       {
-        nodeId: 2,
+        nodeId: 'construction:2',
         identity: 'document/1:section',
         path: 'document/1',
         type: 'section',
@@ -1187,7 +1239,7 @@ describe('block parser content growth heuristic helpers', () => {
   it('rejects visible content nodes that grow by more than one character', () => {
     const previousSnapshot: VisibleContentSnapshot[] = [
       {
-        nodeId: 1,
+        nodeId: 'construction:1',
         identity: 'document/0:section',
         path: 'document/0',
         type: 'section',
@@ -1196,7 +1248,7 @@ describe('block parser content growth heuristic helpers', () => {
     ];
     const currentSnapshot: VisibleContentSnapshot[] = [
       {
-        nodeId: 1,
+        nodeId: 'construction:1',
         identity: 'document/0:section',
         path: 'document/0',
         type: 'section',

@@ -1,10 +1,9 @@
-import { viewModel } from '../view-model-node.js';
-import type { ViewModelNode } from '../view-model-node.js';
+import type { ConstructionNode } from '../semantic/construction-tree.js';
 import {
   type BlockParseState,
-  type BlockQuoteViewModelNode,
-  type ListViewModelNode,
-  type ListItemViewModelNode,
+  type ConstructionBlockQuoteNode,
+  type ConstructionListNode,
+  type ConstructionListItemNode,
 } from './types.js';
 import { createSemanticNode, isInsideListPath, placeSemanticNode } from './utils.js';
 import { removeEmptyRootParagraph as ensurePlaceholderRemoved } from './cleanup.js';
@@ -16,9 +15,9 @@ export function resetQuoteStack(state: BlockParseState) {
 
 export function syncQuoteStack(
   state: BlockParseState,
-  base: ViewModelNode,
+  base: ConstructionNode,
   depth: number,
-): ViewModelNode {
+): ConstructionNode {
   if (depth === 0) {
     resetQuoteStack(state);
     return base;
@@ -39,7 +38,7 @@ export function syncQuoteStack(
     const quote = createSemanticNode(state, {
       type: 'block-quote',
       marker: '> ',
-    }) as BlockQuoteViewModelNode;
+    }) as ConstructionBlockQuoteNode;
     placeSemanticNode(state, quote, parent);
     state.currentQuoteStack.push(quote);
     state.sawContent = true;
@@ -50,22 +49,22 @@ export function syncQuoteStack(
 
 export function ensureListContainer(
   state: BlockParseState,
-  parent: ViewModelNode,
-): ListViewModelNode {
-  if (state.currentList?.[viewModel].parent === parent) {
+  parent: ConstructionNode,
+): ConstructionListNode {
+  if (state.currentList?.parent === parent) {
     return state.currentList;
   }
 
   const lastChild = parent.children?.at(-1);
   if (lastChild?.type === 'list') {
-    const list = lastChild as ListViewModelNode;
+    const list = lastChild as ConstructionListNode;
     state.currentList = list;
     return list;
   }
 
   const list = createSemanticNode(state, {
     type: 'list',
-  }) as ListViewModelNode;
+  }) as ConstructionListNode;
   placeSemanticNode(state, list, parent);
   state.currentList = list;
   return list;
@@ -73,9 +72,9 @@ export function ensureListContainer(
 
 export function buildListPath(
   state: BlockParseState,
-  parent: ViewModelNode,
-  item: ListItemViewModelNode,
-): ListItemViewModelNode[] {
+  parent: ConstructionNode,
+  item: ConstructionListItemNode,
+): ConstructionListItemNode[] {
   for (let depth = state.currentListPath.length - 1; depth >= 0; depth--) {
     const ancestor = state.currentListPath[depth];
     if (parent === ancestor || isInsideListPath(parent, ancestor)) {
@@ -85,7 +84,7 @@ export function buildListPath(
   return [item];
 }
 
-export function syncSectionStack(state: BlockParseState, parent: ViewModelNode) {
+export function syncSectionStack(state: BlockParseState, parent: ConstructionNode) {
   if (parent.type !== 'section') {
     state.sectionStack.length = 0;
     return;

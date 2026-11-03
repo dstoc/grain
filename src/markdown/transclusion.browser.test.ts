@@ -2,21 +2,22 @@ import { it, expect } from 'vitest';
 import { MarkdownTransclusion } from './transclusion.js';
 import { HostContext } from './host-context.js';
 import { parseMarkdownTree } from './block-parser/api.js';
+import { ConstructionPreviewAdapter } from './construction-preview.js';
+import { asInlineMarkdownNodeView } from './node-view.js';
 import { nextTask } from '../editing/test/lifecycle.js';
-import type { InlineViewModelNode } from './view-model-node.js';
 
 it('forwards end focus to the last paragraph in a mounted transclusion', async () => {
   const outer = parseMarkdownTree('```md\nouter\n```');
   const nested = parseMarkdownTree('first\n\nsecond\n\n> quoted first\n>\n> quoted last');
   const context = new HostContext();
-  context.root = outer.root;
+  const outerPreview = new ConstructionPreviewAdapter(outer);
+  const nestedPreview = new ConstructionPreviewAdapter(nested);
+  context.root = outerPreview.root;
   const transclusion = new MarkdownTransclusion();
-  const node = outer.root.children![0] as InlineViewModelNode & {
-    type: 'code-block';
-    info: string | null;
-  };
+  const node = asInlineMarkdownNodeView(outerPreview.root.children![0]!);
+  if (node.type !== 'code-block') throw new Error('expected code block');
   transclusion.node = node;
-  transclusion.root = nested.root;
+  transclusion.root = nestedPreview.root;
   transclusion.hostContext = context;
   document.body.replaceChildren(transclusion);
   try {

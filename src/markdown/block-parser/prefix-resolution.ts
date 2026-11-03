@@ -1,7 +1,7 @@
-import type { ViewModelNode } from '../view-model-node.js';
+import type { ConstructionNode } from '../semantic/construction-tree.js';
 import {
   type BlockParseState,
-  type ListItemViewModelNode,
+  type ConstructionListItemNode,
   type LinePrefixResult,
 } from './types.js';
 import {
@@ -31,14 +31,14 @@ export function parseBlankLinePrefix(
   line: string,
 ):
   | {
-      quoteBase: ViewModelNode;
+      quoteBase: ConstructionNode;
       quoteDepth: number;
       listDepth: number;
       continuedListIndent: boolean;
     }
   | undefined {
   let rest = line;
-  let currentContainer: ViewModelNode = currentSectionContainer(state);
+  let currentContainer: ConstructionNode = currentSectionContainer(state);
   let listDepth = 0;
   let quoteBase = currentContainer;
   let quoteDepth = 0;
@@ -96,9 +96,9 @@ export function parseBlankLinePrefix(
 
 export function parseLinePrefix(state: BlockParseState, line: string): LinePrefixResult {
   let rest = line;
-  let currentContainer: ViewModelNode = currentSectionContainer(state);
+  let currentContainer: ConstructionNode = currentSectionContainer(state);
   let listDepth = 0;
-  let quoteBase: ViewModelNode | undefined;
+  let quoteBase: ConstructionNode | undefined;
   let quoteDepth = 0;
   const prefixes: ('list' | 'quote')[] = [];
   let continuedListIndent = false;
@@ -155,10 +155,10 @@ export function parseLinePrefix(state: BlockParseState, line: string): LinePrefi
 export function resolvePrefixContainers(
   state: BlockParseState,
   prefix: LinePrefixResult,
-): ViewModelNode {
+): ConstructionNode {
   let container = currentSectionContainer(state);
   let listDepth = 0;
-  let quoteBase: ViewModelNode | undefined;
+  let quoteBase: ConstructionNode | undefined;
   let quoteDepth = 0;
   let sawQuote = false;
 
@@ -203,11 +203,11 @@ export function parseQuotedListContinuation(
   line: string,
 ):
   | {
-      container: ListItemViewModelNode;
-      listPath: ListItemViewModelNode[];
+      container: ConstructionListItemNode;
+      listPath: ConstructionListItemNode[];
       content: string;
       contentFrom: number;
-      quoteBase: ViewModelNode;
+      quoteBase: ConstructionNode;
       quoteDepth: number;
     }
   | undefined {
@@ -231,8 +231,8 @@ export function parseQuotedListContinuation(
   let currentContainer =
     getQuotedPrefixContainer(state, quoteContext.quoteBase, quoteContext.quoteDepth) ??
     quoteContext.quoteBase;
-  let container: ListItemViewModelNode | undefined;
-  const listPath: ListItemViewModelNode[] = [];
+  let container: ConstructionListItemNode | undefined;
+  const listPath: ConstructionListItemNode[] = [];
 
   while (true) {
     const nextListItem = nextListPathItem(state.currentListPath, currentContainer, listPath.length);
@@ -278,7 +278,7 @@ export function parseQuotedListContinuation(
 export function shouldPreserveListPathOnQuotedBlankLine(
   state: BlockParseState,
   blankPrefix: {
-    quoteBase: ViewModelNode;
+    quoteBase: ConstructionNode;
     quoteDepth: number;
     listDepth: number;
     continuedListIndent: boolean;

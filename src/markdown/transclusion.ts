@@ -15,8 +15,11 @@
 import { css, html, LitElement } from 'lit';
 import { property, customElement, query } from 'lit/decorators.js';
 import { MarkdownRenderer } from './block-render.js';
-import type { CodeBlockNode } from './node.js';
-import type { InlineMarkdownNodeView, ReadonlyMarkdownNodeView } from './node-view.js';
+import type {
+  InlineMarkdownNodeView,
+  ReadonlyCodeBlockNodeView,
+  ReadonlyMarkdownNodeView,
+} from './node-view.js';
 import './block-render.js';
 import { consume } from '@lit/context';
 import { HostContext, hostContext, invalidateNodeView } from './host-context.js';
@@ -24,7 +27,7 @@ import { HostContext, hostContext, invalidateNodeView } from './host-context.js'
 @customElement('md-transclusion')
 export class MarkdownTransclusion extends LitElement {
   @property({ attribute: false })
-  accessor node: (InlineMarkdownNodeView & CodeBlockNode) | undefined;
+  accessor node: ReadonlyCodeBlockNodeView | undefined;
 
   @property({ type: Boolean, reflect: true })
   accessor selected = false;

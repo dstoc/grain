@@ -9,6 +9,7 @@ import {
 import type { CanonicalTextAnchor } from '../../markdown/canonical-selection.js';
 import type { MarkdownInline } from '../../markdown/inline-render.js';
 import type { MarkdownRenderer } from '../../markdown/block-render.js';
+import type { HostContext } from '../../markdown/host-context.js';
 import { asInlineMarkdownNodeView } from '../../markdown/node-view.js';
 import type { EditSelection } from '../../markdown/semantic/selection.js';
 import type { NodeId } from '../../markdown/semantic/types.js';
@@ -77,8 +78,7 @@ export class SelectionController {
     this.expectedInputSelection = { nodeId, offset };
   }
 
-  visibleInlineNodes(): CanonicalNode[] {
-    const root = this.host.document()?.root;
+  visibleInlineNodes(root = this.host.document()?.root): CanonicalNode[] {
     if (!root) return [];
     const result: CanonicalNode[] = [];
     const pending = [root];
@@ -92,13 +92,17 @@ export class SelectionController {
     return result;
   }
 
-  currentBlockSelection(): CanonicalNode[] {
-    const selection = this.host.renderer()?.hostContext?.selection ?? [];
+  currentBlockSelection(context = this.host.renderer()?.hostContext): CanonicalNode[] {
+    const selection = context?.selection ?? [];
     const selected = new Set<NodeId>();
     for (const node of selection) {
       if (node instanceof CanonicalNodeProjection) selected.add(node.sharedId);
     }
-    return this.visibleInlineNodes().filter((node) => selected.has(node.sharedId));
+    const root =
+      context?.root instanceof CanonicalNodeProjection
+        ? (context.root as CanonicalNode)
+        : undefined;
+    return this.visibleInlineNodes(root).filter((node) => selected.has(node.sharedId));
   }
 
   captureSelection(sealChangedGroup = false): void {
@@ -152,11 +156,11 @@ export class SelectionController {
     }
   }
 
-  async restoreSavedSelection(): Promise<void> {
+  async restoreSavedSelection(hostContext?: HostContext): Promise<void> {
     const anchor = this.anchor;
     const focus = this.focus ?? anchor;
     if (!anchor || !focus) return;
-    await this.restoreAnchors(anchor, focus);
+    await this.restoreAnchors(anchor, focus, false, false, hostContext);
   }
 
   async restoreAnchors(
@@ -164,9 +168,13 @@ export class SelectionController {
     focus: CanonicalTextAnchor,
     restoreAsBlockSelection = false,
     preserveBlockSelection = false,
+    hostContext?: HostContext,
   ): Promise<void> {
     const document = this.host.document();
-    const renderer = this.host.renderer();
+    const rootRenderer = this.host.renderer();
+    const renderer = hostContext
+      ? (this.rendererForContext(hostContext) ?? rootRenderer)
+      : rootRenderer;
     const generation = this.session.generation;
     if (!document || !renderer || !this.host.isConnected()) return;
     if (!this.session.isCurrentGeneration(generation)) return;
@@ -180,16 +188,23 @@ export class SelectionController {
     }
     const target = document.node(end.nodeId);
     if (!target.connected) return;
-    const context = renderer.hostContext;
+    const context = hostContext ?? renderer.hostContext;
     if (!preserveBlockSelection && (start.nodeId !== end.nodeId || restoreAsBlockSelection)) {
-      const visible = this.visibleInlineNodes();
+      const visibleRoot =
+        context.root instanceof CanonicalNodeProjection ? context.root : undefined;
+      const visible = this.visibleInlineNodes(visibleRoot);
       const startIndex = visible.findIndex((node) => node.sharedId === start.nodeId);
       const endIndex = visible.findIndex((node) => node.sharedId === end.nodeId);
       if (startIndex >= 0 && endIndex >= 0) {
         const low = Math.min(startIndex, endIndex);
         const high = Math.max(startIndex, endIndex);
         const ordered = visible.slice(low, high + 1);
-        this.setBlockSelection(ordered, document.node(start.nodeId), document.node(end.nodeId));
+        this.setBlockSelection(
+          ordered,
+          document.node(start.nodeId),
+          document.node(end.nodeId),
+          context,
+        );
       }
     } else if (!preserveBlockSelection) {
       context.clearSelection();
@@ -225,14 +240,14 @@ export class SelectionController {
     }
   }
 
-  async focusBookmark(bookmark: Bookmark | undefined): Promise<void> {
+  async focusBookmark(bookmark: Bookmark | undefined, hostContext?: HostContext): Promise<void> {
     const document = this.host.document();
     if (!document || !bookmark) return;
     try {
       const anchor = createCanonicalTextAnchor(document, bookmark);
-      await this.restoreAnchors(anchor, anchor);
+      await this.restoreAnchors(anchor, anchor, false, false, hostContext);
     } catch {
-      await this.restoreSavedSelection();
+      await this.restoreSavedSelection(hostContext);
     }
   }
 
@@ -259,14 +274,16 @@ export class SelectionController {
     };
   }
 
-  blockSelectionBefore(selection: readonly CanonicalNode[]): EditSelection | undefined {
+  blockSelectionBefore(
+    selection: readonly CanonicalNode[],
+    hostContext = this.host.renderer()?.hostContext,
+  ): EditSelection | undefined {
     if (!selection.length) return undefined;
     const first = selection[0]!;
     const last = selection.at(-1)!;
-    const context = this.host.renderer()?.hostContext;
     const reverse =
-      context?.selectionAnchor instanceof CanonicalNodeProjection &&
-      context.selectionAnchor.sharedId === last.sharedId;
+      hostContext?.selectionAnchor instanceof CanonicalNodeProjection &&
+      hostContext.selectionAnchor.sharedId === last.sharedId;
     const anchorNode = reverse ? last : first;
     const focusNode = reverse ? first : last;
     return {
@@ -285,7 +302,7 @@ export class SelectionController {
   }
 
   moveAcrossBlocks(inline: MarkdownInline, node: CanonicalNode, event: KeyboardEvent): void {
-    const context = this.host.renderer()?.hostContext;
+    const context = inline.hostContext ?? this.host.renderer()?.hostContext;
     const document = this.host.document();
     if (!context || !document?.root) return;
     event.preventDefault();
@@ -303,7 +320,9 @@ export class SelectionController {
       this.captureSelection();
       return;
     }
-    const visible = this.visibleInlineNodes();
+    const root =
+      context.root instanceof CanonicalNodeProjection ? (context.root as CanonicalNode) : undefined;
+    const visible = this.visibleInlineNodes(root);
     const index = visible.findIndex((candidate) => candidate.sharedId === node.sharedId);
     const next = visible[index + (direction === 'backward' ? -1 : 1)];
     if (!next) return;
@@ -318,15 +337,15 @@ export class SelectionController {
       offset,
       affinity: direction === 'backward' ? 'left' : 'right',
     });
-    void this.restoreAnchors(anchor, anchor, false, event.shiftKey);
+    void this.restoreAnchors(anchor, anchor, false, event.shiftKey, context);
   }
 
   setBlockSelection(
     nodes: readonly CanonicalNode[],
     anchor?: CanonicalNode,
     focus?: CanonicalNode,
+    context = this.host.renderer()?.hostContext,
   ): void {
-    const context = this.host.renderer()?.hostContext;
     if (!context) return;
     context.clearSelection();
     for (const node of nodes) {
@@ -335,6 +354,26 @@ export class SelectionController {
     }
     context.selectionAnchor = anchor ? asInlineMarkdownNodeView(anchor) : undefined;
     context.selectionFocus = focus ? asInlineMarkdownNodeView(focus) : undefined;
+  }
+
+  private rendererForContext(context: HostContext): MarkdownRenderer | undefined {
+    const root = this.host.renderer()?.shadowRoot;
+    if (!root) return;
+    const pending: Node[] = [...root.childNodes].reverse();
+    while (pending.length) {
+      const current = pending.pop()!;
+      if (
+        current instanceof HTMLElement &&
+        current.localName === 'md-block-render' &&
+        (current as MarkdownRenderer).hostContext === context
+      ) {
+        return current as MarkdownRenderer;
+      }
+      if (current instanceof Element && current.shadowRoot) {
+        pending.push(...[...current.shadowRoot.childNodes].reverse());
+      }
+      pending.push(...[...current.childNodes].reverse());
+    }
   }
 
   private onSelectionChange = (): void => {
