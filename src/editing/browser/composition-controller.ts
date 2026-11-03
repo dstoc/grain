@@ -132,9 +132,6 @@ export class CompositionController {
       return;
     }
     const nativeText = inline.textContent ?? '';
-    let from: number;
-    let to: number;
-    let insert: string;
     if (session.blockSelection?.length) {
       const document = this.environment.document()!;
       const selected = session.blockSelection
@@ -168,56 +165,20 @@ export class CompositionController {
         .catch(() => this.finishRecovery(recovery, false));
       return;
     }
-    if (nativeText === session.content && data) {
-      from = Math.min(session.selection.anchor, session.selection.focus);
-      to = Math.max(session.selection.anchor, session.selection.focus);
-      insert = data;
-    } else {
-      let prefix = 0;
-      while (
-        prefix < session.content.length &&
-        prefix < nativeText.length &&
-        session.content[prefix] === nativeText[prefix]
-      ) {
-        prefix++;
-      }
-      let suffix = 0;
-      while (
-        suffix < session.content.length - prefix &&
-        suffix < nativeText.length - prefix &&
-        session.content[session.content.length - 1 - suffix] ===
-          nativeText[nativeText.length - 1 - suffix]
-      ) {
-        suffix++;
-      }
-      while (
-        prefix > 0 &&
-        (!isUtf16Boundary(session.content, prefix) || !isUtf16Boundary(nativeText, prefix))
-      ) {
-        prefix--;
-      }
-      while (
-        suffix > 0 &&
-        (!isUtf16Boundary(session.content, session.content.length - suffix) ||
-          !isUtf16Boundary(nativeText, nativeText.length - suffix))
-      ) {
-        suffix--;
-      }
-      from = prefix;
-      to = session.content.length - suffix;
-      insert = nativeText.slice(prefix, nativeText.length - suffix);
-    }
+    const replacement = data
+      ? findCompositionEnvelope(session.content, nativeText, data, session.selection)
+      : undefined;
     if (
-      !data ||
-      insert.trimStart() !== data ||
+      !replacement ||
       !session.node.connected ||
       session.node.version !== session.version ||
-      session.node.content !== session.content ||
-      session.content.slice(0, from) + insert + session.content.slice(to) !== nativeText
+      session.node.content !== session.content
     ) {
       this.recoverAndReplay(session, inline, session.selection);
       return;
     }
+    const { from, to } = replacement;
+    const insert = replacement.insert;
     if (session.content.slice(0, from) + insert + session.content.slice(to) === session.content) {
       const caret = from + insert.length;
       const recovery = this.beginRecovery(session, inline);
@@ -495,4 +456,78 @@ function isUtf16Boundary(text: string, offset: number): boolean {
   const before = text.charCodeAt(offset - 1);
   const after = text.charCodeAt(offset);
   return !(before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff);
+}
+
+// Find an envelope containing the original selection whose native text includes the full payload.
+function findCompositionEnvelope(
+  content: string,
+  nativeText: string,
+  data: string,
+  selection: { readonly anchor: number; readonly focus: number },
+): { readonly from: number; readonly to: number; readonly insert: string } | undefined {
+  const selectionFrom = Math.min(selection.anchor, selection.focus);
+  const selectionTo = Math.max(selection.anchor, selection.focus);
+  let commonPrefix = 0;
+  while (
+    commonPrefix < content.length &&
+    commonPrefix < nativeText.length &&
+    content[commonPrefix] === nativeText[commonPrefix]
+  ) {
+    commonPrefix++;
+  }
+  let commonSuffix = 0;
+  while (
+    commonSuffix < content.length &&
+    commonSuffix < nativeText.length &&
+    content[content.length - 1 - commonSuffix] === nativeText[nativeText.length - 1 - commonSuffix]
+  ) {
+    commonSuffix++;
+  }
+
+  let replacement:
+    | { from: number; to: number; insert: string; score: number; leftExpansion: number }
+    | undefined;
+  for (
+    let dataFrom = nativeText.indexOf(data);
+    dataFrom >= 0;
+    dataFrom = nativeText.indexOf(data, dataFrom + 1)
+  ) {
+    const outputTo = dataFrom + data.length;
+    for (
+      let from = dataFrom;
+      from >= 0 && /^\s*$/u.test(nativeText.slice(from, dataFrom));
+      from--
+    ) {
+      const insert = nativeText.slice(from, outputTo);
+      const leadingText = insert.slice(0, insert.length - data.length);
+      if (leadingText && !/^\s*$/u.test(leadingText)) break;
+      const suffixLength = nativeText.length - outputTo;
+      const to = content.length - suffixLength;
+      if (
+        from > selectionFrom ||
+        to < selectionTo ||
+        from > to ||
+        from > commonPrefix ||
+        suffixLength > commonSuffix ||
+        !isUtf16Boundary(content, from) ||
+        !isUtf16Boundary(content, to) ||
+        !isUtf16Boundary(nativeText, from) ||
+        !isUtf16Boundary(nativeText, outputTo) ||
+        content.slice(0, from) + insert + content.slice(to) !== nativeText
+      ) {
+        continue;
+      }
+      const leftExpansion = selectionFrom - from;
+      const rightExpansion = to - selectionTo;
+      const score = Math.max(leftExpansion, rightExpansion);
+      if (
+        !replacement ||
+        score < replacement.score ||
+        (score === replacement.score && leftExpansion < replacement.leftExpansion)
+      ) {
+        replacement = { from, to, insert, score, leftExpansion };
+      }
+    }
+  }
+  return replacement;
 }
