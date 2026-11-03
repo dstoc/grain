@@ -65,6 +65,7 @@ import type {
   WriterOperationCounts,
   WriterOptions,
   NodeSpec,
+  CanonicalTextEdit,
 } from './canonical/action-types.js';
 export type {
   ActionFocus,
@@ -103,6 +104,8 @@ export type {
   WriterListener,
   WriterOperationCounts,
   WriterOptions,
+  CanonicalTextEdit,
+  CanonicalTreeDraft,
 } from './canonical/action-types.js';
 import {
   indexNativeTape,
@@ -1015,7 +1018,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     this.apply({ type: 'detach', id }, true);
   }
 
-  spliceText(id: NodeId, edit: TextEdit): void {
+  spliceText(id: NodeId, edit: CanonicalTextEdit): void {
     this.apply({ type: 'spliceText', id, edit: deepFreeze(deepCopy(edit)) }, true);
   }
 
@@ -1368,7 +1371,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     this.parentOverlay.set(id, null);
   }
 
-  private spliceInternal(id: NodeId, edit: TextEdit): void {
+  private spliceInternal(id: NodeId, edit: CanonicalTextEdit): void {
     const node = this.requireNode(id);
     this.ensureVisibleOrCreated(node);
     assert(INLINE_KINDS.has(node.type), `${node.type} nodes do not have inline text`);
@@ -1421,7 +1424,7 @@ class MutableTreeDraft implements ParserTreeDraft {
     node.textEdited ||= content !== inlineContent(node);
   }
 
-  private validateDraftEdit(content: string, edit: TextEdit): void {
+  private validateDraftEdit(content: string, edit: CanonicalTextEdit): void {
     assertTextEdit(content, edit);
   }
 

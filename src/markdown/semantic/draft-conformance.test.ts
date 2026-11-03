@@ -8,6 +8,12 @@ import { MarkdownTree } from '../view-model.js';
 import type { TreeDraft, InlineFragment } from './draft.js';
 import type { CreateNodeSpec, NodeId } from './types.js';
 
+it('keeps canonical span hints out of neutral draft edits', () => {
+  const spliceText: TreeDraft['spliceText'] = () => {};
+  // @ts-expect-error Canonical storage hints are not part of semantic text edits.
+  spliceText('node', { from: 0, to: 0, insert: 'x', spanIndex: 0 });
+});
+
 interface DraftHarness {
   readonly rootId: NodeId;
   run(callback: (draft: TreeDraft) => void): void;

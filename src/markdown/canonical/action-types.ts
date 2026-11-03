@@ -13,6 +13,14 @@ export type {
 } from '../semantic/draft.js';
 export type { CreateNodeSpec as NodeSpec } from '../semantic/types.js';
 
+/** Canonical-only insertion hint for selecting an identity-preserving empty span. */
+export type CanonicalTextEdit = TextEdit & { readonly spanIndex?: number };
+
+/** Canonical commands can carry native-span hints that semantic drafts do not expose. */
+export interface CanonicalTreeDraft extends Omit<TreeDraft, 'spliceText'> {
+  spliceText(id: NodeId, edit: CanonicalTextEdit): void;
+}
+
 export type CellField = 'kind' | 'children' | 'spans' | 'marker' | 'checked' | 'info';
 
 export interface Bookmark {
@@ -42,7 +50,7 @@ export interface ActionFocus {
   };
 }
 
-export type DraftCommand = (draft: TreeDraft) => void | ActionFocus;
+export type DraftCommand = (draft: CanonicalTreeDraft) => void | ActionFocus;
 
 export type ReadPrecondition =
   | {
@@ -67,7 +75,7 @@ export type SemanticOperation =
       readonly before: NodeId | null;
     }
   | { readonly type: 'detach'; readonly id: NodeId }
-  | { readonly type: 'spliceText'; readonly id: NodeId; readonly edit: TextEdit }
+  | { readonly type: 'spliceText'; readonly id: NodeId; readonly edit: CanonicalTextEdit }
   | {
       readonly type: 'cutInline';
       readonly id: NodeId;

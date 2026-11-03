@@ -2,6 +2,7 @@ import * as Y from 'yjs';
 import { describe, expect, it } from 'vitest';
 
 import { mapTextEdit } from './canonical-text.js';
+import type { CanonicalTextEdit } from './canonical-text.js';
 import type { Span } from './canonical-model.js';
 
 function tape(start: string, content: string, end: string, middle: string[] = []) {
@@ -98,6 +99,13 @@ describe('mapTextEdit', () => {
       { tapeId: 'empty', startBoundaryId: 'h2', endBoundaryId: 't2' },
       { tapeId: 'three', startBoundaryId: 'h3', endBoundaryId: 't3' },
     ];
+    const edit: CanonicalTextEdit = {
+      from: 1,
+      to: 1,
+      insert: 'x',
+      spanIndex: 1,
+      affinity: 'right',
+    };
     const mapped = mapTextEdit(
       spans,
       new Map([
@@ -105,7 +113,7 @@ describe('mapTextEdit', () => {
         ['empty', empty],
         ['three', third],
       ]),
-      { from: 1, to: 1, insert: 'x', spanIndex: 1, affinity: 'right' },
+      edit,
     );
 
     expect(mapped.insertion).toMatchObject({ tapeId: 'empty', index: 1, spanIndex: 1 });

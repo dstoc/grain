@@ -14,8 +14,6 @@ export interface TextEdit {
   readonly to: number;
   readonly insert: string;
   readonly affinity?: TextAffinity;
-  /** Select an otherwise empty canonical span when a bookmark identifies one. */
-  readonly spanIndex?: number;
 }
 
 export type CreateNodeSpec =
