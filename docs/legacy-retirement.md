@@ -207,16 +207,16 @@ At the R5 implementation head, the checker reports 111 production TypeScript mod
 
 ### Removed paths and preserved coverage
 
-| R5 disposition         | Paths or behavior                                                                                                                                                         |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Deleted                | `src/event-utils.ts`, `src/markdown/block-parser/conversion-boundary.ts`, and `src/markdown/semantic-normalize.ts`; full and production Knip found no required consumer.  |
-| Localized or deleted   | Proven-dead helpers, unused semantic utilities, and forwarding type exports. No replacement public facade was added.                                                      |
-| Kept as test support   | `canonical-history-capture.reference.ts` supplies the always-attached Yjs control for differential history tests; it is not production code.                              |
-| Kept and smoke-tested  | The six source facade paths in the import contract. The active ten custom elements remain asserted through `src/main.browser.test.ts`.                                    |
-| Kept as a release gate | The exact post-M5 baseline's complete three-process, uninterrupted 10,000-action retention run; physical mobile and IME checks; lifecycle and maintenance release checks. |
+| R5 disposition        | Paths or behavior                                                                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Deleted               | `src/event-utils.ts`, `src/markdown/block-parser/conversion-boundary.ts`, and `src/markdown/semantic-normalize.ts`; full and production Knip found no required consumer.                                     |
+| Localized or deleted  | Proven-dead helpers, unused semantic utilities, and forwarding type exports. No replacement public facade was added.                                                                                         |
+| Kept as test support  | `canonical-history-capture.reference.ts` supplies the always-attached Yjs control for differential history tests; it is not production code.                                                                 |
+| Kept and smoke-tested | The six source facade paths in the import contract. The active ten custom elements remain asserted through `src/main.browser.test.ts`.                                                                       |
+| Completed comparison  | The exact post-M5 baseline and R5 each completed three uninterrupted 10,000-action retention traces. Physical mobile and IME checks, lifecycle checks, and maintenance release checks remain separate gates. |
 
 The R5 test crosswalk does not retire any legacy behavior assertion. Existing editor history, parser, selection, clipboard, and custom-element controls remain in their active suites. The browser suite covers desktop Chromium, not physical mobile or IME input.
 
 ### R5 verification and benchmark record
 
-The implementation report and raw results live in [R5 structural metrics and benchmarks](./r5-metrics-and-benchmarks.md). It records exact commands, commits, environment, analyzer output, boundary output, matched profiles, and the incomplete baseline long-session gate. Historical M0/M1 reports and the earlier partial retention trace remain unchanged.
+The implementation report and raw results live in [R5 structural metrics and benchmarks](./r5-metrics-and-benchmarks.md). It records exact commands, commits, environment, analyzer output, boundary output, matched profiles, and the completed exact post-M5 long-session comparison. Historical M0/M1 reports and the earlier partial original-M0 retention trace remain unchanged; that trace is not post-M5 evidence.

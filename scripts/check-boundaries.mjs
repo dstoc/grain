@@ -173,8 +173,10 @@ function scanEdges(sourcePath, sourceText) {
 
     if (isImport && next?.kind === SyntaxKind.OpenParenToken) {
       const literal = tokens[index + 2];
-      const close = tokens[index + 3];
-      if (literal?.kind === SyntaxKind.StringLiteral && close?.kind === SyntaxKind.CloseParenToken)
+      if (
+        literal?.kind === SyntaxKind.StringLiteral ||
+        literal?.kind === SyntaxKind.NoSubstitutionTemplateLiteral
+      )
         edges.push(makeEdge(sourcePath, literal.value, false, true));
       continue;
     }
@@ -392,6 +394,15 @@ function checkBrowserGlobals(sourcePath, sourceText) {
     if (token.kind !== SyntaxKind.Identifier || !browserGlobals.has(token.text)) continue;
     const previous = tokens[index - 1]?.kind;
     const next = tokens[index + 1]?.kind;
+    const qualifier = tokens[index - 2];
+    if (
+      (previous === SyntaxKind.DotToken || previous === SyntaxKind.QuestionDotToken) &&
+      qualifier?.kind === SyntaxKind.Identifier &&
+      qualifier.text === 'globalThis'
+    ) {
+      errors.add(`${sourcePath} uses browser global ${token.text}`);
+      continue;
+    }
     if (
       previous === SyntaxKind.DotToken ||
       previous === SyntaxKind.QuestionDotToken ||

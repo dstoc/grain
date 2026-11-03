@@ -13,7 +13,7 @@
     "format:check": "vp fmt --check",
     "analyze:unused": "knip --no-progress --reporter compact",
     "analyze:unused:production": "knip --production --no-progress --reporter compact",
-    "check:boundaries": "node scripts/check-boundaries.mjs",
+    "check:boundaries": "node --test scripts/check-boundaries.test.mjs && node scripts/check-boundaries.mjs",
     "test": "vp test run --project node",
     "test:watch": "vp test --project node",
     "test:browser": "vp test run --project browser",
