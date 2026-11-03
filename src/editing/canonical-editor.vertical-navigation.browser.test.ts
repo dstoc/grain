@@ -199,7 +199,7 @@ test('uses proportional caret geometry on the first wrapped destination line', a
     target: 'iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii',
     edge: 'End',
     direction: 'down',
-    width: 150,
+    width: 100,
     wrapped: true,
   });
 });
