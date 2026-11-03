@@ -37,22 +37,6 @@ export function editSemanticText(
   state.draft.spliceText(node.id, { from, to, insert });
 }
 
-export function setSemanticMarker(
-  state: BlockParseState,
-  node: ConstructionNode,
-  marker: string,
-): void {
-  state.draft.setMarker(node.id, marker);
-}
-
-export function setSemanticChecked(
-  state: BlockParseState,
-  node: ConstructionNode,
-  checked: boolean | null,
-): void {
-  state.draft.setChecked(node.id, checked);
-}
-
 export function isInsideListPath(
   node: ConstructionNode,
   ancestor?: ConstructionListItemNode,

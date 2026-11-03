@@ -1,10 +1,10 @@
 import * as Y from 'yjs';
 import { describe, expect, it } from 'vitest';
 import {
-  ReferenceNativeTextHistoryCapture,
   RoutedNativeTextHistoryCapture,
   type NativeTextHistoryCapture,
 } from './canonical-history-capture.js';
+import { ReferenceNativeTextHistoryCapture } from './canonical-history-capture.reference.js';
 
 type CaptureMode = 'routed' | 'reference';
 type Listener = (...args: any[]) => void;

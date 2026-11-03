@@ -513,11 +513,44 @@ function historyEdit(
   return publishTextInput(writer, request);
 }
 
-function retainedHistoryGroupCount(writer: CanonicalWriter, sessionId = 'm0-core-session'): number {
-  const internals = writer as unknown as {
-    readonly sessions: ReadonlyMap<string, { readonly all: ReadonlySet<unknown> }>;
-  };
-  return internals.sessions.get(sessionId)?.all.size ?? 0;
+type RetainedHistorySession = { readonly all: { readonly size: number } };
+type RetainedHistoryRegistry = ReadonlyMap<string, RetainedHistorySession>;
+
+interface RetainedHistoryWriterShape {
+  readonly sessions?: unknown;
+  readonly history?: { readonly sessions?: unknown };
+}
+
+function isRetainedHistoryRegistry(value: unknown): value is RetainedHistoryRegistry {
+  return (
+    typeof value === 'object' && value !== null && 'get' in value && typeof value.get === 'function'
+  );
+}
+
+function retainedHistoryRegistry(writer: CanonicalWriter): {
+  readonly path: 'writer.sessions' | 'writer.history.sessions';
+  readonly sessions: RetainedHistoryRegistry;
+} {
+  const internals = writer as unknown as RetainedHistoryWriterShape;
+  if (isRetainedHistoryRegistry(internals.sessions))
+    return { path: 'writer.sessions', sessions: internals.sessions };
+  if (isRetainedHistoryRegistry(internals.history?.sessions))
+    return { path: 'writer.history.sessions', sessions: internals.history.sessions };
+  throw new Error(
+    'unsupported canonical writer history registry; expected writer.sessions or writer.history.sessions',
+  );
+}
+
+function retainedHistoryGroupCount(
+  writer: CanonicalWriter,
+  sessionId = 'm0-core-session',
+  requireSession = false,
+): { readonly path: 'writer.sessions' | 'writer.history.sessions'; readonly count: number } {
+  const { path, sessions } = retainedHistoryRegistry(writer);
+  const session = sessions.get(sessionId);
+  if (!session && requireSession)
+    throw new Error(`missing retained history session ${sessionId} in ${path}`);
+  return { path, count: session?.all.size ?? 0 };
 }
 
 function seededHistory(depth: number) {
@@ -527,6 +560,29 @@ function seededHistory(depth: number) {
   for (let index = 0; index < depth; index++)
     historyEdit(writer, target.sharedId, index, `m0-history-seed-${depth}`);
   return { document, writer, target };
+}
+
+function calibrateRetainedHistoryProbe() {
+  const counts: Record<number, number> = {};
+  let path: 'writer.sessions' | 'writer.history.sessions' | undefined;
+  for (const depth of [0, 64, 500]) {
+    const { document, writer } = seededHistory(depth);
+    try {
+      const observed = retainedHistoryGroupCount(writer, 'm0-core-session', depth > 0);
+      if (path && observed.path !== path)
+        throw new Error(`retained history registry changed from ${path} to ${observed.path}`);
+      path = observed.path;
+      expect(observed.count).toBe(depth);
+      counts[depth] = observed.count;
+    } finally {
+      writer.close();
+      document.close();
+    }
+  }
+  if (!path) throw new Error('retained history probe calibration did not select a registry');
+  const calibration = { path, counts };
+  runtimeProcess.stderr?.write(`GRAIN_YJS_M0_PROBE=${JSON.stringify(calibration)}\n`);
+  return calibration;
 }
 
 function warmHistory(depth: number, warmupCount: number): void {
@@ -542,7 +598,11 @@ function benchmarkHistoryDepth(depth: number, warmupCount: number, operationCoun
   const seeded = seededHistory(depth);
   const { document, target } = seeded;
   let writer = seeded.writer;
-  const observedRetainedGroupsBefore = retainedHistoryGroupCount(writer);
+  const observedRetainedGroupsBefore = retainedHistoryGroupCount(
+    writer,
+    'm0-core-session',
+    depth > 0,
+  ).count;
   expect(observedRetainedGroupsBefore).toBe(depth);
   const prepareTimes: number[] = [];
   const applyPublishTimes: number[] = [];
@@ -581,7 +641,11 @@ function benchmarkHistoryDepth(depth: number, warmupCount: number, operationCoun
   }
 
   const resourcesAfterMeasured = snapshotNativeState(document);
-  const observedRetainedGroupsAfter = retainedHistoryGroupCount(writer);
+  const observedRetainedGroupsAfter = retainedHistoryGroupCount(
+    writer,
+    'm0-core-session',
+    depth > 0,
+  ).count;
   expect(observedRetainedGroupsAfter).toBe(depth === 0 ? 0 : Math.min(500, depth + operationCount));
   collectGarbage?.();
   const memoryAfter = runtimeProcess.memoryUsage();
@@ -709,7 +773,7 @@ function benchmarkLongTrace(actionCount: number, sampleCount: number) {
   }
 
   const resourcesAfter = snapshotNativeState(document);
-  const observedRetainedGroups = retainedHistoryGroupCount(writer);
+  const observedRetainedGroups = retainedHistoryGroupCount(writer, 'm0-core-session', true).count;
   expect(observedRetainedGroups).toBe(500);
   collectGarbage?.();
   const memoryAfter = runtimeProcess.memoryUsage();
@@ -745,6 +809,7 @@ function benchmarkLongTrace(actionCount: number, sampleCount: number) {
 }
 
 function runRetentionProfile() {
+  const retainedHistoryProbe = calibrateRetainedHistoryProbe();
   const config = manifest.profiles.retention;
   emitRetentionProgress({
     kind: 'profile-started',
@@ -786,6 +851,7 @@ function runRetentionProfile() {
       platform: runtimeProcess.platform,
       arch: runtimeProcess.arch,
     },
+    retainedHistoryProbe,
     retainedHistory,
     longTrace,
   };
@@ -794,6 +860,12 @@ function runRetentionProfile() {
 }
 
 describe('Grain/Yjs M0 core benchmark', () => {
+  it('validates retained-history probe calibration', () => {
+    expect(calibrateRetainedHistoryProbe()).toMatchObject({
+      counts: { 0: 0, 64: 64, 500: 500 },
+    });
+  });
+
   it.skipIf(profile !== 'core')(
     'reports acceptance, projection, serialization, checkpoint, and native state distributions',
     () => {

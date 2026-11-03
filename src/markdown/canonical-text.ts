@@ -3,7 +3,6 @@ import * as Y from 'yjs';
 import type { BoundaryEmbed, Span, TapeId } from './canonical/types.js';
 import type { CanonicalTextEdit } from './canonical/action-types.js';
 import type { TextAffinity } from './semantic/types.js';
-export type { TextAffinity, TextEdit } from './semantic/types.js';
 export type { CanonicalTextEdit } from './canonical/action-types.js';
 
 export interface NativeTextRun {
@@ -12,7 +11,7 @@ export interface NativeTextRun {
   readonly to: number;
 }
 
-export interface NativeInsertionPoint {
+interface NativeInsertionPoint {
   readonly tapeId: TapeId;
   readonly index: number;
   readonly spanIndex: number;
@@ -31,7 +30,7 @@ interface TextRun {
   readonly nativeFrom: number;
 }
 
-export interface ProjectedSpanIndex {
+interface ProjectedSpanIndex {
   readonly span: Span;
   readonly spanIndex: number;
   readonly visibleFrom: number;
@@ -43,13 +42,13 @@ export interface ProjectedSpanIndex {
   readonly endGap: number;
 }
 
-export interface NativeTapePart {
+interface NativeTapePart {
   readonly insert: unknown;
   readonly nativeFrom: number;
   readonly nativeTo: number;
 }
 
-export interface NativeBoundaryItem {
+interface NativeBoundaryItem {
   readonly boundaryId: string;
   readonly itemId: string;
   readonly index: number;

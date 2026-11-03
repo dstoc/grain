@@ -1,9 +1,9 @@
-export interface SourceSpan {
+interface SourceSpan {
   startIndex: number;
   endIndex: number;
 }
 
-export interface InlineTokenBase extends SourceSpan {
+interface InlineTokenBase extends SourceSpan {
   text: string;
 }
 
@@ -62,7 +62,7 @@ export interface ResolvedStrikethrough extends ResolvedDelimitedBase {
   type: 'strikethrough';
 }
 
-export interface ResolvedLinkBase extends SourceSpan {
+interface ResolvedLinkBase extends SourceSpan {
   text: string;
   label: ResolvedInline[];
 }

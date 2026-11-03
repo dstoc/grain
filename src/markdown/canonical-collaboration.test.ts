@@ -13,7 +13,7 @@ import {
   type AdmittedContext,
   type DraftCommand,
 } from './canonical-actions.js';
-import type { TextEdit } from './canonical-text.js';
+import type { TextEdit } from './semantic/types.js';
 
 function makeDocument(text = 'base'): CanonicalDocument {
   return CanonicalDocument.fromMarkdown(text, {

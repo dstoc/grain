@@ -15,14 +15,6 @@ export function walkSemanticTree(draft: SemanticNormalizationDraft, rootId: Node
   return result;
 }
 
-export function requireInline(draft: TreeDraft, id: NodeId) {
-  const node = draft.node(id);
-  if (node.type !== 'paragraph' && node.type !== 'section' && node.type !== 'code-block') {
-    throw new Error(`${node.type} is not an inline node`);
-  }
-  return node;
-}
-
 export function nearestAncestor(
   draft: TreeDraft,
   rootId: NodeId,

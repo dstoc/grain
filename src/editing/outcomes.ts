@@ -1,5 +1,5 @@
 import type { EditContext } from './context.js';
-import type { EditFocus, SelectionIntent, TextPoint } from '../markdown/semantic/selection.js';
+import type { SelectionIntent, TextPoint } from '../markdown/semantic/selection.js';
 
 export type EditOutcome =
   | { readonly status: 'not-applicable' }
@@ -18,5 +18,3 @@ export function handled(
 ): EditOutcome {
   return { status: 'handled', ...outcome };
 }
-
-export type { EditFocus };

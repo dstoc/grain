@@ -71,7 +71,7 @@ export class HostContext {
 
 export const hostContext = createContext<HostContext | undefined>('hostContext');
 
-export function focusNode(context: HostContext, node: InlineMarkdownNodeView, offset?: number) {
+function focusNode(context: HostContext, node: InlineMarkdownNodeView, offset?: number) {
   context.focusNode = node;
   context.focusOffset = offset;
   invalidateNodeView(node);

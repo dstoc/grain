@@ -2,7 +2,7 @@
 
 This ledger records the R0 compatibility boundary from the Grain Yjs refactor proposal attached to `grain/58`. It describes the repository at post-M5 commit `c3a8812e8bbee69c805a50347dd29d11c076d2de` on branch `yjs`.
 
-The R0 inventory below is historical. The R4 section at the end records the current construction, renderer, and retirement state.
+The R0 inventory below is historical. R4 records the construction change; the R5 section at the end records the current retirement, boundaries, and remaining gates.
 
 R0 establishes the baseline. It does not authorize broad deletion. Keep each candidate until its production consumers and test cases have a named disposition.
 
@@ -29,40 +29,39 @@ Both draft backends now provide live node views, immutable child snapshots, stri
 
 The block parser contract is:
 
-- `createBlockParser(snapshot?, options?)` returns a `BlockParser` backed by a mutable `MarkdownTree`.
-- `push(text)` applies the chunk and returns that same `MarkdownTree`. Pending text is projected before a final newline arrives.
+- `createBlockParser(snapshot?, options?)` returns a `BlockParser` backed by a mutable `ConstructionTree`.
+- `push(text)` applies the chunk and returns that same `ConstructionTree`. Pending text is projected before a final newline arrives.
 - `finish()` closes the stream and returns that same tree. `getTree()` also returns it.
 - `getPendingText()` returns the unconsumed line suffix. `snapshot()` returns the resumable parser state.
 - `getConversionPlan(source)` is available only when provenance is enabled and the parser is finished. The source length must match the received input length.
 - `parseBlocks(markdown)` returns `{ node: DocumentNode }`. With `{ provenance: true }`, it returns `{ node, provenance }`.
-- `parseMarkdownTree(markdown)` finishes a parser and returns its `MarkdownTree`, not a plain node record.
+- `parseMarkdownTree(markdown)` finishes a parser and returns its `ConstructionTree`; `parseBlocks(markdown)` returns a serializable `DocumentNode`.
 - `classifyInlineInput(markdown)` returns either `{ kind: 'literal' }` or `{ kind: 'conversion', plan }`.
 
 The current active custom elements are registered through the `src/main.ts` import graph:
 
-| Element                            | Registration source                      | Status                                                                                             |
-| ---------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `md-dev-harness`                   | `src/main.ts`                            | Demo application root.                                                                             |
-| `md-canonical-editor`              | `src/editing/canonical-editor.ts`        | Active editor.                                                                                     |
-| `md-mobile-keyboard-toolbar`       | `src/editing/mobile-keyboard-toolbar.ts` | Active mobile toolbar.                                                                             |
-| `md-transclusion`                  | `src/markdown/transclusion.ts`           | Active renderer extension.                                                                         |
-| `md-inline`, `md-span`             | `src/markdown/inline-render.ts`          | Active inline projection.                                                                          |
-| `md-block`, `md-block-render`      | `src/markdown/block-render.ts`           | Active block projection.                                                                           |
-| `md-section-ui`, `md-list-item-ui` | `src/markdown/block-ui.ts`               | Active block controls.                                                                             |
-| `md-editor`                        | `src/editing/editor.ts`                  | Legacy editor element. It is not imported by the application entry; browser tests still import it. |
+| Element                            | Registration source                      | Status                     |
+| ---------------------------------- | ---------------------------------------- | -------------------------- |
+| `md-dev-harness`                   | `src/main.ts`                            | Demo application root.     |
+| `md-canonical-editor`              | `src/editing/canonical-editor.ts`        | Active editor.             |
+| `md-mobile-keyboard-toolbar`       | `src/editing/mobile-keyboard-toolbar.ts` | Active mobile toolbar.     |
+| `md-transclusion`                  | `src/markdown/transclusion.ts`           | Active renderer extension. |
+| `md-inline`, `md-span`             | `src/markdown/inline-render.ts`          | Active inline projection.  |
+| `md-block`, `md-block-render`      | `src/markdown/block-render.ts`           | Active block projection.   |
+| `md-section-ui`, `md-list-item-ui` | `src/markdown/block-ui.ts`               | Active block controls.     |
 
-`src/main.browser.test.ts` now asserts that the ten active application elements register when `src/main.ts` loads.
+R4 removed the legacy `md-editor` element. `src/main.browser.test.ts` asserts that the ten active application elements register when `src/main.ts` loads.
 
 ## Entry graphs
 
-| Graph                  | Current roots and path                                                                                                                                                         | Current reachability                                                                                                                                                                                                                                                                  |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Web application        | `index.html` loads `src/main.ts`.                                                                                                                                              | The host imports the canonical editor, toolbar, transclusion renderer, parser API, canonical document/writer, serializer, and legacy view-model preview utilities. The canonical editor loads block, inline, and block UI elements. The block parser still constructs `MarkdownTree`. |
-| Headless source use    | There is no dedicated public headless barrel. Current source roots are the block parser API, inline parser API, canonical document/writer modules, serializer, and node types. | Tests and the demo host import these paths directly. These are analysis roots, not a published package contract.                                                                                                                                                                      |
-| Node tests             | `vitest.config.ts`: `src/**/*.test.ts`, excluding `src/**/*.browser.test.ts`.                                                                                                  | Includes parser, model, edit, history, collaboration, dependency-control, and review suites. Some benchmark tests are included but are gated by environment variables.                                                                                                                |
-| Browser tests          | `vitest.config.ts`: `src/**/*.browser.test.ts`, Chromium provider.                                                                                                             | Includes the active canonical editor and demo harness, legacy editor tests, renderer tests, toolbar tests, and custom-element registration.                                                                                                                                           |
-| Parser extensive smoke | `npm run test:extensive-smoke` enables `MARKDOWN_EXTENSIVE_SMOKE_TESTS=1` for `src/markdown/block-parser.permutations.test.ts`.                                                | Exercises the parser permutation corpus beyond its normal skipped defaults.                                                                                                                                                                                                           |
-| Benchmarks             | `benchmarks/yjs-m0/run.mjs`, `benchmarks/yjs-m0/fixtures.ts`, `benchmarks/yjs-m0/counters.ts`, and benchmark tests under `src/markdown/`.                                      | `bench:yjs-m0` runs the retained M0 comparison harness. `bench:canonical-history` runs the current canonical history benchmark. Historical M0/M1 JSON remains reference evidence.                                                                                                     |
+| Graph                  | Current roots and path                                                                                                                                                         | Current reachability                                                                                                                                                                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web application        | `index.html` loads `src/main.ts`.                                                                                                                                              | The host imports the canonical editor, toolbar, transclusion renderer, parser API, canonical document/writer, serializer, and construction preview. The canonical editor loads block, inline, and block UI elements. The block parser builds `ConstructionTree`. |
+| Headless source use    | There is no dedicated public headless barrel. Current source roots are the block parser API, inline parser API, canonical document/writer modules, serializer, and node types. | Tests and the demo host import these paths directly. These are analysis roots, not a published package contract.                                                                                                                                                 |
+| Node tests             | `vitest.config.ts`: `src/**/*.test.ts`, excluding `src/**/*.browser.test.ts`.                                                                                                  | Includes parser, model, edit, history, collaboration, dependency-control, and review suites. Some benchmark tests are included but are gated by environment variables.                                                                                           |
+| Browser tests          | `vitest.config.ts`: `src/**/*.browser.test.ts`, Chromium provider.                                                                                                             | Includes the active canonical editor and demo harness, legacy editor tests, renderer tests, toolbar tests, and custom-element registration.                                                                                                                      |
+| Parser extensive smoke | `npm run test:extensive-smoke` enables `MARKDOWN_EXTENSIVE_SMOKE_TESTS=1` for `src/markdown/block-parser.permutations.test.ts`.                                                | Exercises the parser permutation corpus beyond its normal skipped defaults.                                                                                                                                                                                      |
+| Benchmarks             | `benchmarks/yjs-m0/run.mjs`, `benchmarks/yjs-m0/fixtures.ts`, `benchmarks/yjs-m0/counters.ts`, and benchmark tests under `src/markdown/`.                                      | `bench:yjs-m0` runs the retained M0 comparison harness. `bench:canonical-history` runs the current canonical history benchmark. Historical M0/M1 JSON remains reference evidence.                                                                                |
 
 `knip.json` names the application, headless source, active custom-element, test, and benchmark roots. It does not mark every source file as an entry. Production source entries and the source project pattern use Knip's trailing `!` marker. The production project excludes `src/**/*.test.ts` with `!src/**/*.test.ts!`; test and benchmark roots remain in the full-project analysis.
 
@@ -189,3 +188,35 @@ The R4 change deletes `src/editing/editor.ts`, `src/editing/edits/**`, the old e
 `docs/legacy-test-crosswalk.md` lists each removed test by fully qualified Vitest title and gives its R4 disposition. Parser construction, provenance, generated permutations, semantic draft conformance, canonical commands, history, and current browser behavior retain independent tests. It records deliberate retirements where a case belonged to the removed second editor or model.
 
 The exact Yjs dependency remains `13.6.33`. Canonical schema 2, action and wire formats, normalization rules, and history storage remain on the approved R4 boundary.
+
+## R5 final retirement and boundary record
+
+R5 removes the unused `src/event-utils.ts`, `src/markdown/block-parser/conversion-boundary.ts`, and `src/markdown/semantic-normalize.ts`. It also removes unreferenced forwarding helpers and internal type exports listed in the R5 pull request. It keeps the six direct source facades in the import contract above. `docs/module-map.md` records the final layers; `docs/edit-authoring.md` records the command authoring contract; `src/markdown/canonical-facades.test.ts` imports each facade directly.
+
+### Analyzer roots and reviewed findings
+
+Knip remains pinned to `6.41.0`. `knip.json` names the application, six direct facades, standalone commands, active custom elements, tests, and benchmark roots. Production mode excludes test files, parser permutation fixtures, CommonMark test support, and the retained-history differential reference. The full-project run includes those test roots. The one ignored dependency, `@babel/plugin-proposal-decorators`, is loaded by name in `vite.config.ts`; it is not imported from application source. No blanket source-entry or unused-export suppression is configured.
+
+Both `npm run analyze:unused` and `npm run analyze:unused:production` complete with no findings on the R5 branch. The type-only retained-history reference capture lives in `canonical-history-capture.reference.ts`; it is excluded from production analysis and used only by its differential test.
+
+### Enforced boundaries
+
+CI runs `npm run check:boundaries` and Oxlint's `import/no-cycle` rule. The boundary checker scans static imports, re-exports, literal dynamic imports, and type-only edges. It checks parser/core dependencies and browser globals, editing and parser paths against canonical implementation modules, renderer paths against canonical mutation surfaces, canonical paths against editor and renderer modules, and imports from retired paths. It reports runtime strongly connected components separately.
+
+At the R5 implementation head, the checker reports 111 production TypeScript modules, 586 static import/re-export/dynamic edges, 275 type-only edges, 51 external edges, and 0 runtime cycles. The counts are structural observations. The file and line removals do not establish a performance improvement.
+
+### Removed paths and preserved coverage
+
+| R5 disposition        | Paths or behavior                                                                                                                                                                                            |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Deleted               | `src/event-utils.ts`, `src/markdown/block-parser/conversion-boundary.ts`, and `src/markdown/semantic-normalize.ts`; full and production Knip found no required consumer.                                     |
+| Localized or deleted  | Proven-dead helpers, unused semantic utilities, and forwarding type exports. No replacement public facade was added.                                                                                         |
+| Kept as test support  | `canonical-history-capture.reference.ts` supplies the always-attached Yjs control for differential history tests; it is not production code.                                                                 |
+| Kept and smoke-tested | The six source facade paths in the import contract. The active ten custom elements remain asserted through `src/main.browser.test.ts`.                                                                       |
+| Completed comparison  | The exact post-M5 baseline and R5 each completed three uninterrupted 10,000-action retention traces. Physical mobile and IME checks, lifecycle checks, and maintenance release checks remain separate gates. |
+
+The R5 test crosswalk does not retire any legacy behavior assertion. Existing editor history, parser, selection, clipboard, and custom-element controls remain in their active suites. The browser suite covers desktop Chromium, not physical mobile or IME input.
+
+### R5 verification and benchmark record
+
+The implementation report and raw results live in [R5 structural metrics and benchmarks](./r5-metrics-and-benchmarks.md). It records exact commands, commits, environment, analyzer output, boundary output, matched profiles, and the completed exact post-M5 long-session comparison. Historical M0/M1 reports and the earlier partial original-M0 retention trace remain unchanged; that trace is not post-M5 evidence.

@@ -18,7 +18,7 @@ export function isWithinScope(draft: TreeDraft, scopeRoot: NodeId, nodeId: NodeI
   return true;
 }
 
-export function assertInScope(draft: TreeDraft, scopeRoot: NodeId, nodeId: NodeId): void {
+function assertInScope(draft: TreeDraft, scopeRoot: NodeId, nodeId: NodeId): void {
   if (!isWithinScope(draft, scopeRoot, nodeId))
     throw new Error(`node ${nodeId} is outside edit scope ${scopeRoot}`);
 }

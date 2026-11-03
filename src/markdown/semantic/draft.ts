@@ -23,7 +23,7 @@ interface DraftNodeFields {
   readonly info: string | null;
 }
 
-export interface SemanticDraftNode {
+interface SemanticDraftNode {
   readonly id: NodeId;
   readonly type: NodeKind;
   readonly children: readonly NodeId[];

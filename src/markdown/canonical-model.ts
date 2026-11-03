@@ -13,7 +13,6 @@ export type {
   AcceptedUpdate,
   CanonicalCheckpoint,
   CanonicalDocumentOptions,
-  CanonicalMaintenanceReset,
   CanonicalMaintenanceResult,
   CanonicalOpenOptions,
   CanonicalWriterAccess,

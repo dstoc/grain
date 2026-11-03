@@ -83,28 +83,6 @@ function serializeBlocks(
   return serializedContent;
 }
 
-export function getPrefix(node: MarkdownNode): string {
-  switch (node.type) {
-    case 'document':
-    case 'list':
-    case 'paragraph':
-      return '';
-    case 'list-item':
-      // TODO: whitespace should not be part of the marker.
-      return node.marker;
-    case 'block-quote':
-      // TODO: whitespace should not be part of the marker.
-      return node.marker;
-    case 'section':
-      return node.marker + ' ';
-    case 'code-block':
-      return '```' + (node.info ?? '');
-    default:
-      // TODO: assert unreachable
-      assert(false);
-  }
-}
-
 function serialize(
   node: MarkdownNode,
   indents: Indents,

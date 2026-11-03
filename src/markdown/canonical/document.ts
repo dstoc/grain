@@ -47,7 +47,6 @@ export type {
   CanonicalCheckpoint,
   CanonicalDocumentOptions,
   CanonicalMaintenanceResult,
-  CanonicalMaintenanceReset,
   CanonicalOpenOptions,
 } from './document-types.js';
 import { CanonicalNode } from './node-projection.js';
@@ -63,15 +62,7 @@ export type { ValidationResult } from './validation.js';
 import type { BoundaryEmbed, Cell, ResourceToken, Span, TapeId } from './types.js';
 
 export { CanonicalNode } from './node-projection.js';
-export type {
-  BoundaryEmbed,
-  BoundaryId,
-  CanonicalNodeFields,
-  Cell,
-  ResourceToken,
-  Span,
-  TapeId,
-} from './types.js';
+export type { BoundaryEmbed, Span, TapeId } from './types.js';
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 type RecordMap = Y.Map<unknown>;

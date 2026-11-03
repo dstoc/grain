@@ -1,5 +1,6 @@
 import { it, expect } from 'vitest';
 import { MarkdownTransclusion } from './transclusion.js';
+import './block-render.js';
 import { HostContext } from './host-context.js';
 import { parseMarkdownTree } from './block-parser/api.js';
 import { ConstructionPreviewAdapter } from './construction-preview.js';

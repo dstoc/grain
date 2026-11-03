@@ -65,7 +65,7 @@ export function parseInitialListItemContent(
   parseInitialContainerContent(state, item, content, mapped);
 }
 
-export function parseInitialContainerContent(
+function parseInitialContainerContent(
   state: BlockParseState,
   parent: ConstructionNode,
   content: string,

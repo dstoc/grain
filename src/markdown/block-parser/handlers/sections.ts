@@ -37,7 +37,7 @@ export function tryPromoteSetextHeading(
   return true;
 }
 
-export function promoteParagraphToSection(
+function promoteParagraphToSection(
   state: BlockParseState,
   paragraph: ConstructionParagraphNode,
   parent: ConstructionNode,

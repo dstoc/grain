@@ -47,6 +47,6 @@ export function sliceMappedText(source: MappedText, from: number, to: number): M
   return { text, pieces };
 }
 
-export function pieceLength(piece: OutputPiece): number {
+function pieceLength(piece: OutputPiece): number {
   return piece.kind === 'retain' ? piece.sourceTo - piece.sourceFrom : piece.text.length;
 }
