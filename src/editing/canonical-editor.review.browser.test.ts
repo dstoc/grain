@@ -3,6 +3,7 @@ import { userEvent, cdp } from 'vitest/browser';
 import { html } from 'lit';
 import { CanonicalWriter, type ActionRequest } from '../markdown/canonical-actions.js';
 import { CanonicalDocument, type CanonicalNode } from '../markdown/canonical-model.js';
+import { serializeToString } from '../markdown/block-serializer.js';
 import type { HostContext } from '../markdown/host-context.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
 import type { DocumentNode } from '../markdown/node.js';
@@ -331,6 +332,90 @@ describe('M6 review browser contracts', () => {
       }
       await settle();
       expect(inlines().map((item) => item.nodeView?.content)).toContain('Xhello');
+    },
+  );
+
+  test('trusted typing after live heading promotion keeps trailing spaces in the native caret position', async () => {
+    await mount('');
+    const trustedBeforeInputs: boolean[] = [];
+    editor.addEventListener('beforeinput', (event) => trustedBeforeInputs.push(event.isTrusted), {
+      capture: true,
+    });
+    let inline = inlines()[0]!;
+    inline.focus();
+    inline.setSelectionOffsets(0, 0);
+
+    await userEvent.keyboard('# alpha');
+    await settle();
+    inline = inlines()[0]!;
+    expect(model.root.children[0]!.type).toBe('section');
+
+    await userEvent.keyboard(' ');
+    await settle();
+    expect(inline.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
+    expect(getComputedStyle(inline).whiteSpace).toBe('pre');
+
+    await userEvent.keyboard(' ');
+    await settle();
+    expect(inline.getTextSelection()).toEqual({ anchor: 7, focus: 7 });
+
+    inline.setSelectionOffsets(0, 1);
+    window.document.dispatchEvent(new Event('selectionchange'));
+    inline.setSelectionOffsets(7, 7);
+    window.document.dispatchEvent(new Event('selectionchange'));
+    await userEvent.keyboard('beta');
+    await settle();
+    expect(serializeToString(model.exportMarkdownTree())).toBe('# alpha  beta\n');
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children[0]!.content).toBe('alpha  ');
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(serializeToString(model.exportMarkdownTree())).toBe('# alpha  beta\n');
+    expect(trustedBeforeInputs.length).toBeGreaterThan(0);
+    expect(trustedBeforeInputs.every(Boolean)).toBe(true);
+  });
+
+  test.each([
+    ['seeded heading', '# alpha', '# alpha beta\n'],
+    ['live list conversion', '', '* alpha beta\n'],
+  ])(
+    '%s keeps trailing space before continued typing and history replay',
+    async (mode, source, expected) => {
+      await mount(source);
+      let inline = inlines()[0]!;
+      if (mode === 'seeded heading') {
+        inline.focus();
+        inline.setSelectionOffsets(5, 5);
+      } else {
+        inline.focus();
+        inline.setSelectionOffsets(0, 0);
+        await userEvent.keyboard('* alpha');
+        await settle();
+        inline = inlines()[0]!;
+        expect(model.root.children[0]!.type).toBe('list');
+      }
+
+      await userEvent.keyboard(' ');
+      await settle();
+      expect(inline.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
+      inline.setSelectionOffsets(0, 1);
+      window.document.dispatchEvent(new Event('selectionchange'));
+      inline.setSelectionOffsets(6, 6);
+      window.document.dispatchEvent(new Event('selectionchange'));
+
+      await userEvent.keyboard('beta');
+      await settle();
+      expect(serializeToString(model.exportMarkdownTree())).toBe(expected);
+
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(inline.nodeView?.content).toBe('alpha ');
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle();
+      expect(serializeToString(model.exportMarkdownTree())).toBe(expected);
     },
   );
 
