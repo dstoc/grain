@@ -117,11 +117,11 @@ R0 does not rerun the long benchmark matrix. Keep the proposal's previously reco
 
 ## R0 behavior gates
 
-`src/editing/canonical-editor.browser.test.ts` now contains two regressions that fail on this baseline by design:
+`src/editing/canonical-editor.browser.test.ts` now contains two Vitest expected-failure regressions. Their existing bodies and assertions remain intact. `test.fails` makes an unexpected pass fail the suite.
 
 1. **Nondefault-session checkbox:** with `sessionId = 'review-custom-session'`, clicking a task checkbox stores undo under `local`. Expected: the configured session owns the action.
 2. **Child-list-only structure:** a child-list-only accepted action has `childLists` but no cell changes or births. The editor does not seal its current typing group. Expected: one undo after the structural effect removes only the later text input.
 
-These tests record existing failures for the later integration correction. R0 does not alter editor or renderer integration to make them pass.
+These tests record existing failures for the later integration correction. R0 does not alter editor or renderer integration to make them pass. In R3, remove `test.fails` and keep each test as an ordinary passing regression after the integration correction.
 
-After adding the R0 gates, the full browser run reports 10 files passed, 1 failed, 2 skipped; 279 tests passed, 2 failed, 2 skipped. The active-element registration test passes. The only failures are the two named behavior gates above. The `chrome-devtools` daemon did not remain available across runner command invocations, so browser results come from Vitest's Playwright provider using Chromium 156.0.8078.73. No physical mobile or IME behavior is claimed.
+After adding the expected-failure markers, the local full browser run reported 11 files passed, 2 skipped; 279 tests passed, 2 expected failures, and 2 skipped. The active-element registration test passed. GitHub CI on PR #51 at `fadd6d20608d0ea62efef9c91dfffa2ea27beacb` reported the two named behavior gates as failures and a separate failure in `src/editing/editor.browser.test.ts` for `copies and cuts blocks through trusted keyboard events` (`body\n` received instead of `hello\n\nworld\n`). The prior and current local runs did not reproduce that third failure; this R0 correction does not change or mask that legacy test. The `chrome-devtools` daemon did not remain available across runner command invocations, so browser results use Vitest's Playwright provider with Chromium 156.0.8078.73. No physical mobile or IME behavior is claimed.
