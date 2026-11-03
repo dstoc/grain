@@ -2,7 +2,12 @@ import { handled, NOT_APPLICABLE, type Edit } from '../outcomes.js';
 import { textPoint } from '../operations/inline.js';
 import { normalizeBlockSelection } from '../operations/selection.js';
 import { liftSectionChildren } from '../operations/containers.js';
-import { isInlineNodeKind, type NodeId } from '../../markdown/semantic/types.js';
+import type { TreeDraft } from '../../markdown/semantic/draft.js';
+import {
+  isAllowedSemanticChild,
+  isInlineNodeKind,
+  type NodeId,
+} from '../../markdown/semantic/types.js';
 
 export interface DeleteBlocksInput {
   readonly nodeIds: readonly NodeId[];
@@ -21,6 +26,28 @@ function inlinePreorder(context: Parameters<Edit<DeleteBlocksInput>>[0]): NodeId
   return result;
 }
 
+function createEmptyCaretTarget(draft: TreeDraft, scopeRoot: NodeId): NodeId {
+  let parentId = scopeRoot;
+  if (draft.node(scopeRoot).type === 'list') {
+    const itemId = draft.node(scopeRoot).children.find((childId) => {
+      return draft.node(childId).type === 'list-item';
+    });
+    if (itemId) {
+      parentId = itemId;
+    } else {
+      parentId = draft.create({ type: 'list-item' });
+      draft.place(parentId, scopeRoot, null);
+    }
+  }
+
+  if (!isAllowedSemanticChild(draft.node(parentId).type, 'paragraph')) {
+    throw new Error(`scope ${scopeRoot} cannot contain an empty caret paragraph`);
+  }
+  const empty = draft.create({ type: 'paragraph', content: '' });
+  draft.place(empty, parentId, null);
+  return empty;
+}
+
 /** Removes selected blocks while preserving section children and choosing a surviving caret. */
 export const deleteBlocks: Edit<DeleteBlocksInput> = (context, { nodeIds }) => {
   const { draft, scopeRoot } = context;
@@ -35,6 +62,15 @@ export const deleteBlocks: Edit<DeleteBlocksInput> = (context, { nodeIds }) => {
     .toReversed()
     .find((nodeId) => !selected.has(nodeId));
   const next = order.slice(firstTarget + 1).find((nodeId) => !selected.has(nodeId));
+  const hasSurvivingInline = order.some((nodeId) => !selected.has(nodeId));
+  const scopeType = draft.node(scopeRoot).type;
+  if (
+    !hasSurvivingInline &&
+    scopeType !== 'list' &&
+    !isAllowedSemanticChild(scopeType, 'paragraph')
+  ) {
+    return NOT_APPLICABLE;
+  }
 
   for (const nodeId of targets) {
     const node = draft.node(nodeId);
@@ -48,11 +84,10 @@ export const deleteBlocks: Edit<DeleteBlocksInput> = (context, { nodeIds }) => {
     focus = textPoint(draft, previous, draft.node(previous).content!.length, 'left');
   } else if (next && draft.parentOf(next)) {
     focus = textPoint(draft, next, 0, 'right');
-  } else if (draft.node(scopeRoot).type === 'document') {
-    // The shared normalizer also guarantees this sentinel, but creating it here
-    // gives the deletion action a stable caret target and undoable identity.
-    const empty = draft.create({ type: 'paragraph', content: '' });
-    draft.place(empty, scopeRoot, null);
+  } else {
+    // Keep an editable caret inside a scoped container so normalization does
+    // not remove it from the document outside this command's edit boundary.
+    const empty = createEmptyCaretTarget(draft, scopeRoot);
     focus = textPoint(draft, empty, 0, 'right');
   }
 
