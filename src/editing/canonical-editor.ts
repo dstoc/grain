@@ -30,7 +30,12 @@ import type { SessionActionCallbacks } from './browser/session-runner.js';
 import { translateInlineInput, translateInlineKey } from './browser/input.js';
 import { SelectionController } from './browser/selection-controller.js';
 import { CompositionController } from './browser/composition-controller.js';
-import { MarkdownInline, type InlineInput, type InlineKeyDown } from '../markdown/inline-render.js';
+import {
+  MarkdownInline,
+  type FocusRestoreGuard,
+  type InlineInput,
+  type InlineKeyDown,
+} from '../markdown/inline-render.js';
 import type { MarkdownRenderer } from '../markdown/block-render.js';
 import type { HostContext } from '../markdown/host-context.js';
 import type { MarkdownRenderDelegate } from '../markdown/render-delegate.js';
@@ -74,6 +79,8 @@ export class CanonicalEditor extends LitElement {
     renderer: () => this.renderer,
     updateComplete: () => this.updateComplete,
     isConnected: () => this.isConnected,
+    focusRestoreGuard: (inline) =>
+      this.acceptedUpdateRelay ? this.focusRestoreGuard(inline) : undefined,
     session: this.sessionRunner,
     selection: this.selectionController,
     blockSelection: (inline) => {
@@ -257,16 +264,14 @@ export class CanonicalEditor extends LitElement {
     return active instanceof MarkdownInline ? active : undefined;
   }
 
-  private focusRestoreGuard(): () => boolean {
-    const originalInline = this.focusedInline();
-    const focusIntentEpoch = this.focusIntentEpoch;
-    return () => {
+  private focusRestoreGuard(originalInline = this.focusedInline()): FocusRestoreGuard {
+    let focusIntentEpoch = this.focusIntentEpoch;
+    let focusOwner = originalInline;
+    const guard = (() => {
       if (this.focusIntentEpoch !== focusIntentEpoch) return false;
       const currentInline = this.focusedInline();
       if (currentInline) {
-        return (
-          currentInline === originalInline || (!!originalInline && !originalInline.isConnected)
-        );
+        return currentInline === focusOwner || (!!focusOwner && !focusOwner.isConnected);
       }
       let active = this.ownerDocument.activeElement;
       while (active instanceof HTMLElement && active.shadowRoot?.activeElement) {
@@ -281,8 +286,13 @@ export class CanonicalEditor extends LitElement {
         }
       }
       if (current === this) return true;
-      return active === this.ownerDocument.body && !!originalInline && !originalInline.isConnected;
+      return active === this.ownerDocument.body && !!focusOwner && !focusOwner.isConnected;
+    }) as FocusRestoreGuard;
+    guard.markRestored = () => {
+      focusIntentEpoch = this.focusIntentEpoch;
+      focusOwner = this.focusedInline();
     };
+    return guard;
   }
 
   private onFocusIntent = () => {

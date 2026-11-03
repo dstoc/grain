@@ -42,20 +42,41 @@ export class MarkdownBlock extends LitElement {
     event.stopPropagation();
     event.preventDefault();
     this.inlineProjectionVersion++;
-    if (recovery.inline.nodeView && recovery.inline.hostContext) {
-      recovery.inline.hostContext.focusNode = recovery.inline.nodeView;
-      recovery.inline.hostContext.focusOffset = recovery.selection.focus;
+    const context = recovery.inline.hostContext;
+    const node = recovery.inline.nodeView;
+    const focusGuarded = !!recovery.shouldRestoreFocus;
+    if (focusGuarded) {
+      if (context && context.focusNode === node) {
+        context.focusNode = undefined;
+        context.focusOffset = undefined;
+      }
+    } else if (node && context) {
+      context.focusNode = node;
+      context.focusOffset = recovery.selection.focus;
     }
     this.requestUpdate();
     void this.updateComplete.then(async () => {
       const next = this.querySelector(':scope > md-inline');
       if (next instanceof MarkdownInline && next.nodeView === recovery.inline.nodeView) {
         await next.updateComplete;
-        await next.maybeSetFocus();
-        next.focus();
-        next.setSelectionOffsets(recovery.selection.anchor, recovery.selection.focus);
+        const restoreFocus = !recovery.shouldRestoreFocus || recovery.shouldRestoreFocus();
+        if (focusGuarded) {
+          if (restoreFocus) {
+            next.focus();
+            recovery.shouldRestoreFocus?.markRestored?.();
+            next.setSelectionOffsets(recovery.selection.anchor, recovery.selection.focus);
+          } else if (context && context.focusNode === node) {
+            context.focusNode = undefined;
+            context.focusOffset = undefined;
+          }
+        } else {
+          await next.maybeSetFocus();
+          next.focus();
+          next.setSelectionOffsets(recovery.selection.anchor, recovery.selection.focus);
+        }
         const pending = recovery.inline.takeRecoveryEvents();
-        if (recovery.replayEvents) next.replayRecoveryEvents(pending);
+        if (focusGuarded && !restoreFocus) next.discardRecoveryEvents();
+        else if (recovery.replayEvents) next.replayRecoveryEvents(pending);
         else next.holdRecoveryEventsFrom(pending);
         recovery.complete(next);
       } else {

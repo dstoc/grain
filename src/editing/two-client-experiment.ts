@@ -99,12 +99,13 @@ export class TwoClientExperiment {
 
     this.delivering = true;
     this.status_ = 'delivering';
-    this.notifyState();
     const copy = Object.freeze({
       revision: envelope.revision,
       update: Uint8Array.from(envelope.update),
     });
     try {
+      this.notifyState();
+      if (!this.isDelivering()) return false;
       for (const client of this.clients) {
         const errors = client.document.applyAccepted(copy);
         if (errors.length) {
@@ -113,11 +114,19 @@ export class TwoClientExperiment {
           );
         }
       }
+      if (this.isClosed()) return false;
       if (this.clients.some((client) => client.document.acceptedRevision !== envelope.revision)) {
         throw new Error('Client revisions diverged after accepted update delivery.');
       }
       this.revision_ = envelope.revision;
       this.lastEnvelope = copy;
+      if (!this.isDelivering()) return false;
+      if (this.authority.acceptedRevision !== envelope.revision) {
+        this.fail(
+          `Authority advanced to revision ${this.authority.acceptedRevision} during delivery of ${envelope.revision}.`,
+        );
+        return false;
+      }
       this.status_ = 'ready';
       return true;
     } catch (error) {
@@ -137,9 +146,18 @@ export class TwoClientExperiment {
   }
 
   private fail(message: string): void {
+    if (this.status_ === 'closed' || this.status_ === 'failed') return;
     this.status_ = 'failed';
     this.error_ = message;
     this.notifyState();
+  }
+
+  private isDelivering(): boolean {
+    return this.status_ === 'delivering';
+  }
+
+  private isClosed(): boolean {
+    return this.status_ === 'closed';
   }
 
   private notifyState(): void {

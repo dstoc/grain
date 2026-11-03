@@ -41,10 +41,13 @@ export interface InlineProjectionSelection {
   focus: number;
 }
 
+export type FocusRestoreGuard = (() => boolean) & { markRestored?: () => void };
+
 export interface InlineProjectionRecovery {
   inline: MarkdownInline;
   selection: InlineProjectionSelection;
   replayEvents: boolean;
+  shouldRestoreFocus?: FocusRestoreGuard;
   complete: (recoveredInline?: MarkdownInline) => void;
 }
 
@@ -116,12 +119,19 @@ export class MarkdownInline extends LitElement {
   recoverComposition(
     selection: InlineProjectionSelection,
     replayEvents = true,
+    shouldRestoreFocus?: FocusRestoreGuard,
   ): Promise<MarkdownInline | undefined> {
     if (this.recovery) return this.recovery;
     this.recoveringProjection = true;
     this.recovery = new Promise<MarkdownInline | undefined>((resolve) => {
       const event = new CustomEvent<InlineProjectionRecovery>('inline-projection-recovery', {
-        detail: { inline: this, selection, replayEvents, complete: resolve },
+        detail: {
+          inline: this,
+          selection,
+          replayEvents,
+          ...(shouldRestoreFocus ? { shouldRestoreFocus } : {}),
+          complete: resolve,
+        },
         bubbles: true,
         composed: true,
         cancelable: true,
@@ -131,11 +141,17 @@ export class MarkdownInline extends LitElement {
       this.projectionVersion++;
       this.requestUpdate();
       void this.updateComplete.then(async () => {
-        await this.maybeSetFocus();
-        this.focus();
-        this.setSelectionOffsets(selection.anchor, selection.focus);
-        if (replayEvents) this.replayRecoveryEvents();
-        else this.holdRecoveryInputs = true;
+        const restoreFocus = !shouldRestoreFocus || shouldRestoreFocus();
+        if (restoreFocus) {
+          if (!shouldRestoreFocus) await this.maybeSetFocus();
+          this.focus();
+          shouldRestoreFocus?.markRestored?.();
+          this.setSelectionOffsets(selection.anchor, selection.focus);
+        }
+        if (replayEvents) {
+          if (restoreFocus) this.replayRecoveryEvents();
+          else this.discardRecoveryEvents();
+        } else if (restoreFocus) this.holdRecoveryInputs = true;
         resolve(this);
       });
     }).finally(() => {

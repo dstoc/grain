@@ -181,3 +181,129 @@ test('stops on malformed delivery and surfaces authority projection callback err
   otherWriter.close();
   otherAuthority.close();
 });
+
+test.each(['state callback', 'replica projection'] as const)(
+  'keeps a reentrant accepted action terminal after the %s callback',
+  (boundary) => {
+    const document = CanonicalDocument.fromMarkdown('alpha');
+    const authority = new CanonicalWriter(document);
+    const paragraph = document.root.children[0]!;
+    let experiment: TwoClientExperiment | undefined;
+    let injected = false;
+    let nestedResult: boolean | undefined;
+    const tryNestedAcceptance = () => {
+      if (injected) return;
+      injected = true;
+      const later = authority.edit(
+        { actionId: `nested-${boundary}`, sessionId: 'client-b' },
+        (draft) => {
+          draft.spliceText(paragraph.sharedId, { from: 6, to: 6, insert: '?' });
+        },
+      );
+      if (!('update' in later)) throw new Error(`expected accepted action, got ${later.status}`);
+      nestedResult = experiment!.receiveAccepted(later);
+    };
+    experiment = new TwoClientExperiment(document, (state) => {
+      if (boundary === 'state callback' && state.status === 'delivering') tryNestedAcceptance();
+    });
+    const unsubscribe =
+      boundary === 'replica projection'
+        ? experiment.clients[0].document.subscribeProjection(tryNestedAcceptance)
+        : () => {};
+
+    try {
+      const first = authority.edit(
+        { actionId: `first-${boundary}`, sessionId: 'client-a' },
+        (draft) => {
+          draft.spliceText(paragraph.sharedId, { from: 5, to: 5, insert: '!' });
+        },
+      );
+      if (!('update' in first)) throw new Error(`expected accepted action, got ${first.status}`);
+
+      expect(experiment.receiveAccepted(first)).toBe(false);
+      expect(nestedResult).toBe(false);
+      expect(experiment.state.status).toBe('failed');
+      expect(experiment.state.error).toContain('later accepted update');
+      expect(document.acceptedRevision).toBe(2);
+      expect(experiment.clients.map(({ document: client }) => client.acceptedRevision)).toEqual(
+        boundary === 'state callback' ? [0, 0] : [1, 1],
+      );
+      expect(experiment.state.revision).toBe(boundary === 'state callback' ? 0 : 1);
+      expect(experiment.clients[0].document.checkpoint().update).toEqual(
+        experiment.clients[1].document.checkpoint().update,
+      );
+    } finally {
+      unsubscribe();
+      experiment.close();
+      authority.close();
+      document.close();
+    }
+  },
+);
+
+test('fails if the authority advances during delivery without a nested receive', () => {
+  const document = CanonicalDocument.fromMarkdown('alpha');
+  const authority = new CanonicalWriter(document);
+  const paragraph = document.root.children[0]!;
+  let injected = false;
+  const experiment = new TwoClientExperiment(document, (state) => {
+    if (state.status !== 'delivering' || injected) return;
+    injected = true;
+    const later = authority.edit(
+      { actionId: 'unrelayed-reentrant', sessionId: 'client-b' },
+      (draft) => {
+        draft.spliceText(paragraph.sharedId, { from: 6, to: 6, insert: '?' });
+      },
+    );
+    if (!('update' in later)) throw new Error(`expected accepted action, got ${later.status}`);
+  });
+  try {
+    const first = authority.edit(
+      { actionId: 'initial-delivery', sessionId: 'client-a' },
+      (draft) => {
+        draft.spliceText(paragraph.sharedId, { from: 5, to: 5, insert: '!' });
+      },
+    );
+    if (!('update' in first)) throw new Error(`expected accepted action, got ${first.status}`);
+
+    expect(experiment.receiveAccepted(first)).toBe(false);
+    expect(experiment.state).toMatchObject({ status: 'failed', revision: 1 });
+    expect(experiment.state.error).toContain('Authority advanced to revision 2');
+    expect(document.acceptedRevision).toBe(2);
+    expect(experiment.clients.map(({ document: client }) => client.acceptedRevision)).toEqual([
+      1, 1,
+    ]);
+  } finally {
+    experiment.close();
+    authority.close();
+    document.close();
+  }
+});
+
+test('does not reopen an experiment closed by its delivery callback', () => {
+  const document = CanonicalDocument.fromMarkdown('alpha');
+  const authority = new CanonicalWriter(document);
+  let experiment: TwoClientExperiment;
+  experiment = new TwoClientExperiment(document, (state) => {
+    if (state.status === 'delivering') experiment.close();
+  });
+  try {
+    const accepted = authority.edit(
+      { actionId: 'close-during-delivery', sessionId: 'client-a' },
+      (draft) => {
+        draft.spliceText(document.root.children[0]!.sharedId, { from: 5, to: 5, insert: '!' });
+      },
+    );
+    if (!('update' in accepted))
+      throw new Error(`expected accepted action, got ${accepted.status}`);
+
+    expect(experiment.receiveAccepted(accepted)).toBe(false);
+    expect(experiment.state.status).toBe('closed');
+    expect(document.acceptedRevision).toBe(1);
+    expect(() => experiment.clients[0].document.checkpoint()).toThrow('closed');
+  } finally {
+    experiment.close();
+    authority.close();
+    document.close();
+  }
+});

@@ -7,7 +7,7 @@ import {
   resolveCanonicalTextAnchor,
 } from '../../markdown/canonical-selection.js';
 import type { CanonicalTextAnchor } from '../../markdown/canonical-selection.js';
-import type { MarkdownInline } from '../../markdown/inline-render.js';
+import type { FocusRestoreGuard, MarkdownInline } from '../../markdown/inline-render.js';
 import type { MarkdownRenderer } from '../../markdown/block-render.js';
 import type { HostContext } from '../../markdown/host-context.js';
 import {
@@ -214,7 +214,7 @@ export class SelectionController {
 
   async restoreSavedSelection(
     hostContext?: HostContext,
-    shouldRestoreFocus?: () => boolean,
+    shouldRestoreFocus?: FocusRestoreGuard,
   ): Promise<void> {
     const anchor = this.anchor;
     const focus = this.focus ?? anchor;
@@ -229,7 +229,7 @@ export class SelectionController {
     preserveBlockSelection = false,
     hostContext?: HostContext,
     restoreNativeTextSelection = false,
-    shouldRestoreFocus?: () => boolean,
+    shouldRestoreFocus?: FocusRestoreGuard,
   ): Promise<void> {
     const document = this.host.document();
     const rootRenderer = this.host.renderer();
@@ -315,6 +315,7 @@ export class SelectionController {
           context.focusOffset = end.offset;
         }
         inline.focus();
+        shouldRestoreFocus?.markRestored?.();
         if (restoreNativeTextSelection && !shouldRestoreFocus) await inline.maybeSetFocus();
         if (!this.session.isCurrentGeneration(generation)) return;
         inline.setSelectionOffsets(start.offset, end.offset);
@@ -406,6 +407,7 @@ export class SelectionController {
         context.focusOffset = focusOffset;
       }
       inline.focus();
+      shouldRestoreFocus?.markRestored?.();
       if (restoreNativeTextSelection && !shouldRestoreFocus) await inline.maybeSetFocus();
       if (!this.session.isCurrentGeneration(generation)) return;
       inline.setSelectionOffsets(
@@ -432,7 +434,7 @@ export class SelectionController {
   async focusBookmark(
     bookmark: Bookmark | undefined,
     hostContext?: HostContext,
-    shouldRestoreFocus?: () => boolean,
+    shouldRestoreFocus?: FocusRestoreGuard,
   ): Promise<void> {
     const document = this.host.document();
     if (!document || !bookmark) return;
