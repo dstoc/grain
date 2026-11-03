@@ -9,7 +9,9 @@ The benchmark artifacts are committed beside the harness:
 - [Browser harness, five fresh processes per revision](../benchmarks/yjs-m0/results/r5-harness.json)
 - [Candidate retained history and three completed long traces](../benchmarks/yjs-m0/results/r5-retention-candidate.json)
 - [Candidate retained history progress](../benchmarks/yjs-m0/results/r5-retention-candidate.progress.jsonl)
-- [Exact-baseline retention-depth progress](../benchmarks/yjs-m0/results/r5-retention-baseline-depths.progress.jsonl)
+- [Exact post-M5 and R5 retained-history comparison](../benchmarks/yjs-m0/results/r5-retention-post-m5-worker.json)
+- [Exact post-M5 and R5 per-100-action progress](../benchmarks/yjs-m0/results/r5-retention-post-m5-worker.progress.jsonl)
+- [Earlier exact-baseline depth progress](../benchmarks/yjs-m0/results/r5-retention-baseline-depths.progress.jsonl)
 - [R4-to-R5 core isolation run](../benchmarks/yjs-m0/results/r5-r4-core-isolation.json)
 
 ## Environment and commands
@@ -23,6 +25,7 @@ npm run bench:yjs-m0 -- --profile core --runs 5 --against c3a8812e8bbee69c805a50
 npm run bench:yjs-m0 -- --profile editor --runs 5 --against c3a8812e8bbee69c805a50347dd29d11c076d2de --output benchmarks/yjs-m0/results/r5-editor.json --force
 npm run bench:yjs-m0 -- --profile harness --runs 5 --against c3a8812e8bbee69c805a50347dd29d11c076d2de --output benchmarks/yjs-m0/results/r5-harness.json --force
 npm run bench:yjs-m0 -- --profile retention --runs 3 --output benchmarks/yjs-m0/results/r5-retention-candidate.json --progress-file benchmarks/yjs-m0/results/r5-retention-candidate.progress.jsonl
+npm run bench:yjs-m0 -- --profile retention --runs 3 --against c3a8812e8bbee69c805a50347dd29d11c076d2de --output benchmarks/yjs-m0/results/r5-retention-post-m5-worker.json --progress-file benchmarks/yjs-m0/results/r5-retention-post-m5-worker.progress.jsonl
 ```
 
 Core and browser comparisons use 200 measured actions per fixture after 25 warmups, with each run in a fresh process. Table P50 values are the median of the five process P50s. Parenthesized P95 values are the 95th percentile across those process P50s, as recorded by the harness. They are not per-action P95 values. The profile artifacts contain per-process P50/P95 distributions, counters, resource snapshots, and fixture identities.
@@ -76,19 +79,28 @@ The editor workload uses a 150-paragraph document at 1280×720, with 200 measure
 
 ## Retained-history and long-session results
 
-The R5 probe calibrated the private retained-session registry before collecting measurements. It selected `writer.history.sessions` on R5 and observed counts 0, 64, and 500. The exact post-M5 baseline calibration selected `writer.sessions` and observed those same counts. Unknown layouts and missing nonzero sessions fail the probe. Calibration writers are disposable and are outside measured operations and counters.
+The exact post-M5 source at `c3a8812e8bbee69c805a50347dd29d11c076d2de` and the R5 workspace at `c3c58ce40421ed65717198cdfe2df750fbf81734` both passed the retained-session probe before measurement. The baseline probe selected `writer.sessions`; the R5 probe selected `writer.history.sessions`. Each observed 0, 64, and 500 groups. Unknown layouts and missing nonzero sessions fail the probe. Calibration writers are disposable and stay outside measured samples and counters.
 
-The candidate retention-depth profile was run in three fresh processes. For each depth, it recorded 200 measured operations and 25 warmups. The table reports the median process P50 and the P95 across process P50s.
+The exact-baseline comparison completed three fresh processes on each side. Each process measured 200 operations after 25 warmups at each retained-history depth. The table reports the median process P50 and the P95 across process P50s. Times are milliseconds.
 
-| Retained groups | Prepare P50 (P95), ms | Apply/publish P50 (P95), ms | Callback count during samples | Active callbacks after close |
-| --------------: | --------------------: | --------------------------: | ----------------------------: | ---------------------------: |
-|               0 |         3.774 (3.877) |               0.589 (0.615) |                             1 |                            0 |
-|              64 |         0.088 (0.092) |               0.349 (0.351) |                             1 |                            0 |
-|             500 |         0.093 (0.094) |               0.376 (0.384) |                             1 |                            0 |
+| Retained groups | Baseline prepare P50 (P95) | R5 prepare P50 (P95) | Baseline apply/publish P50 (P95) | R5 apply/publish P50 (P95) |
+| --------------: | -------------------------: | -------------------: | -------------------------------: | -------------------------: |
+|               0 |              3.553 (3.655) |        3.493 (3.597) |                    0.502 (0.531) |              0.524 (0.531) |
+|              64 |              0.076 (0.076) |        0.088 (0.088) |                    0.319 (0.321) |              0.343 (0.348) |
+|             500 |              0.081 (0.081) |        0.090 (0.090) |                    0.337 (0.339) |              0.365 (0.365) |
 
-All three candidate processes completed an uninterrupted 10,000-action writer trace with a 500-group cap and observed exactly 500 retained groups. Across those processes, median process P50 was 0.050 ms for prepare and 0.264 ms for apply/publish; the corresponding P95 across process P50s was 0.050 ms and 0.264 ms. The raw report includes per-run operation counts, update and receipt bytes, callback/resource snapshots, and memory measurements.
+Both sides recorded one callback during samples and zero active callbacks after writer close at all three depths. The 64-group sample ends at 264 groups after its 200 measured operations. The 500-group sample remains capped at 500.
 
-The exact post-M5 baseline completed one 0/64/500 depth run with the same calibrated counts, then the comparison runner was stopped after depth 500 before starting its long trace. That completed partial run is preserved in the progress artifact; no full baseline long-session result is claimed. The approved gate requires three uninterrupted baseline traces against exact post-M5. This runner has a 120-minute limit; the earlier project journal records a much longer estimate from a separate, explicitly non-matching partial baseline. Run the exact baseline trace on a pinned long-job worker and retain its progress output. Do not replace historical artifacts or count the partial run as completion.
+All three exact-baseline processes completed uninterrupted 10,000-action traces. Their measured trace durations were 3,089.737, 3,085.861, and 3,026.321 ms. All three R5 processes also completed 10,000 actions, in 3,231.191, 3,319.603, and 3,275.672 ms. Each trace retained exactly 500 groups and reported one active callback. The progress JSONL stores every 100-action chunk, per-action timings, accepted-update and receipt bytes, heap and RSS samples, probe results, and process completion events.
+
+| Long-trace stage | Exact post-M5 baseline P50 (P95) |        R5 P50 (P95) | R5 / baseline |
+| ---------------- | -------------------------------: | ------------------: | ------------: |
+| Prepare          |              0.045501 (0.045690) | 0.048070 (0.049231) |         +5.7% |
+| Apply/publish    |              0.235654 (0.236294) | 0.251704 (0.257293) |         +6.8% |
+
+Here P50 is the median of three process P50 values. P95 is the 95th percentile across those process P50 values, not the per-action P95. The matched run measured higher R5 medians for both long-trace stages on this machine. These measurements do not establish the cause. The raw report preserves per-process depth and trace results, operation counts, byte totals, callback and resource checks, and memory observations.
+
+The earlier depth-only progress artifact remains unchanged as a record of its separate partial attempt. The new comparison has completed the three-process exact post-M5 retention gate; it does not replace the original M0 baseline trace or its historical partial files.
 
 Lifecycle, physical mobile/IME, and maintenance release gates remain visible and unverified by these desktop benchmark and automated test runs.
 
