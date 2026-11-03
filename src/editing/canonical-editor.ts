@@ -437,7 +437,9 @@ export class CanonicalEditor extends LitElement {
       this.runEdit(
         command,
         { nodeId: node.sharedId, nodeIds: selected.map((item) => item.sharedId) },
-        this.blockSelectionBefore(selected, hostContext),
+        selected.length
+          ? this.blockSelectionBefore(selected, hostContext)
+          : this.selectionController.textSelectionStartBefore(node.sharedId, inline, 0, 0),
         hostContext,
       );
       return;

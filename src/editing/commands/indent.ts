@@ -91,8 +91,14 @@ export const indent: Edit<IndentInput> = (context, { nodeId, nodeIds = [] }) => 
         restoreOnRedo: true,
       }
     : undefined;
+  const focusOffset =
+    context.selectionBefore &&
+    !isBlockSelection(context.selectionBefore) &&
+    context.selectionBefore.anchor.nodeId === nodeId
+      ? Math.min(context.selectionBefore.anchor.offset, context.selectionBefore.focus.offset)
+      : 0;
   return handled({
-    focus: textPoint(draft, nodeId, 0),
+    focus: textPoint(draft, nodeId, focusOffset),
     ...(selection ? { selection } : {}),
   });
 };

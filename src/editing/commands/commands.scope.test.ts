@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 
 import { CanonicalWriter } from '../../markdown/canonical-actions.js';
 import { CanonicalDocument } from '../../markdown/canonical-model.js';
+import type { CanonicalNode } from '../../markdown/canonical-model.js';
 import { deleteBackwardAtStart } from './delete-backward.js';
 import { indent } from './indent.js';
 import { insertMarkdown } from './insert-markdown.js';
@@ -27,6 +28,15 @@ function create(markdown: string) {
 
 function snapshot(document: CanonicalDocument): string {
   return JSON.stringify(document.canonicalSnapshot());
+}
+
+function findContent(root: CanonicalNode, content: string): CanonicalNode | undefined {
+  if (root.content === content) return root;
+  for (const child of root.children) {
+    const found = findContent(child, content);
+    if (found) return found;
+  }
+  return undefined;
 }
 
 it('keeps Backspace inside a quote scope instead of unwrapping the scope root', () => {
@@ -163,6 +173,56 @@ it('does not indent a list scope root under a previous sibling outside the scope
   expect(scopeItem.connected).toBe(true);
   expect(scopeItem.parent?.sharedId).toBe(list.sharedId);
   expect(writer.canUndo('local')).toBe(false);
+});
+
+it('preserves list-item caret bookmarks through scoped indent and outdent history', () => {
+  const cases = [
+    {
+      action: 'scoped-indent-caret',
+      markdown: '> - alpha\n> - beta\n\noutside',
+      command: indent,
+      expectedOwner: true,
+    },
+    {
+      action: 'scoped-outdent-caret',
+      markdown: '> - alpha\n>   - beta\n\noutside',
+      command: outdent,
+      expectedOwner: false,
+    },
+  ] as const;
+
+  for (const { action, markdown, command, expectedOwner } of cases) {
+    const { document, writer } = create(markdown);
+    const quote = document.root.children[0]!;
+    const paragraph = findContent(quote, 'beta')!;
+    const selection = {
+      anchor: { nodeId: paragraph.sharedId, offset: 3, affinity: 'left' as const },
+      focus: { nodeId: paragraph.sharedId, offset: 3, affinity: 'right' as const },
+    };
+
+    const accepted = runCommand(writer, { actionId: action }, quote.sharedId, selection, command, {
+      nodeId: paragraph.sharedId,
+    });
+    expect(accepted?.receipt.focus?.start?.offset).toBe(3);
+    expect(accepted?.receipt.focus?.end?.offset).toBe(3);
+    expect(paragraph.connected).toBe(true);
+    expect(quote.connected).toBe(true);
+
+    const movedOwner = paragraph.parent?.parent?.parent;
+    expect(movedOwner?.type === 'list-item').toBe(expectedOwner);
+    const undo = writer.undo('local');
+    expect(undo.status).toBe('applied');
+    expect(undo.focusAnchor?.bookmark.offset ?? undo.focus?.offset).toBe(3);
+    expect(paragraph.parent?.parent?.parent?.type === 'list-item').toBe(
+      action === 'scoped-outdent-caret',
+    );
+
+    const redo = writer.redo('local');
+    expect(redo.status).toBe('applied');
+    expect(redo.focusAnchor?.bookmark.offset ?? redo.focus?.offset).toBe(3);
+    expect(paragraph.parent?.parent?.parent?.type === 'list-item').toBe(expectedOwner);
+    expect(document.root.children[1]?.content).toBe('outside');
+  }
 });
 
 it('splits an item-scoped paragraph inside its item and supports undo and redo', () => {
