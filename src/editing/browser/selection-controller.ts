@@ -92,13 +92,17 @@ export class SelectionController {
     return result;
   }
 
-  currentBlockSelection(): CanonicalNode[] {
-    const selection = this.host.renderer()?.hostContext?.selection ?? [];
+  currentBlockSelection(context = this.host.renderer()?.hostContext): CanonicalNode[] {
+    const selection = context?.selection ?? [];
     const selected = new Set<NodeId>();
     for (const node of selection) {
       if (node instanceof CanonicalNodeProjection) selected.add(node.sharedId);
     }
-    return this.visibleInlineNodes().filter((node) => selected.has(node.sharedId));
+    const root =
+      context?.root instanceof CanonicalNodeProjection
+        ? (context.root as CanonicalNode)
+        : undefined;
+    return this.visibleInlineNodes(root).filter((node) => selected.has(node.sharedId));
   }
 
   captureSelection(sealChangedGroup = false): void {
@@ -152,11 +156,11 @@ export class SelectionController {
     }
   }
 
-  async restoreSavedSelection(): Promise<void> {
+  async restoreSavedSelection(hostContext?: HostContext): Promise<void> {
     const anchor = this.anchor;
     const focus = this.focus ?? anchor;
     if (!anchor || !focus) return;
-    await this.restoreAnchors(anchor, focus);
+    await this.restoreAnchors(anchor, focus, false, false, hostContext);
   }
 
   async restoreAnchors(
@@ -236,14 +240,14 @@ export class SelectionController {
     }
   }
 
-  async focusBookmark(bookmark: Bookmark | undefined): Promise<void> {
+  async focusBookmark(bookmark: Bookmark | undefined, hostContext?: HostContext): Promise<void> {
     const document = this.host.document();
     if (!document || !bookmark) return;
     try {
       const anchor = createCanonicalTextAnchor(document, bookmark);
-      await this.restoreAnchors(anchor, anchor);
+      await this.restoreAnchors(anchor, anchor, false, false, hostContext);
     } catch {
-      await this.restoreSavedSelection();
+      await this.restoreSavedSelection(hostContext);
     }
   }
 
@@ -270,14 +274,16 @@ export class SelectionController {
     };
   }
 
-  blockSelectionBefore(selection: readonly CanonicalNode[]): EditSelection | undefined {
+  blockSelectionBefore(
+    selection: readonly CanonicalNode[],
+    hostContext = this.host.renderer()?.hostContext,
+  ): EditSelection | undefined {
     if (!selection.length) return undefined;
     const first = selection[0]!;
     const last = selection.at(-1)!;
-    const context = this.host.renderer()?.hostContext;
     const reverse =
-      context?.selectionAnchor instanceof CanonicalNodeProjection &&
-      context.selectionAnchor.sharedId === last.sharedId;
+      hostContext?.selectionAnchor instanceof CanonicalNodeProjection &&
+      hostContext.selectionAnchor.sharedId === last.sharedId;
     const anchorNode = reverse ? last : first;
     const focusNode = reverse ? first : last;
     return {
@@ -296,7 +302,7 @@ export class SelectionController {
   }
 
   moveAcrossBlocks(inline: MarkdownInline, node: CanonicalNode, event: KeyboardEvent): void {
-    const context = this.host.renderer()?.hostContext;
+    const context = inline.hostContext ?? this.host.renderer()?.hostContext;
     const document = this.host.document();
     if (!context || !document?.root) return;
     event.preventDefault();
@@ -314,7 +320,9 @@ export class SelectionController {
       this.captureSelection();
       return;
     }
-    const visible = this.visibleInlineNodes();
+    const root =
+      context.root instanceof CanonicalNodeProjection ? (context.root as CanonicalNode) : undefined;
+    const visible = this.visibleInlineNodes(root);
     const index = visible.findIndex((candidate) => candidate.sharedId === node.sharedId);
     const next = visible[index + (direction === 'backward' ? -1 : 1)];
     if (!next) return;
@@ -329,7 +337,7 @@ export class SelectionController {
       offset,
       affinity: direction === 'backward' ? 'left' : 'right',
     });
-    void this.restoreAnchors(anchor, anchor, false, event.shiftKey);
+    void this.restoreAnchors(anchor, anchor, false, event.shiftKey, context);
   }
 
   setBlockSelection(

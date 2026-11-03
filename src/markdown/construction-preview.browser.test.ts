@@ -4,6 +4,7 @@ import { createBlockParser } from './block-parser/api.js';
 import { MarkdownRenderer } from './block-render.js';
 import { ConstructionPreviewAdapter } from './construction-preview.js';
 import { asInlineMarkdownNodeView } from './node-view.js';
+import { ConstructionTree } from './semantic/construction-tree.js';
 
 describe('construction preview adapter', () => {
   test('keeps settled facade identity and refreshes provisional inline content', () => {
@@ -47,6 +48,32 @@ describe('construction preview adapter', () => {
     expect(paragraph.content).toBe('alpha\nbeta');
     expect(paragraph.inlineTree).not.toBe(originalTree);
     expect(paragraph.renderSignal.value).toBeGreaterThan(originalSignal);
+  });
+
+  test('keeps facade identity and invalidates inline parsing after same-node type conversion', () => {
+    const tree = new ConstructionTree({
+      type: 'document',
+      children: [{ type: 'paragraph', content: 'alpha' }],
+    });
+    const source = tree.root.children[0]!;
+    const preview = new ConstructionPreviewAdapter(tree);
+    const root = preview.root;
+    const paragraph = root.children![0]!;
+    const paragraphTree = paragraph.inlineTree;
+
+    tree.createDraft().convertInline(source.id, {
+      type: 'code-block',
+      info: 'js',
+      content: { mode: 'preserve' },
+    });
+    preview.refresh();
+    const codeTree = paragraph.inlineTree;
+
+    expect(root.children![0]).toBe(paragraph);
+    expect(paragraph.type).toBe('code-block');
+    expect(paragraph.content).toBe('alpha');
+    expect(codeTree).not.toBe(paragraphTree);
+    expect(paragraph.inlineTree).toBe(codeTree);
   });
 
   test('updates a mounted renderer as a live parser publishes changed records', async () => {

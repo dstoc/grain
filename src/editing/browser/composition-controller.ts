@@ -44,13 +44,18 @@ interface CompositionEnvironment {
   readonly session: BrowserSessionRunner;
   readonly selection: SelectionController;
   blockSelection(inline: MarkdownInline): readonly CanonicalNode[];
-  replaceBlocks(selection: readonly CanonicalNode[], text: string): void;
+  replaceBlocks(
+    selection: readonly CanonicalNode[],
+    text: string,
+    hostContext?: MarkdownInline['hostContext'],
+  ): void;
   runTextInput(
     node: CanonicalNode,
     from: number,
     to: number,
     insert: string,
     isolated: boolean,
+    hostContext?: MarkdownInline['hostContext'],
   ): void;
 }
 
@@ -98,7 +103,6 @@ export class CompositionController {
     };
     this.composition = session;
     inline.addEventListener('composition-invalidated', session.invalidate);
-    this.environment.session.sealTypingGroup();
   }
 
   end(inline: MarkdownInline, event: CompositionEvent): void {
@@ -140,6 +144,10 @@ export class CompositionController {
         this.recoverAndReplay(session, inline, session.selection);
         return;
       }
+      if (!data) {
+        this.recoverAndReplay(session, inline, session.selection);
+        return;
+      }
       const recovery = this.beginRecovery(session, inline);
       void this.recoverProjection(recovery, session.selection)
         .then(async (current) => {
@@ -147,7 +155,7 @@ export class CompositionController {
             this.finishRecovery(recovery, false);
             return;
           }
-          this.environment.replaceBlocks(selected, data ?? '');
+          this.environment.replaceBlocks(selected, data, recovery.source.hostContext);
           recovery.source.hostContext?.clearSelection();
           const replayed = await this.replayQueuedInputs(
             session.blockSelection?.[0] ?? session.node.sharedId,
@@ -201,12 +209,32 @@ export class CompositionController {
     }
     if (
       !data ||
+      insert.trimStart() !== data ||
       !session.node.connected ||
       session.node.version !== session.version ||
       session.node.content !== session.content ||
       session.content.slice(0, from) + insert + session.content.slice(to) !== nativeText
     ) {
       this.recoverAndReplay(session, inline, session.selection);
+      return;
+    }
+    if (session.content.slice(0, from) + insert + session.content.slice(to) === session.content) {
+      const caret = from + insert.length;
+      const recovery = this.beginRecovery(session, inline);
+      void this.recoverProjection(recovery, { anchor: caret, focus: caret })
+        .then(async (current) => {
+          if (!current) {
+            this.finishRecovery(recovery, false);
+            return;
+          }
+          const replayed = await this.replayQueuedInputs(
+            session.node.sharedId,
+            recovery,
+            recovery.source.hostContext,
+          );
+          this.finishRecovery(recovery, !replayed);
+        })
+        .catch(() => this.finishRecovery(recovery, false));
       return;
     }
     const recovery = this.beginRecovery(session, inline);
@@ -216,7 +244,14 @@ export class CompositionController {
           this.finishRecovery(recovery, false);
           return;
         }
-        this.environment.runTextInput(session.node, from, to, insert, true);
+        this.environment.runTextInput(
+          session.node,
+          from,
+          to,
+          insert,
+          true,
+          recovery.source.hostContext,
+        );
         const replayed = await this.replayQueuedInputs(session.node.sharedId, recovery);
         this.finishRecovery(recovery, !replayed);
       })
@@ -330,13 +365,19 @@ export class CompositionController {
       : recovered?.isConnected
         ? recovered
         : undefined;
+    const isCurrent = () =>
+      this.isRecoveryCurrent(recovery) &&
+      this.environment.session.isCurrent(recovery.session.generation, document, writer, sessionId);
     if (pending.length && replayTarget) {
       if (focusAtEnd) {
         await replayTarget.updateComplete;
+        if (!replayTarget.isConnected || !isCurrent()) return false;
         replayTarget.focus();
+        if (!isCurrent()) return false;
         const offset = replayTarget.nodeView?.content?.length ?? 0;
         replayTarget.setSelectionOffsets(offset, offset);
       }
+      if (!replayTarget.isConnected || !isCurrent()) return false;
       replayTarget.replayRecoveryEvents(pending);
     }
     return this.isRecoveryCurrent(recovery);

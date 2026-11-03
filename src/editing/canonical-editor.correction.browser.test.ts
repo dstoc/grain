@@ -490,3 +490,100 @@ test('selected-block composition recovery does not commit or hold input across a
   expect(model!.root.children.map((node) => node.content)).toEqual(['alpha', 'beta!']);
   expect(recovered.mobileToolbarInputReady).toBe(true);
 });
+
+test.each(['session', 'disconnect'] as const)(
+  'selected composition recovery discards queued input after %s changes during target update',
+  async (boundary) => {
+    const renderer = await mount('canonical', 'alpha\n\nbeta');
+    const canonical = editor!;
+    const last = model!.root.children[1]!;
+    const context = renderer.hostContext;
+    const lastView = asInlineMarkdownNodeView(last as unknown as ReadonlyMarkdownNodeView);
+    context.selection.add(lastView);
+    context.selectionAnchor = lastView;
+    context.selectionFocus = lastView;
+    const inline = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')][1]!;
+    inline.focus();
+    inline.setSelectionOffsets(0, 4);
+
+    let releaseUpdate!: () => void;
+    const updateGate = new Promise<void>((resolve) => {
+      releaseUpdate = resolve;
+    });
+    let reportWaiting!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      reportWaiting = resolve;
+    });
+    let intercepted: MarkdownInline | undefined;
+    inline.parentElement!.addEventListener(
+      'inline-projection-recovery',
+      (event) => {
+        const block = event
+          .composedPath()
+          .find(
+            (target): target is HTMLElement & { updateComplete: Promise<boolean> } =>
+              target instanceof HTMLElement && target.localName === 'md-block',
+          );
+        if (!block) throw new Error('composition recovery did not originate in a block');
+        void block.updateComplete.then(() => {
+          const recovered = block.querySelector('md-inline') as MarkdownInline | null;
+          if (!recovered) throw new Error('composition recovery did not render an inline');
+          intercepted = recovered;
+          Object.defineProperty(recovered, 'updateComplete', {
+            configurable: true,
+            get() {
+              reportWaiting();
+              return updateGate;
+            },
+          });
+        });
+      },
+      { once: true },
+    );
+
+    inline.dispatchEvent(
+      new CompositionEvent('compositionstart', { bubbles: true, composed: true, data: '' }),
+    );
+    inline.queueRecoveryInput(
+      new InputEvent('beforeinput', {
+        bubbles: true,
+        inputType: 'insertText',
+        data: '!',
+      }),
+    );
+    inline.dispatchEvent(
+      new CompositionEvent('compositionend', { bubbles: true, composed: true, data: 'BETA' }),
+    );
+
+    try {
+      const reachedTargetWait = await Promise.race([
+        waiting.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1000)),
+      ]);
+      expect(reachedTargetWait).toBe(true);
+      expect(model!.root.children.map((node) => node.content)).toEqual(['alpha', 'BETA']);
+
+      if (boundary === 'session') {
+        canonical.sessionId = 'target-update-replacement-session';
+        await canonical.updateComplete;
+      } else {
+        canonical.remove();
+        await nextTask();
+      }
+      const focusSink = window.document.createElement('textarea');
+      window.document.body.append(focusSink);
+      focusSink.focus();
+      releaseUpdate();
+      await nextTask();
+      await nextTask();
+
+      expect(model!.root.children.map((node) => node.content)).toEqual(['alpha', 'BETA']);
+      expect(window.document.activeElement).toBe(focusSink);
+    } finally {
+      releaseUpdate();
+      if (intercepted) {
+        delete (intercepted as unknown as { updateComplete?: Promise<boolean> }).updateComplete;
+      }
+    }
+  },
+);
