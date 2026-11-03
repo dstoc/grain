@@ -105,6 +105,31 @@ describe('CanonicalEditor in Chromium', () => {
     return inline;
   }
 
+  function inlineWithText(root: CanonicalNode, text: string): CanonicalNode {
+    const pending = [root];
+    while (pending.length) {
+      const node = pending.pop()!;
+      if (node.content === text) return node;
+      pending.push(...node.children);
+    }
+    throw new Error(`no inline node with text ${text}`);
+  }
+
+  function containingListOwner(node: CanonicalNode): CanonicalNode | undefined {
+    const item = node.parent;
+    const list = item?.parent;
+    const owner = list?.parent;
+    return item?.type === 'list-item' && list?.type === 'list' && owner?.type === 'list-item'
+      ? owner
+      : undefined;
+  }
+
+  function expectCaret(inline: MarkdownInline, node: CanonicalNode, offset: number) {
+    expect(inline.nodeView).toBe(node);
+    expect(inline.matches(':focus')).toBe(true);
+    expect(inline.getTextSelection()).toEqual({ anchor: offset, focus: offset });
+  }
+
   function expectBlockSelection(
     context: HostContext,
     anchor: CanonicalNode,
@@ -437,6 +462,144 @@ describe('CanonicalEditor in Chromium', () => {
     await nextTask();
     expect(node.content).toBe('alpha!');
     expect(mounted.inline.getTextSelection()).toEqual({ anchor: 6, focus: 6 });
+  });
+
+  test.each([
+    { direction: 'indent' as const, offset: 0 },
+    { direction: 'indent' as const, offset: 2 },
+    { direction: 'indent' as const, offset: 4 },
+    { direction: 'outdent' as const, offset: 0 },
+    { direction: 'outdent' as const, offset: 2 },
+    { direction: 'outdent' as const, offset: 4 },
+  ])(
+    'preserves a collapsed caret at $offset through $direction, history, and typing',
+    async ({ direction, offset }) => {
+      const source =
+        direction === 'indent' ? '- Alpha\n- Beta\n- Gamma' : '- Alpha\n  - Beta\n- Gamma';
+      const mounted = await mount(source);
+      const target = inlineWithText(document!.root, 'Beta');
+      const inline = inlineFor(mounted.renderer, target);
+      const originalOwnerId = containingListOwner(target)?.sharedId;
+      let trustedTab = false;
+      inline.addEventListener('keydown', (event) => {
+        if (event.key === 'Tab') trustedTab = event.isTrusted;
+      });
+      inline.focus();
+      inline.setSelectionOffsets(offset, offset);
+
+      await userEvent.keyboard(direction === 'indent' ? '{Tab}' : '{Shift>}{Tab}{/Shift}');
+      await settle(mounted);
+
+      expect(trustedTab).toBe(true);
+      expect(containingListOwner(target)?.sharedId).not.toBe(originalOwnerId);
+      expectCaret(inlineFor(mounted.renderer, target), target, offset);
+
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle(mounted);
+      expect(containingListOwner(target)?.sharedId).toBe(originalOwnerId);
+      expectCaret(inlineFor(mounted.renderer, target), target, offset);
+
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle(mounted);
+      expect(containingListOwner(target)?.sharedId).not.toBe(originalOwnerId);
+      expectCaret(inlineFor(mounted.renderer, target), target, offset);
+
+      await userEvent.keyboard('X');
+      await settle(mounted);
+      expect(target.content).toBe(`Beta`.slice(0, offset) + 'X' + `Beta`.slice(offset));
+      expect(inlineFor(mounted.renderer, target).getTextSelection()).toEqual({
+        anchor: offset + 1,
+        focus: offset + 1,
+      });
+    },
+  );
+
+  test.each([
+    { direction: 'indent' as const, anchor: 1, focus: 3 },
+    { direction: 'indent' as const, anchor: 3, focus: 1 },
+    { direction: 'outdent' as const, anchor: 1, focus: 3 },
+    { direction: 'outdent' as const, anchor: 3, focus: 1 },
+  ])(
+    'collapses a $direction text range to its ordered start through history',
+    async ({ direction, anchor, focus }) => {
+      const source =
+        direction === 'indent' ? '- Alpha\n- Beta\n- Gamma' : '- Alpha\n  - Beta\n- Gamma';
+      const mounted = await mount(source);
+      const target = inlineWithText(document!.root, 'Beta');
+      const inline = inlineFor(mounted.renderer, target);
+      inline.focus();
+      inline.setSelectionOffsets(anchor, focus);
+
+      await userEvent.keyboard(direction === 'indent' ? '{Tab}' : '{Shift>}{Tab}{/Shift}');
+      await settle(mounted);
+      expectCaret(inlineFor(mounted.renderer, target), target, 1);
+
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle(mounted);
+      expectCaret(inlineFor(mounted.renderer, target), target, 1);
+
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle(mounted);
+      expectCaret(inlineFor(mounted.renderer, target), target, 1);
+    },
+  );
+
+  test.each([
+    { direction: 'indent' as const, text: 'Gamma' },
+    { direction: 'outdent' as const, text: 'Beta' },
+  ])(
+    '$direction keeps the caret inside a nested list in a block quote',
+    async ({ direction, text }) => {
+      const mounted = await mount('> - Alpha\n>   - Beta\n>   - Gamma');
+      const target = inlineWithText(document!.root, text);
+      const inline = inlineFor(mounted.renderer, target);
+      const originalOwnerId = containingListOwner(target)?.sharedId;
+      inline.focus();
+      inline.setSelectionOffsets(2, 2);
+
+      await userEvent.keyboard(direction === 'indent' ? '{Tab}' : '{Shift>}{Tab}{/Shift}');
+      await settle(mounted);
+      expect(containingListOwner(target)?.sharedId).not.toBe(originalOwnerId);
+      expectCaret(inlineFor(mounted.renderer, target), target, 2);
+
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle(mounted);
+      expect(containingListOwner(target)?.sharedId).toBe(originalOwnerId);
+      expectCaret(inlineFor(mounted.renderer, target), target, 2);
+
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle(mounted);
+      expect(containingListOwner(target)?.sharedId).not.toBe(originalOwnerId);
+      expectCaret(inlineFor(mounted.renderer, target), target, 2);
+    },
+  );
+
+  test('keeps block-selection indent behavior and selection through undo and redo', async () => {
+    const mounted = await mount('- Alpha\n- Beta\n- Gamma');
+    const target = inlineWithText(document!.root, 'Beta');
+    const context = mounted.renderer.hostContext;
+    const selected = asInlineMarkdownNodeView(target);
+    context.selection.add(selected);
+    context.selectionAnchor = selected;
+    context.selectionFocus = selected;
+    const inline = inlineFor(mounted.renderer, target);
+    inline.focus();
+    inline.setSelectionOffsets(2, 2);
+
+    await userEvent.keyboard('{Tab}');
+    await settle(mounted);
+    expect(containingListOwner(target)).toBeDefined();
+    expectBlockSelection(context, target, target, [target]);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle(mounted);
+    expect(containingListOwner(target)).toBeUndefined();
+    expectBlockSelection(context, target, target, [target]);
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle(mounted);
+    expect(containingListOwner(target)).toBeDefined();
+    expectBlockSelection(context, target, target, [target]);
   });
 
   test('admits the configured session when replacing the writer', async () => {

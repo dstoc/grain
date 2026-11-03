@@ -288,6 +288,20 @@ export class SelectionController {
     };
   }
 
+  textSelectionStartBefore(
+    nodeId: NodeId,
+    inline: MarkdownInline,
+    fallbackAnchor: number,
+    fallbackFocus: number,
+  ): EditSelection {
+    const native = inline.getTextSelection();
+    const offset = Math.min(native?.anchor ?? fallbackAnchor, native?.focus ?? fallbackFocus);
+    return {
+      anchor: { nodeId, offset, affinity: 'left' },
+      focus: { nodeId, offset, affinity: 'right' },
+    };
+  }
+
   blockSelectionBefore(
     selection: readonly CanonicalNode[],
     hostContext = this.host.renderer()?.hostContext,
