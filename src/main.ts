@@ -10,8 +10,8 @@ import type {
   MobileToolbarFocusEvent,
 } from './editing/mobile-keyboard-toolbar.js';
 import { createBlockParser, parseMarkdownTree } from './markdown/block-parser/api.js';
-import { CanonicalWriter } from './markdown/canonical-actions.js';
-import { CanonicalDocument } from './markdown/canonical-model.js';
+import { CanonicalWriter } from './markdown/canonical/writer.js';
+import { CanonicalDocument } from './markdown/canonical/document.js';
 import type { BlockParser } from './markdown/block-parser/api.js';
 import type { DocumentNode } from './markdown/node.js';
 import { serializeToString } from './markdown/block-serializer.js';
@@ -1309,7 +1309,7 @@ class MarkdownDevHarness extends LitElement {
       this.toolbarRedoDisabled = true;
       return;
     }
-    const writer = inline?.hostContext?.canonicalWriter;
+    const writer = this.canonicalWriter;
     if (writer) {
       this.toolbarUndoDisabled = !writer.canUndo('local');
       this.toolbarRedoDisabled = !writer.canRedo('local');

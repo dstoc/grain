@@ -50,7 +50,7 @@ export interface InlineProjectionRecovery {
   inline: MarkdownInline;
   selection: InlineProjectionSelection;
   replayEvents: boolean;
-  complete: () => void;
+  complete: (recoveredInline?: MarkdownInline) => void;
 }
 
 declare global {
@@ -91,7 +91,7 @@ export class MarkdownInline extends LitElement {
   });
   private legacyNodeView = false;
   private projectionVersion = 0;
-  private recovery?: Promise<void>;
+  private recovery?: Promise<MarkdownInline | undefined>;
   private recoveringProjection = false;
   private pendingRecoveryEvents: Array<KeyboardEvent | InputEvent> = [];
   private holdRecoveryInputs = false;
@@ -124,10 +124,13 @@ export class MarkdownInline extends LitElement {
     this.requestUpdate();
   }
 
-  recoverComposition(selection: InlineProjectionSelection, replayEvents = true): Promise<void> {
+  recoverComposition(
+    selection: InlineProjectionSelection,
+    replayEvents = true,
+  ): Promise<MarkdownInline | undefined> {
     if (this.recovery) return this.recovery;
     this.recoveringProjection = true;
-    this.recovery = new Promise<void>((resolve) => {
+    this.recovery = new Promise<MarkdownInline | undefined>((resolve) => {
       const event = new CustomEvent<InlineProjectionRecovery>('inline-projection-recovery', {
         detail: { inline: this, selection, replayEvents, complete: resolve },
         bubbles: true,
@@ -144,7 +147,7 @@ export class MarkdownInline extends LitElement {
         this.setSelectionOffsets(selection.anchor, selection.focus);
         if (replayEvents) this.replayRecoveryEvents();
         else this.holdRecoveryInputs = true;
-        resolve();
+        resolve(this);
       });
     }).finally(() => {
       this.recovery = undefined;
@@ -213,6 +216,11 @@ export class MarkdownInline extends LitElement {
   replayRecoveryEvents(pending = this.takeRecoveryEvents()) {
     this.holdRecoveryInputs = false;
     for (const event of pending) this.dispatchEvent(event);
+  }
+
+  discardRecoveryEvents() {
+    this.pendingRecoveryEvents.length = 0;
+    this.holdRecoveryInputs = false;
   }
 
   private onCompositionStart = (event: CompositionEvent) => {

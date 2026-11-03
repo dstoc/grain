@@ -56,10 +56,11 @@ export class MarkdownBlock extends LitElement {
         const pending = recovery.inline.takeRecoveryEvents();
         if (recovery.replayEvents) next.replayRecoveryEvents(pending);
         else next.holdRecoveryEventsFrom(pending);
+        recovery.complete(next);
       } else {
         recovery.inline.takeRecoveryEvents();
+        recovery.complete();
       }
-      recovery.complete();
     });
   };
 

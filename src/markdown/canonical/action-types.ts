@@ -1,4 +1,4 @@
-import type { Span, ResourceToken, TapeId } from '../canonical-model.js';
+import type { Span, ResourceToken, TapeId } from './types.js';
 import type { TreeDraft } from '../semantic/draft.js';
 import type { CreateNodeSpec, NodeId, TextAffinity, TextEdit } from '../semantic/types.js';
 import type { ConversionPlan, Transfer } from '../semantic/draft.js';
@@ -208,6 +208,13 @@ export interface StructuralPatch {
     readonly boundaryId: string;
     readonly itemId: string;
   }[];
+}
+
+/** A receipt contains a visible structural edit when it changes scalar cells,
+ * child ownership, or creates nodes. Boundary allocation alone is not visible
+ * structure and must not seal an editor typing group. */
+export function hasStructuralEffects(patch: StructuralPatch): boolean {
+  return patch.cells.length > 0 || patch.childLists.length > 0 || patch.births.length > 0;
 }
 
 export interface PendingCommit {

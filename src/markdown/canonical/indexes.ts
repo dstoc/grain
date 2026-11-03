@@ -1,7 +1,7 @@
 import * as Y from 'yjs';
 
 import type { NodeId, NodeKind } from '../semantic/types.js';
-import type { Span, TapeId } from '../canonical-model.js';
+import type { Span, TapeId } from './types.js';
 import type { CanonicalTextEdit } from './action-types.js';
 import { META, NODES, TAPES, TAPE_REVISIONS, readSchemaCell, schemaMap } from './schema.js';
 import { indexNativeTape, indexProjectedSpans, mapProjectedTextEdit } from '../canonical-text.js';

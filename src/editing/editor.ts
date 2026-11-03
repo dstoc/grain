@@ -58,6 +58,7 @@ import {
   selectedBlocksInDocumentOrder,
 } from './edits/replace-selected-blocks.js';
 import type { InlineMarkdownNodeView, ReadonlyMarkdownNodeView } from '../markdown/node-view.js';
+import type { TaskStateIntent } from '../markdown/render-intents.js';
 
 type ExcludeFirst<T extends Parameters<any>> = T extends [any, ...infer Rest] ? Rest : never;
 
@@ -248,6 +249,7 @@ export class Editor extends LitElement {
         @inline-input=${(e: CustomEvent<InlineInput>) => this.onInlineInput(e)}
         @inline-link-click=${(e: CustomEvent<InlineLinkClick>) => this.onInlineLinkClick(e)}
         @inline-keydown=${(e: CustomEvent<InlineKeyDown>) => this.onInlineKeyDown(e)}
+        @task-state-intent=${(e: CustomEvent<TaskStateIntent>) => this.onTaskStateIntent(e)}
         @inline-composition-start=${(e: CustomEvent<{ inline: MarkdownInline }>) => this.startComposition(e.detail.inline)}
         @inline-composition-end=${(
           e: CustomEvent<{ inline: MarkdownInline; event: CompositionEvent }>,
@@ -746,6 +748,27 @@ export class Editor extends LitElement {
     //   noAwait(this.navigateByName(destination, true));
     // }
   }
+
+  private onTaskStateIntent(event: CustomEvent<TaskStateIntent>) {
+    const source = event.composedPath()[0];
+    if (!(source instanceof HTMLElement)) return;
+    const element = source as HTMLElement & {
+      hostContext?: HostContext;
+      node?: ReadonlyMarkdownNodeView;
+    };
+    if (!element.hostContext || !element.node || !(viewModel in event.detail.node)) return;
+    const node = legacyNode(event.detail.node);
+    if (node.type !== 'list-item') return;
+
+    this.runEditAction<(context: EditContext) => void>(element, (context) => {
+      context.startEditing();
+      node[viewModel].updateChecked(
+        node.checked === true ? undefined : node.checked === false ? true : false,
+      );
+      context.keepFocus();
+    });
+  }
+
   onInlineKeyDown(event: CustomEvent<InlineKeyDown>) {
     // This function must only handle key events that do not generate text.
     // So as not to confuse handling here with insertText in onInlineInput.

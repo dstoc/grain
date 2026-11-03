@@ -1,6 +1,6 @@
 import * as Y from 'yjs';
 
-import type { BoundaryEmbed, Span, TapeId } from './canonical-model.js';
+import type { BoundaryEmbed, Span, TapeId } from './canonical/types.js';
 import type { CanonicalTextEdit } from './canonical/action-types.js';
 import type { TextAffinity } from './semantic/types.js';
 export type { TextAffinity, TextEdit } from './semantic/types.js';

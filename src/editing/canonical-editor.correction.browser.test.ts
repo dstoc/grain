@@ -5,6 +5,7 @@ import { CanonicalWriter, type ActionRequest } from '../markdown/canonical-actio
 import { MarkdownTree } from '../markdown/view-model.js';
 import { parseBlocks } from '../markdown/block-parser/api.js';
 import { MarkdownInline } from '../markdown/inline-render.js';
+import type { InlineViewModelNode } from '../markdown/view-model-node.js';
 import { CanonicalEditor } from './canonical-editor.js';
 import { insertParagraph } from './commands/insert-paragraph.js';
 import { prepareEdit } from './prepare-edit.js';
@@ -315,4 +316,182 @@ test('typing in the original paragraph after a remote split works without compos
     text: 'al?',
     model: ['al?', 'pha!'],
   });
+});
+
+test.each(['session', 'disconnect'] as const)(
+  'composition recovery releases continued typing after %s changes the generation',
+  async (boundary) => {
+    const renderer = await mount('canonical', 'alpha');
+    const canonical = editor as CanonicalEditor;
+    const inline = renderer.shadowRoot!.querySelector<MarkdownInline>('md-inline')!;
+    inline.focus();
+    inline.setSelectionOffsets(5, 5);
+    await nextTask();
+
+    const devtools = cdp() as unknown as {
+      send(method: string, params: Record<string, unknown>): Promise<unknown>;
+    };
+    canonical.addEventListener(
+      'inline-composition-end',
+      () => {
+        if (boundary === 'session') canonical.sessionId = 'replacement-session';
+        else {
+          canonical.remove();
+          window.document.body.append(canonical);
+        }
+      },
+      { once: true },
+    );
+    await devtools.send('Input.imeSetComposition', {
+      text: '漢',
+      selectionStart: 1,
+      selectionEnd: 1,
+    });
+    await devtools.send('Input.insertText', { text: '漢' });
+    await nextTask();
+    await nextTask();
+
+    const recovered = renderer.shadowRoot!.querySelector<MarkdownInline>('md-inline')!;
+    expect(recovered.mobileToolbarInputReady).toBe(true);
+    recovered.focus();
+    recovered.setSelectionOffsets(5, 5);
+    await userEvent.keyboard('!');
+    await nextTask();
+    await nextTask();
+
+    expect(model!.root.children[0]!.content).toBe('alpha!');
+    expect(recovered.mobileToolbarInputReady).toBe(true);
+    if (boundary === 'session') {
+      expect(writer!.canUndo('replacement-session', model!.root.children[0]!.sharedId)).toBe(true);
+    }
+  },
+);
+
+test('cross-node composition recovery discards queued input after a session change', async () => {
+  const renderer = await mount('canonical', 'alpha');
+  const canonical = editor as CanonicalEditor;
+  const node = model!.root.children[0]!;
+  const inline = renderer.shadowRoot!.querySelector<MarkdownInline>('md-inline')!;
+  inline.focus();
+  inline.setSelectionOffsets(5, 5);
+  await nextTask();
+
+  const devtools = cdp() as unknown as {
+    send(method: string, params: Record<string, unknown>): Promise<unknown>;
+  };
+  const queuedKey = new KeyboardEvent('keydown', {
+    key: 'Shift',
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+  });
+  const replayed: KeyboardEvent[] = [];
+  renderer.addEventListener('inline-keydown', (event) => {
+    const detail = (event as CustomEvent<{ keyboardEvent: KeyboardEvent }>).detail;
+    if (detail.keyboardEvent === queuedKey) replayed.push(detail.keyboardEvent);
+  });
+  inline.addEventListener('composition-invalidated', () => inline.queueRecoveryKeydown(queuedKey), {
+    once: true,
+  });
+  canonical.addEventListener(
+    'inline-projection-recovery',
+    () => {
+      canonical.sessionId = 'cross-node-replacement-session';
+    },
+    { capture: true, once: true },
+  );
+  await devtools.send('Input.imeSetComposition', {
+    text: '漢',
+    selectionStart: 1,
+    selectionEnd: 1,
+  });
+  await applyRemote(
+    (remote) =>
+      prepareEdit(
+        remote,
+        { actionId: 'split-during-stale-composition-recovery', sessionId: 'remote' },
+        model!.root.sharedId,
+        undefined,
+        insertParagraph,
+        { nodeId: node.sharedId, from: 2 },
+      )?.request,
+  );
+  await nextTask();
+  await nextTask();
+
+  const inlines = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')];
+  expect(inlines.every((candidate) => candidate.mobileToolbarInputReady)).toBe(true);
+  expect(replayed).toEqual([]);
+  const target = renderer.getInlineSelection().inline!;
+  const targetNode = target.nodeView as unknown as { content: string; sharedId: string };
+  target.focus();
+  target.setSelectionOffsets(target.textContent!.length, target.textContent!.length);
+  await userEvent.keyboard('!');
+  await nextTask();
+  await nextTask();
+
+  expect(targetNode.content.endsWith('!')).toBe(true);
+  expect(target.mobileToolbarInputReady).toBe(true);
+});
+
+test('selected-block composition recovery does not commit or hold input across a session change', async () => {
+  const renderer = await mount('canonical', 'alpha\n\nbeta');
+  const canonical = editor as CanonicalEditor;
+  const [first, last] = model!.root.children;
+  const context = renderer.hostContext;
+  context.selection.add(first as unknown as InlineViewModelNode);
+  context.selection.add(last as unknown as InlineViewModelNode);
+  context.selectionAnchor = last as unknown as InlineViewModelNode;
+  context.selectionFocus = first as unknown as InlineViewModelNode;
+  const inline = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')][1]!;
+  inline.focus();
+  inline.setSelectionOffsets(4, 4);
+  await nextTask();
+
+  const queuedKey = new KeyboardEvent('keydown', {
+    key: 'Shift',
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+  });
+  const replayed: KeyboardEvent[] = [];
+  renderer.addEventListener('inline-keydown', (event) => {
+    const detail = (event as CustomEvent<{ keyboardEvent: KeyboardEvent }>).detail;
+    if (detail.keyboardEvent === queuedKey) replayed.push(detail.keyboardEvent);
+  });
+  canonical.addEventListener(
+    'inline-composition-end',
+    () => {
+      canonical.sessionId = 'selected-block-replacement-session';
+    },
+    { once: true },
+  );
+  inline.dispatchEvent(
+    new CompositionEvent('compositionstart', { bubbles: true, composed: true, data: '' }),
+  );
+  inline.queueRecoveryKeydown(queuedKey);
+  inline.textContent = 'beta漢';
+  inline.dispatchEvent(
+    new CompositionEvent('compositionend', { bubbles: true, composed: true, data: '漢' }),
+  );
+  await nextTask();
+  await nextTask();
+
+  expect(model!.root.children.map((node) => node.content)).toEqual(['alpha', 'beta']);
+  const recovered = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
+    (candidate) => candidate.textContent === 'beta',
+  )!;
+  expect(recovered.mobileToolbarInputReady).toBe(true);
+  expect(replayed).toEqual([]);
+  context.selection.clear();
+  context.selectionAnchor = undefined;
+  context.selectionFocus = undefined;
+  recovered.focus();
+  recovered.setSelectionOffsets(4, 4);
+  await userEvent.keyboard('!');
+  await nextTask();
+  await nextTask();
+
+  expect(model!.root.children.map((node) => node.content)).toEqual(['alpha', 'beta!']);
+  expect(recovered.mobileToolbarInputReady).toBe(true);
 });
