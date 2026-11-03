@@ -636,6 +636,10 @@ export class CanonicalWriter {
   private readonly history: CanonicalHistoryCoordinator;
   private readonly replicas: CanonicalReplicas;
   private readonly sessionSequences = new Map<string, number>();
+  private readonly preparedCommands = new Map<
+    string,
+    { readonly actionId: string; readonly sequence: number }
+  >();
   private readonly acceptedRequests = new Map<string, CachedActionResponse>();
   private readonly listeners = new Set<WriterListener>();
   private readonly localQueue: QueuedLocalEdit[] = [];
@@ -723,6 +727,7 @@ export class CanonicalWriter {
     this.unsubscribeAcceptedUpdates();
     this.history.close();
     this.sessionSequences.clear();
+    this.preparedCommands.clear();
     this.replicas.close();
     this.acceptedRequests.clear();
     this.acceptedResponseBytes = 0;
@@ -761,12 +766,110 @@ export class CanonicalWriter {
     this.history.admit(sessionId);
   }
 
+  /** Tracks a prepared pane action before submitting it to a connected authority. */
+  trackPreparedAction(requestInput: ActionRequest): void {
+    this.assertCanPrepare();
+    const request = copyRequest(requestInput);
+    this.validateRequestShape(request);
+    assert(
+      request.documentId === (metaMap(this.state).get('documentId') as string),
+      'prepared action belongs to another document',
+    );
+    assert(
+      request.authorityEpoch === (metaMap(this.state).get('authorityEpoch') as string),
+      'prepared action belongs to another authority epoch',
+    );
+    assert(this.sessionSequences.has(request.sessionId), 'prepared action session is not admitted');
+    assert(
+      request.sessionSequence === this.nextSequence(request.sessionId),
+      'prepared action sequence is not the next session sequence',
+    );
+    assert(
+      !this.preparedCommands.has(request.sessionId),
+      `session ${request.sessionId} already has an outstanding action`,
+    );
+    if (request.mode === 'text-input') {
+      assert(
+        this.replicas.hasPreparedAuthor(request.sessionId, request.actionId),
+        'prepared text action has no matching author branch',
+      );
+    } else {
+      assert(
+        !this.replicas.hasPendingAuthor(request.sessionId),
+        `session ${request.sessionId} already has an outstanding action`,
+      );
+      this.preparedCommands.set(request.sessionId, {
+        actionId: request.actionId,
+        sequence: request.sessionSequence,
+      });
+    }
+  }
+
+  /** Completes a pane action only after its matching authority update is present. */
+  acknowledgePreparedAction(request: ActionRequest, accepted: AcceptedAction): void {
+    this.assertCanPrepare();
+    assert(this.isPreparedAction(request), 'prepared action is no longer outstanding');
+    assert(
+      accepted.actionId === request.actionId &&
+        accepted.sessionId === request.sessionId &&
+        accepted.authorityEpoch === request.authorityEpoch,
+      'accepted response does not match the prepared action',
+    );
+    assert(
+      accepted.revision <= this.document.acceptedRevision,
+      'accepted document revision has not arrived at the pane',
+    );
+    const watermark = sessionWatermarkMap(this.state).get(
+      sessionWatermarkKey(request.authorityEpoch, request.sessionId),
+    );
+    assert(
+      watermark === request.sessionSequence,
+      'accepted session watermark has not arrived at the pane',
+    );
+    const currentSequence = this.sessionSequences.get(request.sessionId);
+    assert(
+      currentSequence === request.sessionSequence - 1 ||
+        currentSequence === request.sessionSequence,
+      'prepared action does not follow the pane session watermark',
+    );
+    if (request.mode === 'text-input') {
+      assert(
+        this.replicas.completePreparedAuthor(request.sessionId, request.actionId),
+        'prepared author branch no longer matches the accepted action',
+      );
+    } else {
+      this.preparedCommands.delete(request.sessionId);
+    }
+    this.sessionSequences.set(request.sessionId, request.sessionSequence);
+  }
+
+  /** Releases a rejected or abandoned connected action without changing document state. */
+  releasePreparedAction(request: ActionRequest): boolean {
+    const command = this.preparedCommands.get(request.sessionId);
+    if (command?.actionId === request.actionId && command.sequence === request.sessionSequence) {
+      this.preparedCommands.delete(request.sessionId);
+      return true;
+    }
+    return this.replicas.rejectPreparedAuthor(request);
+  }
+
+  private isPreparedAction(request: ActionRequest): boolean {
+    if (request.mode === 'text-input')
+      return this.replicas.hasPreparedAuthor(request.sessionId, request.actionId);
+    const command = this.preparedCommands.get(request.sessionId);
+    return command?.actionId === request.actionId && command.sequence === request.sessionSequence;
+  }
+
   prepareCommand(options: ActionOptions, callback: DraftCommand): ActionRequest {
     this.assertCanPrepare();
     assert(options.actionId.length > 0, 'action ID cannot be empty');
     const sessionId = options.sessionId ?? 'local';
     assert(
       !this.replicas.hasPendingAuthor(sessionId),
+      `session ${sessionId} already has an outstanding action`,
+    );
+    assert(
+      !this.preparedCommands.has(sessionId),
       `session ${sessionId} already has an outstanding action`,
     );
     const historyGroupId = options.historyGroupId ?? options.actionId;
@@ -841,6 +944,10 @@ export class CanonicalWriter {
     const sessionSequence = options.sessionSequence ?? this.nextSequence(sessionId);
     assert(
       !this.replicas.hasPendingAuthor(sessionId),
+      `session ${sessionId} already has an outstanding action`,
+    );
+    assert(
+      !this.preparedCommands.has(sessionId),
       `session ${sessionId} already has an outstanding action`,
     );
     const documentId = metaMap(this.state).get('documentId') as string;

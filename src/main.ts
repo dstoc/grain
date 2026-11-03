@@ -826,7 +826,8 @@ class MarkdownDevHarness extends LitElement {
                                 </div>
                                 <md-canonical-editor
                                   .document=${client.document}
-                                  .writer=${this.canonicalWriter}
+                                  .writer=${client.writer}
+                                  .sessionTransport=${this.twoClientExperiment?.sessionTransport(client.sessionId)}
                                   .sessionId=${client.sessionId}
                                   .disabled=${this.experimentStatus !== 'ready'}
                                   .acceptedUpdateRelay=${this.acceptedUpdateRelay}
@@ -1094,7 +1095,7 @@ class MarkdownDevHarness extends LitElement {
     const authority = this.canonicalDocument;
     if (!authority || !this.canonicalWriter) return;
     this.stopPlayback();
-    this.twoClientExperiment = this.createTwoClientExperiment(authority);
+    this.twoClientExperiment = this.createTwoClientExperiment(authority, this.canonicalWriter);
     this.twoClientMode = true;
     this.activeTab = 'render';
     this.experimentStatus = 'ready';
@@ -1242,7 +1243,7 @@ class MarkdownDevHarness extends LitElement {
     this.canonicalDocument = nextDocument;
     this.canonicalWriter = nextWriter;
     this.twoClientExperiment = this.twoClientMode
-      ? this.createTwoClientExperiment(nextDocument)
+      ? this.createTwoClientExperiment(nextDocument, nextWriter)
       : undefined;
     if (this.twoClientMode) {
       this.experimentStatus = 'ready';
@@ -1281,11 +1282,18 @@ class MarkdownDevHarness extends LitElement {
     return elements;
   }
 
-  private createTwoClientExperiment(authority: CanonicalDocument): TwoClientExperiment {
+  private createTwoClientExperiment(
+    authority: CanonicalDocument,
+    authorityWriter: CanonicalWriter,
+  ): TwoClientExperiment {
     let experiment: TwoClientExperiment;
-    experiment = new TwoClientExperiment(authority, (state) => {
-      if (this.twoClientExperiment === experiment) this.onTwoClientStateChange(state);
-    });
+    experiment = new TwoClientExperiment(
+      authority,
+      (state) => {
+        if (this.twoClientExperiment === experiment) this.onTwoClientStateChange(state);
+      },
+      authorityWriter,
+    );
     return experiment;
   }
 
@@ -1571,10 +1579,9 @@ class MarkdownDevHarness extends LitElement {
       return;
     }
     const editor = this.activeEditor();
-    const writer = editor?.writer;
-    if (writer && editor) {
-      this.toolbarUndoDisabled = !writer.canUndo(editor.sessionId);
-      this.toolbarRedoDisabled = !writer.canRedo(editor.sessionId);
+    if (editor) {
+      this.toolbarUndoDisabled = !editor.canUndo();
+      this.toolbarRedoDisabled = !editor.canRedo();
       return;
     }
     this.toolbarUndoDisabled = true;

@@ -26,6 +26,7 @@ import { deleteBlocks as deleteBlocksCommand } from './commands/delete-blocks.js
 import type { Edit } from './outcomes.js';
 import type { EditSelection } from '../markdown/semantic/selection.js';
 import { BrowserSessionRunner } from './browser/session-runner.js';
+import type { BrowserSessionTransport } from './browser/session-runner.js';
 import type { SessionActionCallbacks } from './browser/session-runner.js';
 import { translateInlineInput, translateInlineKey } from './browser/input.js';
 import { SelectionController } from './browser/selection-controller.js';
@@ -53,6 +54,7 @@ export type AcceptedUpdateRelay = (
 export class CanonicalEditor extends LitElement {
   @property({ attribute: false }) accessor document: CanonicalDocument | undefined;
   @property({ attribute: false }) accessor writer: CanonicalWriter | undefined;
+  @property({ attribute: false }) accessor sessionTransport: BrowserSessionTransport | undefined;
   @property({ attribute: false }) accessor renderDelegate: MarkdownRenderDelegate | undefined;
   @property({ type: String, attribute: 'session-id' }) accessor sessionId = 'local';
   @property({ attribute: false }) accessor acceptedUpdateRelay: AcceptedUpdateRelay | undefined;
@@ -124,9 +126,12 @@ export class CanonicalEditor extends LitElement {
 
   protected override updated(changed: Map<PropertyKey, unknown>) {
     const bindingChanged =
-      changed.has('document') || changed.has('writer') || changed.has('sessionId');
+      changed.has('document') ||
+      changed.has('writer') ||
+      changed.has('sessionId') ||
+      changed.has('sessionTransport');
     if (bindingChanged) {
-      this.sessionRunner.bind(this.document, this.writer, this.sessionId);
+      this.sessionRunner.bind(this.document, this.writer, this.sessionId, this.sessionTransport);
       this.compositionController.cancel(true);
       if (changed.has('document')) {
         this.selectionController.resetDocument();
@@ -165,7 +170,7 @@ export class CanonicalEditor extends LitElement {
     this.ownerDocument.addEventListener('focusin', this.onFocusIntent, true);
     this.ownerDocument.addEventListener('pointerdown', this.onFocusIntent, true);
     this.ownerDocument.addEventListener('keydown', this.onFocusIntent, true);
-    this.sessionRunner.bind(this.document, this.writer, this.sessionId);
+    this.sessionRunner.bind(this.document, this.writer, this.sessionId, this.sessionTransport);
     this.selectionController.connect(this.ownerDocument);
   }
 
@@ -198,6 +203,14 @@ export class CanonicalEditor extends LitElement {
     this.sessionRunner.sealTypingGroup();
   }
 
+  canUndo(): boolean {
+    return this.sessionRunner.canUndo();
+  }
+
+  canRedo(): boolean {
+    return this.sessionRunner.canRedo();
+  }
+
   private onAccepted(
     accepted: AcceptedAction,
     selectionIntent?: import('../markdown/semantic/selection.js').SelectionIntent,
@@ -205,7 +218,9 @@ export class CanonicalEditor extends LitElement {
   ) {
     this.selectionController.captureSelection();
     const shouldRestoreFocus = this.acceptedUpdateRelay ? this.focusRestoreGuard() : undefined;
+    if (this.sessionTransport && !this.sessionTransport.isReady()) return;
     if (
+      !this.sessionTransport &&
       !this.relayAcceptedUpdate(
         { revision: accepted.revision, update: accepted.update },
         accepted.callbackErrors,
@@ -600,7 +615,9 @@ export class CanonicalEditor extends LitElement {
       result.revision !== undefined && result.update
         ? { revision: result.revision, update: result.update }
         : undefined;
-    if (!this.relayAcceptedUpdate(envelope, result.callbackErrors ?? [])) return;
+    if (this.sessionTransport) {
+      if (!this.sessionTransport.isReady()) return;
+    } else if (!this.relayAcceptedUpdate(envelope, result.callbackErrors ?? [])) return;
     if (result.status === 'history-reset') {
       this.sealTypingGroup();
       this.dispatchEvent(

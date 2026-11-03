@@ -1,8 +1,12 @@
 import { CanonicalWriter } from '../../markdown/canonical/writer.js';
 import type {
+  ActionRequest,
+  AdmittedContext,
   AcceptedAction,
+  ApplyResult,
   ActionOptions,
   HistoryResult,
+  PendingCommit,
 } from '../../markdown/canonical/action-types.js';
 import type { CanonicalDocument } from '../../markdown/canonical/document.js';
 import type { EditSelection } from '../../markdown/semantic/selection.js';
@@ -21,10 +25,23 @@ export interface SessionActionCallbacks {
   readonly withLocalCommit: (action: () => void) => void;
 }
 
+/** Routes one pane's prepared actions and history through its connected authority. */
+export interface BrowserSessionTransport {
+  isReady(): boolean;
+  apply(writer: CanonicalWriter, request: ActionRequest, context: AdmittedContext): ApplyResult;
+  publish(writer: CanonicalWriter, request: ActionRequest, pending: PendingCommit): AcceptedAction;
+  canUndo(sessionId: string): boolean;
+  canRedo(sessionId: string): boolean;
+  sealTextGroup(sessionId: string): void;
+  undo(sessionId: string): HistoryResult;
+  redo(sessionId: string): HistoryResult;
+}
+
 /** Owns one editor binding's session attribution and action/history grouping. */
 export class BrowserSessionRunner {
   private document?: CanonicalDocument;
   private writer?: CanonicalWriter;
+  private transport?: BrowserSessionTransport;
   private sessionId = 'local';
   private generation_ = 0;
   private textGroup?: { readonly id: string; readonly nodeId: NodeId; lastInputAt: number };
@@ -45,8 +62,14 @@ export class BrowserSessionRunner {
     document: CanonicalDocument | undefined,
     writer: CanonicalWriter | undefined,
     sessionId: string,
+    transport?: BrowserSessionTransport,
   ): void {
-    if (this.document === document && this.writer === writer && this.sessionId === sessionId) {
+    if (
+      this.document === document &&
+      this.writer === writer &&
+      this.sessionId === sessionId &&
+      this.transport === transport
+    ) {
       return;
     }
     this.sealTypingGroup();
@@ -54,6 +77,7 @@ export class BrowserSessionRunner {
     this.document = document;
     this.writer = writer;
     this.sessionId = sessionId;
+    this.transport = transport;
     writer?.admitSession(sessionId);
   }
 
@@ -62,6 +86,7 @@ export class BrowserSessionRunner {
     this.generation_++;
     this.document = undefined;
     this.writer = undefined;
+    this.transport = undefined;
   }
 
   isCurrent(
@@ -80,16 +105,29 @@ export class BrowserSessionRunner {
 
   sealTypingGroup(): void {
     this.textGroup = undefined;
-    this.writer?.sealTextGroup(this.sessionId);
+    if (this.transport) this.transport.sealTextGroup(this.sessionId);
+    else this.writer?.sealTextGroup(this.sessionId);
+  }
+
+  canUndo(): boolean {
+    if (this.transport) return this.transport.canUndo(this.sessionId);
+    return this.writer?.canUndo(this.sessionId) ?? false;
+  }
+
+  canRedo(): boolean {
+    if (this.transport) return this.transport.canRedo(this.sessionId);
+    return this.writer?.canRedo(this.sessionId) ?? false;
   }
 
   undo(): HistoryResult | undefined {
     this.sealTypingGroup();
+    if (this.transport) return this.transport.undo(this.sessionId);
     return this.writer?.undo(this.sessionId);
   }
 
   redo(): HistoryResult | undefined {
     this.sealTypingGroup();
+    if (this.transport) return this.transport.redo(this.sessionId);
     return this.writer?.redo(this.sessionId);
   }
 
@@ -125,16 +163,7 @@ export class BrowserSessionRunner {
       if (!prepared) return;
       this.sealTypingGroup();
       callbacks.withLocalCommit(() => {
-        const result = writer.apply(prepared.request, {
-          sessionId,
-          authorityEpoch: prepared.request.authorityEpoch,
-          sessionSequence: prepared.request.sessionSequence,
-        });
-        if (result.status === 'pending')
-          callbacks.onAccepted(writer.publish(result.pending), prepared.selection);
-        else if (result.status === 'duplicate')
-          callbacks.onAccepted(result.accepted, prepared.selection);
-        else if (result.status === 'rejected') callbacks.onRejected(result.reason);
+        this.submit(writer, prepared.request, sessionId, callbacks, prepared.selection);
       });
     } catch (error) {
       callbacks.onRejected(error);
@@ -192,14 +221,7 @@ export class BrowserSessionRunner {
         { ...this.options(group), focus },
       );
       callbacks.withLocalCommit(() => {
-        const result = writer.apply(request, {
-          sessionId: this.sessionId,
-          authorityEpoch: request.authorityEpoch,
-          sessionSequence: request.sessionSequence,
-        });
-        if (result.status === 'pending') callbacks.onAccepted(writer.publish(result.pending));
-        else if (result.status === 'duplicate') callbacks.onAccepted(result.accepted);
-        else if (result.status === 'rejected') callbacks.onRejected(result.reason);
+        this.submit(writer, request, this.sessionId, callbacks);
       });
     } catch (error) {
       callbacks.onRejected(error);
@@ -209,6 +231,56 @@ export class BrowserSessionRunner {
   private nextActionId(): string {
     const random = globalThis.crypto?.randomUUID?.();
     return random ? `browser:${random}` : `browser:${Date.now()}:${fallbackActionOrdinal++}`;
+  }
+
+  private submit(
+    writer: CanonicalWriter,
+    request: ActionRequest,
+    sessionId: string,
+    callbacks: SessionActionCallbacks,
+    selection?: import('../../markdown/semantic/selection.js').SelectionIntent,
+  ): void {
+    const transport = this.transport;
+    let tracked = false;
+    let authorityPending = false;
+    try {
+      if (transport) {
+        writer.trackPreparedAction(request);
+        tracked = true;
+      }
+      const context: AdmittedContext = {
+        sessionId,
+        authorityEpoch: request.authorityEpoch,
+        sessionSequence: request.sessionSequence,
+      };
+      const result = transport
+        ? transport.apply(writer, request, context)
+        : writer.apply(request, context);
+      if (result.status === 'pending') {
+        authorityPending = !!transport;
+        const accepted = transport
+          ? transport.publish(writer, request, result.pending)
+          : writer.publish(result.pending);
+        tracked = false;
+        callbacks.onAccepted(accepted, selection);
+      } else if (result.status === 'duplicate') {
+        tracked = false;
+        callbacks.onAccepted(result.accepted, selection);
+      } else if (result.status === 'rejected') {
+        if (tracked) writer.releasePreparedAction(request);
+        tracked = false;
+        callbacks.onRejected(result.reason);
+      } else if (result.status === 'queued') {
+        if (tracked) writer.releasePreparedAction(request);
+        tracked = false;
+        callbacks.onRejected(
+          new Error('Connected actions cannot be queued while a pane is bound.'),
+        );
+      }
+    } catch (error) {
+      if (!authorityPending && (tracked || transport)) writer.releasePreparedAction(request);
+      callbacks.onRejected(error);
+    }
   }
 
   private options(historyGroupId?: string): ActionOptions {

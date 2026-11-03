@@ -38,6 +38,10 @@ export class CanonicalReplicas {
     return this.pendingAuthors.has(sessionId);
   }
 
+  hasPreparedAuthor(sessionId: string, actionId: string): boolean {
+    return this.pendingAuthors.get(sessionId) === actionId;
+  }
+
   markAuthorPending(sessionId: string, actionId: string): void {
     this.pendingAuthors.set(sessionId, actionId);
   }
@@ -58,8 +62,8 @@ export class CanonicalReplicas {
     this.pendingAuthors.delete(sessionId);
   }
 
-  rejectPreparedAuthor(value: unknown): void {
-    if (!value || typeof value !== 'object') return;
+  rejectPreparedAuthor(value: unknown): boolean {
+    if (!value || typeof value !== 'object') return false;
     const request = value as { readonly sessionId?: unknown; readonly actionId?: unknown };
     if (
       typeof request.sessionId === 'string' &&
@@ -67,7 +71,15 @@ export class CanonicalReplicas {
       this.pendingAuthors.get(request.sessionId) === request.actionId
     ) {
       this.discardAuthorReplica(request.sessionId);
+      return true;
     }
+    return false;
+  }
+
+  completePreparedAuthor(sessionId: string, actionId: string): boolean {
+    if (this.pendingAuthors.get(sessionId) !== actionId) return false;
+    this.pendingAuthors.delete(sessionId);
+    return true;
   }
 
   discardValidationReplica(): void {

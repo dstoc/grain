@@ -7,6 +7,7 @@ import type { CanonicalDocument } from './markdown/canonical/document.js';
 import type { CanonicalNode } from './markdown/canonical/node-projection.js';
 import type { CanonicalWriter } from './markdown/canonical/writer.js';
 import type { TwoClientExperiment } from './editing/two-client-experiment.js';
+import type { CanonicalEditor } from './editing/canonical-editor.js';
 import { MarkdownInline } from './markdown/inline-render.js';
 import './main.js';
 
@@ -68,7 +69,7 @@ async function enableTwoClients() {
 }
 
 function editors() {
-  return [...harness!.shadowRoot!.querySelectorAll('md-canonical-editor')];
+  return [...harness!.shadowRoot!.querySelectorAll<CanonicalEditor>('md-canonical-editor')];
 }
 
 function inlines(editor: Element) {
@@ -95,6 +96,30 @@ function expectReplicaConvergence() {
   expect([...clients[0].document.checkpoint().update]).toEqual([
     ...clients[1].document.checkpoint().update,
   ]);
+}
+
+function acceptPaneText(index: 0 | 1, actionId: string, insert: string, offset?: number) {
+  const state = harness as unknown as HarnessInternals;
+  const client = state.twoClientExperiment!.clients[index]!;
+  const writer = client.writer!;
+  const node = client.document.root.children[0]!;
+  const from = offset ?? node.content!.length;
+  const request = writer.prepareTextInput(
+    node.sharedId,
+    { from, to: from, insert },
+    { actionId, sessionId: client.sessionId },
+  );
+  writer.trackPreparedAction(request);
+  const transport = state.twoClientExperiment!.sessionTransport(client.sessionId)!;
+  const result = transport.apply(writer, request, {
+    sessionId: client.sessionId,
+    authorityEpoch: request.authorityEpoch,
+    sessionSequence: request.sessionSequence,
+  });
+  if (result.status === 'pending') return transport.publish(writer, request, result.pending);
+  if (result.status === 'duplicate') return result.accepted;
+  if (result.status === 'rejected') writer.releasePreparedAction(request);
+  throw new Error(`expected authority-accepted text update, got ${result.status}`);
 }
 
 function canonicalInline(document: CanonicalDocument, content: string): CanonicalNode | undefined {
@@ -128,6 +153,11 @@ test('keeps single-client mode by default and delivers edits and structural hist
 
   const [editorA, editorB] = await enableTwoClients();
   expect(editors()).toHaveLength(2);
+  const state = harness as unknown as HarnessInternals;
+  expect(editorA!.writer).toBe(state.twoClientExperiment!.clients[0].writer);
+  expect(editorB!.writer).toBe(state.twoClientExperiment!.clients[1].writer);
+  expect(editorA!.writer).not.toBe(editorB!.writer);
+  expect(editorA!.writer).not.toBe(state.canonicalWriter);
   expect(harness!.shadowRoot!.textContent).toContain('Network/offline delivery');
   expect(harness!.shadowRoot!.textContent).toContain(
     'stale-client Receive reconciliation are omitted',
@@ -135,6 +165,8 @@ test('keeps single-client mode by default and delivers edits and structural hist
   expectReplicaConvergence();
 
   await typeAtEnd(inlineWithText(editorA!, 'alpha'), ' A');
+  expect(editorA!.canUndo()).toBe(true);
+  expect(editorA!.writer!.canUndo(editorA!.sessionId)).toBe(false);
   expect(inlineWithText(editorA!, 'alpha A').matches(':focus')).toBe(true);
   expect(inlineWithText(editorB!, 'alpha A').matches(':focus')).toBe(false);
   expectReplicaConvergence();
@@ -149,7 +181,6 @@ test('keeps single-client mode by default and delivers edits and structural hist
   beta.setSelectionOffsets(beta.nodeView!.content.length, beta.nodeView!.content.length);
   await userEvent.keyboard('{Enter}');
   await settleHarness();
-  const state = harness as unknown as HarnessInternals;
   expect(state.canonicalDocument!.root.children).toHaveLength(3);
   expect(inlines(editorB!).some((inline) => inline.matches(':focus'))).toBe(true);
   expectReplicaConvergence();
@@ -177,6 +208,78 @@ test('keeps single-client mode by default and delivers edits and structural hist
   expect((harness as unknown as HarnessInternals).markdownForSave()).toContain('tail');
 });
 
+test('rejected connected text and commands release the pane writer for its next action', async () => {
+  await mountHarness('alpha\n\nbeta');
+  const [editorA] = await enableTwoClients();
+  const state = harness as unknown as HarnessInternals;
+  const authority = state.canonicalWriter!;
+  const originalApply = authority.apply;
+  let rejectNext = false;
+  authority.apply = (request, context) => {
+    if (rejectNext) {
+      rejectNext = false;
+      return { status: 'rejected', reason: 'invalid-operation' };
+    }
+    return originalApply.call(authority, request, context);
+  };
+
+  try {
+    let before = state.canonicalDocument!.checkpoint().update;
+    rejectNext = true;
+    await typeAtEnd(inlineWithText(editorA!, 'alpha'), '!');
+    expect(state.canonicalDocument!.checkpoint().update).toEqual(before);
+    await typeAtEnd(inlineWithText(editorA!, 'alpha'), '?');
+    expect(inlineWithText(editorA!, 'alpha?').matches(':focus')).toBe(true);
+
+    before = state.canonicalDocument!.checkpoint().update;
+    const alpha = inlineWithText(editorA!, 'alpha?');
+    alpha.focus();
+    alpha.setSelectionOffsets(6, 6);
+    rejectNext = true;
+    await userEvent.keyboard('{Enter}');
+    await settleHarness();
+    expect(state.canonicalDocument!.checkpoint().update).toEqual(before);
+    expect(state.canonicalDocument!.root.children).toHaveLength(2);
+
+    await typeAtEnd(inlineWithText(editorA!, 'alpha?'), 'X');
+    expect(inlineWithText(editorA!, 'alpha?X').matches(':focus')).toBe(true);
+    await userEvent.keyboard('{Enter}');
+    await settleHarness();
+    expect(state.canonicalDocument!.root.children).toHaveLength(3);
+    expectReplicaConvergence();
+  } finally {
+    authority.apply = originalApply;
+  }
+});
+
+test('mode exit abandons a prepared pane action and closes only the connected panes', async () => {
+  await mountHarness('alpha');
+  await enableTwoClients();
+  const state = harness as unknown as HarnessInternals;
+  const retiredExperiment = state.twoClientExperiment!;
+  const retiredClient = retiredExperiment.clients[0]!;
+  const retiredWriter = retiredClient.writer!;
+  const paragraph = retiredClient.document.root.children[0]!;
+  const pending = retiredWriter.prepareTextInput(
+    paragraph.sharedId,
+    { from: 5, to: 5, insert: 'uncommitted' },
+    { actionId: 'dispose-prepared-pane-text', sessionId: retiredClient.sessionId },
+  );
+  retiredWriter.trackPreparedAction(pending);
+
+  harness!.shadowRoot!.querySelector<HTMLButtonElement>('.experiment-toggle')!.click();
+  await settleHarness();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  expect(retiredExperiment.state.status).toBe('closed');
+  expect(() => retiredWriter.trackPreparedAction(pending)).toThrow('canonical writer is closed');
+  expect(() => retiredClient.document.checkpoint()).toThrow('closed');
+  expect(state.canonicalDocument!.root.children[0]!.content).toBe('alpha');
+
+  await typeAtEnd(inlineWithText(editors()[0]!, 'alpha'), '!');
+  expect(state.canonicalDocument!.root.children[0]!.content).toBe('alpha!');
+  expect(editors()[0]!.writer).toBe(state.canonicalWriter);
+});
+
 test.each([
   { client: 'Client A', direction: 'indent' as const },
   { client: 'Client B', direction: 'indent' as const },
@@ -190,8 +293,6 @@ test.each([
     const [editorA, editorB] = await enableTwoClients();
     const origin = client === 'Client A' ? editorA! : editorB!;
     const other = client === 'Client A' ? editorB! : editorA!;
-    const sessionId = client === 'Client A' ? 'client-a' : 'client-b';
-    const peerSessionId = client === 'Client A' ? 'client-b' : 'client-a';
     const state = harness as unknown as HarnessInternals;
     const originalInline = inlineWithText(origin, 'Two');
     let trustedTab = false;
@@ -211,8 +312,8 @@ test.each([
     expect(active.matches(':focus')).toBe(true);
     expect(active.getTextSelection()).toEqual({ anchor: 3, focus: 3 });
     expect(inlines(other).some((inline) => inline.matches(':focus'))).toBe(false);
-    expect(state.canonicalWriter!.canUndo(sessionId)).toBe(true);
-    expect(state.canonicalWriter!.canUndo(peerSessionId)).toBe(false);
+    expect(origin.canUndo()).toBe(true);
+    expect(other.canUndo()).toBe(false);
     expectReplicaConvergence();
 
     await userEvent.keyboard('X');
@@ -232,10 +333,10 @@ test.each([
     await settleHarness();
     expect(state.markdownForSave().trimEnd()).toBe(source);
     expect(inlineWithText(origin, 'Two').matches(':focus')).toBe(true);
-    expect(state.canonicalWriter!.canUndo(sessionId)).toBe(false);
-    expect(state.canonicalWriter!.canUndo(peerSessionId)).toBe(false);
-    expect(state.canonicalWriter!.canRedo(sessionId)).toBe(true);
-    expect(state.canonicalWriter!.canRedo(peerSessionId)).toBe(false);
+    expect(origin.canUndo()).toBe(false);
+    expect(other.canUndo()).toBe(false);
+    expect(origin.canRedo()).toBe(true);
+    expect(other.canRedo()).toBe(false);
     expect(inlines(other).some((inline) => inline.matches(':focus'))).toBe(false);
 
     await userEvent.keyboard('{Control>}y{/Control}');
@@ -395,21 +496,9 @@ test('cancels a pending peer selection restore after focus moves to Source or th
   const { source } = await mountHarness('alpha');
   const [editorA, editorB] = await enableTwoClients();
   await typeAtEnd(inlineWithText(editorA!, 'alpha'), '!');
-  const state = harness as unknown as HarnessInternals;
 
   const acceptRemoteText = (actionId: string, insert: string) => {
-    const paragraph = state.canonicalDocument!.root.children[0]!;
-    const result = state.canonicalWriter!.edit({ actionId, sessionId: 'client-b' }, (draft) => {
-      const length = draft.node(paragraph.sharedId).content!.length;
-      draft.spliceText(paragraph.sharedId, { from: length, to: length, insert });
-    });
-    if (!('update' in result)) throw new Error('expected authority-accepted text update');
-    expect(
-      state.twoClientExperiment!.receiveAccepted(
-        { revision: result.revision, update: result.update },
-        result.callbackErrors,
-      ),
-    ).toBe(true);
+    acceptPaneText(1, actionId, insert);
   };
 
   const activeA = inlineWithText(editorA!, 'alpha!');
@@ -463,19 +552,7 @@ test.each(['Client A', 'Client B', 'Source'] as const)(
       selectionStart: 1,
       selectionEnd: 1,
     });
-    const paragraph = state.canonicalDocument!.root.children[0]!;
-    const accepted = state.canonicalWriter!.edit(
-      { actionId: `composition-peer-${focusTarget}`, sessionId: 'client-b' },
-      (draft) => draft.spliceText(paragraph.sharedId, { from: 0, to: 0, insert: 'R' }),
-    );
-    if (!('update' in accepted))
-      throw new Error(`expected accepted peer update, got ${accepted.status}`);
-    expect(
-      state.twoClientExperiment!.receiveAccepted(
-        { revision: accepted.revision, update: accepted.update },
-        accepted.callbackErrors,
-      ),
-    ).toBe(true);
+    acceptPaneText(1, `composition-peer-${focusTarget}`, 'R', 0);
 
     let targetInline: MarkdownInline | undefined;
     if (focusTarget === 'Client B') {
@@ -603,35 +680,28 @@ test('reentrant accepted-update delivery keeps both panes locked after replica p
   }
 });
 
-test('shows delivery failure, blocks both panes, and closes replaced and retired sessions', async () => {
+test('shows delivery failure, blocks both panes, and closes replaced pane writers and documents', async () => {
   const { source } = await mountHarness('alpha');
   const [editorA, editorB] = await enableTwoClients();
   const state = harness as unknown as HarnessInternals;
   const oldAuthority = state.canonicalDocument!;
   const retiredExperiment = state.twoClientExperiment!;
   const oldClients = state.twoClientExperiment!.clients.map((client) => client.document);
+  const oldClientWriters = state.twoClientExperiment!.clients.map((client) => client.writer!);
   const failureInline = inlineWithText(editorA!, 'alpha');
   failureInline.focus();
   failureInline.setSelectionOffsets(5, 5);
   await settleHarness();
-  const relay = (
-    editorA as unknown as {
-      acceptedUpdateRelay: (
-        envelope: { revision: number; update: Uint8Array },
-        errors: readonly unknown[],
-      ) => boolean;
-    }
-  ).acceptedUpdateRelay;
-  expect(relay).toBeTypeOf('function');
-  (editorA as unknown as { acceptedUpdateRelay: typeof relay }).acceptedUpdateRelay = (
-    envelope,
-    errors,
-  ) => relay({ revision: envelope.revision + 1, update: envelope.update }, errors);
+  const failingClient = oldClients[0]!;
+  const applyAccepted = failingClient.applyAccepted;
+  failingClient.applyAccepted = () => {
+    throw new Error('injected pane projection failure');
+  };
 
   await userEvent.keyboard('!');
   await settleHarness();
   expect(state.twoClientExperiment!.state.status).toBe('failed');
-  expect(harness!.shadowRoot!.textContent).toContain('Expected accepted revision');
+  expect(harness!.shadowRoot!.textContent).toContain('injected pane projection failure');
   expect((editorA as unknown as { disabled: boolean }).disabled).toBe(true);
   expect((editorB as unknown as { disabled: boolean }).disabled).toBe(true);
   expect(state.canonicalDocument!.root.children[0]!.content).toBe('alpha!');
@@ -648,8 +718,13 @@ test('shows delivery failure, blocks both panes, and closes replaced and retired
     state.twoClientExperiment!.clients.map((client) => client.document.root.children[0]!.content),
   ).toEqual(['replacement', 'replacement']);
   await new Promise((resolve) => setTimeout(resolve, 10));
+  failingClient.applyAccepted = applyAccepted;
   expect(() => oldAuthority.checkpoint()).toThrow('closed');
   for (const oldClient of oldClients) expect(() => oldClient.checkpoint()).toThrow('closed');
+  for (const oldClientWriter of oldClientWriters)
+    expect(() => oldClientWriter.trackPreparedAction({} as never)).toThrow(
+      'canonical writer is closed',
+    );
 
   harness!.remove();
   await nextTask();
