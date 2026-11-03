@@ -265,29 +265,113 @@ export class SelectionController {
     } else if (!preserveBlockSelection) {
       context.clearSelection();
     }
-    context.focusNode = asInlineMarkdownNodeView(target);
-    context.focusOffset = end.offset;
+    const targetInlineBeforeUpdate = [
+      ...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
+    ].some((inline) => inline.nodeView === target);
+    const deferFocusForRenderDelegate =
+      target.type === 'code-block' &&
+      !!context.renderDelegate?.renderCodeBlock &&
+      !targetInlineBeforeUpdate;
+    if (!deferFocusForRenderDelegate) {
+      context.focusNode = asInlineMarkdownNodeView(target);
+      context.focusOffset = end.offset;
+      this.restoring = true;
+      this.host.requestUpdate();
+      try {
+        await this.host.updateComplete();
+        await renderer.updateComplete;
+        if (!this.host.isConnected() || !this.session.isCurrentGeneration(generation)) return;
+        const inline = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
+          (candidate) => candidate.nodeView === target,
+        );
+        if (!inline || !inline.isConnected) return;
+        await inline.updateComplete;
+        if (!this.session.isCurrentGeneration(generation)) return;
+        inline.focus();
+        inline.setSelectionOffsets(start.offset, end.offset);
+        this.lastNativeSelection = {
+          nodeId: target.sharedId,
+          anchor: start.offset,
+          focus: end.offset,
+        };
+        if (this.expectedInputSelection?.nodeId === target.sharedId) {
+          this.expectedInputSelection = { nodeId: target.sharedId, offset: end.offset };
+        }
+        this.anchor = createCanonicalTextAnchor(document, start);
+        this.focus = createCanonicalTextAnchor(document, end);
+      } finally {
+        this.restoring = false;
+      }
+      return;
+    }
+    context.focusNode = undefined;
+    context.focusOffset = undefined;
     this.restoring = true;
     this.host.requestUpdate();
     try {
       await this.host.updateComplete();
       await renderer.updateComplete;
       if (!this.host.isConnected() || !this.session.isCurrentGeneration(generation)) return;
-      const inline = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
-        (candidate) => candidate.nodeView === target,
-      );
+      const visible = this.visibleInlineNodeViews(context.root);
+      const renderedInlines = [
+        ...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline'),
+      ].filter((candidate) => candidate.isConnected && candidate.nodeView);
+      const inlineFor = (node: InlineMarkdownNodeView) =>
+        renderedInlines.find((candidate) => candidate.nodeView === node);
+      const isTarget = (node: InlineMarkdownNodeView) =>
+        node instanceof CanonicalNodeProjection && node.sharedId === target.sharedId;
+      let focusNode = target;
+      let focusOffset = end.offset;
+      let inline = inlineFor(asInlineMarkdownNodeView(focusNode));
+      let focusParentHostNeighbor = false;
+      if (!inline) {
+        focusParentHostNeighbor = true;
+        const endpoint = [start, end].find((bookmark) => {
+          if (bookmark.nodeId === target.sharedId) return false;
+          return inlineFor(asInlineMarkdownNodeView(document.node(bookmark.nodeId)));
+        });
+        if (endpoint) {
+          focusNode = document.node(endpoint.nodeId);
+          focusOffset = endpoint.offset;
+        } else {
+          const targetIndex = visible.findIndex(isTarget);
+          const fallback = visible
+            .map((node, index) => ({ node, index, inline: inlineFor(node) }))
+            .filter(
+              (candidate) =>
+                candidate.inline &&
+                candidate.node instanceof CanonicalNodeProjection &&
+                candidate.node.sharedId !== target.sharedId,
+            )
+            .sort(
+              (left, right) =>
+                Math.abs(left.index - targetIndex) - Math.abs(right.index - targetIndex),
+            )[0];
+          if (!fallback?.inline || !(fallback.node instanceof CanonicalNodeProjection)) return;
+          focusNode = fallback.node;
+          focusOffset = fallback.index < targetIndex ? (focusNode.content ?? '').length : 0;
+        }
+        inline = inlineFor(asInlineMarkdownNodeView(focusNode));
+      }
       if (!inline || !inline.isConnected) return;
+      context.focusNode = asInlineMarkdownNodeView(focusNode);
+      context.focusOffset = focusOffset;
+      inline.requestUpdate();
       await inline.updateComplete;
       if (!this.session.isCurrentGeneration(generation)) return;
       inline.focus();
-      inline.setSelectionOffsets(start.offset, end.offset);
+      inline.setSelectionOffsets(
+        focusParentHostNeighbor ? focusOffset : start.offset,
+        focusParentHostNeighbor ? focusOffset : end.offset,
+      );
       this.lastNativeSelection = {
-        nodeId: target.sharedId,
-        anchor: start.offset,
-        focus: end.offset,
+        nodeId: focusNode.sharedId,
+        anchor: focusParentHostNeighbor ? focusOffset : start.offset,
+        focus: focusParentHostNeighbor ? focusOffset : end.offset,
       };
-      if (this.expectedInputSelection?.nodeId === target.sharedId) {
-        this.expectedInputSelection = { nodeId: target.sharedId, offset: end.offset };
+      const expectedOffset = focusParentHostNeighbor ? focusOffset : end.offset;
+      if (this.expectedInputSelection?.nodeId === focusNode.sharedId) {
+        this.expectedInputSelection = { nodeId: focusNode.sharedId, offset: expectedOffset };
       }
       this.anchor = createCanonicalTextAnchor(document, start);
       this.focus = createCanonicalTextAnchor(document, end);

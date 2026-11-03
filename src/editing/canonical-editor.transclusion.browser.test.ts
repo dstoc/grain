@@ -390,8 +390,8 @@ describe('canonical editor transclusion navigation', () => {
 
     await userEvent.keyboard('{Backspace}');
     await settle();
-    expect(model.root.children.map((node) => node.content)).toEqual(['', 'Omega']);
-    expect(alphaNode!.connected).toBe(true);
+    expect(model.root.children.map((node) => node.content)).toEqual(['Omega']);
+    expect(alphaNode!.connected).toBe(false);
     expect(codeNode!.connected).toBe(false);
     expect(context.selection.size).toBe(0);
 
@@ -399,13 +399,11 @@ describe('canonical editor transclusion navigation', () => {
     await settle();
     expect(model.root.children.map((node) => node.content)).toEqual(['Alpha', 'Inside', 'Omega']);
     expectSelection(context, alphaNode!, codeNode!, [alphaNode!, codeNode!]);
+    expect(activeInline()?.hostContext).toBe(context);
 
-    const restoredAlpha = inline('Alpha', 'outer');
-    restoredAlpha.focus();
-    restoredAlpha.setSelectionOffsets(5, 5);
     await userEvent.keyboard('{Control>}y{/Control}');
     await settle();
-    expect(model.root.children.map((node) => node.content)).toEqual(['', 'Omega']);
+    expect(model.root.children.map((node) => node.content)).toEqual(['Omega']);
     expect(context.selection.size).toBe(0);
     const keyboardActions = keyboard.events.filter((event) =>
       ['ArrowDown', 'Backspace', 'z', 'y'].includes(event.key),
@@ -415,6 +413,129 @@ describe('canonical editor transclusion navigation', () => {
     expect(keyboardActions.slice(2).every((event) => event.ctrlKey)).toBe(true);
     keyboard.stop();
   });
+
+  test.each(['forward', 'backward'] as const)(
+    'keeps parent focus through %s wrapper deletion and history',
+    async (direction) => {
+      const code = { type: 'code-block', info: 'md', content: 'Inside' } as const;
+      await mount(
+        {
+          type: 'document',
+          children: [
+            { type: 'paragraph', content: 'Alpha' },
+            code,
+            { type: 'paragraph', content: 'Omega' },
+          ],
+        },
+        transclusionDelegate((node) => previewRoot(node.content)),
+      );
+
+      const [alphaNode, codeNode, omegaNode] = model.root.children as CanonicalNode[];
+      const context = renderer.hostContext!;
+      const start = inline(direction === 'forward' ? 'Alpha' : 'Omega', 'outer');
+      const startNode = direction === 'forward' ? alphaNode! : omegaNode!;
+      const selected = direction === 'forward' ? [alphaNode!, codeNode!] : [codeNode!, omegaNode!];
+      const keyboard = observeKeydowns();
+      const errors: unknown[] = [];
+      editor.addEventListener('canonical-edit-error', (event) =>
+        errors.push((event as CustomEvent).detail),
+      );
+      start.focus();
+      start.setSelectionOffsets(direction === 'forward' ? 5 : 0, direction === 'forward' ? 5 : 0);
+      await userEvent.keyboard(
+        direction === 'forward' ? '{Shift>}{ArrowDown}{/Shift}' : '{Shift>}{ArrowUp}{/Shift}',
+      );
+      await settle();
+      expect(context.selection.size).toBe(2);
+
+      await userEvent.keyboard('{Backspace}');
+      await settle();
+      const deleted = direction === 'forward' ? ['Omega'] : ['Alpha'];
+      expect(model.root.children.map((node) => node.content)).toEqual(deleted);
+      expect(context.selection.size).toBe(0);
+      expect(activeInline()?.hostContext).toBe(context);
+      expect(activeInline()?.nodeView).toBe(startNode === alphaNode ? omegaNode : alphaNode);
+
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(model.root.children.map((node) => node.content)).toEqual(['Alpha', 'Inside', 'Omega']);
+      expectSelection(
+        context,
+        direction === 'forward' ? alphaNode! : omegaNode!,
+        codeNode!,
+        selected,
+      );
+      expect(activeInline()?.hostContext).toBe(context);
+      expect(activeInline()?.nodeView).toBe(startNode);
+
+      await userEvent.keyboard('{Control>}y{/Control}');
+      await settle();
+      expect(model.root.children.map((node) => node.content)).toEqual(deleted);
+      expect(context.selection.size).toBe(0);
+      expect(activeInline()?.hostContext).toBe(context);
+
+      await userEvent.keyboard('X');
+      await settle();
+      expect(model.root.children.map((node) => node.content)).toEqual(
+        direction === 'forward' ? ['XOmega'] : ['AlphaX'],
+      );
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(model.root.children.map((node) => node.content)).toEqual(deleted);
+      await userEvent.keyboard('{Control>}z{/Control}');
+      await settle();
+      expect(model.root.children.map((node) => node.content)).toEqual(['Alpha', 'Inside', 'Omega']);
+      await userEvent.keyboard('{Control>}y{/Control}{Control>}y{/Control}');
+      await settle();
+      expect(model.root.children.map((node) => node.content)).toEqual(
+        direction === 'forward' ? ['XOmega'] : ['AlphaX'],
+      );
+      expect(errors).toEqual([]);
+
+      const keyboardActions = keyboard.events.filter((event) =>
+        ['ArrowDown', 'ArrowUp', 'Backspace', 'z', 'y', 'X'].includes(event.key),
+      );
+      expect(keyboardActions.every((event) => event.isTrusted)).toBe(true);
+      keyboard.stop();
+    },
+  );
+
+  test.each(['forward', 'backward'] as const)(
+    'copies the %s selected parent range through native clipboard transfer',
+    async (direction) => {
+      const code = { type: 'code-block', info: 'md', content: 'Inside' } as const;
+      await mount(
+        {
+          type: 'document',
+          children: [
+            { type: 'paragraph', content: 'Alpha' },
+            code,
+            { type: 'paragraph', content: 'Omega' },
+          ],
+        },
+        transclusionDelegate((node) => previewRoot(node.content)),
+      );
+
+      const start = inline(direction === 'forward' ? 'Alpha' : 'Omega', 'outer');
+      const keyboard = observeKeydowns();
+      start.focus();
+      start.setSelectionOffsets(direction === 'forward' ? 5 : 0, direction === 'forward' ? 5 : 0);
+      await userEvent.keyboard(
+        direction === 'forward' ? '{Shift>}{ArrowDown}{/Shift}' : '{Shift>}{ArrowUp}{/Shift}',
+      );
+      await settle();
+      await userEvent.keyboard('{Control>}c{/Control}');
+      const destination = document.createElement('textarea');
+      document.body.append(destination);
+      destination.focus();
+      await userEvent.keyboard('{Control>}v{/Control}');
+      expect(destination.value).toBe(
+        direction === 'forward' ? 'Alpha\n\n```md\nInside\n```\n' : '```md\nInside\n```\n\nOmega\n',
+      );
+      expect(keyboard.events.every((event) => event.isTrusted)).toBe(true);
+      keyboard.stop();
+    },
+  );
 
   test('keeps canonical nested transclusion nodes editable', async () => {
     const tree: DocumentNode = {
