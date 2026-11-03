@@ -6,6 +6,10 @@
     "src/markdown/inline-parser/index.ts!",
     "src/markdown/canonical-actions.ts!",
     "src/markdown/canonical-model.ts!",
+    "src/markdown/block-serializer.ts!",
+    "src/markdown/node.ts!",
+    "src/editing/commands/join-with-previous.ts!",
+    "src/editing/commands/wrap.ts!",
     "src/editing/canonical-editor.ts!",
     "src/editing/mobile-keyboard-toolbar.ts!",
     "src/markdown/block-render.ts!",
@@ -20,10 +24,14 @@
     "src/**/*.ts!",
     "benchmarks/**/*.mjs",
     "benchmarks/**/*.ts",
+    "!src/editing/test/**/*.ts!",
+    "!src/markdown/block-parser.permutations.*.ts!",
+    "!src/markdown/inline-parser/commonmark*.ts!",
+    "!src/markdown/canonical-history-capture.reference.ts!",
     "index.html",
     "vite.config.ts",
     "vitest.config.ts",
     "!src/**/*.test.ts!"
   ],
-  "includeEntryExports": true
+  "ignoreDependencies": ["@babel/plugin-proposal-decorators"]
 }
