@@ -34,6 +34,11 @@ interface BrowserSelectionHost {
   updateComplete(): Promise<unknown>;
 }
 
+interface RenderedMarkdownBlock extends HTMLElement {
+  readonly node?: ReadonlyMarkdownNodeView;
+  readonly updateComplete: Promise<unknown>;
+}
+
 /** Owns selection capture, canonical anchors, recovery, and block selection. */
 export class SelectionController {
   private anchor?: CanonicalTextAnchor;
@@ -300,8 +305,11 @@ export class SelectionController {
           (shouldRestoreFocus && !shouldRestoreFocus())
         )
           return;
-        const inline = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
-          (candidate) => candidate.nodeView === target,
+        const inline = await this.awaitRenderedInline(
+          renderer,
+          target,
+          generation,
+          shouldRestoreFocus,
         );
         if (!inline || !inline.isConnected) return;
         await inline.updateComplete;
@@ -429,6 +437,47 @@ export class SelectionController {
     } finally {
       this.restoring = false;
     }
+  }
+
+  private async awaitRenderedInline(
+    renderer: MarkdownRenderer,
+    target: CanonicalNode,
+    generation: number,
+    shouldRestoreFocus?: FocusRestoreGuard,
+  ): Promise<MarkdownInline | undefined> {
+    const findInline = () =>
+      [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
+        (candidate) => candidate.nodeView === target,
+      );
+    const canContinue = () =>
+      this.host.isConnected() &&
+      this.session.isCurrentGeneration(generation) &&
+      (!shouldRestoreFocus || shouldRestoreFocus());
+
+    let inline = findInline();
+    if (inline?.isConnected) return inline;
+
+    const path: ReadonlyMarkdownNodeView[] = [];
+    let node: ReadonlyMarkdownNodeView | undefined = target;
+    while (node) {
+      path.push(node);
+      if (node === renderer.block) break;
+      node = node.parent;
+    }
+    if (path.at(-1) !== renderer.block) return inline;
+
+    for (const expectedNode of path.reverse()) {
+      if (!canContinue()) return;
+      const block = [
+        ...renderer.shadowRoot!.querySelectorAll<RenderedMarkdownBlock>('md-block'),
+      ].find((candidate) => candidate.node === expectedNode);
+      if (!block) return findInline();
+      await block.updateComplete;
+      if (!canContinue()) return;
+      inline = findInline();
+      if (expectedNode === target && inline?.isConnected) return inline;
+    }
+    return inline;
   }
 
   async focusBookmark(

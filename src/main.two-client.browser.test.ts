@@ -4,6 +4,7 @@ import type { LitElement } from 'lit';
 
 import { nextTask } from './editing/test/lifecycle.js';
 import type { CanonicalDocument } from './markdown/canonical/document.js';
+import type { CanonicalNode } from './markdown/canonical/node-projection.js';
 import type { CanonicalWriter } from './markdown/canonical/writer.js';
 import type { TwoClientExperiment } from './editing/two-client-experiment.js';
 import { MarkdownInline } from './markdown/inline-render.js';
@@ -96,6 +97,16 @@ function expectReplicaConvergence() {
   ]);
 }
 
+function canonicalInline(document: CanonicalDocument, content: string): CanonicalNode | undefined {
+  const pending = [document.root];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (node.content === content) return node;
+    pending.push(...[...(node.children ?? [])].reverse());
+  }
+  return undefined;
+}
+
 async function typeAtEnd(inline: MarkdownInline, text: string) {
   inline.focus();
   const end = inline.nodeView?.content.length ?? 0;
@@ -164,6 +175,168 @@ test('keeps single-client mode by default and delivers edits and structural hist
   expect(source.value).toContain('alpha A');
   expect(source.value).toContain('beta B');
   expect((harness as unknown as HarnessInternals).markdownForSave()).toContain('tail');
+});
+
+test.each([
+  { client: 'Client A', direction: 'indent' as const },
+  { client: 'Client B', direction: 'indent' as const },
+  { client: 'Client A', direction: 'outdent' as const },
+  { client: 'Client B', direction: 'outdent' as const },
+])(
+  'keeps $client focus through connected $direction, continued typing, undo, and redo',
+  async ({ client, direction }) => {
+    const source = direction === 'indent' ? '- One\n- Two' : '- One\n  - Two';
+    await mountHarness(source);
+    const [editorA, editorB] = await enableTwoClients();
+    const origin = client === 'Client A' ? editorA! : editorB!;
+    const other = client === 'Client A' ? editorB! : editorA!;
+    const sessionId = client === 'Client A' ? 'client-a' : 'client-b';
+    const peerSessionId = client === 'Client A' ? 'client-b' : 'client-a';
+    const state = harness as unknown as HarnessInternals;
+    const originalInline = inlineWithText(origin, 'Two');
+    let trustedTab = false;
+    originalInline.addEventListener('keydown', (event) => {
+      if ((event as KeyboardEvent).key === 'Tab') trustedTab = event.isTrusted;
+    });
+    originalInline.focus();
+    originalInline.setSelectionOffsets(3, 3);
+
+    await userEvent.keyboard(direction === 'indent' ? '{Tab}' : '{Shift>}{Tab}{/Shift}');
+    await settleHarness();
+
+    const nestedMarkdown = direction === 'indent' ? '- One\n  - Two' : '- One\n- Two';
+    expect(trustedTab).toBe(true);
+    expect(state.markdownForSave().trimEnd()).toBe(nestedMarkdown);
+    const active = inlineWithText(origin, 'Two');
+    expect(active.matches(':focus')).toBe(true);
+    expect(active.getTextSelection()).toEqual({ anchor: 3, focus: 3 });
+    expect(inlines(other).some((inline) => inline.matches(':focus'))).toBe(false);
+    expect(state.canonicalWriter!.canUndo(sessionId)).toBe(true);
+    expect(state.canonicalWriter!.canUndo(peerSessionId)).toBe(false);
+    expectReplicaConvergence();
+
+    await userEvent.keyboard('X');
+    await settleHarness();
+    expect(state.markdownForSave().trimEnd()).toBe(nestedMarkdown.replace('Two', 'TwoX'));
+    expect(canonicalInline(state.canonicalDocument!, 'TwoX')).toBeDefined();
+    expect(inlineWithText(origin, 'TwoX').matches(':focus')).toBe(true);
+    expect(inlines(other).some((inline) => inline.matches(':focus'))).toBe(false);
+    expectReplicaConvergence();
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settleHarness();
+    expect(state.markdownForSave().trimEnd()).toBe(nestedMarkdown);
+    expect(inlineWithText(origin, 'Two').matches(':focus')).toBe(true);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settleHarness();
+    expect(state.markdownForSave().trimEnd()).toBe(source);
+    expect(inlineWithText(origin, 'Two').matches(':focus')).toBe(true);
+    expect(state.canonicalWriter!.canUndo(sessionId)).toBe(false);
+    expect(state.canonicalWriter!.canUndo(peerSessionId)).toBe(false);
+    expect(state.canonicalWriter!.canRedo(sessionId)).toBe(true);
+    expect(state.canonicalWriter!.canRedo(peerSessionId)).toBe(false);
+    expect(inlines(other).some((inline) => inline.matches(':focus'))).toBe(false);
+
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settleHarness();
+    expect(state.markdownForSave().trimEnd()).toBe(nestedMarkdown);
+    expect(inlineWithText(origin, 'Two').matches(':focus')).toBe(true);
+    expect(inlineWithText(origin, 'Two').getTextSelection()).toEqual({ anchor: 3, focus: 3 });
+    expectReplicaConvergence();
+
+    await userEvent.keyboard('Y');
+    await settleHarness();
+    expect(state.markdownForSave().trimEnd()).toBe(nestedMarkdown.replace('Two', 'TwoY'));
+    expect(inlineWithText(origin, 'TwoY').matches(':focus')).toBe(true);
+    expect(inlines(other).some((inline) => inline.matches(':focus'))).toBe(false);
+    expectReplicaConvergence();
+  },
+);
+
+test('keeps focus and accepts typing after indent in the single-client harness control', async () => {
+  await mountHarness('- One\n- Two');
+  const [editor] = editors();
+  const inline = inlineWithText(editor!, 'Two');
+  inline.focus();
+  inline.setSelectionOffsets(3, 3);
+
+  await userEvent.keyboard('{Tab}');
+  await settleHarness();
+  expect((harness as unknown as HarnessInternals).twoClientMode).toBe(false);
+  expect(inlineWithText(editor!, 'Two').matches(':focus')).toBe(true);
+
+  await userEvent.keyboard('X');
+  await settleHarness();
+  expect((harness as unknown as HarnessInternals).markdownForSave().trimEnd()).toBe(
+    '- One\n  - TwoX',
+  );
+});
+
+test('cancels a connected indent restore when focus moves to Source while rendering waits', async () => {
+  const { source } = await mountHarness('- One\n- Two');
+  const [editorA] = await enableTwoClients();
+  const renderer = editorA!.shadowRoot!.querySelector('md-block-render')!;
+  const rootBlock = renderer.shadowRoot!.querySelector('md-block')!;
+  let resolveGate!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    resolveGate = resolve;
+  });
+  let reportWaiting!: () => void;
+  const waiting = new Promise<void>((resolve) => {
+    reportWaiting = resolve;
+  });
+  let prototype: object | null = Object.getPrototypeOf(rootBlock);
+  let updateCompleteGetter: (() => Promise<unknown>) | undefined;
+  while (prototype && !updateCompleteGetter) {
+    updateCompleteGetter = Object.getOwnPropertyDescriptor(prototype, 'updateComplete')?.get as
+      | (() => Promise<unknown>)
+      | undefined;
+    prototype = Object.getPrototypeOf(prototype);
+  }
+  if (!updateCompleteGetter) throw new Error('could not find Lit updateComplete getter');
+
+  const originalOwnDescriptor = Object.getOwnPropertyDescriptor(rootBlock, 'updateComplete');
+  Object.defineProperty(rootBlock, 'updateComplete', {
+    configurable: true,
+    get() {
+      reportWaiting();
+      const rendering = updateCompleteGetter!.call(rootBlock);
+      return gate.then(() => rendering);
+    },
+  });
+
+  try {
+    const inline = inlineWithText(editorA!, 'Two');
+    inline.focus();
+    inline.setSelectionOffsets(3, 3);
+    await userEvent.keyboard('{Tab}');
+
+    const reachedRenderWait = await Promise.race([
+      waiting.then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 1000)),
+    ]);
+    expect(reachedRenderWait).toBe(true);
+    source.focus();
+    resolveGate();
+    await settleHarness();
+
+    expect(harness!.shadowRoot!.activeElement).toBe(source);
+    expect(
+      editors().every((editor) =>
+        inlines(editor).every((candidate) => !candidate.matches(':focus')),
+      ),
+    ).toBe(true);
+    expect((harness as unknown as HarnessInternals).markdownForSave().trimEnd()).toBe(
+      '- One\n  - Two',
+    );
+    expectReplicaConvergence();
+  } finally {
+    resolveGate();
+    if (originalOwnDescriptor)
+      Object.defineProperty(rootBlock, 'updateComplete', originalOwnDescriptor);
+    else delete (rootBlock as HTMLElement & { updateComplete?: Promise<unknown> }).updateComplete;
+  }
 });
 
 test('routes toolbar undo and redo to the focused client session', async () => {
