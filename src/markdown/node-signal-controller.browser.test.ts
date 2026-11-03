@@ -7,6 +7,7 @@ import { MarkdownInline } from './inline-render.js';
 import { MarkdownTree } from './view-model.js';
 import { viewModel, type ViewModelNode } from './view-model-node.js';
 import type { ListItem } from './block-ui.js';
+import { TASK_STATE_INTENT_EVENT, type TaskStateIntent } from './render-intents.js';
 
 function nodes(): ViewModelNode[] {
   return [
@@ -94,9 +95,13 @@ describe('node signal controller on mounted components', () => {
     });
   }
 
-  test('list item renders changed checked state after its transaction', async () => {
+  test('list item emits a typed task intent without mutating checked state', async () => {
     const item = nodes()[2] as ListItem['node'];
     const element = document.createElement('md-list-item-ui') as ListItem;
+    const intents: TaskStateIntent[] = [];
+    element.addEventListener(TASK_STATE_INTENT_EVENT, (event) => {
+      intents.push((event as CustomEvent<TaskStateIntent>).detail);
+    });
     element.node = item;
     document.body.append(element);
     await element.updateComplete;
@@ -104,12 +109,13 @@ describe('node signal controller on mounted components', () => {
     const before = gutter.innerHTML;
     (gutter as HTMLElement).click();
     await element.updateComplete;
-    expect(item.checked).toBe(true);
-    expect(gutter.innerHTML).not.toBe(before);
+    expect(item.checked).toBe(false);
+    expect(intents).toEqual([{ node: item, operation: 'cycle' }]);
+    expect(gutter.innerHTML).toBe(before);
     expect(element.shadowRoot!.querySelector('#gutter')).toBe(gutter);
     element.remove();
   });
-  test('numbered gutter displays the marker and cycles task state', async () => {
+  test('numbered gutter displays the marker and emits typed task intents', async () => {
     const tree = new MarkdownTree({
       type: 'document',
       children: [
@@ -127,25 +133,28 @@ describe('node signal controller on mounted components', () => {
     });
     const item = tree.root.children![0].children![0] as ListItem['node'];
     const element = document.createElement('md-list-item-ui') as ListItem;
+    const intents: TaskStateIntent[] = [];
+    element.addEventListener(TASK_STATE_INTENT_EVENT, (event) => {
+      intents.push((event as CustomEvent<TaskStateIntent>).detail);
+    });
     element.node = item;
     document.body.append(element);
     await element.updateComplete;
     const gutter = element.shadowRoot!.querySelector('#gutter')!;
     expect(gutter.querySelector('span')!.textContent).toBe('123456789)');
-    for (const [label, value] of [
-      ['Make task unchecked', false],
-      ['Mark task complete', true],
-      ['Remove task', undefined],
-      ['Make task unchecked', false],
-    ] as const) {
+    for (let index = 0; index < 4; index++) {
       const button = gutter.querySelector('button')!;
-      expect(button.getAttribute('aria-label')).toBe(label);
+      expect(button.getAttribute('aria-label')).toBe('Make task unchecked');
       expect(button.querySelector('svg') !== null).toBe(item.checked !== undefined);
       if (item.checked === undefined) button.querySelector('span')!.click();
       else button.querySelector('svg')!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       await element.updateComplete;
-      expect(item.checked).toBe(value);
+      expect(item.checked).toBeUndefined();
     }
+    expect(intents).toHaveLength(4);
+    expect(intents.every((intent) => intent.node === item && intent.operation === 'cycle')).toBe(
+      true,
+    );
     element.remove();
   });
   test('a parent signal update preserves keyed children, focus, and selection', async () => {

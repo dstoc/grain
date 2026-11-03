@@ -210,6 +210,13 @@ export interface StructuralPatch {
   }[];
 }
 
+/** A receipt contains a visible structural edit when it changes scalar cells,
+ * child ownership, or creates nodes. Boundary allocation alone is not visible
+ * structure and must not seal an editor typing group. */
+export function hasStructuralEffects(patch: StructuralPatch): boolean {
+  return patch.cells.length > 0 || patch.childLists.length > 0 || patch.births.length > 0;
+}
+
 export interface PendingCommit {
   readonly actionId: string;
   readonly revision: number;

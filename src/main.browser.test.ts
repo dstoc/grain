@@ -572,7 +572,10 @@ test('mobile toolbar history availability follows history-only block replacement
   const undo = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[aria-label="Undo"]')!;
   const redo = toolbar.shadowRoot!.querySelector<HTMLButtonElement>('button[aria-label="Redo"]')!;
   const history = () => {
-    const writer = inline!.hostContext!.canonicalWriter!;
+    const editor = harness.shadowRoot!.querySelector('md-canonical-editor') as unknown as {
+      writer: CanonicalWriter;
+    };
+    const writer = editor.writer;
     return { canUndo: writer.canUndo('local'), canRedo: writer.canRedo('local') };
   };
 
@@ -617,7 +620,7 @@ test('renders the canonical history-reset status for the active editor', async (
   const editor = harness.shadowRoot!.querySelector('md-canonical-editor')!;
   const resetDocument = CanonicalDocument.open(editor.document!.checkpoint());
   const resetWriter = new CanonicalWriter(resetDocument);
-  inline.hostContext!.canonicalWriter = resetWriter;
+  (editor as unknown as { writer: CanonicalWriter }).writer = resetWriter;
   editor.dispatchEvent(
     new CustomEvent('canonical-history-reset', {
       detail: { sessionId: 'local' },

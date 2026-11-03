@@ -1,24 +1,19 @@
 import { html, LitElement } from 'lit';
 import { customElement, property, query } from 'lit/decorators.js';
 
-import { CanonicalWriter } from '../markdown/canonical-actions.js';
-import type {
-  AcceptedAction,
-  ActionOptions,
-  ActionRequest,
-  Bookmark,
-  HistoryResult,
-} from '../markdown/canonical-actions.js';
-import { CanonicalDocument, CanonicalNode } from '../markdown/canonical-model.js';
-import type { MarkdownNode } from '../markdown/node.js';
-import { serializeToString } from '../markdown/block-serializer.js';
+import type { CanonicalWriter } from '../markdown/canonical-actions.js';
+import { hasStructuralEffects } from '../markdown/canonical/action-types.js';
+import type { AcceptedAction, HistoryResult } from '../markdown/canonical/action-types.js';
+import { CanonicalNode } from '../markdown/canonical/node-projection.js';
+import type { CanonicalDocument } from '../markdown/canonical-model.js';
 import '../markdown/block-render.js';
-import type { NodeId } from '../markdown/canonical-model.js';
+import type { NodeId } from '../markdown/semantic/types.js';
+import { createCanonicalTextAnchor } from '../markdown/canonical-selection.js';
 import {
-  createCanonicalTextAnchor,
-  resolveCanonicalTextAnchor,
-} from '../markdown/canonical-selection.js';
-import type { CanonicalTextAnchor } from '../markdown/canonical-selection.js';
+  readClipboardPayload,
+  serializeBlockSelection,
+  writeMarkdownClipboard,
+} from './browser/clipboard.js';
 import { deleteBackwardAtStart } from './commands/delete-backward.js';
 import { indent } from './commands/indent.js';
 import { outdent } from './commands/outdent.js';
@@ -28,33 +23,18 @@ import { insertParagraph } from './commands/insert-paragraph.js';
 import { replaceBlocks as replaceBlocksCommand } from './commands/replace-blocks.js';
 import type { Edit } from './outcomes.js';
 import type { EditSelection } from '../markdown/semantic/selection.js';
-import { prepareEdit } from './prepare-edit.js';
+import { BrowserSessionRunner } from './browser/session-runner.js';
+import type { SessionActionCallbacks } from './browser/session-runner.js';
+import { translateInlineInput, translateInlineKey } from './browser/input.js';
+import { SelectionController } from './browser/selection-controller.js';
+import { CompositionController } from './browser/composition-controller.js';
 import { MarkdownInline, type InlineInput, type InlineKeyDown } from '../markdown/inline-render.js';
-import { MarkdownRenderer } from '../markdown/block-render.js';
-import { HostContext } from '../markdown/host-context.js';
+import type { MarkdownRenderer } from '../markdown/block-render.js';
+import type { HostContext } from '../markdown/host-context.js';
 import type { MarkdownRenderDelegate } from '../markdown/render-delegate.js';
-import { asInlineMarkdownNodeView } from '../markdown/node-view.js';
+import type { TaskStateIntent } from '../markdown/render-intents.js';
+import { cycleTaskState } from './commands/cycle-task-state.js';
 import './mobile-keyboard-toolbar.js';
-
-interface CompositionDraft {
-  readonly inline: MarkdownInline;
-  readonly node: CanonicalNode;
-  readonly content: string;
-  readonly version: number;
-  readonly selection: { readonly anchor: number; readonly focus: number };
-  readonly selectionAnchor: CanonicalTextAnchor;
-  readonly selectionFocus: CanonicalTextAnchor;
-  readonly blockSelection?: readonly NodeId[];
-  invalidate: () => void;
-}
-
-interface NativeSelectionSnapshot {
-  readonly nodeId: NodeId;
-  readonly anchor: number;
-  readonly focus: number;
-}
-
-let fallbackActionOrdinal = 0;
 
 /** Browser editing over the canonical Yjs model and its single history coordinator. */
 @customElement('md-canonical-editor')
@@ -67,15 +47,32 @@ export class CanonicalEditor extends LitElement {
   @query('md-block-render') private accessor renderer!: MarkdownRenderer;
 
   private unsubscribeProjection?: () => void;
-  private composition?: CompositionDraft;
-  private textGroup?: { readonly id: string; readonly nodeId: NodeId; lastInputAt: number };
-  private selectionAnchor?: CanonicalTextAnchor;
-  private selectionFocus?: CanonicalTextAnchor;
-  private lastNativeSelection?: NativeSelectionSnapshot;
-  private expectedInputSelection?: { readonly nodeId: NodeId; readonly offset: number };
+  private readonly sessionRunner = new BrowserSessionRunner();
+  private readonly selectionController = new SelectionController(
+    {
+      document: () => this.document,
+      renderer: () => this.renderer,
+      isConnected: () => this.isConnected,
+      requestUpdate: () => this.requestUpdate(),
+      updateComplete: () => this.updateComplete,
+    },
+    this.sessionRunner,
+  );
+  private readonly compositionController = new CompositionController({
+    document: () => this.document,
+    writer: () => this.writer,
+    sessionId: () => this.sessionId,
+    renderer: () => this.renderer,
+    updateComplete: () => this.updateComplete,
+    isConnected: () => this.isConnected,
+    session: this.sessionRunner,
+    selection: this.selectionController,
+    blockSelection: () => this.selectionController.currentBlockSelection(),
+    replaceBlocks: (selection, text) => this.replaceBlocks(selection, text),
+    runTextInput: (node, from, to, insert, isolated) =>
+      this.runTextInput(node, from, to, insert, isolated),
+  });
   private localCommit = false;
-  private restoringSelection = false;
-  private selectionChangeRoot?: ShadowRoot;
 
   override render() {
     const root = this.document?.root;
@@ -87,6 +84,7 @@ export class CanonicalEditor extends LitElement {
       @inline-keydown=${this.onInlineKeyDown}
       @inline-composition-start=${this.onCompositionStart}
       @inline-composition-end=${this.onCompositionEnd}
+      @task-state-intent=${this.onTaskStateIntent}
       @copy=${this.onClipboard}
       @cut=${this.onClipboard}
       @paste=${this.onPaste}
@@ -95,8 +93,15 @@ export class CanonicalEditor extends LitElement {
   }
 
   protected override updated(changed: Map<PropertyKey, unknown>) {
-    if (changed.has('sessionId') || changed.has('writer'))
-      this.writer?.admitSession(this.sessionId);
+    const bindingChanged =
+      changed.has('document') || changed.has('writer') || changed.has('sessionId');
+    if (bindingChanged) {
+      this.sessionRunner.bind(this.document, this.writer, this.sessionId);
+      this.compositionController.cancel(true);
+      if (changed.has('document')) {
+        this.selectionController.resetDocument();
+      }
+    }
     if (changed.has('document')) {
       this.unsubscribeProjection?.();
       this.unsubscribeProjection = this.document?.subscribeProjection(() => {
@@ -110,36 +115,28 @@ export class CanonicalEditor extends LitElement {
           );
         }
         if (!this.localCommit) this.sealTypingGroup();
-        if (this.localCommit || !this.selectionAnchor) return;
-        this.restoreSavedSelection();
+        if (this.localCommit || !this.selectionController.selectionAnchor) return;
+        void this.selectionController.restoreSavedSelection();
       });
     }
     const context = this.renderer?.hostContext;
     if (context) {
       context.root = this.document?.root;
-      context.canonicalWriter = this.writer;
     }
   }
 
   override connectedCallback() {
     super.connectedCallback();
-    this.ownerDocument.addEventListener('selectionchange', this.onSelectionChange);
+    this.sessionRunner.bind(this.document, this.writer, this.sessionId);
+    this.selectionController.connect(this.ownerDocument);
   }
 
   override disconnectedCallback() {
     this.unsubscribeProjection?.();
     this.unsubscribeProjection = undefined;
-    this.ownerDocument.removeEventListener('selectionchange', this.onSelectionChange);
-    this.selectionChangeRoot?.removeEventListener('selectionchange', this.onSelectionChange);
-    this.selectionChangeRoot = undefined;
-    if (this.composition) {
-      this.composition.inline.removeEventListener(
-        'composition-invalidated',
-        this.composition.invalidate,
-      );
-      this.composition.inline.composing = false;
-      this.composition = undefined;
-    }
+    this.selectionController.disconnect();
+    this.compositionController.cancel(false);
+    this.sessionRunner.disconnect();
     super.disconnectedCallback();
   }
 
@@ -147,237 +144,31 @@ export class CanonicalEditor extends LitElement {
     return this.renderer?.hostContext;
   }
 
-  private nextActionId() {
-    const random = globalThis.crypto?.randomUUID?.();
-    return random ? `browser:${random}` : `browser:${Date.now()}:${fallbackActionOrdinal++}`;
-  }
-
-  private options(historyGroupId?: string): ActionOptions {
-    const actionId = this.nextActionId();
-    return {
-      actionId,
-      sessionId: this.sessionId,
-      historyGroupId: historyGroupId ?? actionId,
-    };
-  }
-
   private activeInline(inline: MarkdownInline): CanonicalNode | undefined {
     const node = inline.nodeView;
     return node instanceof CanonicalNode ? node : undefined;
   }
-
-  private visibleInlineNodes(): CanonicalNode[] {
-    const root = this.document?.root;
-    if (!root) return [];
-    const result: CanonicalNode[] = [];
-    const pending = [root];
-    while (pending.length) {
-      const node = pending.pop()!;
-      if (node.type === 'paragraph' || node.type === 'section' || node.type === 'code-block') {
-        result.push(node);
-      }
-      pending.push(...[...node.children].reverse());
-    }
-    return result;
-  }
-
-  private currentBlockSelection(): CanonicalNode[] {
-    const selection = this.hostContext?.selection ?? [];
-    const selected = new Set<NodeId>();
-    for (const node of selection) {
-      if (node instanceof CanonicalNode) selected.add(node.sharedId);
-    }
-    return this.visibleInlineNodes().filter((node) => selected.has(node.sharedId));
-  }
-
-  private captureSelection(sealChangedGroup = false) {
-    if (this.restoringSelection || !this.document) return;
-    const { inline } = this.renderer?.getInlineSelection() ?? {};
-    const node = inline && this.activeInline(inline);
-    const selection = inline?.getTextSelection();
-    if (!node || !selection || !node.connected) return;
-    const snapshot = { nodeId: node.sharedId, anchor: selection.anchor, focus: selection.focus };
-    const previous = this.lastNativeSelection;
-    if (
-      sealChangedGroup &&
-      this.textGroup &&
-      previous &&
-      (previous.nodeId !== snapshot.nodeId ||
-        previous.anchor !== snapshot.anchor ||
-        previous.focus !== snapshot.focus)
-    ) {
-      this.sealTypingGroup();
-    }
-    this.lastNativeSelection = snapshot;
-    const root = inline.getRootNode();
-    const selectionRoot = root instanceof ShadowRoot ? root : undefined;
-    if (selectionRoot !== this.selectionChangeRoot) {
-      this.selectionChangeRoot?.removeEventListener('selectionchange', this.onSelectionChange);
-      this.selectionChangeRoot = selectionRoot;
-      this.selectionChangeRoot?.addEventListener('selectionchange', this.onSelectionChange);
-    }
-    try {
-      this.selectionAnchor = createCanonicalTextAnchor(this.document, {
-        nodeId: node.sharedId,
-        offset: selection.anchor,
-        affinity: selection.anchor <= selection.focus ? 'left' : 'right',
-      });
-      this.selectionFocus = createCanonicalTextAnchor(this.document, {
-        nodeId: node.sharedId,
-        offset: selection.focus,
-        affinity: selection.focus >= selection.anchor ? 'right' : 'left',
-      });
-    } catch {
-      // A native selection can briefly point into a render recovery projection.
-    }
-  }
-
-  private onSelectionChange = () => {
-    const { inline } = this.renderer?.getInlineSelection() ?? {};
-    const node = inline && this.activeInline(inline);
-    const selection = inline?.getTextSelection();
-    const expected = this.expectedInputSelection;
-    if (
-      node &&
-      selection &&
-      expected?.nodeId === node.sharedId &&
-      selection.anchor === expected.offset &&
-      selection.focus === expected.offset
-    ) {
-      this.expectedInputSelection = undefined;
-      this.captureSelection();
-      return;
-    }
-    this.expectedInputSelection = undefined;
-    this.captureSelection(true);
-  };
 
   private onPointerDown = () => {
     this.sealTypingGroup();
   };
 
   private sealTypingGroup() {
-    this.textGroup = undefined;
-    this.writer?.sealTextGroup(this.sessionId);
-  }
-
-  private inputHistoryGroup(nodeId: NodeId, isolated: boolean) {
-    if (isolated) {
-      this.sealTypingGroup();
-      return this.nextActionId();
-    }
-    const now = performance.now();
-    if (
-      !this.textGroup ||
-      this.textGroup.nodeId !== nodeId ||
-      now - this.textGroup.lastInputAt > 1000
-    ) {
-      this.sealTypingGroup();
-      this.textGroup = { id: this.nextActionId(), nodeId, lastInputAt: now };
-    } else {
-      this.textGroup.lastInputAt = now;
-    }
-    return this.textGroup.id;
-  }
-
-  private async restoreSavedSelection() {
-    const anchor = this.selectionAnchor;
-    const focus = this.selectionFocus ?? anchor;
-    if (!anchor || !focus) return;
-    await this.restoreAnchors(anchor, focus);
-  }
-
-  private async restoreAnchors(
-    anchor: CanonicalTextAnchor,
-    focus: CanonicalTextAnchor,
-    restoreAsBlockSelection = false,
-    preserveBlockSelection = false,
-  ): Promise<void> {
-    const document = this.document;
-    const renderer = this.renderer;
-    if (!document || !renderer || !this.isConnected) return;
-    let start: Bookmark;
-    let end: Bookmark;
-    try {
-      start = resolveCanonicalTextAnchor(document, anchor);
-      end = resolveCanonicalTextAnchor(document, focus);
-    } catch {
-      return;
-    }
-    const target = document.node(end.nodeId);
-    if (!target.connected) return;
-    const context = renderer.hostContext;
-    if (!preserveBlockSelection && (start.nodeId !== end.nodeId || restoreAsBlockSelection)) {
-      const visible = this.visibleInlineNodes();
-      const startIndex = visible.findIndex((node) => node.sharedId === start.nodeId);
-      const endIndex = visible.findIndex((node) => node.sharedId === end.nodeId);
-      if (startIndex >= 0 && endIndex >= 0) {
-        const low = Math.min(startIndex, endIndex);
-        const high = Math.max(startIndex, endIndex);
-        const ordered = visible.slice(low, high + 1);
-        this.setBlockSelection(ordered, document.node(start.nodeId), document.node(end.nodeId));
-      }
-    } else if (!preserveBlockSelection) {
-      context.clearSelection();
-    }
-    context.focusNode = asInlineMarkdownNodeView(target);
-    context.focusOffset = end.offset;
-    this.restoringSelection = true;
-    this.requestUpdate();
-    try {
-      await this.updateComplete;
-      await renderer.updateComplete;
-      if (!this.isConnected || this.document !== document) return;
-      const inline = [...renderer.shadowRoot!.querySelectorAll<MarkdownInline>('md-inline')].find(
-        (candidate) => candidate.nodeView === target,
-      );
-      if (!inline || !inline.isConnected) return;
-      await inline.updateComplete;
-      inline.focus();
-      inline.setSelectionOffsets(start.offset, end.offset);
-      this.lastNativeSelection = {
-        nodeId: target.sharedId,
-        anchor: start.offset,
-        focus: end.offset,
-      };
-      if (this.expectedInputSelection?.nodeId === target.sharedId) {
-        this.expectedInputSelection = { nodeId: target.sharedId, offset: end.offset };
-      }
-      this.selectionAnchor = createCanonicalTextAnchor(document, start);
-      this.selectionFocus = createCanonicalTextAnchor(document, end);
-    } finally {
-      this.restoringSelection = false;
-    }
-  }
-
-  private async focusBookmark(bookmark: Bookmark | undefined) {
-    if (!this.document || !bookmark) return;
-    try {
-      const anchor = createCanonicalTextAnchor(this.document, bookmark);
-      await this.restoreAnchors(anchor, anchor);
-    } catch {
-      // A deleted or no longer visible result uses the saved selection fallback.
-      await this.restoreSavedSelection();
-    }
+    this.sessionRunner.sealTypingGroup();
   }
 
   private onAccepted(
     accepted: AcceptedAction,
     selectionIntent?: import('../markdown/semantic/selection.js').SelectionIntent,
   ) {
-    this.captureSelection();
-    if (
-      accepted.receipt.structuralPatch.cells.length ||
-      accepted.receipt.structuralPatch.births.length
-    ) {
-      this.sealTypingGroup();
-    }
+    this.selectionController.captureSelection();
+    if (hasStructuralEffects(accepted.receipt.structuralPatch)) this.sealTypingGroup();
     const selection = accepted.receipt.focus?.selection;
     if (selectionIntent?.type === 'preserve-block-selection' && selection && this.document) {
       try {
         const anchor = createCanonicalTextAnchor(this.document, selection.anchor);
         const focus = createCanonicalTextAnchor(this.document, selection.focus);
-        void this.restoreAnchors(anchor, focus, true);
+        void this.selectionController.restoreAnchors(anchor, focus, true);
         return;
       } catch {
         // A selection endpoint can be hidden by the structural action.
@@ -385,53 +176,42 @@ export class CanonicalEditor extends LitElement {
     }
     if (selectionIntent?.type === 'clear') this.hostContext?.clearSelection();
     const focus = accepted.receipt.focus?.end;
-    if (focus) void this.focusBookmark(focus);
-    else void this.restoreSavedSelection();
+    if (focus) void this.selectionController.focusBookmark(focus);
+    else void this.selectionController.restoreSavedSelection();
   }
+
+  private sessionCallbacks(): SessionActionCallbacks {
+    return {
+      onAccepted: (accepted, selection) => this.onAccepted(accepted, selection),
+      onRejected: (error) => this.dispatchEditError(error),
+      withLocalCommit: (action) => {
+        this.localCommit = true;
+        try {
+          action();
+        } finally {
+          this.localCommit = false;
+        }
+      },
+    };
+  }
+
+  private onTaskStateIntent = (event: CustomEvent<TaskStateIntent>) => {
+    if (event.detail.operation !== 'cycle') return;
+    const document = this.document;
+    const node = event.detail.node;
+    if (
+      !document ||
+      !(node instanceof CanonicalNode) ||
+      !node.connected ||
+      document.node(node.sharedId) !== node
+    ) {
+      return;
+    }
+    this.runEdit(cycleTaskState, { nodeId: node.sharedId });
+  };
 
   private runEdit<Input>(command: Edit<Input>, input: Input, selectionBefore?: EditSelection) {
-    const document = this.document;
-    const writer = this.writer;
-    if (!document || !writer) return;
-    if (
-      writer.deferLocalEdit(() => {
-        if (this.document === document && this.writer === writer)
-          this.runEdit(command, input, selectionBefore);
-      })
-    )
-      return;
-    try {
-      const prepared = prepareEdit(
-        writer,
-        this.options(),
-        document.root.sharedId,
-        selectionBefore,
-        command,
-        input,
-      );
-      if (!prepared) return;
-      this.sealTypingGroup();
-      this.localCommit = true;
-      const result = this.applyPrepared(prepared.request);
-      if (result.status === 'pending')
-        this.onAccepted(writer.publish(result.pending), prepared.selection);
-      else if (result.status === 'duplicate') this.onAccepted(result.accepted, prepared.selection);
-      else if (result.status === 'rejected') this.dispatchEditError(result.reason);
-    } catch (error) {
-      this.dispatchEditError(error);
-    } finally {
-      this.localCommit = false;
-    }
-  }
-
-  private applyPrepared(request: ActionRequest) {
-    const writer = this.writer;
-    if (!writer) throw new Error('canonical writer is unavailable');
-    return writer.apply(request, {
-      sessionId: this.sessionId,
-      authorityEpoch: request.authorityEpoch,
-      sessionSequence: request.sessionSequence,
-    });
+    this.sessionRunner.runCommand(command, input, selectionBefore, this.sessionCallbacks());
   }
 
   private textSelectionBefore(
@@ -440,45 +220,16 @@ export class CanonicalEditor extends LitElement {
     fallbackAnchor: number,
     fallbackFocus: number,
   ): EditSelection {
-    const native = inline.getTextSelection();
-    const anchor = native?.anchor ?? fallbackAnchor;
-    const focus = native?.focus ?? fallbackFocus;
-    return {
-      anchor: {
-        nodeId,
-        offset: anchor,
-        affinity: anchor <= focus ? 'left' : 'right',
-      },
-      focus: {
-        nodeId,
-        offset: focus,
-        affinity: focus >= anchor ? 'right' : 'left',
-      },
-    };
+    return this.selectionController.textSelectionBefore(
+      nodeId,
+      inline,
+      fallbackAnchor,
+      fallbackFocus,
+    );
   }
 
   private blockSelectionBefore(selection: readonly CanonicalNode[]): EditSelection | undefined {
-    if (!selection.length) return undefined;
-    const first = selection[0]!;
-    const last = selection.at(-1)!;
-    const reverse =
-      this.hostContext?.selectionAnchor instanceof CanonicalNode &&
-      this.hostContext.selectionAnchor.sharedId === last.sharedId;
-    const anchorNode = reverse ? last : first;
-    const focusNode = reverse ? first : last;
-    return {
-      nodeIds: selection.map((node) => node.sharedId),
-      anchor: {
-        nodeId: anchorNode.sharedId,
-        offset: reverse ? (anchorNode.content ?? '').length : 0,
-        affinity: reverse ? 'right' : 'left',
-      },
-      focus: {
-        nodeId: focusNode.sharedId,
-        offset: reverse ? 0 : (focusNode.content ?? '').length,
-        affinity: reverse ? 'left' : 'right',
-      },
-    };
+    return this.selectionController.blockSelectionBefore(selection);
   }
 
   private runTextInput(
@@ -488,37 +239,17 @@ export class CanonicalEditor extends LitElement {
     insert: string,
     isolated = false,
   ) {
-    const document = this.document;
-    const writer = this.writer;
-    if (!document || !writer) return;
-    const group = this.inputHistoryGroup(node.sharedId, isolated);
-    const start: Bookmark = { nodeId: node.sharedId, offset: from, affinity: 'left' };
-    const end: Bookmark = {
-      nodeId: node.sharedId,
-      offset: from + insert.length,
-      affinity: 'right',
-    };
-    this.expectedInputSelection = { nodeId: node.sharedId, offset: end.offset };
-    this.localCommit = true;
-    try {
-      const request = writer.prepareTextInput(
-        node.sharedId,
-        { from, to, insert },
-        { ...this.options(group), focus: { start, end } },
-      );
-      const result = writer.apply(request, {
-        sessionId: this.sessionId,
-        authorityEpoch: request.authorityEpoch,
-        sessionSequence: request.sessionSequence,
-      });
-      if (result.status === 'pending') this.onAccepted(writer.publish(result.pending));
-      else if (result.status === 'duplicate') this.onAccepted(result.accepted);
-      else if (result.status === 'rejected') this.dispatchEditError(result.reason);
-    } catch (error) {
-      this.dispatchEditError(error);
-    } finally {
-      this.localCommit = false;
-    }
+    this.sessionRunner.runTextInput(
+      node.sharedId,
+      from,
+      to,
+      insert,
+      isolated,
+      this.sessionCallbacks(),
+      (caretOffset) => {
+        this.selectionController.expectInputSelection(node.sharedId, caretOffset);
+      },
+    );
   }
 
   private dispatchEditError(error: unknown) {
@@ -532,79 +263,40 @@ export class CanonicalEditor extends LitElement {
   }
 
   private onInlineInput = (event: CustomEvent<InlineInput>) => {
-    const { inline, inputEvent, inputStart, inputEnd } = event.detail;
+    const { inline } = event.detail;
     const node = this.activeInline(inline);
     const document = this.document;
     if (!node || !document) return;
-
-    const selection = this.currentBlockSelection();
-    if (
-      selection.length &&
-      ['insertText', 'insertReplacementText', 'insertFromPaste'].includes(inputEvent.inputType)
-    ) {
-      const value =
-        inputEvent.inputType === 'insertReplacementText'
-          ? (inputEvent.dataTransfer?.getData('text/plain') ?? inputEvent.data ?? '')
-          : (inputEvent.data ?? '');
-      this.replaceBlocks(selection, value);
+    const selection = this.selectionController.currentBlockSelection();
+    const intent = translateInlineInput(event.detail, selection.length > 0);
+    if (intent.type === 'ignored') return;
+    if (intent.type === 'replace-blocks') {
+      this.replaceBlocks(selection, intent.text);
       return;
     }
-    if (
-      selection.length &&
-      ['deleteContentBackward', 'deleteContentForward', 'deleteByCut'].includes(
-        inputEvent.inputType,
-      )
-    ) {
-      this.replaceBlocks(selection, '');
+    if (intent.type === 'command') {
+      if (intent.command === 'delete-backward-at-start') {
+        this.runEdit(
+          deleteBackwardAtStart,
+          { nodeId: node.sharedId },
+          this.textSelectionBefore(node.sharedId, inline, 0, 0),
+        );
+      } else {
+        this.runEdit(
+          intent.command === 'insert-paragraph' ? insertParagraph : insertLineBreak,
+          { nodeId: node.sharedId, from: intent.from, to: intent.to },
+          this.textSelectionBefore(node.sharedId, inline, intent.from, intent.to),
+        );
+      }
       return;
     }
-    if (inputEvent.inputType === 'insertParagraph') {
-      this.runEdit(
-        insertParagraph,
-        { nodeId: node.sharedId, from: inputStart.index, to: inputEnd.index },
-        this.textSelectionBefore(node.sharedId, inline, inputStart.index, inputEnd.index),
-      );
-      return;
+    let from = intent.from;
+    const to = intent.to;
+    if (intent.type === 'delete-word-backward') {
+      inline.moveCaret('move', 'backward', 'word');
+      from = inline.getTextSelection()?.focus ?? from;
     }
-    if (inputEvent.inputType === 'insertLineBreak') {
-      this.runEdit(
-        insertLineBreak,
-        { nodeId: node.sharedId, from: inputStart.index, to: inputEnd.index },
-        this.textSelectionBefore(node.sharedId, inline, inputStart.index, inputEnd.index),
-      );
-      return;
-    }
-
-    let from = inputStart.index;
-    const to = inputEnd.index;
-    let insert: string;
-    switch (inputEvent.inputType) {
-      case 'insertText':
-        insert = inputEvent.data ?? '';
-        break;
-      case 'insertReplacementText':
-      case 'insertFromPaste':
-        insert = inputEvent.dataTransfer?.getData('text/plain') ?? inputEvent.data ?? '';
-        insert = insert.replace(/\n/g, ' ');
-        this.sealTypingGroup();
-        break;
-      case 'deleteByCut':
-        insert = '';
-        this.sealTypingGroup();
-        break;
-      case 'deleteContentBackward':
-        insert = '';
-        if (from === to) from = previousCodePoint(node.content ?? '', from);
-        break;
-      case 'deleteWordBackward':
-        inline.moveCaret('move', 'backward', 'word');
-        from = inline.getTextSelection()?.focus ?? from;
-        insert = '';
-        break;
-      default:
-        return;
-    }
-    if (from === 0 && to === 0 && insert === '' && inputEvent.inputType.startsWith('delete')) {
+    if (from === 0 && to === 0 && intent.type === 'delete-word-backward') {
       this.runEdit(
         deleteBackwardAtStart,
         { nodeId: node.sharedId },
@@ -612,8 +304,18 @@ export class CanonicalEditor extends LitElement {
       );
       return;
     }
+    if (intent.type === 'text' && from === 0 && to === 0 && intent.insert === '') {
+      this.runEdit(
+        deleteBackwardAtStart,
+        { nodeId: node.sharedId },
+        this.textSelectionBefore(node.sharedId, inline, 0, 0),
+      );
+      return;
+    }
+    const insert = intent.type === 'delete-word-backward' ? '' : intent.insert;
+    const isolated = intent.type === 'delete-word-backward' || intent.isolated;
     this.hostContext?.clearSelection();
-    this.runTextInput(node, from, to, insert, inputEvent.inputType !== 'insertText');
+    this.runTextInput(node, from, to, insert, isolated);
   };
 
   private replaceBlocks(selection: readonly CanonicalNode[], text: string) {
@@ -624,134 +326,34 @@ export class CanonicalEditor extends LitElement {
     );
   }
 
-  private serializeBlockSelection(selection: readonly CanonicalNode[]): string {
-    const document = this.document;
-    if (!document) return '';
-    const selected = new Set(selection.map((node) => node.sharedId));
-    const sectionsWithSelectedChildren = new WeakSet<MarkdownNode>();
-    const hasSelectedDescendant = (node: CanonicalNode): boolean =>
-      node.children.some((child) => selected.has(child.sharedId) || hasSelectedDescendant(child));
-    const roots = new Set<CanonicalNode>();
-    for (const node of selection) {
-      if (node.previousSibling) {
-        roots.add(node);
-        continue;
-      }
-      let root = node;
-      for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
-        if (ancestor.type === 'section') break;
-        root = ancestor;
-        if (ancestor.previousSibling) break;
-      }
-      roots.add(root);
-    }
-    for (const root of roots) {
-      for (let ancestor = root.parent; ancestor; ancestor = ancestor.parent) {
-        if (roots.has(ancestor)) {
-          roots.delete(root);
-          break;
-        }
-      }
-    }
-    const order = new Map<CanonicalNode, number>();
-    const visit = (node: CanonicalNode) => {
-      order.set(node, order.size);
-      node.children.forEach(visit);
-    };
-    visit(document.root);
-    const convert = (node: CanonicalNode): MarkdownNode | undefined => {
-      const children = node.children
-        .map(convert)
-        .filter((child): child is MarkdownNode => child !== undefined);
-      const isSelected = selected.has(node.sharedId);
-      let result: MarkdownNode;
-      switch (node.type) {
-        case 'document':
-          if (!children.length) return undefined;
-          result = { type: 'document', children };
-          break;
-        case 'paragraph':
-          if (!isSelected) return undefined;
-          result = { type: 'paragraph', content: node.content ?? '' };
-          break;
-        case 'section':
-          if (!isSelected && !children.length) return undefined;
-          result = {
-            type: 'section',
-            marker: node.marker ?? '',
-            content: isSelected ? (node.content ?? '') : '',
-            children,
-          };
-          if (isSelected && hasSelectedDescendant(node)) sectionsWithSelectedChildren.add(result);
-          break;
-        case 'code-block':
-          if (!isSelected) return undefined;
-          result = { type: 'code-block', info: node.info ?? null, content: node.content ?? '' };
-          break;
-        case 'list':
-          if (!children.length) return undefined;
-          result = { type: 'list', children };
-          break;
-        case 'list-item':
-          if (!children.length) return undefined;
-          result = {
-            type: 'list-item',
-            marker: node.marker ?? '',
-            ...(node.checked === undefined ? {} : { checked: node.checked }),
-            children,
-          };
-          break;
-        case 'block-quote':
-          if (!children.length) return undefined;
-          result = { type: 'block-quote', marker: node.marker ?? '', children };
-          break;
-      }
-      return result;
-    };
-    const orderedRoots = [...roots].toSorted((a, b) => order.get(a)! - order.get(b)!);
-    const blocks = orderedRoots
-      .map(convert)
-      .filter((block): block is MarkdownNode => block !== undefined);
-    return blocks.length
-      ? serializeToString({ type: 'document', children: blocks }, undefined, undefined, (node) =>
-          sectionsWithSelectedChildren.has(node) ? '\n' : undefined,
-        )
-      : '';
-  }
-
   private onInlineKeyDown = (event: CustomEvent<InlineKeyDown>) => {
     const { inline, node: projectedNode, keyboardEvent } = event.detail;
     const node = projectedNode as unknown as CanonicalNode;
     const document = this.document;
     const writer = this.writer;
     if (!(node instanceof CanonicalNode) || !document || !writer) return;
-    const key = keyboardEvent.key;
-    const control = keyboardEvent.ctrlKey || keyboardEvent.metaKey;
-    if (control && (key.toLowerCase() === 'z' || key.toLowerCase() === 'y')) {
+    const selected = this.selectionController.currentBlockSelection();
+    const intent = translateInlineKey(keyboardEvent, selected.length > 0);
+    if (intent.type === 'history') {
       keyboardEvent.preventDefault();
-      this.sealTypingGroup();
       const result =
-        key.toLowerCase() === 'z' ? writer.undo(this.sessionId) : writer.redo(this.sessionId);
-      this.restoreHistoryFocus(result);
+        intent.direction === 'undo' ? this.sessionRunner.undo() : this.sessionRunner.redo();
+      if (result) this.restoreHistoryFocus(result);
       return;
     }
-    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key)) {
+    if (intent.type === 'move-caret') {
       this.sealTypingGroup();
-      this.moveAcrossBlocks(inline, node, keyboardEvent);
+      this.selectionController.moveAcrossBlocks(inline, node, keyboardEvent);
       return;
     }
-    if (key === 'Backspace' || key === 'Delete') {
-      const selected = this.currentBlockSelection();
-      if (selected.length) {
-        keyboardEvent.preventDefault();
-        this.replaceBlocks(selected, '');
-        return;
-      }
-    }
-    if (key === 'Tab') {
+    if (intent.type === 'delete-block-selection') {
       keyboardEvent.preventDefault();
-      const selected = this.currentBlockSelection();
-      const command = keyboardEvent.shiftKey ? outdent : indent;
+      this.replaceBlocks(selected, '');
+      return;
+    }
+    if (intent.type === 'indent') {
+      keyboardEvent.preventDefault();
+      const command = intent.direction === 'outdent' ? outdent : indent;
       this.runEdit(
         command,
         { nodeId: node.sharedId, nodeIds: selected.map((item) => item.sharedId) },
@@ -759,78 +361,24 @@ export class CanonicalEditor extends LitElement {
       );
       return;
     }
-    if (control && key.toLowerCase() === 'a') {
+    if (intent.type === 'select-all') {
       keyboardEvent.preventDefault();
-      const selected = this.currentBlockSelection();
+      const selected = this.selectionController.currentBlockSelection();
       if (selected.length) {
-        const all = this.visibleInlineNodes();
-        this.setBlockSelection(all, all[0], all.at(-1));
+        const all = this.selectionController.visibleInlineNodes();
+        this.selectionController.setBlockSelection(all, all[0], all.at(-1));
       } else if (
         inline.getTextSelection()?.anchor === 0 &&
         inline.getTextSelection()?.focus === node.content?.length
       ) {
-        this.setBlockSelection([node], node, node);
+        this.selectionController.setBlockSelection([node], node, node);
       } else {
         inline.setSelectionOffsets(0, node.content?.length ?? 0);
       }
       return;
     }
-    if (key === 'Enter') this.sealTypingGroup();
-    else if (key.length !== 1 || control || keyboardEvent.altKey) this.sealTypingGroup();
+    if (intent.type === 'seal-typing') this.sealTypingGroup();
   };
-
-  private moveAcrossBlocks(inline: MarkdownInline, node: CanonicalNode, event: KeyboardEvent) {
-    const context = this.hostContext;
-    const root = this.document?.root;
-    if (!context || !root) return;
-    event.preventDefault();
-    const direction = ['ArrowLeft', 'ArrowUp'].includes(event.key) ? 'backward' : 'forward';
-    const granularity = ['ArrowUp', 'ArrowDown'].includes(event.key)
-      ? 'line'
-      : event.ctrlKey || event.metaKey
-        ? 'word'
-        : 'character';
-    const result = context.hasSelection
-      ? 0
-      : inline.moveCaret(event.shiftKey ? 'extend' : 'move', direction, granularity);
-    if (result === true) {
-      if (!event.shiftKey) context.clearSelection();
-      this.captureSelection();
-      return;
-    }
-    const visible = this.visibleInlineNodes();
-    const index = visible.findIndex((candidate) => candidate.sharedId === node.sharedId);
-    const next = visible[index + (direction === 'backward' ? -1 : 1)];
-    if (!next) return;
-    const offset = direction === 'backward' ? (next.content ?? '').length : 0;
-    if (event.shiftKey) {
-      context.extendSelection(asInlineMarkdownNodeView(node), asInlineMarkdownNodeView(next));
-    } else {
-      context.clearSelection();
-    }
-    const anchor = createCanonicalTextAnchor(this.document!, {
-      nodeId: next.sharedId,
-      offset,
-      affinity: direction === 'backward' ? 'left' : 'right',
-    });
-    void this.restoreAnchors(anchor, anchor, false, event.shiftKey);
-  }
-
-  private setBlockSelection(
-    nodes: readonly CanonicalNode[],
-    anchor?: CanonicalNode,
-    focus?: CanonicalNode,
-  ) {
-    const context = this.hostContext;
-    if (!context) return;
-    context.clearSelection();
-    for (const node of nodes) {
-      context.selection.add(asInlineMarkdownNodeView(node));
-      node.renderSignal.value++;
-    }
-    context.selectionAnchor = anchor ? asInlineMarkdownNodeView(anchor) : undefined;
-    context.selectionFocus = focus ? asInlineMarkdownNodeView(focus) : undefined;
-  }
 
   private restoreHistoryFocus(result: HistoryResult) {
     if (result.status === 'history-reset') {
@@ -846,200 +394,34 @@ export class CanonicalEditor extends LitElement {
     }
     if (result.status !== 'applied' && result.status !== 'no-effect') return;
     if (result.selectionAnchors) {
-      void this.restoreAnchors(result.selectionAnchors.anchor, result.selectionAnchors.focus, true);
+      void this.selectionController.restoreAnchors(
+        result.selectionAnchors.anchor,
+        result.selectionAnchors.focus,
+        true,
+      );
       return;
     }
     const anchor = result.focusAnchor;
-    if (anchor) void this.restoreAnchors(anchor, anchor);
-    else if (result.focus) void this.focusBookmark(result.focus);
-    else void this.restoreSavedSelection();
+    if (anchor) void this.selectionController.restoreAnchors(anchor, anchor);
+    else if (result.focus) void this.selectionController.focusBookmark(result.focus);
+    else void this.selectionController.restoreSavedSelection();
   }
 
   private onCompositionStart = (event: CustomEvent<{ inline: MarkdownInline }>) => {
-    const inline = event.detail.inline;
-    const node = this.activeInline(inline);
-    const selection = inline.getTextSelection();
-    const document = this.document;
-    if (!node || !selection || !document || inline.textContent !== node.content) return;
-    const blockSelection = this.currentBlockSelection().map((item) => item.sharedId);
-    const selectionAnchor = createCanonicalTextAnchor(document, {
-      nodeId: node.sharedId,
-      offset: selection.anchor,
-      affinity: selection.anchor <= selection.focus ? 'left' : 'right',
-    });
-    const selectionFocus = createCanonicalTextAnchor(document, {
-      nodeId: node.sharedId,
-      offset: selection.focus,
-      affinity: selection.focus >= selection.anchor ? 'right' : 'left',
-    });
-    const session: CompositionDraft = {
-      inline,
-      node,
-      content: node.content ?? '',
-      version: node.version,
-      selection,
-      selectionAnchor,
-      selectionFocus,
-      ...(blockSelection.length ? { blockSelection } : {}),
-      invalidate: () => this.invalidateComposition(session),
-    };
-    this.composition = session;
-    inline.addEventListener('composition-invalidated', session.invalidate);
-    this.sealTypingGroup();
+    this.compositionController.start(event.detail.inline);
   };
-
-  private invalidateComposition(session: CompositionDraft) {
-    if (this.composition !== session) return;
-    this.composition = undefined;
-    session.inline.removeEventListener('composition-invalidated', session.invalidate);
-    session.inline.composing = false;
-    if (session.inline.isConnected) void this.recoverInvalidatedComposition(session);
-  }
-
-  private async recoverInvalidatedComposition(session: CompositionDraft) {
-    const document = this.document;
-    if (!document) return;
-    let anchor: Bookmark;
-    let focus: Bookmark;
-    try {
-      anchor = resolveCanonicalTextAnchor(document, session.selectionAnchor);
-      focus = resolveCanonicalTextAnchor(document, session.selectionFocus);
-    } catch {
-      await session.inline.recoverComposition(session.selection);
-      return;
-    }
-    const sameInline =
-      anchor.nodeId === session.node.sharedId && focus.nodeId === session.node.sharedId;
-    const selection = sameInline
-      ? { anchor: anchor.offset, focus: focus.offset }
-      : session.selection;
-    await session.inline.recoverComposition(selection, sameInline);
-    if (this.document !== document || sameInline) return;
-    await this.restoreAnchors(session.selectionAnchor, session.selectionFocus);
-    await this.replayCompositionInputs(session.node.sharedId);
-  }
 
   private onCompositionEnd = (
     event: CustomEvent<{ inline: MarkdownInline; event: CompositionEvent }>,
   ) => {
-    const session = this.composition;
-    this.composition = undefined;
-    const inline = event.detail.inline;
-    const data = event.detail.event.data;
-    if (session) {
-      session.inline.removeEventListener('composition-invalidated', session.invalidate);
-      session.inline.composing = false;
-    }
-    if (!session || session.inline !== inline || !this.document || !this.writer) {
-      if (inline.isConnected)
-        void inline.recoverComposition(inline.getTextSelection() ?? { anchor: 0, focus: 0 });
-      return;
-    }
-    const nativeText = inline.textContent ?? '';
-    let from: number;
-    let to: number;
-    let insert: string;
-    if (session.blockSelection?.length) {
-      const selected = session.blockSelection
-        .map((id) => this.document!.node(id))
-        .filter((node) => node.connected);
-      if (!selected.length || selected.length !== session.blockSelection.length) {
-        void inline.recoverComposition(session.selection);
-        return;
-      }
-      void inline.recoverComposition(session.selection, false).then(() => {
-        this.replaceBlocks(selected, data ?? '');
-        void this.replayCompositionInputs(session.node.sharedId);
-      });
-      return;
-    }
-    if (nativeText === session.content && data) {
-      from = Math.min(session.selection.anchor, session.selection.focus);
-      to = Math.max(session.selection.anchor, session.selection.focus);
-      insert = data;
-    } else {
-      let prefix = 0;
-      while (
-        prefix < session.content.length &&
-        prefix < nativeText.length &&
-        session.content[prefix] === nativeText[prefix]
-      )
-        prefix++;
-      let suffix = 0;
-      while (
-        suffix < session.content.length - prefix &&
-        suffix < nativeText.length - prefix &&
-        session.content[session.content.length - 1 - suffix] ===
-          nativeText[nativeText.length - 1 - suffix]
-      )
-        suffix++;
-      while (
-        prefix > 0 &&
-        (!isUtf16Boundary(session.content, prefix) || !isUtf16Boundary(nativeText, prefix))
-      ) {
-        prefix--;
-      }
-      while (
-        suffix > 0 &&
-        (!isUtf16Boundary(session.content, session.content.length - suffix) ||
-          !isUtf16Boundary(nativeText, nativeText.length - suffix))
-      ) {
-        suffix--;
-      }
-      from = prefix;
-      to = session.content.length - suffix;
-      insert = nativeText.slice(prefix, nativeText.length - suffix);
-    }
-    if (
-      !data ||
-      !session.node.connected ||
-      session.node.version !== session.version ||
-      session.node.content !== session.content ||
-      session.content.slice(0, from) + insert + session.content.slice(to) !== nativeText
-    ) {
-      void inline.recoverComposition(session.selection);
-      return;
-    }
-    void inline.recoverComposition(session.selection, false).then(() => {
-      this.runTextInput(session.node, from, to, insert, true);
-      this.findInline(session.node.sharedId)?.replayRecoveryEvents();
-    });
+    this.compositionController.end(event.detail.inline, event.detail.event);
   };
 
-  private findInline(nodeId: NodeId) {
-    return [
-      ...(this.renderer?.shadowRoot?.querySelectorAll<MarkdownInline>('md-inline') ?? []),
-    ].find(
-      (candidate) =>
-        candidate.nodeView instanceof CanonicalNode && candidate.nodeView.sharedId === nodeId,
-    );
-  }
-
-  private async replayCompositionInputs(nodeId: NodeId) {
-    const renderer = this.renderer;
-    if (!renderer) return;
-    await this.updateComplete;
-    await renderer.updateComplete;
-    const recovered = this.findInline(nodeId);
-    const target = renderer.getInlineSelection().inline;
-    if (recovered && target && recovered !== target) {
-      target.holdRecoveryEventsFrom(recovered.takeRecoveryEvents());
-    }
-    target?.replayRecoveryEvents();
-    recovered?.replayRecoveryEvents();
-  }
-
   private onClipboard = (event: ClipboardEvent) => {
-    const selection = this.currentBlockSelection();
-    if (!selection.length || !event.clipboardData) return;
-    event.preventDefault();
-    const markdown = this.serializeBlockSelection(selection);
-    event.clipboardData.setData('text/plain', markdown);
-    try {
-      event.clipboardData.setData('text/markdown', markdown);
-    } catch {
-      // Plain text is sufficient when the browser rejects custom clipboard data.
-    }
+    const selection = this.selectionController.currentBlockSelection();
+    const document = this.document;
+    if (!selection.length || !event.clipboardData || !document) return;
+    writeMarkdownClipboard(event, serializeBlockSelection(document, selection));
     if (event.type === 'cut') this.replaceBlocks(selection, '');
   };
 
@@ -1048,7 +430,7 @@ export class CanonicalEditor extends LitElement {
     if (!(inline instanceof MarkdownInline)) return;
     const node = this.activeInline(inline);
     if (!node || !event.clipboardData) return;
-    const markdown = event.clipboardData.getData('text/markdown');
+    const { markdown, text } = readClipboardPayload(event.clipboardData);
     if (markdown) {
       event.preventDefault();
       const native = inline.getTextSelection();
@@ -1062,8 +444,7 @@ export class CanonicalEditor extends LitElement {
       return;
     }
     event.preventDefault();
-    const text = event.clipboardData.getData('text/plain');
-    const selection = this.currentBlockSelection();
+    const selection = this.selectionController.currentBlockSelection();
     if (selection.length) {
       this.replaceBlocks(selection, text);
       return;
@@ -1078,23 +459,6 @@ export class CanonicalEditor extends LitElement {
         true,
       );
   };
-}
-
-function previousCodePoint(text: string, offset: number): number {
-  if (offset <= 0) return 0;
-  const low = text.charCodeAt(offset - 1);
-  if (low >= 0xdc00 && low <= 0xdfff && offset > 1) {
-    const high = text.charCodeAt(offset - 2);
-    if (high >= 0xd800 && high <= 0xdbff) return offset - 2;
-  }
-  return offset - 1;
-}
-
-function isUtf16Boundary(text: string, offset: number): boolean {
-  if (offset <= 0 || offset >= text.length) return true;
-  const before = text.charCodeAt(offset - 1);
-  const after = text.charCodeAt(offset);
-  return !(before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff);
 }
 
 declare global {

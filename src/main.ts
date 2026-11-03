@@ -1309,7 +1309,7 @@ class MarkdownDevHarness extends LitElement {
       this.toolbarRedoDisabled = true;
       return;
     }
-    const writer = inline?.hostContext?.canonicalWriter;
+    const writer = this.canonicalWriter;
     if (writer) {
       this.toolbarUndoDisabled = !writer.canUndo('local');
       this.toolbarRedoDisabled = !writer.canRedo('local');
