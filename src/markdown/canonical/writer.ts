@@ -133,6 +133,12 @@ interface PreparedActionBase {
   readonly reservation: HistoryReservation;
 }
 
+interface TaskMarkerCompletion {
+  readonly paragraphId: NodeId;
+  readonly itemId: NodeId;
+  readonly checked: boolean;
+}
+
 type PreparedAction = PreparedActionBase &
   (
     | {
@@ -890,6 +896,7 @@ export class CanonicalWriter {
         readonly boundarySnapshots: ReadonlyMap<TapeId, string>;
       }
     | { readonly kind: 'conversion'; readonly plan: ParserConversionPlan }
+    | { readonly kind: 'task-marker'; readonly completion: TaskMarkerCompletion }
     | { readonly kind: 'slow' } {
     const validation = this.replicas.ensureValidation();
     const target = request.promotionTarget;
@@ -945,7 +952,31 @@ export class CanonicalWriter {
           this.indexes.isActive(target!.nodeId) &&
           kindCell!.value === 'paragraph'
         ) {
-          const classification = classifyInlineInput(validation.indexes.content(target!.nodeId));
+          const content = validation.indexes.content(target!.nodeId);
+          const checked = content.startsWith('[ ] ')
+            ? false
+            : content.startsWith('[x] ')
+              ? true
+              : undefined;
+          if (checked !== undefined) {
+            const itemId = this.indexes.parent(target!.nodeId);
+            const itemRecord = itemId ? nodeMap(this.state).get(itemId) : undefined;
+            if (
+              itemId &&
+              itemRecord &&
+              this.indexes.isActive(itemId) &&
+              readCell<NodeKind>(itemRecord, 'kind').value === 'list-item' &&
+              readCell<boolean | null>(itemRecord, 'checked').value === null &&
+              readCell<readonly NodeId[]>(itemRecord, 'children').value[0] === target!.nodeId
+            ) {
+              evidence.close();
+              return {
+                kind: 'task-marker',
+                completion: { paragraphId: target!.nodeId, itemId, checked },
+              };
+            }
+          }
+          const classification = classifyInlineInput(content);
           if (classification.kind === 'conversion') {
             evidence.close();
             return { kind: 'conversion', plan: classification.plan };
@@ -1316,6 +1347,7 @@ export class CanonicalWriter {
     let reservation: HistoryReservation | undefined;
     try {
       let stagedPromotion: ParserConversionPlan | undefined;
+      let stagedTaskMarkerCompletion: TaskMarkerCompletion | undefined;
       if (request.mode === 'text-input') {
         const staged = this.stageTextInput(request);
         if (staged.kind === 'invalid') return reject('invalid-text-update');
@@ -1331,6 +1363,7 @@ export class CanonicalWriter {
           return this.commitPreparedAction(prepared);
         }
         if (staged.kind === 'conversion') stagedPromotion = staged.plan;
+        if (staged.kind === 'task-marker') stagedTaskMarkerCompletion = staged.completion;
       }
 
       candidate = this.cloneState();
@@ -1357,6 +1390,7 @@ export class CanonicalWriter {
       let draft: MutableTreeDraft | undefined;
       let plan: LowLevelPlan;
       let receiptFocus = request.focus;
+      const taskMarkerCompletion = stagedTaskMarkerCompletion;
       try {
         draft = new MutableTreeDraft(
           candidate,
@@ -1380,30 +1414,46 @@ export class CanonicalWriter {
         ) {
           const sourceNode = draft.node(promotion.nodeId);
           if (sourceNode.type === 'paragraph' && sourceNode.content !== undefined) {
-            const parsed = stagedPromotion
-              ? { provenance: stagedPromotion }
-              : parseBlocks(sourceNode.content, { provenance: true });
-            let mapSourceBookmark: ((bookmark: Bookmark) => Bookmark) | undefined;
-            if (
-              applyParserConversion(
-                draft,
-                metaMap(candidate).get('rootId') as NodeId,
-                promotion.nodeId,
-                sourceNode.content,
-                parsed.provenance,
-                (mapper) => {
-                  mapSourceBookmark = mapper;
-                },
-              )
-            ) {
+            if (taskMarkerCompletion?.paragraphId === promotion.nodeId) {
+              draft.setChecked(taskMarkerCompletion.itemId, taskMarkerCompletion.checked);
+              draft.spliceText(promotion.nodeId, { from: 0, to: 4, insert: '' });
               const end = receiptFocus?.end;
-              if (end?.nodeId === promotion.nodeId && mapSourceBookmark) {
+              if (end?.nodeId === promotion.nodeId) {
                 receiptFocus = copyActionFocus({
                   ...receiptFocus,
-                  end: mapSourceBookmark(end),
+                  end: Object.freeze({
+                    ...end,
+                    offset: Math.max(0, end.offset - 4),
+                  }),
                 });
               }
               normalizeCanonicalDraft(draft, metaMap(candidate).get('rootId') as NodeId);
+            } else {
+              const parsed = stagedPromotion
+                ? { provenance: stagedPromotion }
+                : parseBlocks(sourceNode.content, { provenance: true });
+              let mapSourceBookmark: ((bookmark: Bookmark) => Bookmark) | undefined;
+              if (
+                applyParserConversion(
+                  draft,
+                  metaMap(candidate).get('rootId') as NodeId,
+                  promotion.nodeId,
+                  sourceNode.content,
+                  parsed.provenance,
+                  (mapper) => {
+                    mapSourceBookmark = mapper;
+                  },
+                )
+              ) {
+                const end = receiptFocus?.end;
+                if (end?.nodeId === promotion.nodeId && mapSourceBookmark) {
+                  receiptFocus = copyActionFocus({
+                    ...receiptFocus,
+                    end: mapSourceBookmark(end),
+                  });
+                }
+                normalizeCanonicalDraft(draft, metaMap(candidate).get('rootId') as NodeId);
+              }
             }
           }
         }

@@ -300,9 +300,10 @@ export class CanonicalEditor extends LitElement {
     if (!node || !document) return;
     const selection = this.selectionController.currentBlockSelection(hostContext);
     const intent = translateInlineInput(event.detail, selection.length > 0);
+    const inputType = event.detail.inputEvent.inputType;
     const selectionBefore =
-      node.type === 'code-block' &&
-      ['insertFromPaste', 'insertReplacementText'].includes(event.detail.inputEvent.inputType)
+      inputType === 'insertReplacementText' ||
+      (node.type === 'code-block' && inputType === 'insertFromPaste')
         ? inline.getTextSelection()
         : undefined;
     if (intent.type === 'ignored') return;
