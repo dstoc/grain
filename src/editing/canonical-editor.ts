@@ -685,6 +685,12 @@ export class CanonicalEditor extends LitElement {
     if (markdown) {
       event.preventDefault();
       const native = inline.getTextSelection();
+      const selectionBefore =
+        blockSelection.length > 0
+          ? this.blockSelectionBefore(blockSelection, hostContext)
+          : native
+            ? this.textSelectionBefore(node.sharedId, inline, native.anchor, native.focus)
+            : undefined;
       this.runEdit(
         insertMarkdown,
         {
@@ -693,9 +699,7 @@ export class CanonicalEditor extends LitElement {
           replaceActiveEmptyTarget:
             blockSelection.length === 0 && native !== undefined && native.anchor === native.focus,
         },
-        native
-          ? this.textSelectionBefore(node.sharedId, inline, native.anchor, native.focus)
-          : undefined,
+        selectionBefore,
         hostContext,
       );
       return;

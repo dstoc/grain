@@ -818,6 +818,152 @@ describe('M6 review browser contracts', () => {
     expect(JSON.stringify(model.exportMarkdownTree())).toBe(pasted);
     expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Gamma');
   });
+  test('trusted structured clipboard paste replaces a directed block selection', async () => {
+    await mount('Alpha\n\nBeta\n\nGamma\n\nDelta');
+    const [alpha, beta, gamma, delta] = model.root.children;
+    const context = renderer.hostContext!;
+    const pastes: {
+      trusted: boolean;
+      types: string[];
+      markdown: string;
+      text: string;
+    }[] = [];
+    editor.addEventListener('paste', (event) => {
+      const clipboard = (event as ClipboardEvent).clipboardData;
+      pastes.push({
+        trusted: event.isTrusted,
+        types: [...(clipboard?.types ?? [])],
+        markdown: clipboard?.getData('text/markdown') ?? '',
+        text: clipboard?.getData('text/plain') ?? '',
+      });
+    });
+
+    const alphaInline = inlines().find((candidate) => candidate.nodeView?.content === 'Alpha')!;
+    alphaInline.focus();
+    alphaInline.setSelectionOffsets(0, 0);
+    await userEvent.keyboard('{Control>}a{/Control}{Control>}a{/Control}');
+    await settle();
+    expectBlockSelection(context, alpha!.sharedId, alpha!.sharedId, [alpha!.sharedId]);
+    await userEvent.keyboard('{Control>}c{/Control}');
+
+    const betaInline = inlines().find((candidate) => candidate.nodeView?.content === 'Beta')!;
+    await userEvent.click(betaInline);
+    betaInline.setSelectionOffsets(0, 0);
+    await userEvent.keyboard('{Shift>}{ArrowDown}{/Shift}');
+    await settle();
+    expectBlockSelection(context, beta!.sharedId, gamma!.sharedId, [
+      beta!.sharedId,
+      gamma!.sharedId,
+    ]);
+
+    await userEvent.keyboard('{Control>}v{/Control}');
+    await settle();
+    expect(pastes).toHaveLength(1);
+    expect(pastes[0]).toMatchObject({
+      trusted: true,
+      markdown: 'Alpha\n',
+      text: 'Alpha\n',
+    });
+    expect(pastes[0]!.types).toContain('text/markdown');
+    expect(pastes[0]!.types).toContain('text/plain');
+    expect(model.root.children.map((node) => node.content)).toEqual(['Alpha', 'Alpha', 'Delta']);
+    expect(delta!.connected).toBe(true);
+    expect(context.selection.size).toBe(0);
+    expect(model.validate()).toEqual({ valid: true, errors: [] });
+    const replaced = JSON.stringify(model.exportMarkdownTree());
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual([
+      'Alpha',
+      'Beta',
+      'Gamma',
+      'Delta',
+    ]);
+    expectBlockSelection(context, beta!.sharedId, gamma!.sharedId, [
+      beta!.sharedId,
+      gamma!.sharedId,
+    ]);
+    await userEvent.keyboard('{Control>}y{/Control}');
+    await settle();
+    expect(JSON.stringify(model.exportMarkdownTree())).toBe(replaced);
+    expect(context.selection.size).toBe(0);
+    expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Alpha');
+  });
+  test('trusted plain-text clipboard paste still replaces a block selection', async () => {
+    await mount('Alpha\n\nBeta\n\nGamma\n\nDelta');
+    const [, beta, gamma, delta] = model.root.children;
+    const context = renderer.hostContext!;
+    const pastes: { trusted: boolean; types: string[]; text: string }[] = [];
+    editor.addEventListener('paste', (event) => {
+      const clipboard = (event as ClipboardEvent).clipboardData;
+      pastes.push({
+        trusted: event.isTrusted,
+        types: [...(clipboard?.types ?? [])],
+        text: clipboard?.getData('text/plain') ?? '',
+      });
+    });
+    await writeNativePlainText('X');
+
+    const betaInline = inlines().find((candidate) => candidate.nodeView?.content === 'Beta')!;
+    await userEvent.click(betaInline);
+    betaInline.setSelectionOffsets(0, 0);
+    await userEvent.keyboard('{Shift>}{ArrowDown}{/Shift}');
+    await settle();
+    expectBlockSelection(context, beta!.sharedId, gamma!.sharedId, [
+      beta!.sharedId,
+      gamma!.sharedId,
+    ]);
+
+    await userEvent.keyboard('{Control>}v{/Control}');
+    await settle();
+    expect(pastes).toHaveLength(1);
+    expect(pastes[0]).toMatchObject({ trusted: true, text: 'X' });
+    expect(pastes[0]!.types).toEqual(['text/plain']);
+    expect(model.root.children.map((node) => node.content)).toEqual(['Alpha', 'X', 'Delta']);
+    expect(delta!.connected).toBe(true);
+    expect(context.selection.size).toBe(0);
+
+    await userEvent.keyboard('{Control>}z{/Control}');
+    await settle();
+    expect(model.root.children.map((node) => node.content)).toEqual([
+      'Alpha',
+      'Beta',
+      'Gamma',
+      'Delta',
+    ]);
+    expectBlockSelection(context, beta!.sharedId, gamma!.sharedId, [
+      beta!.sharedId,
+      gamma!.sharedId,
+    ]);
+  });
+  test('an unsafe structured paste keeps the active block selection and focus', async () => {
+    await mount('Alpha\n\nBeta\n\nGamma\n\n> Tail');
+    const [alpha, beta, gamma] = model.root.children;
+    const context = renderer.hostContext!;
+    const before = JSON.stringify(model.exportMarkdownTree());
+    const betaInline = inlines().find((candidate) => candidate.nodeView?.content === 'Beta')!;
+    await userEvent.click(betaInline);
+    betaInline.setSelectionOffsets(0, 0);
+    await userEvent.keyboard('{Shift>}{ArrowDown}{/Shift}');
+    await settle();
+    expectBlockSelection(context, beta!.sharedId, gamma!.sharedId, [
+      beta!.sharedId,
+      gamma!.sharedId,
+    ]);
+
+    dispatchMarkdownPaste(betaInline, '> Pasted');
+    await settle();
+
+    expect(JSON.stringify(model.exportMarkdownTree())).toBe(before);
+    expectBlockSelection(context, beta!.sharedId, gamma!.sharedId, [
+      beta!.sharedId,
+      gamma!.sharedId,
+    ]);
+    expect(renderer.getInlineSelection().inline?.nodeView?.content).toBe('Gamma');
+    expect(alpha!.connected).toBe(true);
+    expect(writer.canUndo()).toBe(false);
+  });
   test('structured paste replaces an Enter-created root paragraph', async () => {
     const first = await mount('Gamma');
     first.focus();
