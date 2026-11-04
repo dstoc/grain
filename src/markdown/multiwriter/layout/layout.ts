@@ -215,7 +215,7 @@ export class LayoutPrefix {
     );
   }
   /** Call once per effect, including inactive and non-layout effects, in ordinal order. */
-  step(ordinal: number, active: boolean): LayoutStepResult {
+  step(ordinal: number, active: boolean, interpretationEligible = false): LayoutStepResult {
     const action = this.current;
     if (!action || ordinal !== this.nextOrdinal || ordinal >= action.effects.length)
       throw new Error('Effects must enter in prefix order');
@@ -263,6 +263,11 @@ export class LayoutPrefix {
         });
         break;
       }
+      case 'Interpret':
+        if (interpretationEligible)
+          for (const placement of effect.packet.placements)
+            blocks.push({ node: placement.node, result: this.moveBlock(placement) });
+        break;
       case 'LiftChildren':
         for (const placement of effect.placements)
           blocks.push({ node: placement.node, result: this.moveBlock(placement) });
@@ -456,13 +461,18 @@ export function reduceLayout(
   genesis: LayoutGenesis,
   inputs: readonly LayoutActionInput[],
   isActive: (order: EffectOrder) => boolean,
+  interpretationEligible: (order: EffectOrder) => boolean = () => false,
 ): LayoutPrefix {
   const unique = new Map(inputs.map((input) => [actionKey(input.action.id), input]));
   const layout = new LayoutPrefix(genesis);
   for (const input of [...unique.values()].sort((a, b) => compareActions(a.action, b.action))) {
     layout.beginAction(input);
     for (let ordinal = 0; ordinal < input.action.effects.length; ordinal++)
-      layout.step(ordinal, isActive({ action: input.action, ordinal }));
+      layout.step(
+        ordinal,
+        isActive({ action: input.action, ordinal }),
+        interpretationEligible({ action: input.action, ordinal }),
+      );
   }
   return layout;
 }

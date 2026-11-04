@@ -7,6 +7,8 @@ export type { SemanticNormalizationDraft } from './draft.js';
 
 export interface SemanticNormalizeOptions {
   readonly preserveEmptyBlocks?: boolean;
+  /** Read-only projections supply their own local empty-root caret. */
+  readonly createEmptyRoot?: boolean;
 }
 
 function placeBefore(
@@ -161,7 +163,7 @@ export function normalizeSemanticTree(
     }
   }
 
-  if (draft.node(rootId).children.length === 0) {
+  if (options.createEmptyRoot !== false && draft.node(rootId).children.length === 0) {
     const paragraph = draft.create({ type: 'paragraph', content: '' });
     draft.place(paragraph, rootId, null);
   }

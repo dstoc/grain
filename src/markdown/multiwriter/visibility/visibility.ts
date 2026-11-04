@@ -85,6 +85,8 @@ export function reduceVisibility(
   activity: Activity,
   layout: VisibilityLayout,
   tokens: readonly TextToken[],
+  /** Packet-owned births may be dormant while their allocating action remains active. */
+  birthEnabled: (node: NodeId) => boolean = () => true,
 ): Visibility {
   const nodes = new Map(layout.nodes.map((node) => [resourceKey(node.id), node]));
   if (nodes.size !== layout.nodes.length) throw new Error('Duplicate node allocation');
@@ -191,7 +193,10 @@ export function reduceVisibility(
     for (const ancestor of paths.get(resourceKey(id))!) kept.add(resourceKey(ancestor.id));
   }
   function birthActive(node: VisibilityNode): boolean {
-    return node.id.birth.type === 'genesis' || activity.isActive(node.id.birth.action);
+    return (
+      (node.id.birth.type === 'genesis' || activity.isActive(node.id.birth.action)) &&
+      birthEnabled(node.id)
+    );
   }
   for (const node of layout.nodes) {
     if (
