@@ -1,7 +1,7 @@
 # Proposal: Compile local semantic commands into multiwriter actions
 
 - **Issue:** grain/90 (MW-09).
-- **Status:** v1 approved in grain/90 comment `cmt_3vzrzLicPnEhq3j8`; v3 amendment below requests MW-06/shared-contract owner approval; it is not approved.
+- **Status:** v1 approved in grain/90 comment `cmt_3vzrzLicPnEhq3j8`; v3 approved by Douglas in grain/90 comment `cmt_xGRGQJOVnsUL4mCm` for PR #87 at `4fed8f5`. The approval removes nonexistent legacy-reader deployment and rollback concerns as blockers; canonical retention, encoding, certification and independent replay remain required.
 - **Authority:** grain/81 proposal v2, especially §§4.3, 6–9, 13–14; the approved MW-04 private-home contract and MW-08 constructor rule.
 - **Inspected baseline:** `yjs` at `0b500005bb26ebdbd0b8b891428ddd2b84bc4f30`, including accepted MW-08 PR #83. Branch and eventual PR target: `yjs`. Yjs stays pinned to 13.6.33.
 

@@ -2,7 +2,7 @@ import { expect, test, vi } from 'vitest';
 import { commandGenesis, commandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import { insertText } from '../../../editing/commands/insert-text.js';
 import { insertParagraph } from '../../../editing/commands/insert-paragraph.js';
-import { CommandCompiler } from './compiler.js';
+import { CommandCompiler, ConversionDeclined } from './compiler.js';
 import { RetainedEditError } from './index.js';
 import { DirectionalActionProvider } from '../providers/adapter.js';
 import { parseBlocks } from '../../block-parser/api.js';
@@ -138,7 +138,7 @@ test('provider persistence retry preserves the exact compiler action without dup
     p.close();
   }
 });
-test('optional unsupported conversion keeps literal input, while operational parser errors propagate', () => {
+test('optional multi-inline conversion publishes complete output, while operational parser errors propagate', () => {
   const p = commandReplica(commandGenesis());
   try {
     const nodeId = p.handle(p.nodes()[0]!);
@@ -148,8 +148,7 @@ test('optional unsupported conversion keeps literal input, while operational par
       { nodeId, from: 0, to: 6, text: 'one\n\ntwo' },
       { promote: nodeId },
     );
-    expect(p.nodes()).toHaveLength(1);
-    expect(p.nodes()[0]!.content).toBe('one\n\ntwo');
+    expect(p.nodes().map((n) => n.content)).toEqual(['one', 'two']);
     const plan = parseBlocks('# title', { provenance: true }).provenance;
     const bad = new Proxy(plan, {
       get(target, key, receiver) {
@@ -186,6 +185,29 @@ test('recursive calls are rejected before any facts are appended', () => {
     ).toThrow(/Recursive/);
     expect(p.document.store.encodeUpdate()).toEqual(bytes);
   } finally {
+    p.close();
+  }
+});
+
+test('an invalid optional promotion keeps the literal edit and omits the complete packet', () => {
+  const p = commandReplica(commandGenesis());
+  const spy = vi.spyOn(CommandCompiler.prototype, 'interpret').mockImplementationOnce(() => {
+    throw new ConversionDeclined('invalid-conversion', 'invalid parser plan');
+  });
+  try {
+    const nodeId = p.handle(p.nodes()[0]);
+    const result = p.editor.edit(
+      session,
+      insertText,
+      { nodeId, from: 0, text: '# ' },
+      { promote: nodeId },
+    );
+    expect(result.status).toBe('applied');
+    expect(p.nodes().map((n) => n.content)).toEqual(['# abcdef']);
+    if (result.status !== 'applied') throw new Error();
+    expect(result.envelope.effects.some((e) => e.type === 'Interpret')).toBe(false);
+  } finally {
+    spy.mockRestore();
     p.close();
   }
 });

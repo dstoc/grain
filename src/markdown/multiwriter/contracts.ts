@@ -173,6 +173,9 @@ export interface InterpretationPacket {
   readonly syntaxMask: readonly NativeTextRange[];
   /** All editable synthesis is born in this action's native insertion manifest. */
   readonly synthesizedText: readonly NativeTextRange[];
+  /** Additional inline births and original effect ordinals owned by this conversion. */
+  readonly derivedInlineOutputs?: readonly NodeId[];
+  readonly effectOrdinals?: readonly number[];
 }
 export type SemanticEffect =
   | { readonly type: 'InsertText'; readonly ranges: readonly NativeTextRange[] }

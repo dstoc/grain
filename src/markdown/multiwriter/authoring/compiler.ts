@@ -1,4 +1,4 @@
-import { convertedOffset } from './parser-focus.js';
+import { convertedFocus } from './parser-focus.js';
 import { prepareParserConversion, bindParserConversion } from '../projection/parser-plan.js';
 import type { OutputBinding } from '../projection/parser-plan.js';
 import type { ParserConversionPlan } from '../../block-parser/types.js';
@@ -38,7 +38,7 @@ import { projectMarkdown, projectionDocument } from '../projection/project.js';
 import type { SourceFragment } from '../projection/parser-plan.js';
 import type { ViewNode } from '../projection/types.js';
 import { NativePlan } from './native-plan.js';
-import type { MultiwriterCommandDraft } from './draft.js';
+import type { CommandIntent, MultiwriterCommandDraft } from './draft.js';
 
 function slice(pieces: readonly SourceFragment[], from: number, to: number): SourceFragment[] {
   let at = 0;
@@ -57,6 +57,8 @@ function slice(pieces: readonly SourceFragment[], from: number, to: number): Sou
       : [];
   });
 }
+const sameAction = (a: ActionEnvelope['id'], b: ActionEnvelope['id']) =>
+  a.actor === b.actor && a.sequence === b.sequence;
 const same = (a: ResourceId<ResourceKind>, b: ResourceId<ResourceKind>) =>
   resourceKey(a) === resourceKey(b);
 
@@ -76,11 +78,12 @@ export class CommandCompiler {
   readonly allocations: Allocation[] = [];
   readonly effects: SemanticEffect[] = [];
   private ordinal = 0;
+  private readonly intents: readonly CommandIntent[];
   private memo?: { key: string; value: ReturnType<typeof projectMarkdown> };
   private readonly ids = new Map<Handle, NodeId>();
   private readonly focusMappings = new Map<
     Handle,
-    (offset: number, affinity: TextAffinity) => number
+    (offset: number, affinity: TextAffinity) => { node: NodeId; offset: number }
   >();
   private readonly text = new Map<Handle, readonly SourceFragment[]>();
   private readonly specs = new Map<Handle, CreateNodeSpec>();
@@ -104,6 +107,7 @@ export class CommandCompiler {
     root: ViewNode,
     native: NativeView,
   ) {
+    this.intents = draft.compilerIntents();
     this.native = new NativePlan(
       [...genesis.layout.allocations, ...ready.flatMap((a) => a.allocations)]
         .filter((a) => a.type === 'tape')
@@ -117,7 +121,7 @@ export class CommandCompiler {
         view.fragments.filter((p) => p.visible).map((p) => ({ text: p.text, range: p.range })),
       );
     }
-    for (const intent of draft.intents) {
+    for (const intent of this.intents) {
       if (intent.type === 'create') this.specs.set(intent.id, intent.spec);
       if (intent.type === 'place' && !this.firstPlaces.has(intent.id))
         this.firstPlaces.set(intent.id, intent);
@@ -300,11 +304,11 @@ export class CommandCompiler {
       return structuredClone(view.wrappers.at(-1)!.end);
     }
     const previous = at > 0 ? children[at - 1] : undefined;
-    const predecessor = previous
-      ? (this.ownership().blockPlacement(this.id(previous))?.occurrence ??
-        this.births.get(previous) ??
-        null)
-      : null;
+    const placement = previous ? this.ownership().blockPlacement(this.id(previous)) : undefined;
+    if (placement && !same(placement.slot.parent, parentId))
+      return { parent: placement.slot.parent, predecessor: placement.occurrence };
+    const predecessor =
+      placement?.occurrence ?? (previous ? this.births.get(previous) : null) ?? null;
     return { parent: parentId, predecessor };
   }
   private pieces(handle: Handle) {
@@ -566,8 +570,12 @@ export class CommandCompiler {
       });
     }
   }
-  /** A terminal parser packet uses retained fragments, never a diff of strings. */
-  interpret(handle: Handle, plan: ParserConversionPlan): void {
+  /** Parser packets use retained fragments, never a diff of strings. */
+  interpret(
+    handle: Handle,
+    plan: ParserConversionPlan,
+    handles?: ReadonlyMap<string, Handle>,
+  ): void {
     const source = this.id(handle),
       flow = this.flow(handle),
       ownership = this.ownership();
@@ -576,9 +584,32 @@ export class CommandCompiler {
     )!.run;
     const parent = this.tree.draft.parentOf(handle);
     if (!parent) throw new Error('Parser source has no insertion parent');
-    const rootSlot = this.blockSlot(parent, this.tree.draft.nextSiblingOf(handle) ?? null, handle);
+    const priorMasks: NativeTextRange[] = [];
+    const captureMasks = (node: ViewNode) => {
+      if (same(node.origin.representative, source))
+        priorMasks.push(...node.fragments.filter((f) => f.masked).map((f) => f.range));
+      node.children.forEach(captureMasks);
+    };
+    captureMasks(this.state().view.root);
+    const rootBefore = this.tree.draft.nextSiblingOf(handle) ?? null;
+    // A conversion replaces this source at its retained raw edge. Legal-view
+    // lifting can put its preceding sibling in another raw slot sequence.
+    const rootSlot = structuredClone(ownership.blockPlacement(source)!.slot);
     const bindings: OutputBinding[] = [],
       nodeByKey = new Map<string, MarkdownNode>();
+    const parserPlacements = new Set<string>();
+    const placementAllocations: Allocation[] = [];
+    const effectOccurrences = new Set(
+      this.effects.flatMap((e) =>
+        'occurrence' in e
+          ? [resourceKey(e.occurrence)]
+          : e.type === 'Interpret'
+            ? e.packet.placements.map((p) => resourceKey(p.occurrence))
+            : e.type === 'LiftChildren'
+              ? e.placements.map((p) => resourceKey(p.occurrence))
+              : [],
+      ),
+    );
     let first = true;
     const visit = (
       node: MarkdownNode,
@@ -597,8 +628,27 @@ export class CommandCompiler {
         ? { parent: parentBinding.node, predecessor }
         : { ...rootSlot, predecessor: predecessor ?? rootSlot.predecessor };
       const occurrence = this.alloc('occurrence');
+      parserPlacements.add(resourceKey(occurrence));
       if (!stable) {
         const birth = this.alloc('occurrence');
+        // Ordinary births precede this action's Interpret placements.
+        const priorBirth = this.allocations.findLast(
+          (a) =>
+            a.type === 'occurrence' &&
+            'parent' in a.slot &&
+            same(a.slot.parent, slot.parent) &&
+            !parserPlacements.has(resourceKey(a.id)) &&
+            !effectOccurrences.has(resourceKey(a.id)),
+        );
+        const retainedPredecessor =
+          slot.predecessor?.birth.type === 'action' &&
+          sameAction(slot.predecessor.birth.action, this.base.id)
+            ? null
+            : slot.predecessor;
+        const birthSlot = {
+          parent: slot.parent,
+          predecessor: (priorBirth?.id as OccurrenceId | undefined) ?? retainedPredecessor,
+        };
         this.allocations.push(
           {
             type: 'node',
@@ -609,9 +659,9 @@ export class CommandCompiler {
                 ? 'quote'
                 : (node.type as 'list' | 'list-item'),
             flow: nodeFlow ?? null,
-            birthSlot: slot,
+            birthSlot,
           },
-          { type: 'occurrence', id: birth, slot },
+          { type: 'occurrence', id: birth, slot: birthSlot },
         );
         if (nodeFlow && run) {
           const tape = this.alloc('tape'),
@@ -624,7 +674,7 @@ export class CommandCompiler {
           );
         }
       }
-      this.allocations.push({ type: 'occurrence', id: occurrence, slot });
+      placementAllocations.push({ type: 'occurrence', id: occurrence, slot });
       const binding: OutputBinding = {
         key,
         node: id,
@@ -656,13 +706,6 @@ export class CommandCompiler {
         throw new ConversionDeclined('invalid-conversion', error.message);
       throw error;
     }
-    // A multi-inline interpretation also changes flow ownership. Its applicability
-    // must be agreed with the projection contract before this compiler can lower it.
-    if (prepared.outputs.filter((o) => isInlineNode(nodeByKey.get(o.binding.key)!)).length !== 1)
-      throw new ConversionDeclined(
-        'unsupported-conversion',
-        'Multi-inline parser conversion is not supported by this compiler',
-      );
     const packet = this.alloc('interpretation');
     this.allocations.push({ type: 'interpretation', id: packet });
     const synthesis: { request: string; ranges: readonly NativeTextRange[] }[] = [];
@@ -706,6 +749,7 @@ export class CommandCompiler {
       this.effects.push({ type: 'InsertText', ranges });
       synthesis.push({ request: request.request, ranges });
     }
+    this.allocations.push(...placementAllocations);
     const retained = [
       ...this.genesis.layout.allocations,
       ...this.ready.flatMap((a) => a.allocations),
@@ -722,30 +766,178 @@ export class CommandCompiler {
           .join(''),
       retained,
     );
-    this.effects.push({ type: 'Interpret', packet: bound.packet });
-    const sourceOutput = prepared.outputs.find((o) => same(o.binding.node, source))!;
-    const findOutput = (node: ViewNode): ViewNode | undefined =>
-      same(node.origin.representative, source) ? node : node.children.map(findOutput).find(Boolean);
-    const projected = findOutput(this.state().view.root);
-    if (projected?.content !== sourceOutput.pieces.map((piece) => piece.text).join(''))
-      throw new ConversionDeclined(
-        'unsupported-conversion',
-        'Conversion requires unsupported retained-piece ownership',
-      );
-    this.focusMappings.set(handle, convertedOffset(fragments, sourceOutput));
-    for (const output of prepared.outputs)
-      if (output.type === 'list-item')
-        this.effects.push({
+    const members: SemanticEffect[] = [];
+    for (const { output, ranges } of bound.outputs) {
+      if (output.binding.node.kind !== 'node') throw new Error('Invalid output');
+      if (output.binding.flow && !same(output.binding.node, source)) {
+        const cells: RangeRef[] = [];
+        for (const range of ranges) {
+          const start = this.alloc('marker'),
+            end = this.alloc('marker');
+          const endAt =
+            this.native.locate(range.tape, {
+              client: range.client,
+              clock: range.clock + range.length - 1,
+            }) + 1;
+          this.native.add({
+            type: 'marker',
+            tape: range.tape,
+            index: endAt,
+            marker: end,
+            affinity: 'right',
+          });
+          const startAt = this.native.locate(range.tape, {
+            client: range.client,
+            clock: range.clock,
+          });
+          this.native.add({
+            type: 'marker',
+            tape: range.tape,
+            index: startAt,
+            marker: start,
+            affinity: 'left',
+          });
+          cells.push({ tape: range.tape, start, end });
+        }
+        if (cells.length) {
+          const home = this.allocations.find(
+            (a) => a.type === 'run' && same(a.id, output.binding.run!),
+          );
+          if (home?.type !== 'run') throw new Error('Output lacks home run');
+          const destination: InlineSlot = {
+            run: home.id,
+            boundary: home.skeleton.at(-1)!.end,
+            side: 'left',
+            predecessor: null,
+          };
+          const run = this.alloc('run'),
+            occurrence = this.alloc('occurrence');
+          this.allocations.push(
+            { type: 'run', id: run, flow: output.binding.flow, skeleton: cells },
+            { type: 'occurrence', id: occurrence, slot: destination },
+          );
+          members.push({ type: 'TransferRange', ranges: cells, destination, run, occurrence });
+        }
+        members.push({
           type: 'SetProperties',
           node: output.binding.node,
-          values: { marker: output.properties.marker, checked: output.properties.checked },
+          values: {
+            presentation: output.properties.presentation,
+            marker: output.properties.marker,
+            info: output.properties.info,
+          },
         });
+      } else if (!output.binding.flow) {
+        members.push({
+          type: 'SetProperties',
+          node: output.binding.node,
+          values: {
+            marker: output.properties.marker,
+            ...(output.type === 'list-item' ? { checked: output.properties.checked } : {}),
+          },
+        });
+      }
+    }
+    const ordinal = this.effects.length;
+    const derived = prepared.outputs
+      .filter((o) => o.binding.flow && !same(o.binding.node, source))
+      .map((o) => o.binding.node);
+    this.effects.push(
+      {
+        type: 'Interpret',
+        packet: {
+          ...bound.packet,
+          syntaxMask: [...priorMasks, ...bound.packet.syntaxMask],
+          ...(derived.length ? { derivedInlineOutputs: derived } : {}),
+          ...(members.length ? { effectOrdinals: members.map((_, i) => ordinal + i + 1) } : {}),
+        },
+      },
+      ...members,
+    );
+    const projected = new Map<string, ViewNode>();
+    const visitProjected = (node: ViewNode) => {
+      projected.set(resourceKey(node.origin.representative), node);
+      node.children.forEach(visitProjected);
+    };
+    visitProjected(this.state().view.root);
+    const identityKeys = (ranges: readonly NativeTextRange[]) =>
+      ranges.flatMap((r) =>
+        Array.from(
+          { length: r.length },
+          (_, i) => `${resourceKey(r.tape)}:${r.client}:${r.clock + i}`,
+        ),
+      );
+    for (const { output, ranges } of bound.outputs) {
+      if (!output.binding.flow) continue;
+      const actual = projected.get(resourceKey(output.binding.node));
+      if (
+        !actual ||
+        JSON.stringify(
+          identityKeys(actual.fragments.filter((f) => f.visible).map((f) => f.range)),
+        ) !== JSON.stringify(identityKeys(ranges))
+      )
+        throw new ConversionDeclined(
+          'unsupported-conversion',
+          'Conversion requires unsupported retained-piece ordering',
+        );
+    }
+    if (handles) {
+      for (const output of prepared.outputs) {
+        const handle = handles.get(output.binding.key)!;
+        const node = nodeByKey.get(output.binding.key)!;
+        if (!same(output.binding.node, source)) {
+          if (node.type === 'document') throw new Error('Parser output cannot be a document');
+          const { children: _children, ...spec } = node;
+          const created = this.tree.draft.create(spec);
+          if (created !== handle) throw new Error('Parser draft handle allocation changed');
+          this.ids.set(handle, output.binding.node);
+        } else
+          this.tree.draft.convertInline(handle, {
+            type: node.type as 'paragraph' | 'section' | 'code-block',
+            content: { mode: 'replace', text: isInlineNode(node) ? node.content : '' },
+            ...('marker' in node ? { marker: node.marker } : {}),
+            ...(node.type === 'code-block' ? { info: node.info } : {}),
+          });
+        const parentKey = output.binding.key.includes('.')
+          ? output.binding.key.slice(0, output.binding.key.lastIndexOf('.'))
+          : null;
+        this.tree.draft.place(
+          handle,
+          parentKey ? handles.get(parentKey)! : parent,
+          parentKey ? null : rootBefore,
+        );
+        const mapped = bound.outputs.find(
+          (b) => b.output === output || b.output.binding.key === output.binding.key,
+        )!;
+        this.text.set(
+          handle,
+          mapped.ranges.flatMap((range) =>
+            this.native.lookup(range).map((p) => ({ text: p.text, range: p.range })),
+          ),
+        );
+      }
+    }
+    if (!handles)
+      this.focusMappings.set(
+        handle,
+        convertedFocus(
+          fragments,
+          prepared.outputs.filter((o) => o.binding.flow),
+        ),
+      );
+    this.text.set(
+      handle,
+      bound.outputs
+        .find((o) => same(o.output.binding.node, source))!
+        .ranges.flatMap((range) =>
+          this.native.lookup(range).map((p) => ({ text: p.text, range: p.range })),
+        ),
+    );
   }
+
   run(): void {
-    if (this.draft.intents.every((i) => i.type === 'splice')) {
-      for (const handle of new Set(
-        this.draft.intents.map((i) => (i.type === 'splice' ? i.id : '')),
-      )) {
+    if (this.intents.every((i) => i.type === 'splice')) {
+      for (const handle of new Set(this.intents.map((i) => (i.type === 'splice' ? i.id : '')))) {
         const original = this.pieces(handle),
           final = this.draft.pieces.get(handle) ?? [];
         const edits: TextEdit[] = [];
@@ -783,8 +975,11 @@ export class CommandCompiler {
       }
       return;
     }
-    for (const intent of this.draft.intents) {
+    for (const intent of this.intents) {
       switch (intent.type) {
+        case 'interpret':
+          this.interpret(intent.id, intent.plan, intent.handles);
+          break;
         case 'create': {
           const id = this.tree.draft.create(intent.spec);
           if (id !== intent.id) throw new Error('Draft allocation order changed');
@@ -897,6 +1092,10 @@ export class CommandCompiler {
         case 'insert-fragment': {
           const f = this.fragments.get(intent.fragment);
           if (!f) throw new Error('Missing compiler fragment');
+          if (!f.ranges.length) {
+            this.fragments.delete(intent.fragment);
+            break;
+          }
           const destination = this.boundary(intent.id, intent.at, intent.affinity),
             flow = this.flow(intent.id),
             run = this.alloc('run'),
@@ -947,10 +1146,9 @@ export class CommandCompiler {
       }),
     };
   }
-  focusOffset(handle: Handle, offset: number, affinity: TextAffinity): number {
-    return this.focusMappings.get(handle)?.(offset, affinity) ?? offset;
-  }
-  resource(handle: Handle) {
-    return this.ids.get(handle);
+  focusTarget(handle: Handle, offset: number, affinity: TextAffinity) {
+    return (
+      this.focusMappings.get(handle)?.(offset, affinity) ?? { node: this.ids.get(handle), offset }
+    );
   }
 }

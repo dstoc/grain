@@ -16,6 +16,7 @@ import type { TapeSnapshot } from '../text/types.js';
 export function createOwnershipAuthorValidator(options: {
   readonly genesis: LayoutGenesis;
   readonly births: (action: ActionEnvelope) => readonly BirthPlacement[];
+  readonly effectEligible?: (actions: readonly ActionEnvelope[], order: EffectOrder) => boolean;
   readonly interpretationEligible?: (
     actions: readonly ActionEnvelope[],
     order: EffectOrder,
@@ -47,7 +48,9 @@ export function createOwnershipAuthorValidator(options: {
           genesis,
           actions: inputs,
           snapshots,
-          isActive: (order) => activity.isActive(order.action.id),
+          isActive: (order) =>
+            activity.isActive(order.action.id) &&
+            (options.effectEligible?.(actions, order) ?? true),
           interpretationEligible: (order) =>
             options.interpretationEligible?.(actions, order) ?? false,
         },

@@ -20,3 +20,4 @@ export { indent } from '../../../editing/commands/indent.js';
 export { outdent } from '../../../editing/commands/outdent.js';
 export { wrap } from '../../../editing/commands/wrap.js';
 export { cycleTaskState } from '../../../editing/commands/cycle-task-state.js';
+export { interpretMarkdown } from './interpret.js';

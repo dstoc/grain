@@ -240,7 +240,7 @@ test('discarded literal buffers are absent while surviving input is allocated on
       .join(''),
   ).toBe('kept');
 });
-test('explicit unsupported parser conversion declines the complete action without facts', () => {
+test('explicit multi-inline parser conversion publishes all outputs atomically', () => {
   const h = open(),
     before = h.document.store.encodeUpdate(),
     nodeId = h.handle(h.nodes()[0]!);
@@ -253,12 +253,11 @@ test('explicit unsupported parser conversion declines the complete action withou
     { conversion: { nodeId, plan } },
   );
   expect(result).toMatchObject({
-    status: 'declined',
-    applied: false,
-    reason: 'unsupported-conversion',
+    status: 'applied',
+    applied: true,
   });
-  expect(h.document.store.encodeUpdate()).toEqual(before);
-  expect(h.text()).toBe('abcdef\n');
+  expect(h.document.store.encodeUpdate()).not.toEqual(before);
+  expect(h.text()).toBe('one\n\ntwo\n');
 });
 test.each(['# ', '> ', '- [x] ', '```js\n'])(
   'promotion maps a caret after consumed prefix %j to the first retained character',
@@ -302,4 +301,58 @@ test('unsupported retained-piece reordering declines the entire explicit convers
   expect(result).toMatchObject({ status: 'declined', reason: 'unsupported-conversion' });
   expect(h.document.store.encodeUpdate()).toEqual(bytes);
   expect(h.text()).toBe('abcdef\n');
+});
+
+test('a discarded buffer split across nodes emits no native text facts', () => {
+  const h = open(),
+    nodeId = h.handle(h.nodes()[0]);
+  const result = h.editor.edit(
+    session,
+    (ctx) => {
+      insertText(ctx, { nodeId, from: 2, text: 'temporary' });
+      const split = insertParagraph(ctx, { nodeId, from: 6 });
+      if (split.status !== 'handled' || !split.focus) throw new Error();
+      insertText(ctx, { nodeId, from: 2, to: 6, text: '' });
+      insertText(ctx, { nodeId: split.focus.nodeId, from: 0, to: 5, text: '' });
+      return { status: 'handled' };
+    },
+    undefined,
+  );
+  expect(h.nodes().map((n) => n.content)).toEqual(['ab', 'cdef']);
+  if (result.status !== 'applied') throw new Error();
+  expect(result.envelope.nativeManifest.filter((m) => m.type === 'text')).toEqual([]);
+});
+
+test('a terminal multi-inline promotion maps the raw caret into its retained output', () => {
+  const h = open(),
+    nodeId = h.handle(h.nodes()[0]),
+    source = 'first\n\n# second';
+  const result = h.editor.edit(
+    session,
+    insertText,
+    { nodeId, from: 0, to: 6, text: source },
+    { promote: nodeId },
+  );
+  if (result.status !== 'applied') throw new Error();
+  const last = h
+    .nodes()[1]
+    .fragments.filter((f) => f.visible)
+    .at(-1)!;
+  expect(result.focus?.native).toEqual({
+    client: last.range.client,
+    clock: last.range.clock + last.range.length - 1,
+  });
+  expect(result.focus?.side).toBe('right');
+});
+test('successive conversions retain observed syntax masks without reconstructing text', () => {
+  const h = open();
+  let nodeId = h.handle(h.nodes()[0]);
+  h.editor.edit(session, insertText, { nodeId, from: 0, text: '# ' }, { promote: nodeId });
+  nodeId = h.handle(h.nodes()[0]);
+  h.editor.edit(session, insertText, { nodeId, from: 0, to: 6, text: 'new' }, { promote: nodeId });
+  expect(h.nodes().map((n) => n.content)).toEqual(['new']);
+  nodeId = h.handle(h.nodes()[0]);
+  h.editor.edit(session, insertText, { nodeId, from: 0, text: '> ' }, { promote: nodeId });
+  expect(h.nodes().map((n) => n.content)).toEqual(['new']);
+  expect(h.text()).toBe('> new\n');
 });

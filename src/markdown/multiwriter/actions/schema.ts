@@ -103,15 +103,37 @@ const slot: Schema = (v, d) =>
 const presentation = enumeration('paragraph', 'section', 'code');
 const properties = record({ presentation, marker: nullable(string), info: nullable(string) });
 const placement = record({ node, occurrence, slot: blockSlot });
-const packet = record({
-  id: interpretation,
-  source: node,
-  properties,
-  wrappers: array(node),
-  placements: array(placement),
-  syntaxMask: array(nativeText),
-  synthesizedText: array(nativeText),
-});
+const packetFields = record(
+  {
+    id: interpretation,
+    source: node,
+    properties,
+    wrappers: array(node),
+    placements: array(placement),
+    syntaxMask: array(nativeText),
+    synthesizedText: array(nativeText),
+  },
+  { derivedInlineOutputs: array(node), effectOrdinals: array(integer) },
+);
+const packet: Schema = (v, d) => {
+  const out = packetFields(v, d) as Record<string, unknown>;
+  for (const key of ['derivedInlineOutputs', 'effectOrdinals']) {
+    if (!Object.hasOwn(out, key)) continue;
+    const values = out[key] as unknown[];
+    if (!values.length) {
+      if (d === 'decode') fail();
+      delete out[key];
+      continue;
+    }
+    const ordinals = values.map((value) =>
+      key === 'effectOrdinals'
+        ? (value as bigint | number)
+        : (value as { ordinal: bigint | number }).ordinal,
+    );
+    if (ordinals.some((value, i) => i > 0 && value <= ordinals[i - 1])) fail();
+  }
+  return out;
+};
 const allocation = union('type', {
   node: tagged('node', {
     id: node,

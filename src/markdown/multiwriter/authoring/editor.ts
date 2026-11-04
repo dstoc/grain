@@ -3,6 +3,7 @@ import { encodeEnvelope } from '../actions/codec.js';
 import { compareBytes } from '../actions/cbor.js';
 import { classifyInlineInput } from '../../block-parser/api.js';
 import type { ParserConversionPlan } from '../../block-parser/types.js';
+import { assertScopedTarget } from '../../../editing/context.js';
 import type { Edit, EditOutcome } from '../../../editing/outcomes.js';
 import type { EditSelection } from '../../semantic/selection.js';
 import type { NodeId as Handle } from '../../semantic/types.js';
@@ -174,16 +175,19 @@ export class LocalEditor {
         return { status: 'not-applicable', applied: false };
       }
       if (!draft.intents.length) return { status: 'unchanged', applied: false };
-      const id = { actor: this.actor, sequence: this.sequence + 1n };
+      const previousSequence = ready
+        .filter((a) => a.id.actor === this.actor)
+        .reduce((n, a) => (a.id.sequence > n ? a.id.sequence : n), this.sequence);
+      const id = { actor: this.actor, sequence: previousSequence + 1n };
       assertCounter(id.sequence);
       const lamport = ready.reduce((max, a) => (a.lamport > max ? a.lamport : max), 0n) + 1n;
       assertCounter(lamport);
       const dependencies = [...p.heads];
       if (
-        this.sequence > 0n &&
-        !dependencies.some((d) => d.actor === this.actor && d.sequence === this.sequence)
+        previousSequence > 0n &&
+        !dependencies.some((d) => d.actor === this.actor && d.sequence === previousSequence)
       )
-        dependencies.push({ actor: this.actor, sequence: this.sequence });
+        dependencies.push({ actor: this.actor, sequence: previousSequence });
       const base = {
         protocolVersion: 3 as const,
         documentId: this.genesis.documentId,
@@ -207,6 +211,7 @@ export class LocalEditor {
       };
       let compiler = makeCompiler();
       if (options.conversion) {
+        assertScopedTarget(draft, options.scopeRoot ?? draft.rootId, options.conversion.nodeId);
         try {
           compiler.interpret(options.conversion.nodeId, options.conversion.plan);
         } catch (error) {
@@ -220,6 +225,7 @@ export class LocalEditor {
         }
       }
       if (options.promote) {
+        assertScopedTarget(draft, options.scopeRoot ?? draft.rootId, options.promote);
         const content = draft.node(options.promote).content;
         if (content === undefined) throw new Error('Promotion source is not inline');
         const classification = classifyInlineInput(content);
@@ -274,7 +280,12 @@ export class LocalEditor {
       };
       let focus: TextPoint | undefined;
       if (outcome.focus) {
-        const resource = compiler.resource(outcome.focus.nodeId);
+        const target = compiler.focusTarget(
+          outcome.focus.nodeId,
+          outcome.focus.offset,
+          outcome.focus.affinity,
+        );
+        const resource = target.node;
         const find = (n: ViewNode): ViewNode | undefined =>
           resource && resourceKey(n.origin.representative) === resourceKey(resource)
             ? n
@@ -283,14 +294,7 @@ export class LocalEditor {
         if (node)
           focus = textPoint(
             node,
-            Math.min(
-              compiler.focusOffset(
-                outcome.focus.nodeId,
-                outcome.focus.offset,
-                outcome.focus.affinity,
-              ),
-              node.content.length,
-            ),
+            Math.min(target.offset, node.content.length),
             outcome.focus.affinity,
           );
       }
@@ -312,6 +316,8 @@ export class LocalEditor {
       };
     } catch (error) {
       if (retained) throw new RetainedEditError(retained, error);
+      if (error instanceof ConversionDeclined)
+        return { status: 'declined', applied: false, reason: error.reason, message: error.message };
       throw error;
     } finally {
       this.editing = false;

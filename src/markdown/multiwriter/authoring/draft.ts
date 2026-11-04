@@ -1,3 +1,6 @@
+import type { ParserConversionPlan } from '../../block-parser/types.js';
+import { isInlineNode } from '../../node.js';
+import type { MarkdownNode } from '../../node.js';
 import { commandDraft } from '../../../editing/command-draft.js';
 import type { ChildLift, CommandDraft, InlineSplit } from '../../../editing/command-draft.js';
 import { ConstructionTree } from '../../semantic/construction-tree.js';
@@ -14,6 +17,12 @@ import type { ViewNode } from '../projection/types.js';
 import { projectionDocument } from '../projection/project.js';
 
 export type CommandIntent =
+  | {
+      type: 'interpret';
+      id: NodeId;
+      plan: ParserConversionPlan;
+      handles: ReadonlyMap<string, NodeId>;
+    }
   | { type: 'create'; id: NodeId; spec: CreateNodeSpec }
   | { type: 'place'; id: NodeId; parent: NodeId; before: NodeId | null }
   | { type: 'splice'; id: NodeId; edit: TextEdit }
@@ -73,6 +82,110 @@ export class MultiwriterCommandDraft implements CommandDraft {
   private readonly fragments = new WeakMap<InlineFragment, readonly OriginPiece[]>();
   private readonly consumed = new WeakSet<InlineFragment>();
   private buffer = 0;
+  private readonly textIntents = new Map<
+    CommandIntent,
+    { before: readonly OriginPiece[]; inserted?: readonly OriginPiece[] }
+  >();
+  private record(
+    intent: CommandIntent,
+    before: readonly OriginPiece[],
+    inserted?: readonly OriginPiece[],
+  ) {
+    this.intents.push(intent);
+    this.textIntents.set(intent, { before, inserted });
+  }
+  /** Remove unpublished buffer slices that have no final or parser-observed use.
+   * Retained native identities are never pruned. Coordinates stay intent-local. */
+  compilerIntents(): readonly CommandIntent[] {
+    const live = new Map<number, { from: number; to: number }[]>();
+    const retain = (pieces: readonly OriginPiece[]) => {
+      for (const p of pieces)
+        if (p.type === 'buffer') {
+          const ranges = live.get(p.buffer) ?? [];
+          ranges.push({ from: p.from, to: p.from + p.text.length });
+          live.set(p.buffer, ranges);
+        }
+    };
+    for (const [id, pieces] of this.pieces) {
+      let node: NodeId | undefined = id;
+      while (node && node !== this.rootId) node = this.parentOf(node);
+      if (node === this.rootId) retain(pieces);
+    }
+    for (const [intent, state] of this.textIntents)
+      if (intent.type === 'interpret') {
+        retain(state.before);
+        retain(state.inserted ?? []);
+      }
+    const kept = (pieces: readonly OriginPiece[]) =>
+      pieces
+        .flatMap((p) => {
+          if (p.type === 'retained') return [p.text];
+          const spans = (live.get(p.buffer) ?? [])
+            .map((r) => ({
+              from: Math.max(r.from, p.from),
+              to: Math.min(r.to, p.from + p.text.length),
+            }))
+            .filter((r) => r.from < r.to)
+            .sort((a, b) => a.from - b.from);
+          let end = p.from;
+          return spans.flatMap((r) => {
+            const from = Math.max(end, r.from);
+            end = Math.max(end, r.to);
+            return from < r.to ? [p.text.slice(from - p.from, r.to - p.from)] : [];
+          });
+        })
+        .join('');
+    return this.intents.map((intent) => {
+      const state = this.textIntents.get(intent);
+      if (!state) return intent;
+      const offset = (at: number) => kept(slicePieces(state.before, 0, at)).length;
+      switch (intent.type) {
+        case 'create':
+          return {
+            ...intent,
+            spec:
+              'content' in intent.spec
+                ? { ...intent.spec, content: kept(state.inserted ?? []) }
+                : intent.spec,
+          };
+        case 'splice':
+          return {
+            ...intent,
+            edit: {
+              ...intent.edit,
+              from: offset(intent.edit.from),
+              to: offset(intent.edit.to),
+              insert: kept(state.inserted ?? []),
+            },
+          };
+        case 'split':
+          return {
+            ...intent,
+            split: {
+              ...intent.split,
+              from: offset(intent.split.from),
+              to: offset(intent.split.to),
+            },
+          };
+        case 'cut':
+          return { ...intent, from: offset(intent.from), to: offset(intent.to) };
+        case 'insert-fragment':
+          return { ...intent, at: offset(intent.at) };
+        case 'convert':
+          return intent.plan.content?.mode === 'replace'
+            ? {
+                ...intent,
+                plan: {
+                  ...intent.plan,
+                  content: { mode: 'replace' as const, text: kept(state.inserted ?? []) },
+                },
+              }
+            : intent;
+        default:
+          return intent;
+      }
+    });
+  }
   constructor(root: ViewNode) {
     this.tree = new ConstructionTree(projectionDocument({ root, emptyRoot: null }));
     this.rootId = this.tree.rootId;
@@ -113,7 +226,7 @@ export class MultiwriterCommandDraft implements CommandDraft {
   create(spec: CreateNodeSpec): NodeId {
     const id = this.tree.draft.create(spec);
     this.pieces.set(id, this.literal('content' in spec ? (spec.content ?? '') : ''));
-    this.intents.push({ type: 'create', id, spec: structuredClone(spec) });
+    this.record({ type: 'create', id, spec: structuredClone(spec) }, [], this.pieces.get(id));
     return id;
   }
   place(id: NodeId, parent: NodeId, before: NodeId | null): void {
@@ -136,8 +249,10 @@ export class MultiwriterCommandDraft implements CommandDraft {
     const before = this.node(id).content;
     this.tree.draft.spliceText(id, edit);
     if (before === this.node(id).content) return;
-    this.replace(id, edit.from, edit.to, this.literal(edit.insert));
-    this.intents.push({ type: 'splice', id, edit: structuredClone(edit) });
+    const pieces = this.pieces.get(id) ?? [],
+      inserted = this.literal(edit.insert);
+    this.replace(id, edit.from, edit.to, inserted);
+    this.record({ type: 'splice', id, edit: structuredClone(edit) }, pieces, inserted);
   }
   splitInline(split: InlineSplit): void {
     const { source, destination, from, to, retainedSide } = split;
@@ -156,7 +271,7 @@ export class MultiwriterCommandDraft implements CommandDraft {
         ? slicePieces(remaining, from, Infinity)
         : slicePieces(remaining, 0, from),
     );
-    this.intents.push({ type: 'split', split: structuredClone(split) });
+    this.record({ type: 'split', split: structuredClone(split) }, p);
   }
   joinInline(source: NodeId, destination: NodeId): void {
     commandDraft(this.tree.draft).joinInline(source, destination);
@@ -168,20 +283,22 @@ export class MultiwriterCommandDraft implements CommandDraft {
     this.intents.push({ type: 'join', source, destination });
   }
   cutInline(id: NodeId, from: number, to: number): InlineFragment {
-    const pieces = slicePieces(this.pieces.get(id) ?? [], from, to);
+    const before = this.pieces.get(id) ?? [];
+    const pieces = slicePieces(before, from, to);
     const fragment = this.tree.draft.cutInline(id, from, to);
     this.fragments.set(fragment, pieces);
     this.replace(id, from, to, []);
-    this.intents.push({ type: 'cut', id, from, to, fragment });
+    this.record({ type: 'cut', id, from, to, fragment }, before);
     return fragment;
   }
   insertFragment(id: NodeId, at: number, affinity: TextAffinity, fragment: InlineFragment): void {
     const p = this.fragments.get(fragment);
     if (!p || this.consumed.has(fragment)) throw new Error('Foreign or consumed command fragment');
+    const before = this.pieces.get(id) ?? [];
     this.tree.draft.insertFragment(id, at, affinity, fragment);
     this.replace(id, at, at, p);
     this.consumed.add(fragment);
-    this.intents.push({ type: 'insert-fragment', id, at, affinity, fragment });
+    this.record({ type: 'insert-fragment', id, at, affinity, fragment }, before);
   }
   transferInlineRange(t: Transfer): void {
     // Validate all coordinates before cutting, including same-node pre-transfer coordinates.
@@ -199,11 +316,12 @@ export class MultiwriterCommandDraft implements CommandDraft {
     this.insertFragment(t.destination, at, t.affinity, fragment);
   }
   convertInline(id: NodeId, plan: ConversionPlan): void {
-    const before = this.node(id).content;
+    const before = this.node(id).content,
+      pieces = this.pieces.get(id) ?? [];
     this.tree.draft.convertInline(id, plan);
     if (plan.content?.mode === 'replace' && before !== plan.content.text)
       this.pieces.set(id, this.literal(plan.content.text));
-    this.intents.push({ type: 'convert', id, plan: structuredClone(plan) });
+    this.record({ type: 'convert', id, plan: structuredClone(plan) }, pieces, this.pieces.get(id));
   }
   setMarker(id: NodeId, marker: string | null): void {
     if (this.node(id).marker === marker) return;
@@ -219,6 +337,51 @@ export class MultiwriterCommandDraft implements CommandDraft {
     if (this.node(id).info === info) return;
     this.tree.draft.setInfo(id, info);
     this.intents.push({ type: 'info', id, info });
+  }
+  /** Apply a parser plan to this isolated draft; native binding remains compiler-owned. */
+  interpret(id: NodeId, plan: ParserConversionPlan): readonly NodeId[] {
+    const source = this.pieces.get(id) ?? [],
+      parent = this.parentOf(id);
+    if (!parent) throw new Error('Parser source is detached');
+    const before = this.nextSiblingOf(id) ?? null;
+    const handles = new Map<string, NodeId>();
+    let first = true;
+    const visit = (node: MarkdownNode, path: number[], parent: NodeId) => {
+      const key = path.join('.'),
+        inline = isInlineNode(node),
+        stable = inline && first;
+      if (inline) first = false;
+      if (node.type === 'document') throw new Error('Parser output cannot contain a document');
+      const { children: _children, ...spec } = node;
+      const handle = stable ? id : this.tree.draft.create(spec);
+      if (stable)
+        this.tree.draft.convertInline(id, {
+          type: node.type as 'paragraph' | 'section' | 'code-block',
+          ...('marker' in node ? { marker: node.marker } : {}),
+          ...(node.type === 'code-block' ? { info: node.info } : {}),
+          content: { mode: 'replace', text: node.content! },
+        });
+      this.tree.draft.place(handle, parent, path.length === 1 ? before : null);
+      handles.set(key, handle);
+      this.pieces.set(
+        handle,
+        inline
+          ? plan.inlinePieces[key].flatMap((p) =>
+              p.kind === 'retain'
+                ? slicePieces(source, p.sourceFrom, p.sourceTo)
+                : this.literal(p.text),
+            )
+          : [],
+      );
+      for (const [i, child] of (node.children ?? []).entries()) visit(child, [...path, i], handle);
+    };
+    for (const [i, node] of (plan.output.children ?? []).entries()) visit(node, [i], parent);
+    this.record(
+      { type: 'interpret', id, plan: structuredClone(plan), handles },
+      source,
+      [...handles.values()].flatMap((id) => this.pieces.get(id) ?? []),
+    );
+    return [...handles.values()];
   }
   sourcePieces(id: NodeId): readonly DraftTextPiece[] {
     let from = 0;

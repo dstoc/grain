@@ -382,7 +382,7 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
         author &&
         author.actor === entry.action.id.actor &&
         author.sequence === entry.action.id.sequence;
-      if (certifying && effect.type === 'SplitFlow') {
+      if (certifying && active && effect.type === 'SplitFlow') {
         const sourceRun = layout.runLayout(effect.cut.run);
         const laterBirth = entry.action.effects.findIndex(
           (candidate) => candidate.type === 'SplitFlow' && sameId(candidate.newRun, effect.cut.run),

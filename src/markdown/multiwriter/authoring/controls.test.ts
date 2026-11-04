@@ -1,60 +1,13 @@
+import { control } from '../../../../test/multiwriter/commands/control.js';
 import { expect, test } from 'vitest';
 import { commandGenesis, commandReplica } from '../../../../test/multiwriter/commands/replica.js';
-import type { CommandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import type { LocalEditResult } from './editor.js';
-import type { ActionEnvelope, ActionId } from '../contracts.js';
 import { insertText } from '../../../editing/commands/insert-text.js';
 import { insertParagraph } from '../../../editing/commands/insert-paragraph.js';
 import { joinWithPrevious } from '../../../editing/commands/join-with-previous.js';
 import { insertMarkdown } from '../../../editing/commands/insert-markdown.js';
 import { deleteBlocks } from '../../../editing/commands/delete-blocks.js';
 
-function control(
-  peer: CommandReplica,
-  result: LocalEditResult,
-  active: boolean,
-  previous: ActionId | null = null,
-): ActionId {
-  if (result.status !== 'applied') throw new Error('Missing compiler action');
-  const ready = peer.document.store.snapshot().ready,
-    actor = result.action.actor;
-  const sequence =
-    ready
-      .filter((a) => a.id.actor === actor)
-      .reduce((n, a) => (a.id.sequence > n ? a.id.sequence : n), 0n) + 1n;
-  const action: ActionEnvelope = {
-    protocolVersion: 3,
-    documentId: 'D',
-    genesisId: 'G',
-    id: { actor, sequence },
-    lamport: ready.reduce((n, a) => (a.lamport > n ? a.lamport : n), 0n) + 1n,
-    dependencies: [
-      ...new Map(
-        [
-          ...peer.document.publication.status().publication!.heads,
-          { actor, sequence: sequence - 1n },
-        ].map((id) => [`${id.actor}:${id.sequence}`, id]),
-      ).values(),
-    ],
-    groupId: { session: result.group.session, sequence: 10000n + sequence },
-    allocations: [],
-    nativeManifest: [],
-    nativeInsertUpdates: [],
-    effects: [
-      {
-        type: 'SetGroupActive',
-        group: result.group,
-        actions: [result.action],
-        active,
-        previousControl: previous,
-      },
-    ],
-  };
-  peer.document.certifyLocal(action);
-  peer.document.store.append(action);
-  peer.editor.refresh();
-  return action.id;
-}
 const session = { local: 'A', group: 1n };
 test('real group controls retract and replay a compiler split after peer typing', () => {
   const genesis = commandGenesis(),
@@ -163,3 +116,25 @@ for (const operation of ['join', 'delete', 'paste', 'promotion', 'transfer'] as 
       b.close();
     }
   });
+
+test('local commands continue the same actor chain after replicated group controls', () => {
+  const p = commandReplica(commandGenesis());
+  try {
+    const edit = p.editor.edit(session, insertText, {
+      nodeId: p.handle(p.nodes()[0]),
+      from: 0,
+      text: 'X',
+    });
+    const undo = control(p, edit, false);
+    const next = p.editor.edit({ local: 'A', group: 2n }, insertText, {
+      nodeId: p.handle(p.nodes()[0]),
+      from: 0,
+      text: 'Y',
+    });
+    if (next.status !== 'applied') throw new Error();
+    expect(next.action).toEqual({ ...undo, sequence: undo.sequence + 1n });
+    expect(p.markdown()).toBe('Yabcdef\n');
+  } finally {
+    p.close();
+  }
+});

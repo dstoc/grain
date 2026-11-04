@@ -4,6 +4,7 @@ import { indent } from '../../../editing/commands/indent.js';
 import { outdent } from '../../../editing/commands/outdent.js';
 import { insertText } from '../../../editing/commands/insert-text.js';
 import { insertMarkdown } from '../../../editing/commands/insert-markdown.js';
+import { deleteBackwardAtStart } from '../../../editing/commands/delete-backward.js';
 import { NativeFixture } from '../ownership/test-fixtures.js';
 const session = { local: 'scope', group: 1n };
 test('a scoped list command cannot outdent content outside its declared scope', () => {
@@ -122,5 +123,136 @@ test('Markdown replacement preserves task marker/state and the in-scope item', (
     expect(p.markdown()).toBe('- [x] pasted!\n');
   } finally {
     p.close();
+  }
+});
+
+function mergedQuotes() {
+  const fixture = new NativeFixture([
+    { id: 'root', role: 'root', parent: null },
+    ...['A', 'B'].flatMap((id) => [
+      { id, role: 'quote' as const, parent: 'root' },
+      {
+        id: `p${id}`,
+        role: 'inline' as const,
+        parent: id,
+        flow: `f${id}`,
+        run: `r${id}`,
+        tape: `t${id}`,
+        cells: [{ id: `${id}text`, text: id }],
+      },
+    ]),
+  ]);
+  const genesis = {
+    documentId: 'D',
+    genesisId: 'G',
+    layout: fixture.genesis,
+    body: { ...fixture.bodies.get('G')!, allocations: fixture.genesis.allocations },
+  };
+  const p = commandReplica(genesis);
+  return {
+    fixture,
+    p,
+    close() {
+      p.close();
+      fixture.destroy();
+    },
+  };
+}
+test('deleting a normalized quote expands both observed raw constituents', () => {
+  const { p, close } = mergedQuotes();
+  try {
+    const quote = p.view().root.children[0];
+    expect(quote.wrappers).toHaveLength(2);
+    const result = p.editor.edit(
+      session,
+      ({ draft }, id) => {
+        draft.deleteSubtree(id);
+        return { status: 'handled' };
+      },
+      p.handle(quote),
+    );
+    expect(p.markdown()).toBe('');
+    if (result.status !== 'applied') throw new Error();
+    expect(result.envelope.effects.filter((e) => e.type === 'DeleteSubtree')).toHaveLength(2);
+  } finally {
+    close();
+  }
+});
+test('unwrapping a normalized quote lifts observed children without deleting unseen peer children', () => {
+  const { fixture, p, close } = mergedQuotes();
+  try {
+    const result = p.editor.edit(session, deleteBackwardAtStart, {
+      nodeId: p.handle(p.nodes()[0]),
+    });
+    expect(p.nodes().map((n) => n.content)).toEqual(['A', 'B']);
+    if (result.status !== 'applied') throw new Error();
+    expect(result.envelope.effects.some((e) => e.type === 'DeleteSubtree')).toBe(false);
+    fixture.author('B1', (f) => {
+      f.createBlock(
+        {
+          id: 'peer',
+          parent: 'B',
+          role: 'inline',
+          flow: 'fPeer',
+          run: 'rPeer',
+          tape: 'tPeer',
+          cells: [{ id: 'peerText', text: 'peer' }],
+        },
+        'pB:birth',
+      );
+      return [];
+    });
+    p.document.store.append(fixture.envelope('B1'));
+    p.editor.refresh();
+    expect(p.nodes().map((n) => n.content)).toContain('peer');
+    expect(p.markdown()).toContain('> peer');
+  } finally {
+    close();
+  }
+});
+
+test('splitting a lifted raw child uses its actual parent slot sequence', async () => {
+  const { insertParagraph } = await import('../../../editing/commands/insert-paragraph.js');
+  const f = new NativeFixture([
+    { id: 'root', parent: null, role: 'root' },
+    {
+      id: 'P',
+      parent: 'root',
+      role: 'inline',
+      flow: 'fP',
+      run: 'rP',
+      tape: 'tP',
+      cells: [{ id: 'Ptext', text: 'parent' }],
+    },
+    {
+      id: 'Q',
+      parent: 'P',
+      role: 'inline',
+      flow: 'fQ',
+      run: 'rQ',
+      tape: 'tQ',
+      cells: [{ id: 'Qtext', text: 'child' }],
+    },
+  ]);
+  const genesis = {
+      documentId: 'D',
+      genesisId: 'G',
+      layout: f.genesis,
+      body: { ...f.bodies.get('G')!, allocations: f.genesis.allocations },
+    },
+    p = commandReplica(genesis);
+  try {
+    expect(p.nodes().map((n) => n.content)).toEqual(['parent', 'child']);
+    p.editor.edit(session, insertParagraph, { nodeId: p.handle(p.nodes()[1]), from: 2 });
+    expect(p.nodes().map((n) => n.content)).toEqual(['parent', 'ch', 'ild']);
+    const cold = commandReplica(genesis, p.document.store.encodeUpdate());
+    try {
+      expect(cold.observe()).toEqual(p.observe());
+    } finally {
+      cold.close();
+    }
+  } finally {
+    p.close();
+    f.destroy();
   }
 });
