@@ -39,6 +39,7 @@ function fixture() {
     id,
     identity,
     exitCode: 0,
+    inventory: [{ file: 'src/phase.test.ts', name: 'phase' }],
     vitest: {
       success: true,
       numFailedTests: 0,
@@ -137,6 +138,20 @@ for (const [label, mutate] of [
           name: `${process.cwd()}/src/a.test.ts`,
           assertionResults: [{ ancestorTitles: [], title: 'new skip', status: 'pending' }],
         });
+    },
+  ],
+  [
+    'missing browser case',
+    (v) => {
+      v.reports.find((r) => r.id === 'browser').vitest.testResults = [];
+    },
+  ],
+  [
+    'missing smoke case',
+    (v) => {
+      v.reports
+        .find((r) => r.id === 'smoke')
+        .inventory.push({ file: 'src/phase.test.ts', name: 'omitted' });
     },
   ],
 ])

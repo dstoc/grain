@@ -3,7 +3,14 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { escapePattern, makePlan, nodeJobs, requiredJobs, validateGate } from './partitions.mjs';
+import {
+  escapePattern,
+  fileName,
+  makePlan,
+  nodeJobs,
+  requiredJobs,
+  validateGate,
+} from './partitions.mjs';
 
 const { values, positionals } = parseArgs({
   allowPositionals: true,
@@ -28,8 +35,8 @@ const identity = {
   run: process.env.GITHUB_RUN_ID ?? 'local',
   attempt: process.env.GITHUB_RUN_ATTEMPT ?? 'local',
 };
-function run(command, args) {
-  const result = spawnSync(command, args, { stdio: 'inherit', env: process.env });
+function run(command, args, env = process.env) {
+  const result = spawnSync(command, args, { stdio: 'inherit', env });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
@@ -69,6 +76,33 @@ if (id === 'plan') {
   rmSync(path(`${id}.json`), { force: true });
   const vitestPath = path(`${id}.vitest.json`);
   const reporter = ['--reporter=default', '--reporter=json', `--outputFile.json=${vitestPath}`];
+  let inventory;
+  if (id === 'browser' || id === 'smoke') {
+    const project = id === 'browser' ? 'browser' : 'node';
+    const files = id === 'smoke' ? ['src/markdown/block-parser.permutations.test.ts'] : [];
+    const env =
+      id === 'smoke' ? { ...process.env, MARKDOWN_EXTENSIVE_SMOKE_TESTS: '1' } : process.env;
+    run(
+      vp,
+      [
+        'test',
+        'list',
+        '--project',
+        project,
+        ...files,
+        '--staticParse=false',
+        '--maxWorkers=1',
+        '--json',
+        path(`${id}.runtime.json`),
+      ],
+      env,
+    );
+    inventory = read(`${id}.runtime.json`).map((test) => ({
+      file: fileName(test.file),
+      name: test.name,
+    }));
+    assert(inventory.length, `Empty runtime inventory for ${id}`);
+  }
   if (nodeJobs.includes(id)) {
     const plan = read('plan.json');
     assert.deepEqual(plan.identity, identity, 'Plan is from another run, attempt or revision');
@@ -120,6 +154,7 @@ if (id === 'plan') {
     id,
     identity,
     exitCode: 0,
+    ...(inventory ? { inventory } : {}),
     ...(id === 'static' ? {} : { vitest: JSON.parse(readFileSync(vitestPath, 'utf8')) }),
   });
 }

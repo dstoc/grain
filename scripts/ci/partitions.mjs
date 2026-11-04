@@ -110,6 +110,12 @@ export function validateGate(plan, reports, needs, identity, allowedSkips) {
       executed.push(...validateNodeReport(plan, report.id, report.vitest, allowedSkips.node));
     else if (report.id !== 'static') {
       const rows = reportTests(report.vitest);
+      assert(report.inventory?.length, `${report.id}: missing runtime inventory`);
+      equalInventory(
+        rows.filter((test) => test.status === 'passed'),
+        report.inventory,
+        `${report.id}: complete runtime coverage`,
+      );
       assert(
         rows.some((test) => test.status === 'passed'),
         `${report.id}: empty report`,

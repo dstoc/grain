@@ -73,7 +73,8 @@ matrix file executes its cases serially. Browser file parallelism stays disabled
 The full 501-group trace remains on one worker.
 
 The aggregate checks the exact job/report inventory, checkout SHA, run ID, attempt,
-command success, and executed Node occurrence counts against runtime discovery.
+command success, and executed Node, browser, and smoke occurrence counts against
+runtime discovery. Browser and smoke collect their inventories in their own jobs.
 It rejects an assigned test that is skipped, an unexpected passed test, source
 skip changes, missing reports, and unsuccessful GitHub dependencies. Occurrence
 counts preserve duplicate parameterized names. Names use suite/title components
@@ -183,17 +184,23 @@ and branch-protection verification remain rollout limitations.
 Implementation PR: [#85](https://github.com/dstoc/grain/pull/85), targeting `yjs`.
 The initial candidate is `92eac5d59ca38275539995e9ce3fd5b57b613a53`.
 The fixed-worker comparison checks out that exact candidate and the accepted
-merge in independent jobs, three repetitions each, in disposable
+merge, three repetitions each, in disposable
 [PR #86](https://github.com/dstoc/grain/pull/86). That experiment must not merge.
 
-Corrected experiment run:
+The initial split-job experiment is
 [41837864440](https://github.com/dstoc/grain/actions/runs/41837864440).
+Its manifests exposed different Node patch versions and image builds across VMs;
+do not pool those runs as a controlled comparison. The replacement
+[paired experiment 41842450308](https://github.com/dstoc/grain/actions/runs/41842450308)
+pins Node 24.22.1 on `ubuntu-24.04` and runs both revisions on each of three VMs.
+Repetition 2 reverses their order. Compare resources within each pair and disclose
+any CPU/image differences between pairs.
 The earlier experiment run 41837077277 failed static checks because measurement
 outputs were inside the measured checkout. It supplies no timing baseline.
 The corrected run writes results outside the checkout. Its failure observer
 passed after seeing an actual failed test, a cancelled timeout, a skipped job,
-and rejection of missing reports. The full Node jobs were still pending when
-this handoff was written.
+and rejection of missing reports. The paired jobs were still pending when this
+initial handoff was written.
 
 Artifact downloads fail at this runner's network proxy with HTTP 403. The
 experiment keeps complete resource/per-test artifacts on GitHub and publishes
