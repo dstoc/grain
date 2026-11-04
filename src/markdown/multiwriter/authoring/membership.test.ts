@@ -4,6 +4,7 @@ import { commandGenesis, commandReplica } from '../../../../test/multiwriter/com
 import type { CommandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import { insertText } from '../../../editing/commands/insert-text.js';
 import type { LocalEditResult } from './editor.js';
+import { actorId } from '../contracts.js';
 import type { ActionEnvelope, ActionId } from '../contracts.js';
 import { compareBytes } from '../actions/cbor.js';
 
@@ -302,3 +303,108 @@ test('same-action independent task toggle is not a member of parser initializati
   b.receive(a.document.store.encodeUpdate());
   expect(b.observe()).toEqual(a.observe());
 });
+
+function supersedeWithCode(
+  p: CommandReplica,
+  result: Extract<LocalEditResult, { status: 'applied' }>,
+) {
+  const interpretation = result.envelope.effects.find((e) => e.type === 'Interpret');
+  if (interpretation?.type !== 'Interpret') throw new Error();
+  const actor = actorId('ffffffffffffffffffffffffffffffff'),
+    id = { actor, sequence: 1n },
+    packetId = {
+      kind: 'interpretation' as const,
+      birth: { type: 'action' as const, action: id },
+      ordinal: 0,
+    };
+  const ready = p.document.store.snapshot().ready;
+  const action: ActionEnvelope = {
+    protocolVersion: 3,
+    documentId: 'D',
+    genesisId: 'G',
+    id,
+    lamport: ready.reduce((n, a) => (a.lamport > n ? a.lamport : n), 0n) + 1n,
+    dependencies: p.document.publication.status().publication!.heads,
+    groupId: { session: { actor, local: 'code' }, sequence: 1n },
+    allocations: [{ type: 'interpretation', id: packetId }],
+    nativeManifest: [],
+    nativeInsertUpdates: [],
+    effects: [
+      {
+        type: 'Interpret',
+        packet: {
+          id: packetId,
+          source: interpretation.packet.source,
+          properties: { presentation: 'code', marker: null, info: null },
+          wrappers: [],
+          placements: [],
+          syntaxMask: [],
+          synthesizedText: [],
+        },
+      },
+    ],
+  };
+  p.document.certifyLocal(action);
+  p.document.store.append(action);
+  p.editor.refresh();
+}
+
+test.each(['transfer', 'task'] as const)(
+  'losing parser membership preserves an independent same-action %s',
+  async (kind) => {
+    const { interpretMarkdown } = await import('./interpret.js');
+    const { genesis, a, b, c } = peers(),
+      nodeId = a.handle(a.nodes()[0]),
+      source = kind === 'transfer' ? 'first\n\n# second' : '- [x] task\n- [ ] other';
+    const result = a.editor.edit(
+      { local: 'independent', group: 1n },
+      (ctx) => {
+        insertText(ctx, { nodeId, from: 0, to: 6, text: source });
+        const handles = interpretMarkdown(
+          ctx,
+          nodeId,
+          parseBlocks(source, { provenance: true }).provenance,
+        );
+        if (kind === 'transfer')
+          ctx.draft.transferInlineRange({
+            source: handles[1],
+            from: 0,
+            to: 2,
+            destination: nodeId,
+            at: 5,
+            affinity: 'right',
+          });
+        else ctx.draft.setChecked(handles[1], false);
+        return { status: 'handled' };
+      },
+      undefined,
+    );
+    if (result.status !== 'applied') throw new Error();
+    const last = result.envelope.effects.at(-1)!;
+    b.receive(a.document.store.encodeUpdate());
+    supersedeWithCode(b, result);
+    c.receive(b.document.store.encodeUpdate());
+    a.receive(b.document.store.encodeUpdate());
+    const state = a.document.publication.status().publication!.value;
+    expect(
+      state.activity.isEffectActive({
+        action: result.action,
+        ordinal: result.envelope.effects.length - 1,
+      }),
+    ).toBe(true);
+    if (kind === 'transfer') expect(a.nodes().map((n) => n.content)).toEqual(['firstse\n\n# cond']);
+    else {
+      if (last.type !== 'SetProperties') throw new Error();
+      expect(state.interpretations.properties(last.node).checked).toBe(false);
+      expect(a.nodes().map((n) => n.content)).toEqual([source]);
+    }
+    expect(a.observe()).toEqual(b.observe());
+    expect(a.observe()).toEqual(c.observe());
+    const cold = commandReplica(genesis, a.document.store.encodeUpdate());
+    try {
+      expect(cold.observe()).toEqual(a.observe());
+    } finally {
+      cold.close();
+    }
+  },
+);
