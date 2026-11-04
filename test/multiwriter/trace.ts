@@ -173,6 +173,9 @@ export interface ContractTrace {
   readonly genesis: 'G';
   /** Actor byte ordering is A < B < C. Each instance has its own session, even for one account. */
   readonly peers: readonly ['A', 'B', 'C'];
+  /** Parent-before-child order; entries with the same parent are in sibling order.
+   * Genesis birth occurrences form a predecessor chain per parent.
+   */
   readonly seed: readonly SeedBlock[];
   readonly steps: readonly Step[];
 }

@@ -142,6 +142,17 @@ index required at MW-08. `P:after-b` and `P:after-c` are stable gaps in
 the seed lineage, not offsets reinterpreted on receipt. `P:birth` is its genesis
 placement occurrence. Start/end slots refer to the permanent home run.
 
+Seed entries list parents before children. Entries with the same parent define
+sibling order. Genesis birth occurrences form a predecessor chain per parent:
+the first sibling has no predecessor; each later sibling follows the previous
+sibling's birth occurrence. Thus the seed `[root, P, U]` places P before U.
+When P moves inside U, `P:birth` remains a non-rendering root anchor. A concurrent
+split S authored after `P:birth` stays before U; the view preorder is `S, U, P`.
+The two `split-sibling-keeps-authored-outer-context` traces swap the move and split
+actors to check both semantic tie orders. The focused occurrence-order regression
+also checks an equivalent sibling representation of genesis and both delivery
+orders. This restricted check does not validate the full layout or split reducer.
+
 Each peer starts from exactly the same genesis. Actors and native clients are
 ordered A < B < C. Fixed native client IDs must also be distinct from the genesis
 client. Thus concurrent same-gap native insertions in these fixtures follow Yjs's

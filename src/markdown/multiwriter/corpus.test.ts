@@ -51,6 +51,115 @@ it('keeps trace IDs unique and freezes the version and three independent peers',
   }
 });
 
+// Restricted occurrence-order check for §§5.1/6.5, not an engine acceptance gate.
+// Import actual fixtures so this catches a wrong frozen expectation.
+describe('split after a moved predecessor', () => {
+  const traces = contractCorpus.filter((trace) =>
+    trace.id.startsWith('split-sibling-keeps-authored-outer-context'),
+  );
+  it('covers both semantic tie orders', () => {
+    expect(
+      traces.map((trace) =>
+        trace.steps
+          .filter((step) => step.type === 'author')
+          .map((step) => [step.action.peer, step.action.intents[0].type]),
+      ),
+    ).toEqual([
+      [
+        ['A', 'move'],
+        ['B', 'split'],
+      ],
+      [
+        ['B', 'move'],
+        ['A', 'split'],
+      ],
+    ]);
+  });
+  for (const shape of ['chained', 'siblings'] as const)
+    for (const reverseDelivery of [false, true])
+      it.each(traces)(
+        `$id retains the ghost anchor (${shape}, reversed=${reverseDelivery})`,
+        (trace) => {
+          type Occurrence = {
+            id: string;
+            node: string;
+            parent: string;
+            predecessor: string | null;
+            rank: number;
+          };
+          const occurrences: Occurrence[] = [];
+          const active = new Map<string, string>();
+          const roles = new Map(trace.seed.map((block) => [block.id, block.role]));
+          for (const [index, block] of trace.seed.entries()) {
+            if (block.parent === null) continue;
+            const previous = trace.seed.slice(0, index).findLast((b) => b.parent === block.parent);
+            const id = `${block.id}:birth`;
+            occurrences.push({
+              id,
+              node: block.id,
+              parent: block.parent,
+              predecessor: shape === 'chained' && previous ? `${previous.id}:birth` : null,
+              rank: -index,
+            });
+            active.set(block.id, id);
+          }
+          function ordered(parent: string, predecessor: string | null = null): Occurrence[] {
+            return occurrences
+              .filter((o) => o.parent === parent && o.predecessor === predecessor)
+              .sort((a, b) => b.rank - a.rank)
+              .flatMap((o) => [o, ...ordered(parent, o.id)]);
+          }
+          function view(parent = 'root'): Observation['view'] {
+            return ordered(parent)
+              .filter((o) => active.get(o.node) === o.id)
+              .flatMap((o) => [
+                {
+                  id: o.node,
+                  parent,
+                  kind: roles.get(o.node) === 'quote' ? 'block-quote' : 'paragraph',
+                },
+                ...view(o.node),
+              ]);
+          }
+          expect(view().map((node) => node.id)).toEqual(['P', 'U']);
+          const authors = trace.steps
+            .filter((step) => step.type === 'author')
+            .map((step) => step.action);
+          if (reverseDelivery) authors.reverse();
+          for (const action of authors) {
+            expect(action.lamport).toBe(1n);
+            for (const intent of action.intents) {
+              if (intent.type !== 'move' && intent.type !== 'split')
+                throw new Error('Unexpected intent');
+              if (intent.type === 'split') {
+                expect(intent.parent).toBe('root');
+                expect(intent.predecessor).toBe('P:birth');
+                roles.set(intent.node, 'inline');
+              }
+              const id = `${action.id}:${intent.type}`;
+              occurrences.push({
+                id,
+                node: intent.node,
+                parent: intent.parent,
+                predecessor: intent.predecessor,
+                rank: trace.peers.indexOf(action.peer as 'A' | 'B' | 'C') + 1,
+              });
+              active.set(intent.node, id);
+            }
+          }
+          expect(occurrences.find((o) => o.id === 'P:birth')?.parent).toBe('root');
+          expect(active.get('P')).not.toBe('P:birth');
+          expect(view()).toEqual([
+            { id: 'S', parent: 'root', kind: 'paragraph' },
+            { id: 'U', parent: 'root', kind: 'block-quote' },
+            { id: 'P', parent: 'U', kind: 'paragraph' },
+          ]);
+          for (const step of trace.steps)
+            if (step.type === 'expect') expect(step.state.view).toEqual(view());
+        },
+      );
+});
+
 describe('authored trace audit (not a semantic reducer)', () => {
   it.each(contractCorpus)('$id uses valid actor chains and observed causal heads', (trace) => {
     const actions = new Map<string, TraceAction>();

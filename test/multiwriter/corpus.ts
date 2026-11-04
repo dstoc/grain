@@ -89,15 +89,15 @@ function concurrent(a: TraceAction, b: TraceAction, state: Partial<Observation>)
   return [
     author(a),
     author(b),
-    deliver('B', 'C', [b.id]),
-    deliver('A', 'C', [a.id]),
+    deliver(b.peer, 'C', [b.id]),
+    deliver(a.peer, 'C', [a.id]),
     expect('C', state),
-    deliver('A', 'C', [a.id]),
+    deliver(a.peer, 'C', [a.id]),
     expect('C', state),
-    deliver('B', 'A', [b.id]),
-    expect('A', state),
-    deliver('A', 'B', [a.id]),
-    expect('B', state),
+    deliver(b.peer, a.peer, [b.id]),
+    expect(a.peer, state),
+    deliver(a.peer, b.peer, [a.id]),
+    expect(b.peer, state),
   ];
 }
 const cutState = {
@@ -1337,27 +1337,29 @@ export const ingestCorpus: readonly ContractTrace[] = [
 ];
 
 export const compositionCorpus: readonly ContractTrace[] = [
-  trace(
-    'split-sibling-keeps-authored-outer-context',
-    ['6.5'],
-    'Moving P concurrently does not drag the split-created sibling into its new parent.',
-    concurrent(
-      action('A1', [
-        { type: 'move', node: 'P', parent: 'U', predecessor: null, standaloneFlow: 'fP' },
-      ]),
-      action('B1', [split('S', 'P2')]),
-      {
-        rawParents: { root: null, U: 'root', P: 'U', S: 'root' },
-        flowParents: { fP: 'block:P', fS: 'block:S' },
-        visible: { P: ['P0', 'P1', 'P2'], S: ['P3', 'P4', 'P5'] },
-        view: [
-          { id: 'U', parent: 'root', kind: 'block-quote' },
-          { id: 'P', parent: 'U', kind: 'paragraph' },
-          { id: 'S', parent: 'root', kind: 'paragraph' },
-        ],
-      },
+  ...([false, true] as const).map((reverse) =>
+    trace(
+      `split-sibling-keeps-authored-outer-context${reverse ? '-reverse' : ''}`,
+      ['5.1', '6.5'],
+      'The split sibling stays after the moved predecessor’s ghost occurrence and before U in either semantic tie order.',
+      concurrent(
+        action(reverse ? 'B1' : 'A1', [
+          { type: 'move', node: 'P', parent: 'U', predecessor: null, standaloneFlow: 'fP' },
+        ]),
+        action(reverse ? 'A1' : 'B1', [split('S', 'P2')]),
+        {
+          rawParents: { root: null, U: 'root', P: 'U', S: 'root' },
+          flowParents: { fP: 'block:P', fS: 'block:S' },
+          visible: { P: ['P0', 'P1', 'P2'], S: ['P3', 'P4', 'P5'] },
+          view: [
+            { id: 'S', parent: 'root', kind: 'paragraph' },
+            { id: 'U', parent: 'root', kind: 'block-quote' },
+            { id: 'P', parent: 'U', kind: 'paragraph' },
+          ],
+        },
+      ),
+      [root, p, { id: 'U', parent: 'root', role: 'quote' }],
     ),
-    [root, p, { id: 'U', parent: 'root', role: 'quote' }],
   ),
   trace(
     'undo-cross-tape-join',
