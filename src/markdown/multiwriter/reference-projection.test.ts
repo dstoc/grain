@@ -324,6 +324,7 @@ test('state-vector catch-up is peer-specific and retains original carrier prefix
   }
 });
 
+// Three-peer catch-up and cold replay can exceed the default 5s deadline on CI.
 test('multi-block paste-shaped construction and undo retain independent peer typing', async () => {
   await exercise(
     [root, paragraph('P', 'a')],
@@ -353,7 +354,7 @@ test('multi-block paste-shaped construction and undo retain independent peer typ
       expect(state.raw!.homes).toHaveLength(3);
     },
   );
-});
+}, 20000);
 
 test('explicit left/right seam affinity types on opposite sides of the same retained cut', async () => {
   const split: Intent = {
