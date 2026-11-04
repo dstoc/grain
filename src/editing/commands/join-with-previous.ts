@@ -18,6 +18,5 @@ export const joinWithPrevious: Edit<JoinWithPreviousInput> = (context, { nodeId 
   const parent = draft.parentOf(nodeId);
   if (source.type === 'section' && parent) liftSectionChildren(draft, nodeId);
   const seam = appendInline(draft, nodeId, targetId);
-  draft.detach(nodeId);
   return handled({ focus: seam });
 };

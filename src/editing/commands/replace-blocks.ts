@@ -1,3 +1,4 @@
+import { commandDraft } from '../command-draft.js';
 import { handled, NOT_APPLICABLE, type Edit } from '../outcomes.js';
 import { requireInline, textPoint } from '../operations/inline.js';
 import { normalizeBlockSelection } from '../operations/selection.js';
@@ -21,7 +22,7 @@ export const replaceBlocks: Edit<ReplaceBlocksInput> = (context, { nodeIds, text
     const parent = draft.parentOf(nodeId);
     if (!parent) throw new Error(`cannot remove detached selected block ${nodeId}`);
     if (node.type === 'section') liftSectionChildren(draft, nodeId);
-    draft.detach(nodeId);
+    commandDraft(draft).deleteSubtree(nodeId);
   }
   return handled({
     focus: textPoint(draft, first, text.length),

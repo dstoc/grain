@@ -1,7 +1,10 @@
 import { isInlineNode } from '../../node.js';
 import type { MarkdownNode } from '../../node.js';
 import type { ParserConversionPlan } from '../../block-parser/types.js';
-import { assertTextRange, assertWellFormedText } from '../../semantic/types.js';
+import {
+  assertTextRange as checkTextRange,
+  assertWellFormedText as checkWellFormedText,
+} from '../../semantic/types.js';
 import type {
   ActionEnvelope,
   Allocation,
@@ -57,10 +60,22 @@ export function prepareParserConversion(input: {
   readonly plan: ParserConversionPlan;
   readonly bindings: readonly OutputBinding[];
 }): PreparedConversion {
+  return prepare(input);
+}
+// Only input-validation failures become a declined conversion. Unexpected errors
+// in supplied plans or host code must retain their operational meaning.
+function assertTextRange(...args: Parameters<typeof checkTextRange>): void {
   try {
-    return prepare(input);
+    checkTextRange(...args);
   } catch (error) {
-    if (error instanceof ProjectionError) throw error;
+    if (error instanceof Error) throw new ProjectionError(error.message);
+    throw error;
+  }
+}
+function assertWellFormedText(...args: Parameters<typeof checkWellFormedText>): void {
+  try {
+    checkWellFormedText(...args);
+  } catch (error) {
     if (error instanceof Error) throw new ProjectionError(error.message);
     throw error;
   }

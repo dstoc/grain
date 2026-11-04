@@ -64,7 +64,7 @@ function splitSiblingParagraph(
 
   const shouldKeepOriginalOnRight = start === 0 && node.content.length > 0;
   if (shouldKeepOriginalOnRight) {
-    if (end > start) draft.spliceText(nodeId, { from: start, to: end, insert: '' });
+    splitInlineInto(draft, nodeId, start, end, paragraph, 'right');
     placeBefore(draft, paragraph, parent, nodeId);
     return { focusId: end > start ? nodeId : paragraph, focusOffset: 0 };
   }
@@ -164,7 +164,7 @@ function splitParagraphInSimpleList(
     const oldParent = draft.parentOf(nodeId);
     const newParent = draft.parentOf(paragraph);
     if (!oldParent || !newParent) throw new Error('list split lost a parent');
-    if (end > 0) draft.spliceText(nodeId, { from: 0, to: end, insert: '' });
+    splitInlineInto(draft, nodeId, start, end, paragraph, 'right');
     const oldBefore = nextAfter(context, nodeId) ?? null;
     const newBefore = nextAfter(context, paragraph) ?? null;
     placeBefore(draft, nodeId, newParent, newBefore);

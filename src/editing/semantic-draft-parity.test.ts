@@ -1,3 +1,4 @@
+import { commandDraft } from './command-draft.js';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ActionRequest } from '../markdown/canonical-actions.js';
@@ -55,7 +56,7 @@ function markdown(document: CanonicalDocument): string {
 }
 
 function runTreeEdit(tree: ConstructionTree, node: ConstructionNode, edit: SharedEdit): void {
-  const outcome = edit({ draft: tree.draft, scopeRoot: tree.rootId }, node.id);
+  const outcome = edit({ draft: commandDraft(tree.draft), scopeRoot: tree.rootId }, node.id);
   if (outcome.status === 'not-applicable') throw new Error('construction edit was not applicable');
   tree.normalize();
 }
@@ -121,7 +122,7 @@ describe('shared semantic editing draft', () => {
       { actionId: `edit-${ordinal}` },
       (draft) => {
         const outcome = fixture.edit(
-          { draft, scopeRoot: canonical.root.sharedId },
+          { draft: commandDraft(draft), scopeRoot: canonical.root.sharedId },
           canonicalTarget.sharedId,
         );
         if (outcome.status === 'not-applicable') return;

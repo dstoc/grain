@@ -1,0 +1,231 @@
+import { commandDraft } from '../../../editing/command-draft.js';
+import type { ChildLift, CommandDraft, InlineSplit } from '../../../editing/command-draft.js';
+import { ConstructionTree } from '../../semantic/construction-tree.js';
+import type { ConstructionNode } from '../../semantic/construction-tree.js';
+import type {
+  ConversionPlan,
+  DraftTextPiece,
+  InlineFragment,
+  Transfer,
+} from '../../semantic/draft.js';
+import type { CreateNodeSpec, NodeId, TextAffinity, TextEdit } from '../../semantic/types.js';
+import type { NativeTextRange } from '../contracts.js';
+import type { ViewNode } from '../projection/types.js';
+import { projectionDocument } from '../projection/project.js';
+
+export type CommandIntent =
+  | { type: 'create'; id: NodeId; spec: CreateNodeSpec }
+  | { type: 'place'; id: NodeId; parent: NodeId; before: NodeId | null }
+  | { type: 'splice'; id: NodeId; edit: TextEdit }
+  | { type: 'split'; split: InlineSplit }
+  | { type: 'join'; source: NodeId; destination: NodeId }
+  | { type: 'delete'; id: NodeId }
+  | { type: 'lift'; lift: ChildLift }
+  | { type: 'convert'; id: NodeId; plan: ConversionPlan }
+  | { type: 'marker'; id: NodeId; marker: string | null }
+  | { type: 'checked'; id: NodeId; checked: boolean | null }
+  | { type: 'info'; id: NodeId; info: string | null }
+  | { type: 'cut'; id: NodeId; from: number; to: number; fragment: InlineFragment }
+  | {
+      type: 'insert-fragment';
+      id: NodeId;
+      at: number;
+      affinity: TextAffinity;
+      fragment: InlineFragment;
+    };
+
+export type OriginPiece =
+  | { readonly type: 'retained'; readonly text: string; readonly range: NativeTextRange }
+  | {
+      readonly type: 'buffer';
+      readonly text: string;
+      readonly buffer: number;
+      readonly from: number;
+    };
+function slicePieces(pieces: readonly OriginPiece[], from: number, to: number): OriginPiece[] {
+  const out: OriginPiece[] = [];
+  let offset = 0;
+  for (const p of pieces) {
+    const a = Math.max(from, offset),
+      b = Math.min(to, offset + p.text.length);
+    if (a < b)
+      out.push(
+        p.type === 'retained'
+          ? {
+              ...p,
+              text: p.text.slice(a - offset, b - offset),
+              range: { ...p.range, clock: p.range.clock + a - offset, length: b - a },
+            }
+          : { ...p, text: p.text.slice(a - offset, b - offset), from: p.from + a - offset },
+      );
+    offset += p.text.length;
+  }
+  return out;
+}
+
+/** Isolated semantic records plus native ranges/immutable buffers. Never normalizes shared facts. */
+export class MultiwriterCommandDraft implements CommandDraft {
+  readonly intents: CommandIntent[] = [];
+  readonly origins = new Map<NodeId, ViewNode>();
+  readonly pieces = new Map<NodeId, readonly OriginPiece[]>();
+  readonly tree: ConstructionTree;
+  readonly rootId: NodeId;
+  private readonly fragments = new WeakMap<InlineFragment, readonly OriginPiece[]>();
+  private readonly consumed = new WeakSet<InlineFragment>();
+  private buffer = 0;
+  constructor(root: ViewNode) {
+    this.tree = new ConstructionTree(projectionDocument({ root, emptyRoot: null }));
+    this.rootId = this.tree.rootId;
+    const visit = (view: ViewNode, node: ConstructionNode) => {
+      this.origins.set(node.id, view);
+      this.pieces.set(
+        node.id,
+        view.fragments
+          .filter((p) => p.visible)
+          .map((p) => ({ type: 'retained', text: p.text, range: p.range })),
+      );
+      view.children.forEach((child, i) => visit(child, node.children[i]!));
+    };
+    visit(root, this.tree.root);
+  }
+  node(id: NodeId) {
+    return this.tree.draft.node(id);
+  }
+  parentOf(id: NodeId) {
+    return this.tree.draft.parentOf(id);
+  }
+  previousSiblingOf(id: NodeId) {
+    return this.tree.draft.previousSiblingOf(id);
+  }
+  nextSiblingOf(id: NodeId) {
+    return this.tree.draft.nextSiblingOf(id);
+  }
+  bookmark(id: NodeId, offset: number, affinity: TextAffinity) {
+    return this.tree.draft.bookmark(id, offset, affinity);
+  }
+  private literal(text: string): OriginPiece[] {
+    return text ? [{ type: 'buffer', text, buffer: this.buffer++, from: 0 }] : [];
+  }
+  private replace(id: NodeId, from: number, to: number, insert: readonly OriginPiece[]) {
+    const p = this.pieces.get(id) ?? [];
+    this.pieces.set(id, [...slicePieces(p, 0, from), ...insert, ...slicePieces(p, to, Infinity)]);
+  }
+  create(spec: CreateNodeSpec): NodeId {
+    const id = this.tree.draft.create(spec);
+    this.pieces.set(id, this.literal('content' in spec ? (spec.content ?? '') : ''));
+    this.intents.push({ type: 'create', id, spec: structuredClone(spec) });
+    return id;
+  }
+  place(id: NodeId, parent: NodeId, before: NodeId | null): void {
+    if (this.parentOf(id) === parent && (this.nextSiblingOf(id) ?? null) === before) return;
+    this.tree.draft.place(id, parent, before);
+    this.intents.push({ type: 'place', id, parent, before });
+  }
+  detach(): never {
+    throw new Error('Use explicit delete, join or lift intent in a command draft');
+  }
+  deleteSubtree(id: NodeId): void {
+    this.tree.draft.detach(id);
+    this.intents.push({ type: 'delete', id });
+  }
+  liftChildren(lift: ChildLift): void {
+    commandDraft(this.tree.draft).liftChildren(lift);
+    this.intents.push({ type: 'lift', lift: structuredClone(lift) });
+  }
+  spliceText(id: NodeId, edit: TextEdit): void {
+    const before = this.node(id).content;
+    this.tree.draft.spliceText(id, edit);
+    if (before === this.node(id).content) return;
+    this.replace(id, edit.from, edit.to, this.literal(edit.insert));
+    this.intents.push({ type: 'splice', id, edit: structuredClone(edit) });
+  }
+  splitInline(split: InlineSplit): void {
+    const { source, destination, from, to, retainedSide } = split;
+    const p = this.pieces.get(source) ?? [];
+    const remaining = [...slicePieces(p, 0, from), ...slicePieces(p, to, Infinity)];
+    commandDraft(this.tree.draft).splitInline(split);
+    this.pieces.set(
+      source,
+      retainedSide === 'left'
+        ? slicePieces(remaining, 0, from)
+        : slicePieces(remaining, from, Infinity),
+    );
+    this.pieces.set(
+      destination,
+      retainedSide === 'left'
+        ? slicePieces(remaining, from, Infinity)
+        : slicePieces(remaining, 0, from),
+    );
+    this.intents.push({ type: 'split', split: structuredClone(split) });
+  }
+  joinInline(source: NodeId, destination: NodeId): void {
+    commandDraft(this.tree.draft).joinInline(source, destination);
+    this.pieces.set(destination, [
+      ...(this.pieces.get(destination) ?? []),
+      ...(this.pieces.get(source) ?? []),
+    ]);
+    this.pieces.set(source, []);
+    this.intents.push({ type: 'join', source, destination });
+  }
+  cutInline(id: NodeId, from: number, to: number): InlineFragment {
+    const pieces = slicePieces(this.pieces.get(id) ?? [], from, to);
+    const fragment = this.tree.draft.cutInline(id, from, to);
+    this.fragments.set(fragment, pieces);
+    this.replace(id, from, to, []);
+    this.intents.push({ type: 'cut', id, from, to, fragment });
+    return fragment;
+  }
+  insertFragment(id: NodeId, at: number, affinity: TextAffinity, fragment: InlineFragment): void {
+    const p = this.fragments.get(fragment);
+    if (!p || this.consumed.has(fragment)) throw new Error('Foreign or consumed command fragment');
+    this.tree.draft.insertFragment(id, at, affinity, fragment);
+    this.replace(id, at, at, p);
+    this.consumed.add(fragment);
+    this.intents.push({ type: 'insert-fragment', id, at, affinity, fragment });
+  }
+  transferInlineRange(t: Transfer): void {
+    // Validate all coordinates before cutting, including same-node pre-transfer coordinates.
+    const source = this.node(t.source).content,
+      destination = this.node(t.destination).content;
+    if (source === undefined || destination === undefined)
+      throw new Error('Transfer needs inline content');
+    this.tree.draft.bookmark(t.destination, t.at, t.affinity);
+    if (t.source === t.destination) {
+      if (t.at === t.from || t.at === t.to) return;
+      if (t.from < t.at && t.at < t.to) throw new Error('Transfer destination is inside source');
+    }
+    const fragment = this.cutInline(t.source, t.from, t.to);
+    const at = t.source === t.destination && t.at > t.from ? t.at - (t.to - t.from) : t.at;
+    this.insertFragment(t.destination, at, t.affinity, fragment);
+  }
+  convertInline(id: NodeId, plan: ConversionPlan): void {
+    const before = this.node(id).content;
+    this.tree.draft.convertInline(id, plan);
+    if (plan.content?.mode === 'replace' && before !== plan.content.text)
+      this.pieces.set(id, this.literal(plan.content.text));
+    this.intents.push({ type: 'convert', id, plan: structuredClone(plan) });
+  }
+  setMarker(id: NodeId, marker: string | null): void {
+    if (this.node(id).marker === marker) return;
+    this.tree.draft.setMarker(id, marker);
+    this.intents.push({ type: 'marker', id, marker });
+  }
+  setChecked(id: NodeId, checked: boolean | null): void {
+    if (this.node(id).checked === checked) return;
+    this.tree.draft.setChecked(id, checked);
+    this.intents.push({ type: 'checked', id, checked });
+  }
+  setInfo(id: NodeId, info: string | null): void {
+    if (this.node(id).info === info) return;
+    this.tree.draft.setInfo(id, info);
+    this.intents.push({ type: 'info', id, info });
+  }
+  sourcePieces(id: NodeId): readonly DraftTextPiece[] {
+    let from = 0;
+    return (this.pieces.get(id) ?? []).map((p) => {
+      const start = from;
+      from += p.text.length;
+      return { from: start, to: from, kind: p.type === 'retained' ? 'existing' : 'inserted' };
+    });
+  }
+}

@@ -32,7 +32,7 @@ function splitSiblingParagraph(
     placeBefore(draft, paragraph, parent, nextAfter(context, nodeId) ?? null);
   }
   if (start === 0 && node.content.length > 0) {
-    if (end > start) draft.spliceText(nodeId, { from: start, to: end, insert: '' });
+    splitInlineInto(draft, nodeId, start, end, paragraph, 'right');
     placeBefore(draft, paragraph, parent, nodeId);
     return { nodeId: end > start ? nodeId : paragraph, offset: 0 };
   }

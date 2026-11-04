@@ -1,9 +1,10 @@
+import type { CommandDraft } from './command-draft.js';
 import type { TreeDraft } from '../markdown/semantic/draft.js';
 import type { BlockSelection, EditSelection } from '../markdown/semantic/selection.js';
 import type { NodeId } from '../markdown/semantic/types.js';
 
 export interface EditContext {
-  readonly draft: TreeDraft;
+  readonly draft: CommandDraft;
   readonly scopeRoot: NodeId;
   readonly selectionBefore?: EditSelection;
 }
