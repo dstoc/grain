@@ -675,11 +675,13 @@ test('native selection changes keep the caret above the mobile toolbar', async (
   inline.addEventListener('keydown', () => keydownEvents++);
 
   inline.setSelectionOffsets(text.length, text.length);
-  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  // Native selectionchange is queued before the handler schedules its scroll frame.
+  await expect
+    .poll(() => inline.getCaretPosition().y)
+    .toBeLessThan(toolbar.getBoundingClientRect().top);
 
   expect(inputEvents).toBe(0);
   expect(keydownEvents).toBe(0);
-  expect(inline.getCaretPosition().y).toBeLessThan(toolbar.getBoundingClientRect().top);
   harness.remove();
 });
 
