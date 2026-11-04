@@ -1,132 +1,91 @@
-name: CI
-
-on:
-  pull_request:
-  push:
-    branches: [main, yjs]
-
+# Disposable grain/100 experiment. Do not merge this branch.
+name: CI efficiency experiment
+on: pull_request
 permissions:
   contents: read
-
 jobs:
-  plan:
+  measure:
+    name: Measure (${{ matrix.revision }}, ${{ matrix.repeat }})
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: python3 scripts/ci/measure.py ci-results/plan-install.metrics.json npm ci
-      - run: python3 scripts/ci/measure.py ci-results/plan.metrics.json node scripts/ci/run.mjs plan
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ci-plan
-          path: ci-results/
-          if-no-files-found: error
-
-  static:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: python3 scripts/ci/measure.py ci-results/static-install.metrics.json npm ci
-      - run: python3 scripts/ci/measure.py ci-results/static.metrics.json node scripts/ci/run.mjs static
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ci-static
-          path: ci-results/
-          if-no-files-found: error
-
-  node:
-    needs: plan
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 70
     strategy:
       fail-fast: false
       matrix:
-        partition: [ordinary, reference, retention, matrix-1, matrix-2, matrix-3, matrix-4]
-    name: Node (${{ matrix.partition }})
+        revision: [baseline, candidate]
+        repeat: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: 92eac5d59ca38275539995e9ce3fd5b57b613a53
+          path: harness
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.revision == 'baseline' && '0b500005bb26ebdbd0b8b891428ddd2b84bc4f30' || '92eac5d59ca38275539995e9ce3fd5b57b613a53' }}
+          path: measured
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-      - run: python3 scripts/ci/measure.py ci-results/${{ matrix.partition }}-install.metrics.json npm ci
-      - uses: actions/download-artifact@v4
-        with:
-          name: ci-plan
-          path: ci-results/
-      - run: python3 scripts/ci/measure.py ci-results/${{ matrix.partition }}.metrics.json node scripts/ci/run.mjs ${{ matrix.partition }}
+          cache-dependency-path: measured/package-lock.json
+      - run: python3 ../harness/scripts/ci/measure.py results/install.metrics.json npm ci
+        working-directory: measured
+      - run: python3 ../harness/scripts/ci/measure.py results/chromium-install.metrics.json ./node_modules/.bin/playwright install --with-deps chromium
+        working-directory: measured
+      - name: Static commands
+        working-directory: measured
+        run: |
+          for script in build build:web lint check:boundaries analyze:unused analyze:unused:production format:check; do
+            python3 ../harness/scripts/ci/measure.py "results/${script//:/-}.metrics.json" npm run "$script"
+          done
+      - run: python3 ../harness/scripts/ci/measure.py results/node.metrics.json npm run test -- --maxWorkers=2 --reporter=default --reporter=json --outputFile.json=results/node.vitest.json
+        working-directory: measured
+      - run: python3 ../harness/scripts/ci/measure.py results/browser.metrics.json npm run test:browser -- --reporter=default --reporter=json --outputFile.json=results/browser.vitest.json
+        working-directory: measured
+      - run: python3 ../harness/scripts/ci/measure.py results/smoke.metrics.json npm run test:extensive-smoke -- --maxWorkers=2 --reporter=default --reporter=json --outputFile.json=results/smoke.vitest.json
+        working-directory: measured
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ci-${{ matrix.partition }}
-          path: ci-results/${{ matrix.partition }}*
+          name: measurement-${{ matrix.revision }}-${{ matrix.repeat }}
+          path: measured/results/
           if-no-files-found: error
-
-  browser:
+  failed-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: python3 scripts/ci/measure.py ci-results/browser-install.metrics.json npm ci
-      - run: python3 scripts/ci/measure.py ci-results/chromium-install.metrics.json ./node_modules/.bin/playwright install --with-deps chromium
-      - run: python3 scripts/ci/measure.py ci-results/browser.metrics.json node scripts/ci/run.mjs browser
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ci-browser
-          path: ci-results/
-          if-no-files-found: error
-
-  smoke:
+      - run: node --test --eval "require('node:test').test('intentional failed test', () => { throw new Error('grain/100 control'); })"
+  timed-out:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 1
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-      - run: python3 scripts/ci/measure.py ci-results/smoke-install.metrics.json npm ci
-      - run: python3 scripts/ci/measure.py ci-results/smoke.metrics.json node scripts/ci/run.mjs smoke
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: ci-smoke
-          path: ci-results/
-          if-no-files-found: error
-
-  # Keep this stable name required by branch protection. Validate individual
-  # reports as well as the matrix group's result.
-  test:
+      - run: sleep 120
+  skipped:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: exit 0
+  failure-observer:
     if: always()
-    needs: [plan, static, node, browser, smoke]
+    needs: [failed-test, timed-out, skipped]
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: 92eac5d59ca38275539995e9ce3fd5b57b613a53
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: ci-*
-          merge-multiple: true
-          path: ci-results/
-      - run: node scripts/ci/run.mjs aggregate
+      - run: |
+          node --input-type=module - <<'JS'
+          import assert from 'node:assert/strict';
+          const needs = JSON.parse(process.env.CI_NEEDS);
+          assert.equal(needs['failed-test'].result, 'failure');
+          assert.equal(needs['timed-out'].result, 'failure');
+          assert.equal(needs.skipped.result, 'skipped');
+          JS
+          if node scripts/ci/run.mjs aggregate --output missing-reports; then
+            echo 'ERROR: aggregate passed without reports'
+            exit 1
+          fi
+          node --test scripts/ci/partitions.test.mjs
         env:
           CI_NEEDS: ${{ toJSON(needs) }}
