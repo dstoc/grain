@@ -356,3 +356,47 @@ test('successive conversions retain observed syntax masks without reconstructing
   expect(h.nodes().map((n) => n.content)).toEqual(['new']);
   expect(h.text()).toBe('> new\n');
 });
+
+test.each(['left', 'right'] as const)(
+  'transfer/resize/transfer compiles surviving buffer slices with %s affinity',
+  (affinity) => {
+    const h = open(),
+      nodeId = h.handle(h.nodes()[0]);
+    const result = h.editor.edit(
+      session,
+      (ctx) => {
+        insertText(ctx, { nodeId, from: 2, text: 'XYZ' });
+        const split = insertParagraph(ctx, { nodeId, from: 4 });
+        if (split.status !== 'handled' || !split.focus) throw new Error();
+        const right = split.focus.nodeId;
+        ctx.draft.transferInlineRange({
+          source: nodeId,
+          from: 2,
+          to: 4,
+          destination: right,
+          at: 1,
+          affinity,
+        });
+        insertText(ctx, { nodeId: right, from: 2, to: 3, text: '!' });
+        ctx.draft.transferInlineRange({
+          source: right,
+          from: 0,
+          to: 2,
+          destination: nodeId,
+          at: 2,
+          affinity,
+        });
+        return { status: 'handled', focus: ctx.draft.bookmark(nodeId, 4, 'right') };
+      },
+      undefined,
+    );
+    expect(h.nodes().map((n) => n.content)).toEqual(['abZX', '!cdef']);
+    if (result.status !== 'applied') throw new Error();
+    expect(
+      result.envelope.nativeManifest
+        .filter((m) => m.type === 'text')
+        .map((m) => m.text)
+        .join(''),
+    ).toBe('XZ!');
+  },
+);
