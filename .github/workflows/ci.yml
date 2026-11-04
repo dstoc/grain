@@ -1,131 +1,115 @@
 # Disposable grain/100 experiment. Do not merge this branch.
-name: CI efficiency experiment
+name: CI efficiency paired experiment
 on: pull_request
 permissions:
   contents: read
 jobs:
   measure:
-    name: Measure (${{ matrix.revision }}, ${{ matrix.repeat }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 70
+    name: Paired measurement (${{ matrix.repeat }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 110
     strategy:
       fail-fast: false
       matrix:
-        revision: [baseline, candidate]
         repeat: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 92eac5d59ca38275539995e9ce3fd5b57b613a53
-          path: harness
+          ref: 0b500005bb26ebdbd0b8b891428ddd2b84bc4f30
+          path: baseline
       - uses: actions/checkout@v4
         with:
-          ref: ${{ matrix.revision == 'baseline' && '0b500005bb26ebdbd0b8b891428ddd2b84bc4f30' || '92eac5d59ca38275539995e9ce3fd5b57b613a53' }}
-          path: measured
+          ref: 92eac5d59ca38275539995e9ce3fd5b57b613a53
+          path: candidate
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
+          node-version: 24.22.1
           cache: npm
-          cache-dependency-path: measured/package-lock.json
-      - run: python3 ../harness/scripts/ci/measure.py ../results/install.metrics.json npm ci
-        working-directory: measured
-      - run: python3 ../harness/scripts/ci/measure.py ../results/chromium-install.metrics.json ./node_modules/.bin/playwright install --with-deps chromium
-        working-directory: measured
-      - name: Static commands
-        working-directory: measured
+          cache-dependency-path: |
+            baseline/package-lock.json
+            candidate/package-lock.json
+      - name: Full paired gates
+        env:
+          REPETITION: ${{ matrix.repeat }}
         run: |
-          for script in build build:web lint check:boundaries analyze:unused analyze:unused:production format:check; do
-            python3 ../harness/scripts/ci/measure.py "../results/${script//:/-}.metrics.json" npm run "$script"
+          order='baseline candidate'
+          if [ "$REPETITION" = 2 ]; then order='candidate baseline'; fi
+          for revision in $order; do
+            cd "$GITHUB_WORKSPACE/$revision"
+            result="$GITHUB_WORKSPACE/results/$revision"
+            measure() {
+              phase="$1"
+              shift
+              python3 "$GITHUB_WORKSPACE/candidate/scripts/ci/measure.py" "$result/$phase.metrics.json" "$@"
+            }
+            measure install npm ci
+            measure chromium-install ./node_modules/.bin/playwright install --with-deps chromium
+            for script in build build:web lint check:boundaries analyze:unused analyze:unused:production format:check; do
+              measure "${script//:/-}" npm run "$script"
+            done
+            measure node npm run test -- --maxWorkers=2 --reporter=default --reporter=json --outputFile.json="$result/node.vitest.json"
+            measure browser npm run test:browser -- --reporter=default --reporter=json --outputFile.json="$result/browser.vitest.json"
+            measure smoke npm run test:extensive-smoke -- --maxWorkers=2 --reporter=default --reporter=json --outputFile.json="$result/smoke.vitest.json"
           done
-      - run: python3 ../harness/scripts/ci/measure.py ../results/node.metrics.json npm run test -- --maxWorkers=2 --reporter=default --reporter=json --outputFile.json=../results/node.vitest.json
-        working-directory: measured
-      - run: python3 ../harness/scripts/ci/measure.py ../results/browser.metrics.json npm run test:browser -- --reporter=default --reporter=json --outputFile.json=../results/browser.vitest.json
-        working-directory: measured
-      - run: python3 ../harness/scripts/ci/measure.py ../results/smoke.metrics.json npm run test:extensive-smoke -- --maxWorkers=2 --reporter=default --reporter=json --outputFile.json=../results/smoke.vitest.json
-        working-directory: measured
       - id: metrics
-        name: Prepare measurement summaries
-        working-directory: measured
+        name: Prepare paired measurement summaries
         run: |
           python3 - <<'PYMETRICS'
           import json, os
           from pathlib import Path
-          read = lambda name: json.loads(Path('../results/' + name).read_text())
-          metric = lambda name: read(name + '.metrics.json')
-          node = metric('node')
-          report = read('node.vitest.json')
-          tests = [test for file in report['testResults'] for test in file['assertionResults']]
-          duration = lambda prefix: round(sum(test.get('duration', 0) or 0 for test in tests if test['fullName'].startswith(prefix)) / 1000, 3)
-          phase = lambda name: str(round(metric(name)['wall_seconds'], 3))
-          memory = next(line.split()[1] for line in node['memory'].splitlines() if line.startswith('MemTotal:'))
-          values = {
-            'environment': f"Environment sha={node['revision'][:12]} Node={node['node']} Yjs={node['packages']['yjs']} cpus={node['logical_cpus']} RAM-KiB={memory} image={node['runner']['ImageVersion']}",
-            'node': f"Node wall={phase('node')}s CPU={round(node['user_seconds']+node['system_seconds'],3)}s peak-tree-RSS={node['sampled_tree_peak_rss_kib']}KiB passed={report['numPassedTests']} skipped={report['numPendingTests']}",
-            'reference': f"Reference retention={duration('independent reference: history-limit-retains-canonical-facts')}s old-prefix={duration('independent reference: old-prefix-after-lossless-maintenance')}s matrix-pairs={duration('independent matrix:')}s generated={duration('independent generated structural schedule:')}s",
-            'phases': f"Phases install={phase('install')}s Chromium={phase('chromium-install')}s browser={phase('browser')}s smoke={phase('smoke')}s",
-            'static': 'Static ' + ' '.join(f"{name}={phase(name)}s" for name in ['build','build-web','lint','check-boundaries','analyze-unused','analyze-unused-production','format-check']),
-          }
+          values = {}
+          for revision in ['baseline','candidate']:
+            read = lambda name: json.loads(Path('results/' + revision + '/' + name).read_text())
+            metric = lambda name: read(name + '.metrics.json')
+            node = metric('node')
+            report = read('node.vitest.json')
+            tests = [test for file in report['testResults'] for test in file['assertionResults']]
+            duration = lambda prefix: round(sum(test.get('duration', 0) or 0 for test in tests if test['fullName'].startswith(prefix)) / 1000, 3)
+            phase = lambda name: str(round(metric(name)['wall_seconds'], 3))
+            memory = next(line.split()[1] for line in node['memory'].splitlines() if line.startswith('MemTotal:'))
+            values[revision+'_environment'] = f"{revision} environment sha={node['revision'][:12]} Node={node['node']} Yjs={node['packages']['yjs']} cpus={node['logical_cpus']} RAM-KiB={memory} image={node['runner']['ImageVersion']} CPU={node['cpu_model']}"
+            values[revision+'_node'] = f"{revision} node wall={phase('node')}s CPU={round(node['user_seconds']+node['system_seconds'],3)}s peak-tree-RSS={node['sampled_tree_peak_rss_kib']}KiB passed={report['numPassedTests']} skipped={report['numPendingTests']}"
+            values[revision+'_reference'] = f"{revision} reference retention={duration('independent reference: history-limit-retains-canonical-facts')}s old-prefix={duration('independent reference: old-prefix-after-lossless-maintenance')}s matrix-pairs={duration('independent matrix:')}s generated={duration('independent generated structural schedule:')}s"
+            values[revision+'_phases'] = f"{revision} phases install={phase('install')}s Chromium={phase('chromium-install')}s browser={phase('browser')}s smoke={phase('smoke')}s"
+            values[revision+'_static'] = revision + ' static ' + ' '.join(f"{name}={phase(name)}s" for name in ['build','build-web','lint','check-boundaries','analyze-unused','analyze-unused-production','format-check'])
+            for name in ['browser','smoke']:
+              other = read(name+'.vitest.json')
+              values[revision+'_'+name+'_coverage'] = f"{revision} {name} passed={other['numPassedTests']} skipped={other['numPendingTests']}"
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
             for name, value in values.items():
               print(f'{name}={value}', file=output)
           PYMETRICS
-      - name: ${{ steps.metrics.outputs.environment }}
+      - name: ${{ steps.metrics.outputs.baseline_environment }}
         run: ':'
-      - name: ${{ steps.metrics.outputs.node }}
+      - name: ${{ steps.metrics.outputs.candidate_environment }}
         run: ':'
-      - name: ${{ steps.metrics.outputs.reference }}
+      - name: ${{ steps.metrics.outputs.baseline_node }}
         run: ':'
-      - name: ${{ steps.metrics.outputs.phases }}
+      - name: ${{ steps.metrics.outputs.candidate_node }}
         run: ':'
-      - name: ${{ steps.metrics.outputs.static }}
+      - name: ${{ steps.metrics.outputs.baseline_reference }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.candidate_reference }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.baseline_phases }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.candidate_phases }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.baseline_static }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.candidate_static }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.baseline_browser_coverage }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.candidate_browser_coverage }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.baseline_smoke_coverage }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.candidate_smoke_coverage }}
         run: ':'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: measurement-${{ matrix.revision }}-${{ matrix.repeat }}
+          name: paired-measurement-${{ matrix.repeat }}
           path: results/
           if-no-files-found: error
-  failed-test:
-    runs-on: ubuntu-latest
-    steps:
-      - run: |
-          cat > /tmp/grain100-failure.cjs <<'JS'
-          require('node:test').test('intentional failed test', () => { throw new Error('grain/100 control'); });
-          JS
-          node --test /tmp/grain100-failure.cjs
-  timed-out:
-    runs-on: ubuntu-latest
-    timeout-minutes: 1
-    steps:
-      - run: sleep 120
-  skipped:
-    if: ${{ false }}
-    runs-on: ubuntu-latest
-    steps:
-      - run: exit 0
-  failure-observer:
-    if: always()
-    needs: [failed-test, timed-out, skipped]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: 92eac5d59ca38275539995e9ce3fd5b57b613a53
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - run: |
-          node --input-type=module - <<'JS'
-          import assert from 'node:assert/strict';
-          const needs = JSON.parse(process.env.CI_NEEDS);
-          assert.equal(needs['failed-test'].result, 'failure');
-          assert.equal(needs['timed-out'].result, 'cancelled');
-          assert.equal(needs.skipped.result, 'skipped');
-          JS
-          if node scripts/ci/run.mjs aggregate --output missing-reports; then
-            echo 'ERROR: aggregate passed without reports'
-            exit 1
-          fi
-          node --test scripts/ci/partitions.test.mjs
-        env:
-          CI_NEEDS: ${{ toJSON(needs) }}
