@@ -53,6 +53,10 @@ interface Entry {
   readonly id: ActionId;
   readonly variants: Variant[];
 }
+interface ReadyCertificate {
+  readonly variant: Variant;
+  readonly dependencies: readonly ReadyCertificate[];
+}
 const quarantined = (reason: QuarantineReason): ActionReadiness => ({
   state: 'quarantined',
   reason,
@@ -77,6 +81,7 @@ export class ActionStore {
   private readonly doc = new Y.Doc({ gc: false });
   private readonly envelopes = this.doc.getArray<Uint8Array>('envelopes');
   private readonly entries = new Map<string, Entry>();
+  private readonly certificates = new Map<string, ReadyCertificate>();
   private readonly diagnostics: string[] = [];
   private integrity = true;
   private readonly undecoded: Uint8Array[] = [];
@@ -113,6 +118,47 @@ export class ActionStore {
 
   append(action: ActionEnvelope): void {
     this.appendEncoded(encodeEnvelope(action));
+  }
+
+  /** Certify a local candidate against its exact ready past before appending facts.
+   * No carrier/native publication occurs here; callers abort private preparation on failure.
+   */
+  checkLocal(action: ActionEnvelope): QuarantineReason | null {
+    const bytes = encodeEnvelope(action);
+    const snapshot = this.snapshot();
+    if (!snapshot.integrity) return 'reference';
+    const existing = snapshot.actions.find((entry) => actionKey(entry.id) === actionKey(action.id));
+    if (existing)
+      return existing.readiness.state === 'ready' &&
+        existing.variants.length === 1 &&
+        compareBytes(existing.variants[0], bytes) === 0
+        ? null
+        : 'reference';
+    const chain = finish(this.chainError(action));
+    if (chain) return chain;
+    const ready = new Map(snapshot.ready.map((entry) => [actionKey(entry.id), entry]));
+    if (action.dependencies.some((id) => !ready.has(actionKey(id)))) return 'reference';
+    const maximum = action.dependencies.reduce((maximum, id) => {
+      const time = ready.get(actionKey(id))!.lamport;
+      return time > maximum ? time : maximum;
+    }, 0n);
+    if (action.lamport !== maximum + 1n) return 'actor-chain';
+    const closure = new Map<string, ActionEnvelope>();
+    const stack = [...action.dependencies];
+    while (stack.length) {
+      const key = actionKey(stack.pop()!);
+      if (closure.has(key)) continue;
+      const dependency = ready.get(key)!;
+      closure.set(key, dependency);
+      stack.push(...dependency.dependencies);
+    }
+    const dependencies = [...closure.values()].sort(compareActions);
+    if (!finish(validReferencesSteps(action, dependencies, this.options.genesisAllocations)))
+      return 'reference';
+    const result = this.options.validate(structuredClone(action), {
+      dependencies: structuredClone(dependencies),
+    });
+    return result !== null && typeof result === 'object' ? finish(result) : result;
   }
 
   /** Also retains malformed/unsupported envelopes for diagnostics and lossless exchange. */
@@ -168,6 +214,7 @@ export class ActionStore {
     this.computation++;
     this.active?.return(undefined as unknown as ActionStoreSnapshot);
     this.doc.destroy();
+    this.certificates.clear();
   }
 
   private collect(value: unknown): void {
@@ -262,6 +309,7 @@ export class ActionStore {
     }
     candidates.sort(compareActions);
     const ready = new Map<string, ActionEnvelope>();
+    const readyCertificates = new Map<string, ReadyCertificate>();
     for (const action of candidates) {
       yield;
       const key = actionKey(action.id);
@@ -297,6 +345,26 @@ export class ActionStore {
         states.set(key, quarantined('actor-chain'));
         continue;
       }
+      // A successful author check depends only on this immutable payload and its
+      // exact causal facts. Direct certificate identities encode the transitive
+      // closure. Forked/unready dependencies never enter readyCertificates.
+      const variant = this.entries.get(key)!.variants[0];
+      const prior = this.certificates.get(key);
+      const dependencyCertificates = dependencies.map((id) =>
+        readyCertificates.get(actionKey(id))!,
+      );
+      if (
+        prior?.variant === variant &&
+        dependencyCertificates.length === prior.dependencies.length &&
+        dependencyCertificates.every(
+          (certificate, index) => certificate === prior.dependencies[index],
+        )
+      ) {
+        states.set(key, { state: 'ready' });
+        ready.set(key, action);
+        readyCertificates.set(key, prior);
+        continue;
+      }
       const closure = new Map<string, ActionEnvelope>();
       const stack = [...dependencies];
       while (stack.length) {
@@ -325,7 +393,12 @@ export class ActionStore {
       const reason =
         typeof validation === 'object' && validation !== null ? yield* validation : validation;
       states.set(key, reason ? quarantined(reason) : { state: 'ready' });
-      if (!reason) ready.set(key, action);
+      if (!reason) {
+        ready.set(key, action);
+        const certificate = { variant, dependencies: dependencyCertificates };
+        this.certificates.set(key, certificate);
+        readyCertificates.set(key, certificate);
+      }
     }
     const heads = new Map([...ready].map(([key, action]) => [key, action.id]));
     for (const action of ready.values()) {

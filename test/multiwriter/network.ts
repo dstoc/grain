@@ -1,4 +1,4 @@
-import { mergeUpdates } from 'yjs';
+import { decodeUpdate, Item, mergeUpdates } from 'yjs';
 import { SYNC_DIRECTIONS } from '../../src/markdown/multiwriter/contracts.js';
 import type { DeliveryRoute, SyncMode } from '../../src/markdown/multiwriter/contracts.js';
 import type { ContractTrace, Observation, Step, TraceAction, TraceAdapter } from './trace.js';
@@ -52,16 +52,24 @@ export interface ReplicaStateBytes {
 }
 export interface ReplicaPort {
   readonly handles: ReplicaHandles;
+  /** Detached test command metadata for symbolic observation aliases only. It cannot
+   * admit facts, supply native identities, or participate in certification.
+   */
+  defineCommand?(action: TraceAction): void;
   author(action: TraceAction): void | Promise<void>;
   setMode(mode: SyncMode): void | Promise<void>;
   /** Export complete envelopes as real transport bytes; subsets can omit semantic prerequisites.
    * Full held-set export must bootstrap a new receiver, including other actors' records.
    */
-  exportUpdate(actions: readonly string[], mutation?: Mutation): Uint8Array | Promise<Uint8Array>;
+  exportUpdate(
+    actions: readonly string[],
+    mutation?: Mutation,
+    recipient?: string,
+  ): Uint8Array | Promise<Uint8Array>;
   /** Receive gating belongs here, before canonical ingestion, on every route. */
   receive(update: Uint8Array, route: DeliveryRoute): void | Promise<void>;
   control(): Uint8Array | Promise<Uint8Array>;
-  receiveControl(update: Uint8Array): void | Promise<void>;
+  receiveControl(update: Uint8Array, from?: string): void | Promise<void>;
   observe(): Observation | Promise<Observation>;
   /** Complete retained Yjs state, including pending outer structs and unprojected data.
    * Transport control metadata is separate. Reads must not author native operations.
@@ -91,6 +99,21 @@ interface Message {
 }
 
 const localFacets = new Set<keyof Observation>(['undo', 'redo', 'emittedActions']);
+/** Counts do not identify immutable facts: one peer may hold a valid variant while
+ * another holds a malformed variant of the same action. Include pending carrier
+ * payloads, deduplicate identical envelopes and ignore outer transport identities.
+ */
+function canonicalPayloads(update: Uint8Array): readonly string[] {
+  const values = new Set<string>();
+  for (const item of decodeUpdate(update).structs) {
+    if (!(item instanceof Item)) continue;
+    for (const value of item.content.getContent()) {
+      if (!(value instanceof Uint8Array)) throw new Error('Canonical carrier payload is not bytes');
+      values.add(Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join(''));
+    }
+  }
+  return [...values].sort();
+}
 /** Compare every document facet, including hidden facts and origin bindings. */
 export function compareDocument(
   actual: Observation,
@@ -161,15 +184,15 @@ export class ReplicaNetwork {
       throw error;
     }
   }
-  private openPeer(peer: string, checkpoint?: Uint8Array): Promise<ReplicaPort> {
+  private async openPeer(peer: string, checkpoint?: Uint8Array): Promise<ReplicaPort> {
     const { version, genesis, seed, peers } = this.contract;
-    return Promise.resolve(
-      this.factory.open({
-        peer,
-        genesis: structuredClone({ version, genesis, seed, peers }),
-        checkpoint: checkpoint?.slice(),
-      }),
-    );
+    const port = await this.factory.open({
+      peer,
+      genesis: structuredClone({ version, genesis, seed, peers }),
+      checkpoint: checkpoint?.slice(),
+    });
+    for (const action of this.actions.values()) port.defineCommand?.(structuredClone(action));
+    return port;
   }
   private peer(peer: string): ReplicaPort {
     const replica = this.replicas.get(peer);
@@ -223,6 +246,8 @@ export class ReplicaNetwork {
         if (this.actions.has(action.id)) throw new Error(`Duplicate author action ${action.id}`);
         this.validateAuthor(action, before.get(action.peer)!);
         this.actions.set(action.id, structuredClone(action));
+        for (const replica of this.replicas.values())
+          replica.defineCommand?.(structuredClone(action));
         await this.peer(action.peer).author(structuredClone(action));
         changed = action.peer;
         break;
@@ -244,7 +269,7 @@ export class ReplicaNetwork {
         const held = before.get(step.from)!.held;
         for (const id of step.actions)
           this.equal(held.includes(id), true, `${step.from} exports held ${id}`);
-        const bytes = await this.peer(step.from).exportUpdate(step.actions, step.mutation);
+        const bytes = await this.peer(step.from).exportUpdate(step.actions, step.mutation, step.to);
         this.messages.set(step.id, {
           from: step.from,
           to: step.to,
@@ -303,6 +328,7 @@ export class ReplicaNetwork {
           throw new Error('Reverse control traffic disabled');
         await this.peer(message.from).receiveControl(
           (await this.peer(message.to).control()).slice(),
+          message.to,
         );
         break;
       }
@@ -368,6 +394,11 @@ export class ReplicaNetwork {
             (await replay.isolationState()).canonical,
             retained.get(step.peer)!.canonical,
             `${step.peer} fresh replay preserves canonical native state`,
+          );
+          this.equal(
+            (await replay.isolationState()).native,
+            retained.get(step.peer)!.native,
+            `${step.peer} fresh replay preserves materialized native identities`,
           );
         } finally {
           await replay.dispose();
@@ -450,9 +481,13 @@ export class ReplicaNetwork {
   }
   private async inspect(context: string): Promise<void> {
     const observations: Observation[] = [];
+    const facts: string[] = [];
     for (const peer of this.contract.peers) {
       const state = await this.observe(peer);
       observations.push(state);
+      facts.push(
+        JSON.stringify(canonicalPayloads((await this.peer(peer).isolationState()).canonical)),
+      );
       const label = `${context} ${peer}`;
       const prior = this.inventories.get(peer);
       for (const id of prior?.held ?? [])
@@ -570,7 +605,7 @@ export class ReplicaNetwork {
           for (const key of Object.keys(a) as (keyof Observation)[])
             if (!localFacets.has(key) && !inventory.has(key))
               this.equal(a[key], b[key], `${context} equal ready sets.${key}`);
-        if (JSON.stringify([a.held, a.variants]) === JSON.stringify([b.held, b.variants]))
+        if (facts[left] === facts[right])
           compareDocument(a, b, this.equal, `${context} equal canonical sets`);
       }
   }
@@ -713,6 +748,7 @@ export function replicaTraceAdapter(factory: ReplicaFactory, equal: Equal, seed 
     },
     execute: (step) => active().executeContractStep(step),
     observe: (peer) => active().observe(peer),
+    checkpoint: (peer) => active().step({ type: 'replay', peer }),
     async dispose() {
       const prior = network;
       network = undefined;

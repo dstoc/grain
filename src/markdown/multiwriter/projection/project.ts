@@ -4,6 +4,7 @@ import { isAllowedSemanticChild } from '../../semantic/types.js';
 import type {
   ActionEnvelope,
   Allocation,
+  DeletionId,
   NativeResourceBirth,
   NativeTextRange,
   NodeId,
@@ -173,12 +174,77 @@ function project(input: ProjectionInput) {
     containsBirthContent: (node, token) =>
       birthContent.get(resourceKey(node))!.some((range) => ownership.contains(range, token)),
   };
-  const visibility = reduceVisibility(
+  const initialVisibility = reduceVisibility(
     activity,
     visibilityLayout,
     tokens,
     interpretations.birthEnabled,
   );
+  // A concurrent deletion can leave a split with no surviving derivation. Its
+  // header is weakly suppressed, not tombstoned by historical source identity.
+  // Visible peer content, children and independent placements still keep it.
+  // A split observed by the deletion is already separated and is not a candidate.
+  const hiddenDerivations = new Map<string, { action: ActionEnvelope['id']; ordinal: number }>();
+  const nodeVisibility = new Map(
+    initialVisibility.nodes.map((entry) => [resourceKey(entry.node), entry]),
+  );
+  const sourceDeletedBy = (node: NodeId, tag: DeletionId) => {
+    let current: NodeId | null = node;
+    while (current) {
+      if (
+        nodeVisibility
+          .get(resourceKey(current))!
+          .tags.some((value) => resourceKey(value) === resourceKey(tag))
+      )
+        return true;
+      current = visibilityLayout.parent(current);
+    }
+    return false;
+  };
+  for (const entry of activity.effects) {
+    if (entry.effect.type !== 'SplitFlow') continue;
+    const split = entry.effect;
+    const run = ownership.runLayouts.find(
+      (run) => resourceKey(run.run) === resourceKey(split.cut.run),
+    )!;
+    const source = ownership.nodeAllocations.find(
+      (node) => node.flow && resourceKey(node.flow) === resourceKey(run.flow),
+    )!;
+    if (
+      activity.effects.some(
+        (deletion) =>
+          deletion.effect.type === 'DeleteSubtree' &&
+          activity.concurrent(entry.action, deletion.action) &&
+          sourceDeletedBy(source.id, deletion.effect.tag),
+      )
+    )
+      hiddenDerivations.set(resourceKey(entry.effect.newNode), {
+        action: entry.action,
+        ordinal: entry.ordinal,
+      });
+  }
+  const hiddenEffects = new Set(
+    [...hiddenDerivations.values()].map(
+      (ref) => `${ref.action.actor}:${ref.action.sequence}:${ref.ordinal}`,
+    ),
+  );
+  const visibility = hiddenDerivations.size
+    ? reduceVisibility(
+        activity,
+        {
+          ...visibilityLayout,
+          requirements: (node) =>
+            visibilityLayout
+              .requirements(node)
+              .filter(
+                (ref) =>
+                  !hiddenEffects.has(`${ref.action.actor}:${ref.action.sequence}:${ref.ordinal}`),
+              ),
+        },
+        tokens,
+        (node) => interpretations.birthEnabled(node) && !hiddenDerivations.has(resourceKey(node)),
+      )
+    : initialVisibility;
   const visibleTokens = new Map(
     visibility.text.map((entry) => [tokenKey(entry.token), entry.visible]),
   );

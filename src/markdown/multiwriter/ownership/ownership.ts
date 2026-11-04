@@ -368,6 +368,13 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
   for (const entry of actions) {
     layout.beginAction(entry);
     install({ allocations: entry.action.allocations, births: entry.births }, entry.action.effects);
+    if (
+      entry.action.allocations.some(
+        (allocation) =>
+          allocation.type === 'node' || allocation.type === 'flow' || allocation.type === 'run',
+      )
+    )
+      assertCoverage();
     for (const [ordinal, effect] of entry.action.effects.entries()) {
       const order = { action: { id: entry.action.id, lamport: entry.action.lamport }, ordinal };
       const active = input.isActive(order);
@@ -500,7 +507,20 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
       if (active && eligible) candidates.push({ order, effect });
       for (const changed of result.flows)
         if (changed.result === 'applied') flowIntentions.set(resourceKey(changed.flow), order);
-      assertCoverage();
+      // Native refinement is already installed in the initial cell index. Text,
+      // visibility, properties and controls cannot change these raw assignments.
+      // Recheck the invariant at structural births and after layout/ownership edits.
+      if (
+        active &&
+        eligible &&
+        (effect.type === 'TransferRange' ||
+          effect.type === 'SplitFlow' ||
+          effect.type === 'JoinFlow' ||
+          effect.type === 'MoveBlock' ||
+          effect.type === 'LiftChildren' ||
+          effect.type === 'Interpret')
+      )
+        assertCoverage();
     }
   }
   if (homes.some((home) => !installedTapes.has(resourceKey(home.cell.tape))))
