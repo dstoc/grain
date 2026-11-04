@@ -93,6 +93,35 @@ async function exercise(
   }
 }
 
+test('reconstructs interleaved same-tape and cross-tape aliases with native ordering', async () => {
+  await exercise(
+    [root, paragraph('P', 'ab'), paragraph('Q', 'XY')],
+    [
+      action('A1', [{ type: 'insert', cell: 'AX', text: 'x', tape: 'tP', slot: 'P:end' }]),
+      action(
+        'A2',
+        [{ type: 'insert', cell: 'AY', text: 'y', tape: 'tP', slot: 'P:end' }],
+        ['A1'],
+        2n,
+      ),
+      action('B1', [{ type: 'insert', cell: 'BX', text: 'z', tape: 'tQ', slot: 'Q:end' }]),
+    ],
+    (state) => {
+      expect(state.skeletons).toEqual({ rP: ['P0', 'P1', 'AX', 'AY'], rQ: ['Q0', 'Q1', 'BX'] });
+      expect(state.nativeText).toEqual({
+        P0: 'a',
+        P1: 'b',
+        Q0: 'X',
+        Q1: 'Y',
+        AX: 'x',
+        AY: 'y',
+        BX: 'z',
+      });
+      expect(state.markdown).toBe('abxy\n\nXYz\n');
+    },
+  );
+});
+
 test.each(['# repeated repeated😀', '```ts\ncode😀\n```', 'Title\n===\n'])(
   'parser conversion, native syntax masks and export/reparse: %j',
   async (text) => {

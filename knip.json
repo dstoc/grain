@@ -16,6 +16,7 @@
     "src/markdown/multiwriter/projection/index.ts!",
     "src/markdown/multiwriter/reference/document.ts!",
     "src/markdown/multiwriter/authoring/index.ts!",
+    "src/markdown/multiwriter/bootstrap/index.ts!",
     "src/markdown/canonical-model.ts!",
     "src/markdown/block-serializer.ts!",
     "src/markdown/node.ts!",

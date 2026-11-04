@@ -4,7 +4,7 @@ import type { ActionStoreSnapshot } from '../actions/store.js';
 import { compareBytes } from '../actions/cbor.js';
 import { NativeTapeCache } from '../text/cache.js';
 import type { NativeBody } from '../text/types.js';
-import { DEFAULT_INGEST_LIMITS, IngestDataError, compute } from './work.js';
+import { DEFAULT_INGEST_LIMITS, IngestDataError, assertLimit, compute } from './work.js';
 import type { Computation, Work } from './work.js';
 
 export type NativeView = Pick<
@@ -50,8 +50,20 @@ export class IngestPublication<T> {
     private readonly store: ActionStore,
     private readonly genesis: NativeBody,
     private readonly reduce: (actions: readonly ActionEnvelope[], native: NativeView) => Work<T>,
-    private readonly decodeOperations = DEFAULT_INGEST_LIMITS.decodeOperations as number,
+    private decodeOperations = DEFAULT_INGEST_LIMITS.decodeOperations as number,
   ) {}
+
+  /** Cancel unfinished projection work; retain the last publication and all canonical facts. */
+  setDecodeLimit(operations: number): void {
+    this.assertOpen();
+    assertLimit(operations);
+    this.generation++;
+    this.active?.return(undefined as unknown as PublishedProjection<T>);
+    this.active = undefined;
+    this.candidate?.destroy();
+    this.candidate = undefined;
+    this.decodeOperations = operations;
+  }
 
   /** Rechecks readiness before granting authoring. Missing independent branches do not block it. */
   status(): ProjectionStatus<T> {

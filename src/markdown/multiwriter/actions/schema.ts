@@ -153,6 +153,10 @@ const manifest = union('type', {
   text: tagged('text', { tape, native: nativeRange, text: string }),
   marker: tagged('marker', { tape, native, marker }),
 });
+const propertyValues = record(
+  {},
+  { presentation, marker: nullable(string), info: nullable(string), checked: nullable(bool) },
+);
 const effect = union('type', {
   InsertText: tagged('InsertText', { ranges: array(nativeText) }),
   MoveBlock: tagged('MoveBlock', {
@@ -197,10 +201,7 @@ const effect = union('type', {
   Interpret: tagged('Interpret', { packet }),
   SetProperties: tagged('SetProperties', {
     node,
-    values: record(
-      {},
-      { presentation, marker: nullable(string), info: nullable(string), checked: nullable(bool) },
-    ),
+    values: propertyValues,
   }),
   LiftChildren: tagged('LiftChildren', { placements: array(placement) }),
   SetGroupActive: tagged('SetGroupActive', {
@@ -228,4 +229,23 @@ export function envelopeToWire(value: unknown): CborValue {
 }
 export function envelopeFromWire(value: CborValue): unknown {
   return envelope(value, 'decode');
+}
+
+// Genesis shares resource/native field encoding with envelopes, but is never an action.
+const genesis = record({
+  protocolVersion: integer,
+  bootstrapVersion: integer,
+  documentId: string,
+  genesisId: string,
+  allocations: array(allocation),
+  births: array(record({ node, occurrence })),
+  initialProperties: array(record({ node, values: propertyValues })),
+  nativeInsertUpdates: array(bytes),
+  nativeManifest: array(manifest),
+});
+export function genesisToWire(value: unknown): CborValue {
+  return genesis(value, 'encode') as CborValue;
+}
+export function genesisFromWire(value: CborValue): unknown {
+  return genesis(value, 'decode');
 }
