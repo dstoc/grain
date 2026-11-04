@@ -94,6 +94,17 @@ export class OwnershipResult {
     });
     return structuredClone(this.layout.children(parent, buckets));
   }
+  occurrenceOrder(slot: BlockSlot) {
+    return structuredClone(
+      this.layout.occurrenceOrder(
+        slot,
+        this.cohorts.filter((bucket) => {
+          const root = this.layout.occurrence(bucket.roots[0]).slot;
+          return 'parent' in root && sameId(root.parent, slot.parent);
+        }),
+      ),
+    );
+  }
   resolveBlockSlot(slot: BlockSlot): BlockSlot {
     return this.layout.resolveBlockSlot(slot);
   }

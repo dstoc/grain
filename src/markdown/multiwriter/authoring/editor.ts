@@ -8,24 +8,31 @@ import type { Edit, EditOutcome } from '../../../editing/outcomes.js';
 import type { EditSelection } from '../../semantic/selection.js';
 import type { NodeId as Handle } from '../../semantic/types.js';
 import { actorId, assertCounter } from '../contracts.js';
-import type { ActionEnvelope, ActionId, GroupId, NodeId, ProjectionAddress } from '../contracts.js';
+import type { ActionEnvelope, ActionId, GroupId, NodeId } from '../contracts.js';
 import type { ReferenceGenesis, openReferenceDocument } from '../reference/document.js';
 import { resourceKey } from '../layout/index.js';
 import { NativeTapeCache } from '../text/cache.js';
 import { textPoint, requestEmptyRootEdit } from '../projection/addresses.js';
 import type { TextPoint } from '../projection/addresses.js';
 import type { ViewNode } from '../projection/types.js';
+import type { PreparedNativeBody } from '../text/types.js';
+import { RetainedEditError } from './errors.js';
+export { RetainedEditError } from './errors.js';
+import { HistorySession } from '../history/session.js';
+import type { HistoryOptions, RetainedEdit } from '../history/session.js';
+import { capturePoint } from '../history/selection.js';
+import { captureFootprint } from '../history/scope.js';
+import { reconstructProvenance } from '../reference/provenance.js';
+import { projectMarkdown } from '../projection/project.js';
+import { nativeView } from '../ingest/publication.js';
+import type { StableSelection } from '../history/selection.js';
+export type { StableSelection } from '../history/selection.js';
 import { MultiwriterCommandDraft } from './draft.js';
 import { CommandCompiler, ConversionDeclined } from './compiler.js';
 
 export interface AuthorSession {
   readonly local: string;
   readonly group: bigint;
-}
-export interface StableSelection {
-  readonly anchor: TextPoint;
-  readonly focus: TextPoint;
-  readonly blocks?: readonly ProjectionAddress[];
 }
 export type LocalEditResult =
   | { readonly status: 'not-applicable' | 'unchanged'; readonly applied: false }
@@ -49,21 +56,11 @@ export type LocalEditResult =
     };
 export interface LocalEditOptions {
   readonly scopeRoot?: Handle;
+  /** Initiating editor host, independent of the command scope. Defaults to document root. */
+  readonly hostRoot?: Handle;
   readonly selectionBefore?: EditSelection;
   readonly conversion?: { readonly nodeId: Handle; readonly plan: ParserConversionPlan };
   readonly promote?: Handle;
-}
-
-/** Canonical facts were retained. Refresh and retry persistence; do not repeat this edit. */
-export class RetainedEditError extends Error {
-  readonly appended = true;
-  constructor(
-    readonly action: ActionId,
-    cause: unknown,
-  ) {
-    super('Edit was appended; recover publication before the next command', { cause });
-    this.name = 'RetainedEditError';
-  }
 }
 
 /** Synchronous local writer; transport and durability belong to an attached provider.
@@ -80,6 +77,169 @@ export class LocalEditor {
   private editing = false;
   private closed = false;
   private applied = new Set<string>();
+  private readonly sessions = new Map<string, HistorySession>();
+  private readonly unmanaged = new Set<string>();
+  /** A live session's identity cannot also be used by the low-level writer. */
+  session(local = 'default', options: HistoryOptions = {}): HistorySession {
+    if (this.closed) throw new Error('Local editor is closed');
+    if (!local) throw new Error('Session must have a local identity');
+    if (this.unmanaged.has(local))
+      throw new Error('Session was already used by the low-level writer');
+    let session = this.sessions.get(local);
+    if (!session) {
+      session = new HistorySession(
+        local,
+        {
+          publication: () => this.current(),
+          version: () => this.document.store.factsVersion,
+          capture: (options) => this.captureSelection(options),
+          edit: (group, command, input, options, register) =>
+            this.performEdit({ local, group }, command, input, options, register),
+          control: (group, effect, register) =>
+            this.performControl({ local, group }, effect, register),
+          empty: (group, text, register) => this.performEmptyRoot({ local, group }, text, register),
+        },
+        options,
+      );
+      this.sessions.set(local, session);
+    }
+    return session;
+  }
+  private current() {
+    if (this.closed) throw new Error('Local editor is closed');
+    const status = this.document.publication.status();
+    if (status.stale || !status.canAuthor || !status.publication)
+      throw new Error('Publication is stale or not authorable; refresh before editing');
+    return status.publication;
+  }
+  private captureSelection(options: LocalEditOptions): StableSelection | undefined {
+    const selection = options.selectionBefore;
+    if (!selection) return undefined;
+    const p = this.current(),
+      draft = new MultiwriterCommandDraft(p.value.view.root);
+    const host = options.hostRoot ? draft.origins.get(options.hostRoot) : p.value.view.root;
+    if (!host) throw new Error('Selection has no projected host');
+    const stable = (point: EditSelection['anchor']) => {
+      const node = draft.origins.get(point.nodeId);
+      if (!node) throw new Error('Selection has no projected origin');
+      assertScopedTarget(draft, options.scopeRoot ?? draft.rootId, point.nodeId);
+      assertScopedTarget(draft, options.hostRoot ?? draft.rootId, point.nodeId);
+      return capturePoint(p, node, point.offset, point.affinity, host);
+    };
+    return structuredClone({
+      anchor: stable(selection.anchor),
+      focus: stable(selection.focus),
+      ...('nodeIds' in selection
+        ? {
+            blocks: selection.nodeIds.map((id) => {
+              assertScopedTarget(draft, options.scopeRoot ?? draft.rootId, id);
+              const node = draft.origins.get(id);
+              if (!node) throw new Error('Selected block has no projected origin');
+              return node.origin;
+            }),
+          }
+        : {}),
+    });
+  }
+  private base(session: AuthorSession) {
+    const p = this.current(),
+      ready = this.document.store.snapshot().ready;
+    this.sync(ready);
+    const previousSequence = ready
+      .filter((a) => a.id.actor === this.actor)
+      .reduce((n, a) => (a.id.sequence > n ? a.id.sequence : n), this.sequence);
+    const id = { actor: this.actor, sequence: previousSequence + 1n };
+    const lamport = ready.reduce((max, a) => (a.lamport > max ? a.lamport : max), 0n) + 1n;
+    assertCounter(id.sequence);
+    assertCounter(lamport);
+    const dependencies = [...p.heads];
+    if (
+      previousSequence > 0n &&
+      !dependencies.some((d) => d.actor === this.actor && d.sequence === previousSequence)
+    )
+      dependencies.push({ actor: this.actor, sequence: previousSequence });
+    return {
+      protocolVersion: 3 as const,
+      documentId: this.genesis.documentId,
+      genesisId: this.genesis.genesisId,
+      id,
+      lamport,
+      dependencies,
+      groupId: { session: { actor: this.actor, local: session.local }, sequence: session.group },
+    };
+  }
+  /** The only append boundary for both commands and controls. */
+  private append(
+    envelope: ActionEnvelope,
+    prepared: PreparedNativeBody | undefined,
+    register: () => void,
+  ): void {
+    let appended = false;
+    const retain = () => {
+      prepared?.commit();
+      this.applied.add(`${envelope.id.actor}:${envelope.id.sequence}`);
+      this.sequence = envelope.id.sequence;
+      register();
+    };
+    try {
+      this.document.certifyLocal(envelope);
+      this.document.store.append(envelope);
+      appended = true;
+    } catch (error) {
+      const bytes = encodeEnvelope(envelope);
+      appended = decodeUpdate(this.document.store.encodeUpdate()).structs.some(
+        (struct) =>
+          struct instanceof Item &&
+          struct.content
+            .getContent()
+            .some((value) => value instanceof Uint8Array && compareBytes(value, bytes) === 0),
+      );
+      if (appended) retain();
+      else prepared?.abort();
+      throw error;
+    }
+    retain();
+  }
+  private performControl(
+    session: AuthorSession,
+    effect: Extract<ActionEnvelope['effects'][number], { type: 'SetGroupActive' }>,
+    register: (id: ActionId) => void,
+  ) {
+    if (this.editing) throw new Error('Recursive local editing is not allowed');
+    this.editing = true;
+    let retained: ActionId | undefined;
+    try {
+      const base = this.base(session);
+      const dependencies = [
+        ...new Map(
+          [
+            ...base.dependencies,
+            ...effect.actions,
+            ...(effect.previousControl ? [effect.previousControl] : []),
+          ].map((id) => [`${id.actor}:${id.sequence}`, id]),
+        ).values(),
+      ];
+      const envelope: ActionEnvelope = {
+        ...base,
+        dependencies,
+        allocations: [],
+        nativeManifest: [],
+        nativeInsertUpdates: [],
+        effects: [structuredClone(effect)],
+      };
+      this.append(envelope, undefined, () => {
+        retained = envelope.id;
+        register(envelope.id);
+      });
+      const publication = this.refresh();
+      return { action: envelope.id, publication };
+    } catch (error) {
+      if (retained) throw new RetainedEditError(retained, error);
+      throw error;
+    } finally {
+      this.editing = false;
+    }
+  }
   constructor(
     readonly document: ReturnType<typeof openReferenceDocument>,
     private readonly genesis: ReferenceGenesis,
@@ -127,6 +287,18 @@ export class LocalEditor {
     input: Input,
     options: LocalEditOptions = {},
   ): LocalEditResult {
+    if (this.sessions.has(session.local))
+      throw new Error('Session is managed; use its history facade');
+    this.unmanaged.add(session.local);
+    return this.performEdit(session, command, input, options);
+  }
+  private performEdit<Input>(
+    session: AuthorSession,
+    command: Edit<Input>,
+    input: Input,
+    options: LocalEditOptions = {},
+    register?: (edit: RetainedEdit) => void,
+  ): LocalEditResult {
     if (this.closed) throw new Error('Local editor is closed');
     if (this.editing) throw new Error('Recursive local editing is not allowed');
     if (!session.local) throw new Error('Session must have a local identity');
@@ -141,27 +313,7 @@ export class LocalEditor {
         ready = this.document.store.snapshot().ready;
       this.sync(ready);
       const draft = new MultiwriterCommandDraft(p.value.view.root);
-      const beforeSelection = options.selectionBefore;
-      const stablePoint = (point: EditSelection['anchor']): TextPoint => {
-        const node = draft.origins.get(point.nodeId);
-        if (!node) throw new Error('Selection has no projected origin');
-        return textPoint(node, point.offset, point.affinity);
-      };
-      const selectionBefore: StableSelection | undefined = beforeSelection
-        ? {
-            anchor: stablePoint(beforeSelection.anchor),
-            focus: stablePoint(beforeSelection.focus),
-            ...('nodeIds' in beforeSelection
-              ? {
-                  blocks: beforeSelection.nodeIds.map((id) => {
-                    const node = draft.origins.get(id);
-                    if (!node) throw new Error('Selected block has no projected origin');
-                    return structuredClone(node.origin);
-                  }),
-                }
-              : {}),
-          }
-        : undefined;
+      const selectionBefore = this.captureSelection(options);
       const outcome = command(
         {
           draft,
@@ -175,28 +327,8 @@ export class LocalEditor {
         return { status: 'not-applicable', applied: false };
       }
       if (!draft.intents.length) return { status: 'unchanged', applied: false };
-      const previousSequence = ready
-        .filter((a) => a.id.actor === this.actor)
-        .reduce((n, a) => (a.id.sequence > n ? a.id.sequence : n), this.sequence);
-      const id = { actor: this.actor, sequence: previousSequence + 1n };
-      assertCounter(id.sequence);
-      const lamport = ready.reduce((max, a) => (a.lamport > max ? a.lamport : max), 0n) + 1n;
-      assertCounter(lamport);
-      const dependencies = [...p.heads];
-      if (
-        previousSequence > 0n &&
-        !dependencies.some((d) => d.actor === this.actor && d.sequence === previousSequence)
-      )
-        dependencies.push({ actor: this.actor, sequence: previousSequence });
-      const base = {
-        protocolVersion: 3 as const,
-        documentId: this.genesis.documentId,
-        genesisId: this.genesis.genesisId,
-        id,
-        lamport,
-        dependencies,
-        groupId: { session: { actor: this.actor, local: session.local }, sequence: session.group },
-      };
+      const base = this.base(session),
+        id = base.id;
       const makeCompiler = () => {
         const c = new CommandCompiler(
           this.genesis,
@@ -242,38 +374,94 @@ export class LocalEditor {
         return { status: 'unchanged', applied: false };
       const key = `${id.actor}:${id.sequence}`;
       const prepared = this.native.prepare(key, compiler.native.operations);
-      let appended = false;
-      let envelope: ActionEnvelope | undefined;
-      const retain = () => {
-        prepared.commit();
-        this.applied.add(key);
-        this.sequence = id.sequence;
-        retained = id;
-      };
+      let envelope: ActionEnvelope;
       try {
         envelope = compiler.bind(this.native, prepared.body);
-        this.document.certifyLocal(envelope);
-        this.document.store.append(envelope);
-        appended = true;
       } catch (error) {
-        // A synchronous update observer can throw after append has changed the
-        // canonical store. Inspect the exact retained payload before aborting.
-        if (envelope) {
-          const bytes = encodeEnvelope(envelope);
-          appended = decodeUpdate(this.document.store.encodeUpdate()).structs.some(
-            (struct) =>
-              struct instanceof Item &&
-              struct.content
-                .getContent()
-                .some((value) => value instanceof Uint8Array && compareBytes(value, bytes) === 0),
-          );
-        }
-        if (appended) retain();
-        else prepared.abort();
+        prepared.abort();
         throw error;
       }
-      retain();
+      const after = (
+        publication: ReturnType<LocalEditor['refresh']>,
+      ): StableSelection | undefined => {
+        if (outcome.selection?.type === 'preserve-block-selection' && selectionBefore)
+          return selectionBefore;
+        if (!outcome.focus) return undefined;
+        const target = compiler.focusTarget(
+          outcome.focus.nodeId,
+          outcome.focus.offset,
+          outcome.focus.affinity,
+        );
+        const find = (n: ViewNode): ViewNode | undefined =>
+          target.node && resourceKey(n.origin.representative) === resourceKey(target.node)
+            ? n
+            : n.children.map(find).find(Boolean);
+        const node = find(publication.value.view.root);
+        if (!node) return undefined;
+        const hostId =
+          selectionBefore?.focus.host.representative ??
+          (options.hostRoot
+            ? draft.origins.get(options.hostRoot)?.origin.representative
+            : undefined);
+        const host = hostId
+          ? (() => {
+              const visit = (n: ViewNode): ViewNode | undefined =>
+                n.origin.constituents.some((id) => resourceKey(id) === resourceKey(hostId))
+                  ? n
+                  : n.children.map(visit).find(Boolean);
+              return visit(publication.value.view.root);
+            })()
+          : publication.value.view.root;
+        if (!host) return undefined;
+        const point = capturePoint(
+          publication,
+          node,
+          Math.min(target.offset, node.content.length),
+          outcome.focus.affinity,
+          host,
+        );
+        return { anchor: point, focus: point };
+      };
+      // Capture against the exact author result before append. A later recovery
+      // may include peer changes, so delayed numeric focus lowering is unsafe.
+      let stagedAfter: StableSelection | undefined;
+      let footprintForHistory;
+      try {
+        if (register) {
+          const native = nativeView(this.native);
+          footprintForHistory = captureFootprint(envelope, p, native);
+          if (outcome.selection?.type === 'preserve-block-selection') stagedAfter = selectionBefore;
+          else if (outcome.focus) {
+            const actions = [...ready, envelope];
+            const staged = {
+              heads: [envelope.id],
+              native,
+              value: projectMarkdown({
+                genesis: this.genesis.layout,
+                genesisManifest: this.genesis.body.nativeManifest,
+                initialProperties: this.genesis.initialProperties,
+                ...reconstructProvenance(this.genesis.layout, actions),
+                native,
+              }),
+            };
+            stagedAfter = after(staged);
+          }
+        }
+      } catch (error) {
+        prepared.abort();
+        throw error;
+      }
+      this.append(envelope, prepared, () => {
+        retained = id;
+        register?.({
+          envelope: structuredClone(envelope),
+          selectionBefore,
+          selectionAfter: stagedAfter,
+          footprint: footprintForHistory!,
+        });
+      });
       const publication = this.refresh();
+      const selectionAfter = register ? stagedAfter : after(publication);
       const footprint = {
         allocations: structuredClone(envelope.allocations),
         effects: structuredClone(envelope.effects),
@@ -308,11 +496,7 @@ export class LocalEditor {
         footprint,
         ...(focus ? { focus } : {}),
         ...(selectionBefore ? { selectionBefore } : {}),
-        ...(outcome.selection?.type === 'preserve-block-selection' && selectionBefore
-          ? { selectionAfter: selectionBefore }
-          : focus
-            ? { selectionAfter: { anchor: focus, focus } }
-            : {}),
+        ...(selectionAfter ? { selectionAfter } : {}),
       };
     } catch (error) {
       if (retained) throw new RetainedEditError(retained, error);
@@ -330,10 +514,20 @@ export class LocalEditor {
     return result.value;
   }
   editEmptyRoot(session: AuthorSession, text: string): LocalEditResult {
-    const p = this.document.publication.status().publication;
-    if (!p?.value.view.emptyRoot) throw new Error('Document does not have an empty-root caret');
+    if (this.sessions.has(session.local))
+      throw new Error('Session is managed; use its history facade');
+    this.unmanaged.add(session.local);
+    return this.performEmptyRoot(session, text);
+  }
+  private performEmptyRoot(
+    session: AuthorSession,
+    text: string,
+    register?: (edit: RetainedEdit) => void,
+  ): LocalEditResult {
+    const p = this.current();
+    if (!p.value.view.emptyRoot) throw new Error('Document does not have an empty-root caret');
     requestEmptyRootEdit(p.value.view, text);
-    return this.edit(
+    return this.performEdit(
       session,
       ({ draft, scopeRoot }) => {
         const id = draft.create({ type: 'paragraph', content: text });
@@ -341,6 +535,8 @@ export class LocalEditor {
         return { status: 'handled', focus: draft.bookmark(id, text.length, 'right') };
       },
       undefined,
+      {},
+      register,
     );
   }
   destroy(): void {

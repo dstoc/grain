@@ -1,0 +1,271 @@
+import type {
+  ActionEnvelope,
+  ActionId,
+  BlockSlot,
+  FlowId,
+  InlineSlot,
+  NativeTextRange,
+  NodeId,
+  ProjectionAddress,
+  RangeRef,
+} from '../contracts.js';
+import { resourceKey } from '../layout/index.js';
+import { resolveAddress } from '../projection/addresses.js';
+import { projectedNode, viewNodes } from './selection.js';
+import type { NativeView } from '../ingest/publication.js';
+import type { HistoryPublication } from './selection.js';
+
+export interface Footprint {
+  readonly action: ActionId;
+  readonly envelope: Pick<ActionEnvelope, 'allocations' | 'effects'>;
+  /** Source edges disappear on move/join. Capture their parents before append. */
+  readonly sourceParents: readonly NodeId[];
+  readonly endpoints: readonly NodeId[];
+}
+export function captureFootprint(
+  envelope: ActionEnvelope,
+  before: HistoryPublication,
+  native: NativeView,
+): Footprint {
+  const sourceParents: NodeId[] = [],
+    endpoints: NodeId[] = [];
+  const known = (node: NodeId) =>
+    before.value.ownership.nodeAllocations.some((n) => resourceKey(n.id) === resourceKey(node));
+  const ranges = (values: readonly RangeRef[]) => {
+    for (const range of values) {
+      // Same-action ranges are classified after allocation; they have no pre-edit owner.
+      if (
+        range.tape.birth.type === 'action' &&
+        range.tape.birth.action.actor === envelope.id.actor &&
+        range.tape.birth.action.sequence === envelope.id.sequence
+      )
+        continue;
+      const start = native.marker(range.start).index,
+        end = native.marker(range.end).index;
+      for (const cell of before.value.ownership.assignments) {
+        if (resourceKey(cell.cell.tape) !== resourceKey(range.tape)) continue;
+        const cellStart = native.marker(cell.cell.start).index,
+          cellEnd = native.marker(cell.cell.end).index;
+        if (Math.max(start, cellStart) >= Math.min(end, cellEnd)) continue;
+        const run = before.value.ownership.runLayouts.find(
+          (r) => resourceKey(r.run) === resourceKey(cell.run),
+        );
+        if (run) endpoints.push(before.value.ownership.flowBlock(run.flow));
+      }
+    }
+  };
+  const source = (node: NodeId) => {
+    if (!known(node)) return;
+    const placement = before.value.ownership.blockPlacement(node);
+    if (placement) sourceParents.push(placement.slot.parent);
+  };
+  for (const effect of envelope.effects) {
+    if (effect.type === 'MoveBlock') {
+      if (
+        before.value.ownership.nodeAllocations.some(
+          (n) => resourceKey(n.id) === resourceKey(effect.node),
+        )
+      )
+        source(effect.node);
+    } else if (effect.type === 'JoinFlow') {
+      if (
+        before.value.ownership.flowPlacements.some(
+          (p) => resourceKey(p.flow) === resourceKey(effect.source),
+        )
+      ) {
+        const node = before.value.ownership.flowBlock(effect.source);
+        endpoints.push(node);
+        source(node);
+      }
+    } else if (effect.type === 'TransferRange') ranges(effect.ranges);
+    else if (effect.type === 'SplitFlow') ranges(effect.basis.ranges.map((r) => r.range));
+    else if (effect.type === 'LiftChildren')
+      for (const placement of effect.placements) source(placement.node);
+  }
+  return structuredClone({
+    action: envelope.id,
+    envelope: { allocations: envelope.allocations, effects: envelope.effects },
+    sourceParents,
+    endpoints,
+  });
+}
+export type ScopeClassification = 'inside' | 'outside' | 'mixed' | 'unresolved';
+export function validScope(p: HistoryPublication, scope: ProjectionAddress): boolean {
+  return (
+    scope.type === 'node' &&
+    resolveAddress(scope, p.value.ownership, p.value.visibility).state === 'available' &&
+    (() => {
+      const node = projectedNode(p.value.view.root, scope.representative);
+      return (
+        !!node &&
+        node.origin.constituents.length === scope.constituents.length &&
+        scope.constituents.every((id) =>
+          node.origin.constituents.some((c) => resourceKey(c) === resourceKey(id)),
+        )
+      );
+    })()
+  );
+}
+
+/** Classify exact retained intervals, including hidden cells, against current ownership. */
+export function classifyFootprints(
+  p: HistoryPublication,
+  footprints: readonly Footprint[],
+  scope: ProjectionAddress,
+): ScopeClassification {
+  if (scope.type !== 'node') return 'unresolved';
+  const ownership = p.value.ownership;
+  const projected = projectedNode(p.value.view.root, scope.representative);
+  if (!projected) return 'unresolved';
+  const roots = new Set(
+    viewNodes(projected).flatMap((n) => n.origin.constituents.map(resourceKey)),
+  );
+  const visible = new Set(
+    viewNodes(p.value.view.root).flatMap((n) => n.origin.constituents.map(resourceKey)),
+  );
+  const classifications: boolean[] = [];
+  let unresolved = false;
+  const node = (id: NodeId) => {
+    let current: NodeId | undefined = id;
+    const seen = new Set<string>();
+    while (current) {
+      const key = resourceKey(current);
+      if (roots.has(key)) {
+        classifications.push(true);
+        return;
+      }
+      if (visible.has(key)) {
+        classifications.push(false);
+        return;
+      }
+      if (seen.has(key) || !ownership.nodeAllocations.some((n) => resourceKey(n.id) === key)) {
+        unresolved = true;
+        return;
+      }
+      seen.add(key);
+      let parent: NodeId | undefined = ownership.blockPlacement(current)?.slot.parent;
+      // Non-section inline headers lift raw children into their containing view.
+      // Visible origins take precedence; hidden children use the same retained rule.
+      while (parent) {
+        const allocation = ownership.nodeAllocations.find(
+          (n) => resourceKey(n.id) === resourceKey(parent!),
+        );
+        if (allocation?.role !== 'inline') break;
+        const joined =
+          allocation.flow &&
+          ownership.flowPlacements.find(
+            (f) => resourceKey(f.flow) === resourceKey(allocation.flow!),
+          )?.parent.type === 'flow';
+        if (!joined && p.value.interpretations.properties(parent).presentation === 'section') break;
+        parent = ownership.blockPlacement(parent)?.slot.parent;
+      }
+      current = parent;
+    }
+    classifications.push(false);
+  };
+  const flow = (id: FlowId) => node(ownership.flowBlock(id));
+  const slot = (value: InlineSlot) => flow(ownership.resolveSlot(value).run.flow);
+  const blockSlot = (value: BlockSlot) => {
+    ownership.resolveBlockSlot(value);
+    node(value.parent);
+  };
+  const range = (value: RangeRef) => {
+    const cells = ownership.cells(value);
+    if (!cells.length) {
+      unresolved = true;
+      return;
+    }
+    for (const cell of cells) {
+      const run = ownership.runLayouts.find((r) => resourceKey(r.run) === resourceKey(cell.run));
+      if (!run) {
+        unresolved = true;
+        continue;
+      }
+      flow(run.flow);
+    }
+  };
+  const text = (value: NativeTextRange) => {
+    const owners = ownership.inlineOwner(value);
+    if (!owners.length && value.length) unresolved = true;
+    owners.forEach(node);
+  };
+  for (const footprint of footprints) {
+    if (
+      !p.value.activity.actions.some(
+        (a) => a.id.actor === footprint.action.actor && a.id.sequence === footprint.action.sequence,
+      )
+    )
+      return 'unresolved';
+    footprint.sourceParents.forEach(node);
+    footprint.endpoints.forEach(node);
+    // Only semantic node births count; tape/marker/run infrastructure does not.
+    for (const allocation of footprint.envelope.allocations)
+      if (allocation.type === 'node') {
+        node(allocation.id);
+        if (allocation.birthSlot) blockSlot(allocation.birthSlot);
+      }
+    for (const effect of footprint.envelope.effects) {
+      switch (effect.type) {
+        case 'InsertText':
+          effect.ranges.forEach(text);
+          break;
+        case 'DeleteText':
+          effect.observed.forEach(text);
+          break;
+        case 'SetProperties':
+          node(effect.node);
+          break;
+        case 'MoveBlock':
+          node(effect.node);
+          blockSlot(effect.slot);
+          break;
+        case 'JoinFlow':
+          flow(effect.source);
+          slot(effect.destination);
+          effect.liftedChildren.forEach(node);
+          break;
+        case 'SplitFlow':
+          effect.basis.ranges.forEach((r) => range(r.range));
+          slot(effect.cut);
+          node(effect.newNode);
+          blockSlot(effect.outerSlot);
+          break;
+        case 'TransferRange':
+          effect.ranges.forEach(range);
+          slot(effect.destination);
+          break;
+        case 'DeleteSubtree':
+          node(effect.scope.target);
+          effect.scope.observedNodes.forEach(node);
+          effect.scope.ownedIntervals.forEach(range);
+          effect.scope.joinedFlows.forEach(flow);
+          break;
+        case 'Interpret':
+          node(effect.packet.source);
+          effect.packet.wrappers.forEach(node);
+          effect.packet.derivedInlineOutputs?.forEach(node);
+          effect.packet.placements.forEach((placement) => {
+            node(placement.node);
+            blockSlot(placement.slot);
+          });
+          effect.packet.syntaxMask.forEach(text);
+          effect.packet.synthesizedText.forEach(text);
+          break;
+        case 'LiftChildren':
+          effect.placements.forEach((placement) => {
+            node(placement.node);
+            blockSlot(placement.slot);
+          });
+          break;
+        case 'SetGroupActive':
+          break;
+      }
+    }
+  }
+  if (unresolved || !classifications.length) return 'unresolved';
+  return classifications.every(Boolean)
+    ? 'inside'
+    : classifications.every((v) => !v)
+      ? 'outside'
+      : 'mixed';
+}
