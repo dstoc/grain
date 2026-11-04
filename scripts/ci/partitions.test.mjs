@@ -58,6 +58,23 @@ function fixture() {
 const verify = ({ plan, needs, reports }) =>
   validateGate(plan, reports, needs, identity, { node: [], browser: [] });
 test('complete coverage passes with duplicate names preserved', () => verify(fixture()));
+test('declared skip-only modules preserve complete executed coverage', () => {
+  const { plan, needs, reports } = fixture();
+  const skip = { file: 'src/opt-in.test.ts', name: 'explicit workload' };
+  reports
+    .find((report) => report.id === 'ordinary')
+    .vitest.testResults.push({
+      name: `${process.cwd()}/${skip.file}`,
+      status: 'skipped',
+      assertionResults: [{ ancestorTitles: [], title: skip.name, status: 'skipped' }],
+    });
+  const validate = (node) => validateGate(plan, reports, needs, identity, { node });
+  assert.throws(() => validate([]), /source skip inventory/);
+  validate([skip]);
+  assert.throws(() => validate([skip, skip]), /source skip inventory/);
+  reports.find((report) => report.id === 'ordinary').vitest.testResults.shift();
+  assert.throws(() => validate([skip]), /executed occurrence coverage/);
+});
 for (const outcome of ['failure', 'cancelled', 'skipped', 'timed_out', undefined])
   test(`rejects job outcome ${outcome}`, () => {
     const value = fixture();

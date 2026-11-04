@@ -6,6 +6,7 @@ import { createProjectionAuthorValidator, projectMarkdown } from '../projection/
 import type { ProjectionInput } from '../projection/project.js';
 import type { NativeBody } from '../text/types.js';
 import type { ActionEnvelope } from '../contracts.js';
+import { assertLimit } from '../ingest/work.js';
 import { ProvenanceError, reconstructBirths, reconstructProvenance } from './provenance.js';
 
 export interface ReferenceGenesis {
@@ -19,7 +20,10 @@ export interface ReferenceGenesis {
 /** One headless replica's certification and atomic publication, with no fixture registry.
  * All inputs are detached. Transport, local authoring and navigation are separate callers.
  */
-export function openReferenceDocument(input: ReferenceGenesis) {
+export function openReferenceDocument(
+  input: ReferenceGenesis,
+  options: { readonly nativeDecodeOperations?: number } = {},
+) {
   const genesis = structuredClone(input);
   const validateAuthor = createProjectionAuthorValidator({
     genesis: genesis.layout,
@@ -27,6 +31,7 @@ export function openReferenceDocument(input: ReferenceGenesis) {
   });
   const validate = createIngestValidator({
     genesis: genesis.body,
+    decodeOperations: options.nativeDecodeOperations,
     validateAuthor(action, context) {
       try {
         return validateAuthor(action, context);
@@ -44,21 +49,35 @@ export function openReferenceDocument(input: ReferenceGenesis) {
     genesisAllocations: genesis.layout.allocations,
     validate,
   });
-  const publication = new IngestPublication(store, genesis.body, function* (actions, native) {
-    yield;
-    validate.retainReady(actions);
-    const provenance = reconstructProvenance(genesis.layout, actions);
-    return projectMarkdown({
-      genesis: genesis.layout,
-      genesisManifest: genesis.body.nativeManifest,
-      initialProperties: genesis.initialProperties,
-      ...provenance,
-      native,
-    });
-  });
+  const publication = new IngestPublication(
+    store,
+    genesis.body,
+    function* (actions, native) {
+      yield;
+      validate.retainReady(actions);
+      const provenance = reconstructProvenance(genesis.layout, actions);
+      return projectMarkdown({
+        genesis: genesis.layout,
+        genesisManifest: genesis.body.nativeManifest,
+        initialProperties: genesis.initialProperties,
+        ...provenance,
+        native,
+      });
+    },
+    options.nativeDecodeOperations,
+  );
   return {
     store,
     publication,
+    /** Raise native capacity, then refresh retained facts without replacing this replica.
+     * Cancel both publication-owned and directly requested store computations first.
+     */
+    setNativeDecodeLimit(operations: number): void {
+      assertLimit(operations);
+      publication.setDecodeLimit(operations);
+      store.setDecodeLimits({});
+      validate.setDecodeLimit(operations);
+    },
     /** Preflight the actual store's ready past before publishing any local facts. */
     certifyLocal(action: ActionEnvelope): void {
       const reason = store.checkLocal(action);
