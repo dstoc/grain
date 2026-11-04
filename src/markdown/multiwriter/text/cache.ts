@@ -394,11 +394,24 @@ export class NativeTapeCache {
 }
 
 function copyBody(body: NativeBody): NativeBody {
-  return structuredClone(body);
+  // Envelopes are structurally assignable to NativeBody; retain only the native subset.
+  return structuredClone({
+    allocations: body.allocations,
+    nativeInsertUpdates: body.nativeInsertUpdates,
+    nativeManifest: body.nativeManifest,
+  });
 }
 function sameBody(a: NativeBody, b: NativeBody): boolean {
   const json = (value: unknown) =>
-    JSON.stringify(value, (_key, item) => (typeof item === 'bigint' ? `${item}n` : item));
+    JSON.stringify(value, (_key, item) => {
+      if (typeof item === 'bigint') return `${item}n`;
+      // Codec round trips may change record property order without changing the body.
+      if (item && typeof item === 'object' && !Array.isArray(item) && !(item instanceof Uint8Array))
+        return Object.fromEntries(
+          Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        );
+      return item;
+    });
   return json(a) === json(b);
 }
 
