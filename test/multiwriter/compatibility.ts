@@ -1,5 +1,9 @@
 /** Baseline 1d76dddbd8620c5dc92b02ccb1c45e67af7ddc46: preserve behavior, not authority machinery. */
 export const compatibilityInventory = {
+  providers: [
+    'src/markdown/multiwriter/providers/adapter.test.ts',
+    'src/markdown/multiwriter/providers/indexeddb.browser.test.ts',
+  ],
   commands: [
     'src/editing/browser/input.test.ts',
     'src/editing/commands/commands.review.test.ts',
