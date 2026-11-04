@@ -3,13 +3,22 @@ import type { ReferenceFactoryOptions } from './reference/factory.js';
 import { openReferenceDocument } from '../../src/markdown/multiwriter/reference/document.js';
 import { compareBytes } from '../../src/markdown/multiwriter/actions/cbor.js';
 
-export const checkMaterializedPublication: NonNullable<ReferenceFactoryOptions['onPublication']> = (
-  document,
-  genesis,
-) => {
-  const bytes = document.store.encodeUpdate();
-  const oracle = openReferenceDocument(genesis);
-  try {
+type Check = NonNullable<ReferenceFactoryOptions['onPublication']>;
+
+/** Independent full-reference readiness/native/projection for every publication.
+ * Reuse only the reference implementation's exact immutable certification cache.
+ * Native cache, provenance, ownership and semantic projection are rebuilt each time.
+ * New candidate instances (including checkpoint/replay opens) get a cold oracle.
+ */
+export function createMaterializationOracle() {
+  const oracles = new Map<Parameters<Check>[0], ReturnType<typeof openReferenceDocument>>();
+  const check: Check = (document, genesis) => {
+    const bytes = document.store.encodeUpdate();
+    let oracle = oracles.get(document);
+    if (!oracle) {
+      oracle = openReferenceDocument(genesis);
+      oracles.set(document, oracle);
+    }
     oracle.store.applyUpdate(bytes);
     let result = oracle.publication.refresh();
     while (result.state === 'deferred')
@@ -43,7 +52,12 @@ export const checkMaterializedPublication: NonNullable<ReferenceFactoryOptions['
     }
     expect(compareBytes(actual.native.encodeState(), expected.native.encodeState())).toBe(0);
     expect(compareBytes(document.store.encodeUpdate(), bytes)).toBe(0);
-  } finally {
-    oracle.destroy();
-  }
-};
+  };
+  return {
+    check,
+    destroy() {
+      for (const oracle of oracles.values()) oracle.destroy();
+      oracles.clear();
+    },
+  };
+}

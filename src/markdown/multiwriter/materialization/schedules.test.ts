@@ -11,20 +11,21 @@ import {
 import { referenceFactory } from '../../../../test/multiwriter/reference/factory.js';
 import { generateAction } from '../../../../test/multiwriter/reference/generator.js';
 import { scenario, structuralChoices } from '../../../../test/multiwriter/reference/matrix.js';
-import { checkMaterializedPublication } from '../../../../test/multiwriter/materialization-oracle.js';
+import { createMaterializationOracle } from '../../../../test/multiwriter/materialization-oracle.js';
 import { openMaterializedDocument } from './document.js';
 const equal = (a: unknown, b: unknown, context: string) => expect(a, context).toEqual(b);
 for (const seed of [1, 7, 42, 85, 89, 34064, 123456, 0xffffffff]) {
-  test(`native materialization equals cold reference during generated delivery: ${seed}`, async () => {
+  test(`native materialization equals full reference during generated delivery: ${seed}`, async () => {
     const random = new SeededRandom(seed);
     const trace = scenario(
       Array.from({ length: 3 }, () => structuralChoices[random.next(structuralChoices.length)]),
       `mw13-${seed}`,
     );
+    const oracle = createMaterializationOracle();
     const factory = () =>
       referenceFactory(trace, undefined, {
         openDocument: openMaterializedDocument,
-        onPublication: checkMaterializedPublication,
+        onPublication: oracle.check,
       });
     const network = await ReplicaNetwork.open(factory(), trace, equal, seed);
     try {
@@ -60,6 +61,7 @@ for (const seed of [1, 7, 42, 85, 89, 34064, 123456, 0xffffffff]) {
       throw error;
     } finally {
       await network.dispose();
+      oracle.destroy();
     }
   }, 300000);
 }
