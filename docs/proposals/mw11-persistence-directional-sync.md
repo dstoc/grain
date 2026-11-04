@@ -38,6 +38,13 @@ There is no schema-3 provider or IndexedDB implementation in the inspected tree.
 `src/main.ts` still mounts the schema-2 canonical editor. MW-11 must provide an
 independently testable adapter without switching that editor to schema 3.
 
+`onUpdate()` is not a complete record of received bytes. On Yjs 13.6.33, an
+update missing outer native struct prerequisites can enter the store's pending
+structs without emitting an event or changing its state vector. A merged message
+can emit an event for an independent action while omitting its unresolved structs.
+Persisting only emitted events loses that held data on restart. A semantic
+snapshot does not expose these structs; a full `encodeUpdate()` includes them.
+
 ## Proposal
 
 ### Ownership and first caller
@@ -52,8 +59,11 @@ instances with the same document/genesis and separate persistence namespaces.
 Later MW-08/MW-14 integration supplies the document and editing sessions. The
 adapter does not create a writer, native text cache, reducer or history stack.
 
-Attach only through the existing action-store hooks. Never expose or attach a
-provider to `textDoc`. Keep envelope validation and causal readiness in MW-01's
+Use the existing action-store methods and events. Route all remote application
+through the adapter while it is attached; direct caller use of `applyUpdate()`
+would bypass both the receive gate and ingress journaling. Local authoring still
+uses the store's append methods. Never expose or attach a provider to `textDoc`.
+Keep envelope validation and causal readiness in MW-01's
 store and its required validator; mode checks do not certify semantic validity.
 
 ### One remote ingress
@@ -64,6 +74,15 @@ catch-up, self-echo and cross-tab callbacks must all enter here. Check
 `ActionStore.applyUpdate()`. A blocked update changes neither store bytes, heads,
 storage nor publication state. Do not retain a hidden remote queue in the adapter;
 senders retransmit when receiving becomes available.
+
+Copy incoming bytes before application. After `applyUpdate()` returns normally,
+enqueue that exact copy for persistence even if no update event fired. Each
+admitted receive also triggers the publication/retry path when sending is enabled;
+an event is not required to discover newly held unresolved data. Rejected input
+must not enter the journal. Stage events emitted synchronously during remote
+application until the call succeeds; discard that staging if it throws. Report
+the failure without marking it durable or delivered. Pending or quarantined
+envelopes retained by a successful call are admitted data, not rejected updates.
 
 If delivery involves an asynchronous wait, check the current mode after that wait.
 Do not let a callback captured in an earlier mode import data after receiving has
@@ -86,20 +105,42 @@ or install a BroadcastChannel provider. Any future cross-tab exchange uses remot
 ingress and therefore the receive gate.
 
 Persist actionDoc update bytes in an append-only, ordered IndexedDB journal.
-Observe updates after startup restoration, including allowed received updates.
-Subscribe before exposing the adapter to the host. Seed persistence with any
-preexisting store content so attachment cannot omit earlier local actions.
-Never persist derived caches or interactive history.
+Capture three sources of coverage:
+
+1. After startup restoration, subscribe to `onUpdate()` and enqueue a full
+   `encodeUpdate()` seed before exposing the adapter or attaching transport.
+   Keep this attachment step synchronous so host edits cannot fall between the
+   subscription and seed. The seed includes preexisting unresolved outer structs,
+   not just integrated actions. Restore must not recursively journal its replay.
+2. Enqueue emitted updates from local authoring. Events alone cover these local
+   append operations, but do not cover all remote ingress.
+3. Enqueue the copied raw bytes of every successfully admitted receive, on every
+   route, even when its state vector and semantic snapshot are unchanged. Also
+   retain any staged emitted updates after successful application. Redundant
+   bytes are acceptable: Yjs replay is idempotent. Never substitute the emitted
+   subset for the complete incoming message.
+
+Use one ordered in-memory write queue for these sources. Assign each queued
+entry a monotonically increasing journal position. Copy bytes before queueing
+so later caller mutation cannot alter pending storage. No state-vector or
+snapshot comparison may suppress an admitted receive. Do not persist blocked
+or rejected updates, derived caches or interactive history.
 
 Resolve a persistence fence only on the IndexedDB transaction's `complete` event,
-not on an individual request's success. Serialize journal writes and retain failed
-and subsequent unsaved updates in memory for an explicit retry. Report open,
-quota, abort and write errors. A persistence failure leaves the local edit applied
-and unsaved; it does not issue compensating edits or stop local authoring.
+not on an individual request's success. A fence captures the queue tail and covers
+every entry through that position, including raw receives with no update event.
+Advance the durable position only for a completed contiguous prefix. Serialize
+journal writes and retain failed and subsequent unsaved updates in memory for an
+explicit retry. Report open, quota, abort and write errors. A persistence failure
+leaves the local edit applied and unsaved; it does not issue compensating edits
+or stop local authoring.
 
 Closing stops new transport callbacks, unsubscribes listeners and attempts to
-flush pending persistence. Reject close/flush on a failed durable write rather
-than claiming success. Never delete the journal on close. Restart restores
+flush pending persistence, including every admitted raw receive captured before
+closing. The host must stop local authoring before close. Reject close/flush on
+a failed durable write rather than claiming success. Never delete the journal
+on close. Restart replays the seed and journal bytes through the private startup
+path; unresolved structs must survive even before prerequisites arrive. It restores
 canonical updates into a new process instance; it does not restore the old actor
 or interactive navigation stack.
 
@@ -138,7 +179,10 @@ unvalidated envelope. The provider supplies persistence and optional delivery
 progress for the publication's captured actionDoc coverage.
 
 `persisted` becomes true after a completed journal transaction covers those
-bytes. Later unsaved work must not make earlier durable work appear unsaved.
+bytes. Capture the queue position after enqueueing all updates for that
+publication; full flush also covers admitted ingress through its captured tail.
+Neither an unchanged state vector nor an update callback proves durable coverage.
+Later unsaved work must not make earlier durable work appear unsaved.
 `delivered` is omitted without an acknowledgment facility. With that facility,
 only an explicit peer acknowledgment covering the publication can set it true;
 successful send completion alone cannot. Qualify delivery by peer. Out-of-order
@@ -187,6 +231,25 @@ permits removal of canonical facts.
 - Exercise all modes with persistence enabled. In actual Chromium IndexedDB,
   reopen a completed journal and compare retained envelopes, variants, pending
   actions and controls. Validate document/genesis metadata mismatch failure.
+- Reproduce the no-event outer-update case: A emits U1 containing A1, then U2
+  containing A2. B receives only U2, then authors unrelated B1. Assert U2 changed
+  full encoded bytes but emitted no event and left the state vector unchanged.
+  Flush and restart B before U1 arrives. Deliver only U1 to B and an uninterrupted
+  control. Compare retained actions, variants, readiness and full encoded Yjs
+  bytes, preserving original native action-store IDs. Repeat through every
+  receive route and with actual IndexedDB reopen.
+- Repeat with U2 merged with an independent action's update. Assert an event
+  fires but contains only the integrated subset; the journal must retain the
+  complete admitted message. Restart before U1, deliver only U1, and compare
+  against the uninterrupted control. Test duplicate and reordered journal replay.
+  A semantically pending envelope already integrated into the outer array is a
+  separate fixture and cannot substitute for either outer-struct regression.
+- Attach to a store already holding unresolved U2 and verify its full seed
+  survives reopen. Delay or abort the raw-ingress write in both regressions;
+  flush/close must wait or reject even if no event fired. Retry must complete
+  coverage without retransmission from the peer. Mutating the original receive
+  buffer after admission must not change the journal. Blocked and rejected
+  inputs must add no journal entries, including staged callbacks on failure.
 - Inject write aborts, quota errors, delayed completion and close during writes.
   Verify persistence fences, retry and unsaved status. Independently test send
   failure, absent acknowledgments and acknowledgments for older coverage.
@@ -205,7 +268,9 @@ permits removal of canonical facts.
    traffic or actor filtering.
 3. Mode changes preserve the store and caller-owned live identity/history, and
    publish accumulated work when sending is enabled.
-4. Completed journal writes survive reopen; failed writes stay visibly unsaved
-   and retryable. Applied, persisted and delivered status remain distinct.
+4. Completed journal writes preserve integrated and unresolved outer data across
+   reopen, including no-event and mixed-message receives. Flush/close fences
+   cover that data; failed writes stay visibly unsaved and retryable. Applied,
+   persisted and delivered status remain distinct.
 5. No provider operation expires a replica or deletes canonical facts. Real
    provider tests pass without claiming the independent composition gates pass.
