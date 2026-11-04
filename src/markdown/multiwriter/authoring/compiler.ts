@@ -109,7 +109,8 @@ export class CommandCompiler {
   >();
   private readonly seenPlacements = new Set<Handle>();
   private readonly births = new Map<Handle, OccurrenceId>();
-  private readonly tree: ConstructionTree;
+  private tree_?: ConstructionTree;
+  private readonly root: ViewNode;
   constructor(
     readonly genesis: ReferenceGenesis,
     readonly ready: readonly ActionEnvelope[],
@@ -120,20 +121,35 @@ export class CommandCompiler {
     readonly draft: MultiwriterCommandDraft,
     root: ViewNode,
     native: NativeView,
+    initial?: ReturnType<typeof projectMarkdown>,
   ) {
+    this.root = root;
     this.intents = draft.compilerIntents();
+    const tapes = [...genesis.layout.allocations, ...ready.flatMap((a) => a.allocations)]
+      .filter((a) => a.type === 'tape')
+      .map((t) => t.id);
     this.native = new NativePlan(
-      [...genesis.layout.allocations, ...ready.flatMap((a) => a.allocations)]
-        .filter((a) => a.type === 'tape')
-        .map((t) => native.snapshot(t.id)),
+      initial
+        ? {
+            native,
+            tapes,
+            clients: new Set(
+              [...genesis.body.nativeManifest, ...ready.flatMap((a) => a.nativeManifest)].map(
+                (entry) => entry.native.client,
+              ),
+            ),
+          }
+        : tapes.map((tape) => native.snapshot(tape)),
     );
-    this.tree = new ConstructionTree(projectionDocument({ root, emptyRoot: null }));
+    if (initial) this.memo = { key: '0:0:0', value: initial };
+    else void this.tree;
     for (const [handle, view] of draft.origins) {
       this.ids.set(handle, view.origin.representative);
-      this.text.set(
-        handle,
-        view.fragments.filter((p) => p.visible).map((p) => ({ text: p.text, range: p.range })),
-      );
+      if (!initial)
+        this.text.set(
+          handle,
+          view.fragments.filter((p) => p.visible).map((p) => ({ text: p.text, range: p.range })),
+        );
     }
     for (const intent of this.intents) {
       if (intent.type === 'create') this.specs.set(intent.id, intent.spec);
@@ -141,6 +157,11 @@ export class CommandCompiler {
         this.firstPlaces.set(intent.id, intent);
       if (intent.type === 'split') this.splitNodes.add(intent.split.destination);
     }
+  }
+  private get tree(): ConstructionTree {
+    return (this.tree_ ??= new ConstructionTree(
+      projectionDocument({ root: this.root, emptyRoot: null }),
+    ));
   }
   private alloc<K extends ResourceKind>(kind: K): ResourceId<K> {
     if (this.ordinal >= 0xffffffff) throw new Error('Action resource ordinal overflow');
@@ -361,7 +382,16 @@ export class CommandCompiler {
     return { parent: parentId, predecessor };
   }
   private pieces(handle: Handle) {
-    return this.text.get(handle) ?? [];
+    let pieces = this.text.get(handle);
+    if (!pieces) {
+      pieces =
+        this.draft.origins
+          .get(handle)
+          ?.fragments.filter((p) => p.visible)
+          .map((p) => ({ text: p.text, range: p.range })) ?? [];
+      this.text.set(handle, pieces);
+    }
+    return pieces;
   }
   private length(handle: Handle) {
     return this.pieces(handle).reduce((n, p) => n + p.text.length, 0);
@@ -426,16 +456,16 @@ export class CommandCompiler {
     if (!text.length) return;
     this.id(handle);
     const point = this.point(handle, offset, affinity),
-      index = new CellIndex(this.native.all()),
+      index = new CellIndex([this.native.snapshot(point.tape)]),
       ownership = this.ownership();
     const neighbor = index.adjacent(point.slot.boundary, point.slot.side);
     let ranges: readonly NativeTextRange[] = [];
-    if (new HomeIndex(ownership.homeBindings, index).isReserved(neighbor.range)) {
-      for (const op of new HomeIndex(ownership.homeBindings, index).planTextInsertion(
-        point.slot,
-        text,
-        () => this.alloc('marker'),
-      ))
+    const homes = new HomeIndex(
+      ownership.homeBindings.filter((home) => same(home.cell.tape, point.tape)),
+      index,
+    );
+    if (homes.isReserved(neighbor.range)) {
+      for (const op of homes.planTextInsertion(point.slot, text, () => this.alloc('marker')))
         ranges = [...ranges, ...this.native.add(op)];
     } else ranges = this.native.add({ type: 'text', tape: point.tape, index: point.index, text });
     this.effects.push({ type: 'InsertText', ranges });

@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "baseline": "415363a4e85549a33eee3010d69e55ce6161002d",
+  "postM5": "c3a8812e8bbee69c805a50347dd29d11c076d2de",
+  "yjs": "13.6.33",
+  "sizes": [10, 150, 1000, 5000],
+  "steps": 24,
+  "warmup": 4,
+  "runs": 3,
+  "workload": "literal insertion into the first paragraph; offsets repeat 0, 1, 2",
+  "scope": "incremental native materialization and command overlays; full MW-13 acceptance remains incomplete"
+}

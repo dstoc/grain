@@ -9,7 +9,8 @@ import type { EditSelection } from '../../semantic/selection.js';
 import type { NodeId as Handle } from '../../semantic/types.js';
 import { actorId, assertCounter } from '../contracts.js';
 import type { ActionEnvelope, ActionId, GroupId, NodeId, ProjectionAddress } from '../contracts.js';
-import type { ReferenceGenesis, openReferenceDocument } from '../reference/document.js';
+import type { ReferenceGenesis } from '../reference/document.js';
+import type { AuthoringDocument } from './document.js';
 import { resourceKey } from '../layout/index.js';
 import { NativeTapeCache } from '../text/cache.js';
 import { textPoint, requestEmptyRootEdit } from '../projection/addresses.js';
@@ -75,16 +76,20 @@ export class LocalEditor {
       .map((byte) => byte.toString(16).padStart(2, '0'))
       .join(''),
   );
-  private native = new NativeTapeCache();
+  private native: NativeTapeCache;
+  private readonly nativeDecodeOperations?: number;
   private sequence = 0n;
   private editing = false;
   private closed = false;
   private applied = new Set<string>();
   constructor(
-    readonly document: ReturnType<typeof openReferenceDocument>,
+    readonly document: AuthoringDocument,
     private readonly genesis: ReferenceGenesis,
+    options: { readonly nativeDecodeOperations?: number } = {},
   ) {
     this.genesis = structuredClone(genesis);
+    this.nativeDecodeOperations = options.nativeDecodeOperations;
+    this.native = new NativeTapeCache(this.nativeDecodeOperations);
     this.native.apply('genesis', this.genesis.body);
   }
   get nativeClientId(): number {
@@ -109,7 +114,7 @@ export class LocalEditor {
     const keys = new Set(ready.map((a) => `${a.id.actor}:${a.id.sequence}`));
     if ([...this.applied].some((k) => !keys.has(k))) {
       this.native.destroy();
-      this.native = new NativeTapeCache();
+      this.native = new NativeTapeCache(this.nativeDecodeOperations);
       this.native.apply('genesis', this.genesis.body);
       this.applied.clear();
     }
@@ -140,7 +145,10 @@ export class LocalEditor {
       const p = status.publication,
         ready = this.document.store.snapshot().ready;
       this.sync(ready);
-      const draft = new MultiwriterCommandDraft(p.value.view.root);
+      const draft = new MultiwriterCommandDraft(
+        p.value.view.root,
+        this.document.commandMode === 'overlay',
+      );
       const beforeSelection = options.selectionBefore;
       const stablePoint = (point: EditSelection['anchor']): TextPoint => {
         const node = draft.origins.get(point.nodeId);
@@ -205,6 +213,7 @@ export class LocalEditor {
           draft,
           p.value.view.root,
           p.native,
+          this.document.commandMode === 'overlay' ? p.value : undefined,
         );
         c.run();
         return c;

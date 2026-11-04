@@ -19,18 +19,37 @@ export class NativePlan implements NativeView {
   private readonly tapes = new Map<string, TapeSnapshot>();
   private readonly client: number;
   private clock = 0;
-  constructor(snapshots: readonly TapeSnapshot[]) {
-    const clients = new Set(snapshots.flatMap((s) => s.parts.map((p) => p.native.client)));
+  private readonly source?: { native: NativeView; tapes: readonly TapeId[] };
+  constructor(
+    input:
+      | readonly TapeSnapshot[]
+      | {
+          native: NativeView;
+          tapes: readonly TapeId[];
+          clients: ReadonlySet<number>;
+        },
+  ) {
+    const lazy = 'native' in input ? input : undefined;
+    const snapshots = 'native' in input ? [] : input;
+    this.source = lazy;
+    const clients =
+      lazy?.clients ?? new Set(snapshots.flatMap((s) => s.parts.map((p) => p.native.client)));
     let client = 0;
     while (clients.has(client)) client++;
     this.client = client;
     for (const s of structuredClone(snapshots)) this.tapes.set(resourceKey(s.tape), s);
   }
   all() {
-    return [...this.tapes.values()].map((s) => structuredClone(s));
+    const result = new Map(this.source?.tapes.map((id) => [resourceKey(id), this.snapshot(id)]));
+    for (const [key, snapshot] of this.tapes) result.set(key, structuredClone(snapshot));
+    return [...result.values()];
   }
   snapshot(tape: TapeId): TapeSnapshot {
-    const s = this.tapes.get(resourceKey(tape));
+    let s = this.tapes.get(resourceKey(tape));
+    if (!s && this.source) {
+      s = this.source.native.snapshot(tape);
+      this.tapes.set(resourceKey(tape), s);
+    }
     if (!s) throw new Error('Unknown planned tape');
     return structuredClone(s);
   }
@@ -41,6 +60,11 @@ export class NativePlan implements NativeView {
       );
       if (p?.type === 'marker')
         return { tape: snapshot.tape, native: p.native, index: p.index, affinity: p.affinity };
+    }
+    if (this.source) {
+      const found = this.source.native.marker(id);
+      this.snapshot(found.tape);
+      return found;
     }
     throw new Error('Unknown planned marker');
   }

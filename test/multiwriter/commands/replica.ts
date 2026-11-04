@@ -3,6 +3,7 @@ import type { MarkdownNode } from '../../../src/markdown/node.js';
 import { isInlineNode } from '../../../src/markdown/node.js';
 import { NativeFixture } from '../../../src/markdown/multiwriter/ownership/test-fixtures.js';
 import { openReferenceDocument } from '../../../src/markdown/multiwriter/reference/document.js';
+import { openMaterializedDocument } from '../../../src/markdown/multiwriter/materialization/document.js';
 import type { ReferenceGenesis } from '../../../src/markdown/multiwriter/reference/document.js';
 import { LocalEditor } from '../../../src/markdown/multiwriter/authoring/index.js';
 import { serializeProjection } from '../../../src/markdown/multiwriter/projection/project.js';
@@ -69,8 +70,13 @@ export function commandGenesis(markdown = 'abcdef'): ReferenceGenesis {
     f.destroy();
   }
 }
-export function commandReplica(genesis: ReferenceGenesis, bytes?: Uint8Array) {
-  const document = openReferenceDocument(structuredClone(genesis));
+export function commandReplica(
+  genesis: ReferenceGenesis,
+  bytes?: Uint8Array,
+  implementation: 'reference' | 'materialized' = 'reference',
+) {
+  const open = implementation === 'materialized' ? openMaterializedDocument : openReferenceDocument;
+  const document = open(structuredClone(genesis));
   if (bytes) document.store.applyUpdate(bytes);
   let refresh = document.publication.refresh();
   while (refresh.state === 'deferred') refresh = refresh.continuation.resume();

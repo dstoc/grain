@@ -23,6 +23,8 @@ import { NativeFixture } from '../../../src/markdown/multiwriter/ownership/test-
 import { NativeTapeCache } from '../../../src/markdown/multiwriter/text/cache.js';
 import { DirectionalActionProvider } from '../../../src/markdown/multiwriter/providers/adapter.js';
 import { openReferenceDocument } from '../../../src/markdown/multiwriter/reference/document.js';
+import type { ReferenceGenesis } from '../../../src/markdown/multiwriter/reference/document.js';
+import type { AuthoringDocument } from '../../../src/markdown/multiwriter/authoring/document.js';
 import { serializeProjection } from '../../../src/markdown/multiwriter/projection/index.js';
 import type { ViewNode } from '../../../src/markdown/multiwriter/projection/index.js';
 import type { ContractTrace, Observation, TraceAction } from '../trace.js';
@@ -33,12 +35,24 @@ import { selectCarrier } from './carrier.js';
 
 const key = (id: ActionId) => `${id.actor}:${id.sequence}`;
 
+interface HeadlessDocument extends AuthoringDocument {
+  readonly publication: AuthoringDocument['publication'] & { evict?(): void };
+  nativeStates(): readonly Uint8Array[];
+  destroy(): void;
+}
+export interface ReferenceFactoryOptions {
+  readonly openDocument?: (genesis: ReferenceGenesis) => HeadlessDocument;
+  /** Observe each completed publication, including before final convergence. */
+  readonly onPublication?: (document: HeadlessDocument, genesis: ReferenceGenesis) => void;
+}
+
 /** Immutable common genesis and trace command definitions only. Expected observations
  * are deliberately not captured. Every open owns all maps, clients and namespaces.
  */
 export function referenceFactory(
   trace: ContractTrace,
   onAuthor?: (action: TraceAction) => void,
+  options: ReferenceFactoryOptions = {},
 ): ReplicaFactory {
   const commands = structuredClone(
     trace.steps.flatMap((s) => (s.type === 'author' ? [s.action] : [])),
@@ -90,7 +104,8 @@ export function referenceFactory(
         return action;
       }
 
-      let document = openReferenceDocument(config.genesis);
+      const openDocument = options.openDocument ?? openReferenceDocument;
+      let document: HeadlessDocument = openDocument(config.genesis);
       const journalBytes: Uint8Array[] = checkpoint ? [checkpoint.slice()] : [];
       let provider = await DirectionalActionProvider.open({
         store: document.store,
@@ -297,6 +312,7 @@ export function referenceFactory(
         let publication = document.publication.refresh();
         while (publication.state === 'deferred')
           publication = publication.continuation.resume(Number.MAX_SAFE_INTEGER);
+        options.onPublication?.(document, config.genesis);
         materializedVersion = document.store.factsVersion;
         cached = { snapshot, p: publication.value };
         return cached;
@@ -750,6 +766,7 @@ export function referenceFactory(
             return;
           }
           if (operation === 'drop-caches') {
+            document.publication.evict?.();
             native.destroy();
             native = freshNative();
             readyBytes = [];
@@ -762,7 +779,7 @@ export function referenceFactory(
           const bytes = document.store.encodeUpdate();
           await provider.close();
           document.destroy();
-          document = openReferenceDocument(config.genesis);
+          document = openDocument(config.genesis);
           provider = await DirectionalActionProvider.open({
             store: document.store,
             mode,
