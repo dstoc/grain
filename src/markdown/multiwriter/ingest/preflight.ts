@@ -56,9 +56,14 @@ export function* scanUpdate(bytes: Uint8Array, stage: 'carrier' | 'native'): Wor
     yield* scanUtf8(data, stage);
     return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(data);
   }
-  function* id(): Work<void> {
-    if ((yield* uint()) > 0xffffffff) fail('encoding', 'Invalid Yjs client');
-    yield* uint();
+  function* origin(client: number, clock: number): Work<void> {
+    const originClient = yield* uint();
+    if (originClient > 0xffffffff) fail('encoding', 'Invalid Yjs client');
+    const originClock = yield* uint();
+    // A client can only anchor to its earlier insertions, on either side.
+    // Cross-client prerequisites may legitimately arrive in a later update.
+    if (originClient === client && originClock >= clock)
+      fail('origin', 'Same-client Yjs origin must precede the inserted struct');
   }
   const clients = yield* uint();
   if (clients > bytes.length - offset) fail('encoding', 'Inflated Yjs client count');
@@ -86,8 +91,8 @@ export function* scanUpdate(bytes: Uint8Array, stage: 'carrier' | 'native'): Wor
           'content',
           'Only append-only carrier bytes/native string and marker insertions are permitted',
         );
-      if (info & 128) yield* id();
-      if (info & 64) yield* id();
+      if (info & 128) yield* origin(client, clock);
+      if (info & 64) yield* origin(client, clock);
       if (!(info & 192)) {
         if ((yield* uint()) !== 1) fail('parent', 'Nested shared types are prohibited');
         const name = yield* text();
