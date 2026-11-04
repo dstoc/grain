@@ -6,6 +6,7 @@
     "src/markdown/inline-parser/index.ts!",
     "src/markdown/canonical-actions.ts!",
     "src/markdown/multiwriter/contracts.ts!",
+    "src/markdown/multiwriter/visibility/index.ts!",
     "src/markdown/canonical-model.ts!",
     "src/markdown/block-serializer.ts!",
     "src/markdown/node.ts!",
