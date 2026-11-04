@@ -1,10 +1,10 @@
 # Proposal: MW-03 placement, slots, and flow layout
 
-**Issue:** grain/84.  
-**Status:** Proposed implementation plan; runtime work has not started.  
-**Source contract:** [MW-00 proposal, version 1](https://tines.tbuckley.dev/issues/prj_L8Cva7P0y96K81kq/81), especially §§4–6, 7.4, 8.2, and 14.  
-**Inspected branch:** `yjs` at `676d0314e259caa199605f5bfe3a9029c0941c54`, which includes the required `1d76dddbd8620c5dc92b02ccb1c45e67af7ddc46` baseline and MW-00.  
-**Implementation branch:** `feat/84-mw03-layout`; eventual implementation PR targets `yjs`.
+- **Issue:** grain/84.
+- **Status:** Approved for implementation on 2026-11-04. Implementation evidence is recorded on grain/84.
+- **Source contract:** [MW-00 proposal, version 1](https://tines.tbuckley.dev/issues/prj_L8Cva7P0y96K81kq/81), especially §§4–6, 7.4, 8.2, and 14.
+- **Inspected branch:** `yjs` at `676d0314e259caa199605f5bfe3a9029c0941c54`, which includes the required `1d76dddbd8620c5dc92b02ccb1c45e67af7ddc46` baseline and MW-00.
+- **Implementation branch:** `feat/84-mw03-layout`; eventual implementation PR targets `yjs`.
 
 ## Motivation
 
@@ -42,10 +42,10 @@ The primitive's result distinguishes applied placement, ineffective cycle, and i
 
 The fixed document root has no parent and cannot move. Every other node has one effective occurrence and raw parent. Use this role table independently of mutable presentation:
 
-| Parent raw role | Allowed child raw roles |
-| --- | --- |
+| Parent raw role                        | Allowed child raw roles   |
+| -------------------------------------- | ------------------------- |
 | `root`, `quote`, `list-item`, `inline` | `inline`, `list`, `quote` |
-| `list` | `list-item` |
+| `list`                                 | `list-item`               |
 
 A paragraph or code presentation can therefore retain raw children on an `inline` node. MW-06 lifts those children in the legal view. Layout does not mutate roles, normalize wrappers, or delete children when presentation changes.
 
@@ -76,7 +76,7 @@ Following flow-to-run and run-to-flow edges catches indirect cycles, including j
 
 A `JoinFlow` placement changes only containment. The source block's raw parent, home run, tape lineage, and slots survive. Return whether the flow is standalone or nested; MW-06 uses that state to suppress an absorbed header. Never supply a deletion tag as an input to cycle checking.
 
-A `MoveBlock` of an inline node also asserts its own flow's standalone placement at the same semantic prefix. Treat the block-edge request and standalone-flow request as constituent intentions, each checked in its typed domain. This follows the master proposal's rule that atomic action visibility does not imply every intention wins. In particular, this plan proposes that an ineffective cyclic block move can still assert a legal standalone flow. Include this combined case explicitly in review and tests; the current corpus does not settle it. The alternative is to gate the standalone assertion on a successful block move. That would couple intention success across domains and requires an explicit contract decision before implementation.
+A `MoveBlock` of an inline node also asserts its own flow's standalone placement at the same semantic prefix. Treat the block-edge request and standalone-flow request as constituent intentions, each checked in its typed domain. This follows the master proposal's rule that atomic action visibility does not imply every intention wins. The proposal review approved that an ineffective cyclic block move still asserts a legal standalone flow. Keep this combined case explicit in tests; the original corpus does not settle it. The alternative is to gate the standalone assertion on a successful block move. That would couple intention success across domains and requires an explicit contract decision before implementation.
 
 For the existing `move-overrides-join` fixture both requests succeed: Q returns to its block and renders once. In opposing joins, the earlier safe attachment remains and the later cyclic attachment is ineffective.
 
@@ -92,13 +92,13 @@ Slot lookup and traversal are pure reads. They allocate no shared resources, wri
 
 Suggested implementation files:
 
-| File under `src/markdown/multiwriter/layout/` | Responsibility |
-| --- | --- |
-| `forest.ts` | Shared typed edge replacement and ancestry checks |
-| `occurrences.ts` | Permanent predecessor traversal and effective filtering |
-| `layout.ts` | Block and inline domain policies, prefix steps, full reference replay, slot lookup |
-| `index.ts` | Narrow exports for MW-04, MW-06, and MW-08 |
-| `*.test.ts` | Kernel, ordering, roles, and ghost-address regressions |
+| File under `src/markdown/multiwriter/layout/` | Responsibility                                                                     |
+| --------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `forest.ts`                                   | Shared typed edge replacement and ancestry checks                                  |
+| `occurrences.ts`                              | Permanent predecessor traversal and effective filtering                            |
+| `layout.ts`                                   | Block and inline domain policies, prefix steps, full reference replay, slot lookup |
+| `index.ts`                                    | Narrow exports for MW-04, MW-06, and MW-08                                         |
+| `*.test.ts`                                   | Kernel, ordering, roles, and ghost-address regressions                             |
 
 Use structured `ResourceId` equality through canonical logical keys internally. Equivalent decoded ID objects must address the same resource; object reference equality is insufficient. Internal keys do not become a second wire format. Use effect order from `contracts.ts`; do not create another actor comparator.
 
@@ -132,7 +132,7 @@ Use [Kleppmann et al., Figures 1, 2, and 4 and §3.5](https://martin.kleppmann.c
 
 After implementation, run `npm run build`, focused `npm run test -- src/markdown/multiwriter/`, `npm run lint`, `npm run check:boundaries`, both Knip scripts, and `npm run format:check`. Run the remaining node suite if shared types or fixtures change. Browser tests become relevant if scope expands into editing or rendering; that expansion is not proposed here.
 
-For this proposal-only change, validate document links, source paths, fixture names, and consistency with the master proposal. No runtime test pass or convergence result is claimed.
+Proposal preparation validated document links, source paths, fixture names, and consistency with the master proposal. Those document checks did not establish runtime correctness or convergence.
 
 ## Suggested implementation shape
 
