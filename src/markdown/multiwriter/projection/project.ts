@@ -254,6 +254,12 @@ function project(input: ProjectionInput) {
   const nodes = new Map(ownership.nodeAllocations.map((node) => [resourceKey(node.id), node]));
   const rootAllocation = ownership.nodeAllocations.find((node) => node.role === 'root');
   if (!rootAllocation) throw new ProjectionError('Missing document root');
+  // Ownership is complete and immutable during projection. Read detached collections once.
+  const runById = new Map(ownership.runLayouts.map((run) => [resourceKey(run.run), run]));
+  const flowById = new Map(ownership.flowPlacements.map((flow) => [resourceKey(flow.flow), flow]));
+  const snapshotByTape = new Map(
+    snapshots.map((snapshot) => [resourceKey(snapshot.tape), snapshot]),
+  );
   function build(id: NodeId): MutableViewNode[] {
     const allocation = nodes.get(resourceKey(id));
     if (!allocation) throw new ProjectionError('Unknown raw child');
@@ -286,25 +292,18 @@ function project(input: ProjectionInput) {
     const children = ownership.children(id).flatMap(build);
     const absorbed =
       allocation.flow !== null &&
-      ownership.flowPlacements.some(
-        (flow) =>
-          resourceKey(flow.flow) === resourceKey(allocation.flow!) && flow.parent.type === 'flow',
-      );
+      flowById.get(resourceKey(allocation.flow))?.parent.type === 'flow';
     if (allocation.flow && !absorbed) {
       for (const entry of ownership.raw(allocation.flow)) {
         if (entry.type === 'slot') {
           const marker = input.native.marker(entry.slot.boundary);
-          const tape = snapshots.find(
-            (snapshot) => resourceKey(snapshot.tape) === resourceKey(marker.tape),
-          )!;
+          const tape = snapshotByTape.get(resourceKey(marker.tape))!;
           if (
             (marker.index === 0 && entry.slot.side === 'left') ||
             (marker.index === tape.length - 1 && entry.slot.side === 'right')
           )
             continue;
-          const run = ownership.runLayouts.find(
-            (run) => resourceKey(run.run) === resourceKey(entry.slot.run),
-          )!;
+          const run = runById.get(resourceKey(entry.slot.run))!;
           const origin = run.skeleton.find((range) =>
             ownership.containsBoundary(range, entry.slot.boundary),
           );

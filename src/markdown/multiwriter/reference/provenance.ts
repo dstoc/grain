@@ -74,26 +74,26 @@ export function reconstructProvenance(genesis: LayoutGenesis, actions: readonly 
     ...inputs.map(({ action, births }) => ({ ...action, births })),
   ].flatMap((batch) => {
     const homes = deriveHomes(batch, batch.effects);
+    const runs = new Map(
+      batch.allocations.filter((a) => a.type === 'run').map((a) => [resourceKey(a.id), a]),
+    );
+    const homeByFlow = new Map(
+      homes.map((home) => {
+        const run = runs.get(resourceKey(home.run));
+        if (!run) throw new ProvenanceError('Private home has no root');
+        return [resourceKey(run.flow), { home, root: run }] as const;
+      }),
+    );
     return batch.allocations.flatMap((node): BirthContent[] => {
       if (node.type !== 'node') return [];
       if (!node.flow) return [{ node: node.id, intervals: [] }];
-      const home = homes.find((home) =>
-        batch.allocations.some(
-          (entry) =>
-            entry.type === 'run' &&
-            resourceKey(entry.id) === resourceKey(home.run) &&
-            resourceKey(entry.flow) === resourceKey(node.flow!),
-        ),
-      );
-      if (!home) throw new ProvenanceError('Inline birth has no private home');
+      const binding = homeByFlow.get(resourceKey(node.flow));
+      if (!binding) throw new ProvenanceError('Inline birth has no private home');
+      const { home, root } = binding;
       const split = batch.effects.find(
         (effect) =>
           effect.type === 'SplitFlow' && resourceKey(effect.newNode) === resourceKey(node.id),
       );
-      const root = batch.allocations.find(
-        (entry) => entry.type === 'run' && resourceKey(entry.id) === resourceKey(home.run),
-      );
-      if (root?.type !== 'run') throw new ProvenanceError('Private home has no root');
       if (
         split?.type === 'SplitFlow' &&
         (resourceKey(split.newRun) !== resourceKey(root.id) ||
