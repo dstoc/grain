@@ -84,7 +84,9 @@ result includes `mixed-footprint` or `unresolved-footprint` and the selected gro
 Rejected requests leave stacks and canonical bytes unchanged.
 
 Selections retain both native gap neighbors, caller affinities, directional block
-endpoints, raw placement and host origins. `LocalEditOptions.hostRoot` identifies
+endpoints, raw placement and host origins. Commands without a new focus target
+preserve the supplied selection unless they explicitly clear it. Root history also
+retains before/after empty-root intent. `LocalEditOptions.hostRoot` identifies
 the initiating host independently of `scopeRoot`, which restricts the command.
 Both default to the document root. For a nested host, pass its current origin as
 `{ host }` to undo/redo. A different or deleted host refuses restoration.

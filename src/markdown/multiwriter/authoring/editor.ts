@@ -386,7 +386,8 @@ export class LocalEditor {
       ): StableSelection | undefined => {
         if (outcome.selection?.type === 'preserve-block-selection' && selectionBefore)
           return selectionBefore;
-        if (!outcome.focus) return undefined;
+        if (!outcome.focus)
+          return outcome.selection?.type === 'clear' ? undefined : selectionBefore;
         const target = compiler.focusTarget(
           outcome.focus.nodeId,
           outcome.focus.offset,
@@ -425,27 +426,28 @@ export class LocalEditor {
       // Capture against the exact author result before append. A later recovery
       // may include peer changes, so delayed numeric focus lowering is unsafe.
       let stagedAfter: StableSelection | undefined;
+      let emptyAfter = false;
       let footprintForHistory;
       try {
         if (register) {
-          const native = nativeView(this.native);
-          footprintForHistory = captureFootprint(envelope, p, native);
-          if (outcome.selection?.type === 'preserve-block-selection') stagedAfter = selectionBefore;
-          else if (outcome.focus) {
-            const actions = [...ready, envelope];
-            const staged = {
-              heads: [envelope.id],
+          const actions = [...ready, envelope],
+            native = nativeView(this.native);
+          const staged = {
+            heads: [envelope.id],
+            native,
+            value: projectMarkdown({
+              genesis: this.genesis.layout,
+              genesisManifest: this.genesis.body.nativeManifest,
+              initialProperties: this.genesis.initialProperties,
+              ...reconstructProvenance(this.genesis.layout, actions),
               native,
-              value: projectMarkdown({
-                genesis: this.genesis.layout,
-                genesisManifest: this.genesis.body.nativeManifest,
-                initialProperties: this.genesis.initialProperties,
-                ...reconstructProvenance(this.genesis.layout, actions),
-                native,
-              }),
-            };
-            stagedAfter = after(staged);
-          }
+            }),
+          };
+          footprintForHistory = captureFootprint(envelope, p, native);
+          stagedAfter = after(staged);
+          emptyAfter =
+            !!staged.value.view.emptyRoot &&
+            (!options.hostRoot || options.hostRoot === draft.rootId);
         }
       } catch (error) {
         prepared.abort();
@@ -458,6 +460,9 @@ export class LocalEditor {
           selectionBefore,
           selectionAfter: stagedAfter,
           footprint: footprintForHistory!,
+          emptyBefore:
+            !!p.value.view.emptyRoot && (!options.hostRoot || options.hostRoot === draft.rootId),
+          emptyAfter,
         });
       });
       const publication = this.refresh();

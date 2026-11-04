@@ -21,6 +21,8 @@ export interface ManagedEditOptions extends LocalEditOptions {
 export interface RetainedEdit {
   readonly envelope: ActionEnvelope;
   readonly footprint: Footprint;
+  readonly emptyBefore: boolean;
+  readonly emptyAfter: boolean;
   readonly selectionBefore?: StableSelection;
   readonly selectionAfter?: StableSelection;
 }
@@ -50,6 +52,7 @@ interface Group {
   before?: StableSelection;
   after?: StableSelection;
   emptyBefore: boolean;
+  emptyAfter: boolean;
   previousControl: ActionId | null;
 }
 export interface NavigationOptions {
@@ -186,7 +189,8 @@ export class HistorySession {
             actions: [],
             footprints: [],
             before: edit.selectionBefore && structuredClone(edit.selectionBefore),
-            emptyBefore: false,
+            emptyBefore: edit.emptyBefore,
+            emptyAfter: edit.emptyAfter,
             previousControl: null,
           };
           this.undoGroups.push(group);
@@ -196,6 +200,7 @@ export class HistorySession {
         this.redoGroups = [];
         this.resetNavigation = false;
         group.after = edit.selectionAfter && structuredClone(edit.selectionAfter);
+        group.emptyAfter = edit.emptyAfter;
         if (typing && edit.envelope.effects.every((e) => e.type === 'InsertText'))
           this.open = { group, at: now };
         else this.sealGroup();
@@ -221,12 +226,14 @@ export class HistorySession {
           actions: [structuredClone(edit.envelope.id)],
           footprints: [structuredClone(edit.footprint)],
           emptyBefore: true,
+          emptyAfter: edit.emptyAfter,
           previousControl: null,
         };
         this.undoGroups.push(group);
         this.redoGroups = [];
         this.resetNavigation = false;
         group.after = edit.selectionAfter && structuredClone(edit.selectionAfter);
+        group.emptyAfter = edit.emptyAfter;
         this.evict();
       });
 
@@ -287,7 +294,7 @@ export class HistorySession {
               result.publication,
               active ? group.after : group.before,
               options.host ?? result.publication.value.view.root.origin,
-              !active && group.emptyBefore,
+              active ? group.emptyAfter : group.emptyBefore,
             ),
             version: this.driver.version(),
             session: this.local,

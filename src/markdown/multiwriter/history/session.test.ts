@@ -413,3 +413,65 @@ test('typing without a collapsed saved selection stays isolated', () => {
   type(a, 'w', 3, { typing: true });
   expect(h.status().undo).toBe(4);
 });
+
+test('a no-focus task command preserves supplied directional selection and caller affinities on redo', () => {
+  const a = replica('- [ ] task'),
+    h = a.editor.session(),
+    nodeId = a.handle(a.nodes()[0]);
+  const before = {
+    anchor: { nodeId, offset: 4, affinity: 'left' as const },
+    focus: { nodeId, offset: 1, affinity: 'right' as const },
+  };
+  h.edit(
+    cycleTaskState,
+    { nodeId: a.handle(a.view().root.children[0].children[0]) },
+    { selectionBefore: before },
+  );
+  const undo = h.undo(),
+    redo = h.redo();
+  for (const result of [undo, redo])
+    expect(result).toMatchObject({
+      state: 'applied',
+      restoration: {
+        state: 'exact',
+        anchor: { offset: 4, affinity: 'left' },
+        focus: { offset: 1, affinity: 'right' },
+      },
+    });
+});
+
+test('explicit all-block deletion saves after empty-root intent even without a caller selection', () => {
+  const a = replica('gone'),
+    h = a.editor.session();
+  h.edit(({ draft }, id) => {
+    draft.deleteSubtree(id);
+    return { status: 'handled' };
+  }, a.handle(a.nodes()[0]));
+  expect(a.view().emptyRoot).not.toBeNull();
+  h.undo();
+  const redo = h.redo();
+  expect(redo).toMatchObject({ state: 'applied', restoration: { state: 'empty-root' } });
+  expect(a.markdown()).toBe('');
+});
+
+test('empty nested-host deletion never saves a document-root caret intent', () => {
+  const a = replica('> gone'),
+    h = a.editor.session(),
+    host = a.view().root.children[0],
+    hostRoot = a.handle(host);
+  h.edit(
+    ({ draft }, id) => {
+      draft.deleteSubtree(id);
+      return { status: 'handled' };
+    },
+    a.handle(a.nodes()[0]),
+    { hostRoot, scopeRoot: hostRoot },
+  );
+  h.undo({ host: host.origin });
+  expect(h.redo({ host: host.origin })).toMatchObject({
+    state: 'applied',
+    restoration: { state: 'unavailable' },
+  });
+  h.undo({ host: host.origin });
+  expect(h.redo()).toMatchObject({ state: 'applied', restoration: { state: 'unavailable' } });
+});
