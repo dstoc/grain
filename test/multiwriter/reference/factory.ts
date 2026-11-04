@@ -169,6 +169,10 @@ export function referenceFactory(
             }
           }
         aliases = structuredClone(config.seedAliases);
+        // All ready bodies have been applied above. Alias reconstruction only reads
+        // this native cache, so every insert on one tape sees the same snapshot.
+        // Keep this local to one materialization, including fresh checkpoint opens.
+        const tapeSnapshots = new Map<string, ReturnType<typeof native.snapshot>>();
         for (const action of snapshot.ready) {
           const command = commandByName.get(name(action.id));
           if (!command) throw new Error('No immutable alias definition');
@@ -266,7 +270,12 @@ export function referenceFactory(
               const birth = text[textIndex++];
               if (!birth) throw new Error('Missing inserted text');
               aliases.text.set(intent.cell, { tape: birth.tape, ...birth.native });
-              const snap = native.snapshot(birth.tape);
+              const tapeKey = resourceKey(birth.tape);
+              let snap = tapeSnapshots.get(tapeKey);
+              if (!snap) {
+                snap = native.snapshot(birth.tape);
+                tapeSnapshots.set(tapeKey, snap);
+              }
               const at = native.locate(birth.tape, birth.native);
               const left = snap.parts.findLast((v) => v.type === 'marker' && v.index < at)!;
               const right = snap.parts.find(
@@ -432,13 +441,19 @@ export function referenceFactory(
         const skeletons: Record<string, string[]> = {};
         for (const run of o.runLayouts)
           skeletons[alias(run.run)] = textEntries
-            .filter(([, r]) => run.skeleton.some((s) => o.contains(s, { tape: r.tape, native: r })))
-            .sort(([, a], [, b]) => {
-              const ai = run.skeleton.findIndex((s) => o.contains(s, { tape: a.tape, native: a })),
-                bi = run.skeleton.findIndex((s) => o.contains(s, { tape: b.tape, native: b }));
-              return ai - bi || native.locate(a.tape, a) - native.locate(b.tape, b);
+            .map(([name, range]) => ({
+              name,
+              range,
+              index: run.skeleton.findIndex((s) =>
+                o.contains(s, { tape: range.tape, native: range }),
+              ),
+            }))
+            .filter((entry) => entry.index >= 0)
+            .map((entry) => ({ ...entry, position: native.locate(entry.range.tape, entry.range) }))
+            .sort((a, b) => {
+              return a.index - b.index || a.position - b.position;
             })
-            .map(([n]) => n);
+            .map((entry) => entry.name);
         // The symbolic skeleton facet is sparse text-alias coverage. Full native
         // marker/home skeletons are checked independently by reconstruction controls.
         for (const run of Object.keys(skeletons)) if (!skeletons[run].length) delete skeletons[run];
