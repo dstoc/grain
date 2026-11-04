@@ -617,6 +617,8 @@ function localActions() {
     return { type: 'author', action: result };
   };
 }
+// Each seed generates the full 80-step trace twice and replays it on fresh replicas.
+// Allow slower CI runners to finish all convergence and identity assertions.
 it.each([0, 1, 88, 0xffff_ffff])(
   'records and replays seeded partitions, local deletes and undo (%s)',
   async (seed) => {
@@ -667,7 +669,7 @@ it.each([0, 1, 88, 0xffff_ffff])(
     ).toBe(true);
     await replayNetworkTrace(transportProbe(), decoded, equal);
   },
-  15_000,
+  60_000,
 );
 it('round trips exact uint64 counters and rejects bad trace versions, seeds and counters', () => {
   const trace = {

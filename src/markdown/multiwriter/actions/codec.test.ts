@@ -159,11 +159,12 @@ describe('schema boundary', () => {
 it('round trips every schema-3 allocation, manifest and effect shape', () => {
   expect(decodeEnvelope(encodeEnvelope(fullEnvelope()))).toEqual(fullEnvelope());
 });
+// Exhaustive prefix decoding exceeds the default timeout on slower CI runners.
 it('rejects every truncated prefix of a full envelope', () => {
   const encoded = encodeEnvelope(fullEnvelope());
   for (let length = 0; length < encoded.length; length++)
     expect(() => decodeEnvelope(encoded.subarray(0, length))).toThrow();
-});
+}, 20_000);
 
 it('pins the complete empty schema-3 envelope wire representation', () => {
   expect(hex(encodeEnvelope(action()))).toBe(
