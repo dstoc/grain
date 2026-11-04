@@ -765,7 +765,8 @@ it('connects the existing semantic trace runner to three ports without passing e
     ],
   };
   await runContractTrace(replicaTraceAdapter(guarded, equal), trace, equal);
-  expect(opened).toBe(4);
+  // Three live ports, one restart, and two independent observation checkpoints.
+  expect(opened).toBe(6);
 });
 
 it('preserves local redo across remote edits and restores the same native identities once', async () => {

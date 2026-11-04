@@ -46,6 +46,10 @@ export interface IngestValidatorOptions {
 export type IngestValidator = ActionStoreOptions['validate'] & {
   destroy(): void;
   setDecodeLimit(operations: number): void;
+  /** Detached native diagnostics, including the retained certification branch. */
+  encodeNativeState(): Uint8Array;
+  /** Withdraw a formerly certified branch when a late fork removes it from readiness. */
+  retainReady(actions: readonly ActionEnvelope[]): void;
 };
 export function createIngestValidator(options: IngestValidatorOptions): IngestValidator {
   const genesis = structuredClone(options.genesis);
@@ -168,6 +172,13 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
     }
   }
   return Object.assign(validate, {
+    encodeNativeState: () => cache?.encodeState() ?? Uint8Array.of(0, 0),
+    retainReady: (actions: readonly ActionEnvelope[]) => {
+      if (busy) throw new Error('Cancel ingest computation before withdrawing its native branch');
+      const ready = actions.map(encodeEnvelope);
+      if (certified.some((bytes) => !ready.some((value) => compareBytes(bytes, value) === 0)))
+        discard();
+    },
     setDecodeLimit: (operations: number) => {
       if (busy) throw new Error('Cancel ingest computation before changing native decode capacity');
       assertLimit(operations);

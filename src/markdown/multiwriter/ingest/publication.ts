@@ -9,7 +9,7 @@ import type { Computation, Work } from './work.js';
 
 export type NativeView = Pick<
   NativeTapeCache,
-  'snapshot' | 'range' | 'lookup' | 'marker' | 'locate'
+  'snapshot' | 'range' | 'lookup' | 'marker' | 'locate' | 'encodeState'
 >;
 /** Read-only facade: no native writer, Yjs doc, provider or destroy method escapes. */
 export function nativeView(cache: NativeTapeCache): NativeView {
@@ -19,6 +19,7 @@ export function nativeView(cache: NativeTapeCache): NativeView {
     lookup: cache.lookup.bind(cache),
     marker: cache.marker.bind(cache),
     locate: cache.locate.bind(cache),
+    encodeState: cache.encodeState.bind(cache),
   };
 }
 export interface PublishedProjection<T> {

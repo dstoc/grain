@@ -1,11 +1,21 @@
 import type {
   DeliveryRoute,
+  CellAssignment,
+  FlowPlacement,
+  NodeId,
+  RunLayout,
   NativeRange,
   RawRole,
   ResourceId,
   ResourceKind,
   SyncMode,
+  SemanticEffect,
+  InterpretationPacket,
 } from '../../src/markdown/multiwriter/contracts.js';
+import type { BlockPlacement } from '../../src/markdown/multiwriter/layout/index.js';
+import type { RawInlineEntry } from '../../src/markdown/multiwriter/ownership/index.js';
+import type { Visibility } from '../../src/markdown/multiwriter/visibility/index.js';
+import type { ProjectionView } from '../../src/markdown/multiwriter/projection/index.js';
 
 /** Symbolic IDs are stable aliases, not numeric offsets or a second wire format.
  * Adapters bind them to real genesis/action allocations and native identities.
@@ -71,7 +81,19 @@ export type Intent =
       readonly presentation: 'paragraph' | 'section' | 'code';
       readonly mask: readonly string[];
       readonly wrappers: readonly string[];
+      readonly placements?: readonly {
+        readonly node: string;
+        readonly parent: string;
+        readonly predecessor: string | null;
+      }[];
+      readonly synthesized?: readonly string[];
     }
+  | {
+      readonly type: 'properties';
+      readonly node: string;
+      readonly values: Extract<SemanticEffect, { type: 'SetProperties' }>['values'];
+    }
+  | { readonly type: 'parse'; readonly source: string; readonly packet: string }
   | {
       readonly type: 'control';
       readonly group: string;
@@ -90,6 +112,27 @@ export interface TraceAction {
 }
 /** Each specified facet is an exact comparison, including identity and order. */
 export interface Observation {
+  /** Integrated factories additionally expose the complete native-addressed raw state.
+   * Symbolic text facets below are not a substitute for empty cells/home/ghost coverage.
+   */
+  readonly raw?: {
+    readonly visibility: Visibility;
+    readonly projection: ProjectionView;
+    readonly packets: readonly InterpretationPacket[];
+    readonly children: readonly { readonly node: NodeId; readonly children: readonly NodeId[] }[];
+    readonly blocks: readonly {
+      readonly node: NodeId;
+      readonly placement: BlockPlacement | null;
+    }[];
+    readonly flows: readonly FlowPlacement[];
+    readonly runs: readonly RunLayout[];
+    readonly cells: readonly CellAssignment[];
+    readonly homes: readonly CellAssignment[];
+    readonly traversals: readonly {
+      readonly flow: FlowPlacement['flow'];
+      readonly entries: readonly RawInlineEntry[];
+    }[];
+  };
   /** Actual native IDs, not aliases. Bindings cannot change across peers or replay. */
   readonly nativeIds: Readonly<Record<string, NativeRange>>;
   readonly resources: Readonly<Record<string, ResourceId<ResourceKind>>>;
@@ -185,6 +228,8 @@ export interface TraceAdapter {
   initialize(trace: ContractTrace): void | Promise<void>;
   execute(step: Exclude<Step, { readonly type: 'expect' }>): void | Promise<void>;
   observe(peer: string): Observation | Promise<Observation>;
+  /** Reconstruct from complete retained bytes at explicit observation checkpoints. */
+  checkpoint?(peer: string): void | Promise<void>;
   dispose(): void | Promise<void>;
 }
 /** No reference reducer is hidden here. MW-07/08 supply the independent real adapter. */
@@ -264,6 +309,7 @@ export async function runContractTrace(
         await inspect(peer, `step ${index}`);
         continue;
       }
+      await adapter.checkpoint?.(step.peer);
       const actual = await inspect(step.peer, `step ${index}`);
       for (const facet of Object.keys(step.state) as (keyof Observation)[]) {
         equal(actual[facet], step.state[facet], `${trace.id} step ${index} ${step.peer}.${facet}`);

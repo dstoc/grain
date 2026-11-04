@@ -366,6 +366,12 @@ export class NativeTapeCache {
     return result;
   }
 
+  /** Detached diagnostics for identity/isolation checks; never a provider input. */
+  encodeState(): Uint8Array {
+    this.#open();
+    return Y.encodeStateAsUpdate(this.#doc);
+  }
+
   destroy(): void {
     if (this.#closed) return;
     this.#closed = true;

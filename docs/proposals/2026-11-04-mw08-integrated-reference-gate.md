@@ -1,9 +1,10 @@
 # Proposal: Compose the independent multiwriter reference gate
 
-**Status:** Proposal v1 approved in grain/89 comment `cmt_oFwDHQD1WC5RQ1qT`.
-Version 2 proposes the ordinary-birth coverage clarification below. That
-clarification requires shared-contract review before implementation resumes.
-No integrated acceptance result exists.
+**Status:** Proposal v1 and the version 2 constructor amendment are approved in
+grain/89 comments `cmt_oFwDHQD1WC5RQ1qT` and `cmt_qJAhzP3sw8xuDeDU`.
+Implementation evidence and the preservation argument are described in
+[the reference composition](../multiwriter-reference.md). Review acceptance and
+normal browser integration remain separate gates.
 
 **Authority:** The proposal attached to grain/81, version 2, especially §§4–8,
 12–14; the approved MW-04 private-home contract recorded on grain/85. The
@@ -58,10 +59,10 @@ production command or scoped-history acceptance.
 
 ## Proposal
 
-### Version 2 decision: define birth content by its constructor
+### Approved version 2 decision: define birth content by its constructor
 
-This amendment proposes one semantic rule. The rest of v1 remains approved.
-It does not claim an implementation or change any frozen corpus outcome.
+This amendment selects one semantic rule. The rest of v1 remains approved.
+Its approval changes no frozen corpus outcome. Implementation evidence is recorded separately.
 
 #### Reduced native witness
 
@@ -110,7 +111,7 @@ explicit split references. They own separate stores, validators and native
 publication caches. This is not a replacement for the independent ReplicaFactory,
 structural intent lowering or full frozen-corpus gate.
 
-#### Proposed rule requiring approval
+#### Approved constructor rule
 
 Define birth coverage from the retained **constructor**, rather than choosing an
 unspecified endpoint in the allocating action:
@@ -153,23 +154,18 @@ same group. No new field or such convention is implemented here.
 
 #### Scope, fallback, and verification
 
-Request shared-contract approval for the proposed rule, or a replacement rule
-that determines the ordinary witness and excludes the all-visits negative
-control. The affected contracts are MW-05 inherited birth-content membership,
-MW-06 `BirthContent`, and MW-08 reconstruction, with MW-04 constructor certification
-and MW-09 lowering as consumers. No shared context is edited by this proposal.
+Review approved the constructor rule in comment `cmt_qJAhzP3sw8xuDeDU`.
+The affected contracts are MW-05 inherited birth-content membership, MW-06
+`BirthContent`, and MW-08 reconstruction, with MW-04 certification and MW-09
+lowering as consumers. No shared context is edited by this proposal.
 
-Until the decision is approved, do not implement a general provenance fallback
-for this case. Preserve the witness and stop the integrated gate at the decision;
-do not quarantine otherwise valid existing envelopes merely to avoid the question.
-There is no browser cutover, canonical pruning or authority fallback.
-
-After approval, replace the witness's candidate-prefix parameter with the approved
-constructor rule in the reference assembler. Keep both the ordinary and split
-cases as fixed semantic regressions. Add prior/later same-action transfers, joined
-sources, inactive constructors, later native insertions, exact dependency closures
-and fresh reconstruction before completing the independent factory. Keep v1's
-full corpus, matrix, generator, history/retention and preservation obligations.
+The ordinary witness must leave `bc` visible at Q; an explicit SplitFlow masks it.
+Later visits must not broaden coverage. The implementation must retain fixed
+regressions for prior/later transfers, joined sources, inactive constructors,
+later insertion, exact dependency closures and fresh reconstruction. V1's corpus,
+matrix, generator, history/retention and preservation obligations remain in force.
+A new ambiguity still requires a reduced witness and review. No browser cutover,
+canonical pruning or authority fallback is authorized.
 
 The clarification has no deployed migration in this patch because no runtime rule
 changes. After adoption, changing this coverage rule can change deletion results
@@ -242,18 +238,19 @@ cells remain in raw traversal and are omitted only from content adjacency. Do
 not reintroduce old sentinel-capturing fixtures or mix home conventions.
 
 For `BirthContent`, reconstruct each allocating action's exact causal view,
-including its same-action structural effect prefixes. Record the permanent
-intervals initially assigned to each newly allocated node after its birth's
-structural construction, including transferred split content and its private
-home. Later transfers in other actions do not change this coverage. Wrappers
+including its same-action structural effect prefixes. Record each inline birth's full fresh private home. For an explicit SplitFlow
+birth, additionally retain exactly its certified constructor component from the
+root skeleton. Ordinary transfers and joins add no birth coverage, before or
+after that constructor. Retraction and packet loss do not erase the retained
+constructor facts. Wrappers
 without owned inline content have empty coverage. Preserve all retained nodes,
 including retracted and packet-ineligible births. Membership uses permanent
 intervals, so later insertions inside them are covered. Final merged owners,
 visible strings and historical source names cannot substitute for this replay.
 
-Test a node receiving content and then transferring it away in its birth action;
-make the construction prefix explicit rather than using the final owner as a
-shortcut. If the current envelope effects do not identify that birth construction
+Test a node receiving content and then transferring it away in its birth action.
+The approved constructor rule distinguishes ordinary creation from SplitFlow;
+never use the final owner or the union of all visits as a shortcut. If the current envelope effects do not identify that birth construction
 uniquely, stop with a reduced witness for review. Do not silently broaden coverage
 to every interval the node ever touches. Memoization may key on exact immutable
 birth closure, but eviction must yield the same result from retained facts.

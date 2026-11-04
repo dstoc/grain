@@ -218,7 +218,6 @@ it('validates only complete causal closure, with no concurrent or future actions
   value.snapshot();
   expect(validate.mock.calls).toEqual([
     [a1, { dependencies: [] }],
-    [b1, { dependencies: [] }],
     [a2, { dependencies: [a1] }],
   ]);
   value.destroy();
@@ -333,8 +332,18 @@ it('does not let a later control alter earlier author-local validation', () => {
   value.snapshot();
   value.append(undo);
   value.snapshot();
-  expect(seen).toEqual([[actionKey(birth.id)], [actionKey(birth.id)]]);
+  expect(seen).toEqual([[actionKey(birth.id)]]);
   expect(status(value, edit.id)).toEqual({ state: 'ready' });
+  const fresh = store({
+    validate: (entry, context) => {
+      if (entry.id.actor === B) seen.push(context.dependencies.map((dep) => actionKey(dep.id)));
+      return null;
+    },
+  });
+  fresh.applyUpdate(value.encodeUpdate());
+  expect(status(fresh, edit.id)).toEqual({ state: 'ready' });
+  expect(seen).toEqual([[actionKey(birth.id)], [actionKey(birth.id)]]);
+  fresh.destroy();
   value.destroy();
 });
 
@@ -569,4 +578,37 @@ it('rejects nonbinary canonical entries before changing the current ready set', 
   expect(value.snapshot()).toMatchObject({ integrity: true, ready: [action()], diagnostics: [] });
   badPeer.destroy();
   value.destroy();
+});
+
+it('local preflight agrees with ready admission and authors no carrier facts', () => {
+  const first = action();
+  const candidates = [
+    action(A, 2n, [first]),
+    { ...action(A, 2n, [first]), lamport: 8n },
+    action(A, 3n, [first]),
+    { ...action(B), documentId: 'different' },
+    {
+      ...action(B),
+      effects: [{ type: 'SetProperties' as const, node: resource('node', 999), values: {} }],
+    },
+  ];
+  for (const candidate of candidates) {
+    const local = store(),
+      remote = store();
+    local.append(first);
+    remote.append(first);
+    const before = local.encodeUpdate();
+    const events = vi.fn();
+    const stop = local.onUpdate(events);
+    const reason = local.checkLocal(candidate);
+    expect(local.encodeUpdate()).toEqual(before);
+    expect(events).not.toHaveBeenCalled();
+    remote.append(candidate);
+    expect(status(remote, candidate.id)).toEqual(
+      reason ? { state: 'quarantined', reason } : { state: 'ready' },
+    );
+    stop();
+    local.destroy();
+    remote.destroy();
+  }
 });
