@@ -64,6 +64,12 @@ export interface BootstrapOpenOptions extends Omit<ProviderOptions, 'store'> {
  * Authoring stays suspended until this resolves. Navigation/writer state belongs to callers.
  */
 export async function openBootstrap(options: BootstrapOpenOptions) {
+  if (
+    options.materialization !== undefined &&
+    options.materialization !== 'reference' &&
+    options.materialization !== 'incremental-native'
+  )
+    throw new Error('Unknown local materialization implementation');
   const bytes = options.genesis.slice();
   requireSameGenesis(options.persistedGenesis, bytes);
   const limits = bootstrapLimits(options.bootstrapLimits);
