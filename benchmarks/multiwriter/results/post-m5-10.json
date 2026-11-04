@@ -1,0 +1,223 @@
+{
+  "baseline": "c3a8812e8bbee69c805a50347dd29d11c076d2de",
+  "candidate": "96c0df224b5348daeb1a400b7f4774a130cb68ce",
+  "dirty": "",
+  "runtime": "v26.13.0",
+  "yjs": "13.6.33",
+  "host": {
+    "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+    "platform": "linux",
+    "release": "6.17.7-300.fc43.x86_64"
+  },
+  "size": 10,
+  "runs": 3,
+  "sourceFixtureReport": {
+    "baseline": "415363a4e85549a33eee3010d69e55ce6161002d",
+    "candidate": "64e92e8dafb074765d7058536b8dd3f8e800c8fa"
+  },
+  "models": {
+    "baseline": "schema-2 authority and native undo",
+    "candidate": "schema-3 independent action envelopes with full reference semantic fallback"
+  },
+  "complete": true,
+  "samples": [
+    {
+      "pair": 0,
+      "mode": "command",
+      "implementation": "schema2-postM5",
+      "size": 10,
+      "steps": 24,
+      "warmup": 4,
+      "latencyMs": {
+        "samples": [
+          0.8730049999999778, 0.657701000000003, 0.6689210000000116, 0.6682500000000005,
+          0.7190209999999979, 0.8244239999999934, 0.912824999999998, 0.9246550000000013,
+          0.7974329999999838, 0.8499229999999898, 0.8662940000000106, 0.8811239999999998,
+          1.3938829999999882, 0.768732, 1.2838710000000049, 0.5309280000000172, 0.5625589999999931,
+          0.4853160000000116, 0.5935690000000022, 0.5968900000000019
+        ],
+        "p50": 0.768732,
+        "p95": 1.2838710000000049
+      },
+      "canonicalCheckpointBytes": 12961,
+      "processHeapDelta": 2138248,
+      "fixtureSha256": "33fa96ff057f6c14d565353a366bee8d901648d91c7a7282693dc016bf7744f0",
+      "markdownSha256": "5692f0470308bce006633e20ef78e26a4fe304e83e6f26790cb3e165800b3bd4",
+      "verified": true,
+      "model": "schema-2 authority and native history; not an independent multiwriter algorithm"
+    },
+    {
+      "pair": 0,
+      "mode": "command",
+      "implementation": "materialized",
+      "size": 10,
+      "steps": 24,
+      "warmup": 4,
+      "coldMs": 14.784200999999968,
+      "latencyMs": {
+        "samples": [
+          25.448395000000005, 23.30785000000003, 20.678517999999997, 21.45348899999999,
+          24.116593999999964, 22.824583000000075, 20.584614999999985, 20.97724100000005,
+          21.087824999999953, 21.09479399999998, 22.388664999999946, 22.472496999999976,
+          22.906415000000038, 25.216571000000044, 26.155677999999966, 30.222742999999923,
+          21.738685000000032, 22.55823799999996, 23.627854999999954, 24.55033100000003
+        ],
+        "p50": 22.55823799999996,
+        "p95": 26.155677999999966
+      },
+      "diagnostics": {
+        "nativeBodiesIntegrated": 25,
+        "tapesIndexed": 34,
+        "partsIndexed": 278,
+        "nativeRebuilds": 0,
+        "fullProjections": 25,
+        "unchangedRefreshes": 0,
+        "discardedNativeCandidates": 0
+      },
+      "canonicalBytes": 15199,
+      "envelopeBytes": 14969,
+      "embeddedNativeUpdateBytes": 576,
+      "genesisBytes": 45740,
+      "nativeBytes": 4757,
+      "processHeapDelta": 4986656,
+      "storageJournalBytes": null,
+      "localHistoryBytes": null,
+      "consolidation": null,
+      "verified": true,
+      "markdownSha256": "5692f0470308bce006633e20ef78e26a4fe304e83e6f26790cb3e165800b3bd4",
+      "fixtureSha256": "33fa96ff057f6c14d565353a366bee8d901648d91c7a7282693dc016bf7744f0"
+    },
+    {
+      "pair": 1,
+      "mode": "command",
+      "implementation": "materialized",
+      "size": 10,
+      "steps": 24,
+      "warmup": 4,
+      "coldMs": 14.520007000000021,
+      "latencyMs": {
+        "samples": [
+          24.591721000000007, 24.952586999999994, 18.874938000000043, 17.865071, 19.01670999999999,
+          18.960158999999976, 18.824866999999983, 18.927088000000026, 20.801049000000035,
+          19.99825599999997, 20.977351999999996, 20.86777100000006, 21.053403000000003,
+          21.026933999999983, 23.068895999999995, 23.164077999999904, 24.248475999999982,
+          24.240545999999995, 23.176467000000002, 26.147066999999993
+        ],
+        "p50": 20.977351999999996,
+        "p95": 24.952586999999994
+      },
+      "diagnostics": {
+        "nativeBodiesIntegrated": 25,
+        "tapesIndexed": 34,
+        "partsIndexed": 278,
+        "nativeRebuilds": 0,
+        "fullProjections": 25,
+        "unchangedRefreshes": 0,
+        "discardedNativeCandidates": 0
+      },
+      "canonicalBytes": 15199,
+      "envelopeBytes": 14969,
+      "embeddedNativeUpdateBytes": 576,
+      "genesisBytes": 45740,
+      "nativeBytes": 4757,
+      "processHeapDelta": 4975752,
+      "storageJournalBytes": null,
+      "localHistoryBytes": null,
+      "consolidation": null,
+      "verified": true,
+      "markdownSha256": "5692f0470308bce006633e20ef78e26a4fe304e83e6f26790cb3e165800b3bd4",
+      "fixtureSha256": "33fa96ff057f6c14d565353a366bee8d901648d91c7a7282693dc016bf7744f0"
+    },
+    {
+      "pair": 1,
+      "mode": "command",
+      "implementation": "schema2-postM5",
+      "size": 10,
+      "steps": 24,
+      "warmup": 4,
+      "latencyMs": {
+        "samples": [
+          0.9113040000000012, 0.6894819999999982, 0.65270000000001, 0.6596010000000092,
+          1.2376509999999996, 1.0503870000000006, 0.9219850000000065, 0.8172939999999755,
+          0.7498229999999921, 0.7835619999999892, 0.9099950000000092, 0.8965940000000217,
+          0.9024259999999913, 1.4525329999999883, 0.5359990000000039, 0.5149389999999983,
+          0.5576399999999921, 0.47145799999998417, 0.5124979999999937, 0.48812800000001744
+        ],
+        "p50": 0.7498229999999921,
+        "p95": 1.2376509999999996
+      },
+      "canonicalCheckpointBytes": 12961,
+      "processHeapDelta": 2167456,
+      "fixtureSha256": "33fa96ff057f6c14d565353a366bee8d901648d91c7a7282693dc016bf7744f0",
+      "markdownSha256": "5692f0470308bce006633e20ef78e26a4fe304e83e6f26790cb3e165800b3bd4",
+      "verified": true,
+      "model": "schema-2 authority and native history; not an independent multiwriter algorithm"
+    },
+    {
+      "pair": 2,
+      "mode": "command",
+      "implementation": "schema2-postM5",
+      "size": 10,
+      "steps": 24,
+      "warmup": 4,
+      "latencyMs": {
+        "samples": [
+          0.9308049999999923, 0.7680030000000215, 0.6349299999999971, 0.7415220000000033,
+          0.7444519999999955, 1.1039679999999805, 0.9832960000000242, 0.8403840000000002,
+          0.7860320000000058, 0.7788630000000012, 0.9509649999999965, 0.9428760000000125,
+          0.9138049999999964, 0.9241949999999974, 1.3605019999999968, 0.5258990000000097,
+          0.5339190000000258, 0.7169810000000041, 1.0821170000000109, 0.6286910000000034
+        ],
+        "p50": 0.7860320000000058,
+        "p95": 1.1039679999999805
+      },
+      "canonicalCheckpointBytes": 12750,
+      "processHeapDelta": 2328048,
+      "fixtureSha256": "33fa96ff057f6c14d565353a366bee8d901648d91c7a7282693dc016bf7744f0",
+      "markdownSha256": "5692f0470308bce006633e20ef78e26a4fe304e83e6f26790cb3e165800b3bd4",
+      "verified": true,
+      "model": "schema-2 authority and native history; not an independent multiwriter algorithm"
+    },
+    {
+      "pair": 2,
+      "mode": "command",
+      "implementation": "materialized",
+      "size": 10,
+      "steps": 24,
+      "warmup": 4,
+      "coldMs": 15.059165000000007,
+      "latencyMs": {
+        "samples": [
+          25.22628100000003, 24.088603000000035, 19.887464000000023, 21.858565999999996,
+          21.353578999999968, 22.26002299999999, 20.03389700000008, 19.27168400000005,
+          20.601105000000075, 20.832160999999928, 22.55674799999997, 25.557306999999923,
+          23.80162800000005, 23.753588000000036, 22.52552800000001, 23.879329000000098,
+          24.317607000000066, 25.824401999999964, 28.926912000000016, 30.380845000000022
+        ],
+        "p50": 22.55674799999997,
+        "p95": 28.926912000000016
+      },
+      "diagnostics": {
+        "nativeBodiesIntegrated": 25,
+        "tapesIndexed": 34,
+        "partsIndexed": 278,
+        "nativeRebuilds": 0,
+        "fullProjections": 25,
+        "unchangedRefreshes": 0,
+        "discardedNativeCandidates": 0
+      },
+      "canonicalBytes": 15199,
+      "envelopeBytes": 14969,
+      "embeddedNativeUpdateBytes": 576,
+      "genesisBytes": 45740,
+      "nativeBytes": 4757,
+      "processHeapDelta": 4969480,
+      "storageJournalBytes": null,
+      "localHistoryBytes": null,
+      "consolidation": null,
+      "verified": true,
+      "markdownSha256": "5692f0470308bce006633e20ef78e26a4fe304e83e6f26790cb3e165800b3bd4",
+      "fixtureSha256": "33fa96ff057f6c14d565353a366bee8d901648d91c7a7282693dc016bf7744f0"
+    }
+  ]
+}

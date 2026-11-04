@@ -46,6 +46,35 @@ consolidation fields null. A separate integration branch probes actual MW-18
 consolidation; that probe does not supply per-instance MW-10 history or performance
 acceptance. A development 1,000-paragraph/two-action smoke run also completed, but
 is not a matched 24-action scale comparison. No 5,000-paragraph measurement,
-schema-2 post-M5 comparison, mixed 10,000-action trace, strict one-way/catch-up
+mixed 10,000-action trace, strict one-way/catch-up
 performance result, or complete cache/history storage accounting was completed.
 Do not extrapolate these short runs to those workloads.
+
+## Post-M5 semantic control
+
+The additional paired control compares exact post-M5 schema-2 commit
+`c3a8812e8bbee69c805a50347dd29d11c076d2de` with native-stage commit
+`96c0df224b5348daeb1a400b7f4774a130cb68ce`. It reuses the same fixture and
+24-action literal script, with four warm-up actions and three alternating
+fresh-process pairs. The candidate and historical model both matched the final
+Markdown. The historical source received no algorithm or capacity patch.
+Environment and concurrent correctness workers were the same as above.
+
+| Paragraphs | Post-M5 p50 | Post-M5 p95 | Native stage p50 | Native stage p95 |
+| ---------- | ----------- | ----------- | ---------------- | ---------------- |
+| 10         | 0.769       | 1.238       | 22.557           | 26.156           |
+| 150        | 0.556       | 0.996       | 584.458          | 639.779          |
+
+Times are milliseconds and are medians of per-process percentiles. These models
+have different capabilities: schema 2 admits edits through an authority and uses
+native history, while schema 3 retains independent immutable action envelopes.
+This compares the same literal task, not offline merge behavior or identical
+wire data. The stage is far slower than this historical control and is not ready
+for browser cutover. Full-readiness, author-certification and semantic-replay work
+remain unoptimized.
+
+[post-m5-10.json](post-m5-10.json) and [post-m5-150.json](post-m5-150.json) retain
+all raw samples and fixture hashes. The schema-2 checkpoint includes its initial
+document, unlike the separate schema-3 genesis/actionDoc fields. The individual
+byte fields are not equivalent storage categories. No cache-only heap, production
+history, 10k trace or structural-performance conclusion is drawn from this control.
