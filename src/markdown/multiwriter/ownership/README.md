@@ -73,8 +73,10 @@ an editable document.
 The adapter uses only MW-15's isolated dependency closure plus the candidate.
 It checks home uniqueness, interior captures, non-overlapping skeletons, authored
 basis occurrences and captured components, and canonical empty cuts at each
-effect prefix. An empty basis must omit no ordinary content cell, including
-joined or text-free interior content. The new root captures no source content.
+effect prefix. Nonempty basis cells must follow the cut source's current top-level
+content traversal in adjacent order, including joined flows. Only reserved home
+cells leave this adjacency check. An empty basis must omit no ordinary content
+cell, including joined or text-free interior content. The new root captures no source content.
 Same-action dependent splits must follow their source's creating effect.
 
 Native manifests must leave text-free home edges. Edge typing also needs two

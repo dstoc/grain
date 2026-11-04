@@ -390,6 +390,27 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
                 throw new Error('Basis occurrence differs from author ownership');
             }
           const basis = effect.basis.ranges.flatMap((member) => index.range(member.range));
+          // Certify against the pre-effect author traversal, not just two supplied
+          // descriptions of the capture. Joined flows share their top-level source.
+          // Merged replay below must still allow concurrent component shortening.
+          const block = layout.flowBlock(sourceRun.flow);
+          const source = layout.flowPlacements.find(
+            (placement) =>
+              placement.parent.type === 'block' && sameId(placement.parent.node, block),
+          )!;
+          const current = rawCells(source.flow).filter(
+            (assignment) => !homeIndex.isReserved(assignment.cell),
+          );
+          const positions = new Map(
+            current.map((assignment, position) => [cellKey(assignment.cell), position]),
+          );
+          let previous: number | undefined;
+          for (const cell of basis) {
+            const position = positions.get(cellKey(cell.range));
+            if (position === undefined || (previous !== undefined && position !== previous + 1))
+              throw new Error('Basis is not contiguous in author source flow traversal');
+            previous = position;
+          }
           const cut = cutPosition(effect, index, homeIndex);
           const expected = (
             effect.retainedSide === 'left' ? basis.slice(cut) : basis.slice(0, cut)

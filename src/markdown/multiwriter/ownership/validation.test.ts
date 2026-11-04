@@ -68,6 +68,116 @@ function rejected(f: NativeFixture, action: ActionEnvelope, dependencies: readon
     ),
   ).toBe(false);
 }
+it.each(
+  (['left', 'right'] as const).flatMap((side) =>
+    (['ordered', 'joined', 'disconnected', 'reordered'] as const).map((variant) => ({
+      side,
+      variant,
+    })),
+  ),
+)('checks $variant author basis through MW-01/MW-15 ($side retained)', ({ side, variant }) => {
+  const f = new NativeFixture([
+    { id: 'root', parent: null, role: 'root' },
+    {
+      id: 'P',
+      parent: 'root',
+      role: 'inline',
+      flow: 'fP',
+      run: 'rP',
+      tape: 'tP',
+      cells: [...'abc'].map((text, i) => ({ id: `P${i}`, text })),
+    },
+    {
+      id: 'Q',
+      parent: 'root',
+      role: 'inline',
+      flow: 'fQ',
+      run: 'rQ',
+      tape: 'tQ',
+      cells: [{ id: 'Q0', text: 'X' }],
+    },
+  ]);
+  cleanup.push(() => f.destroy());
+  const dependencies = variant === 'joined' ? ['A1'] : [];
+  if (variant === 'joined') f.author('A1', (f) => [f.join('fQ', 'P:end')]);
+  const basis =
+    variant === 'reordered'
+      ? ['P0', 'P2', 'P1'].map((name) => ({
+          range: f.ranges.get(name)!,
+          occurrence: f.id('P:birth', 'occurrence'),
+        }))
+      : (variant === 'ordered' ? ['P'] : ['P', 'Q']).map((name) => ({
+          range: f.contentRanges.get(name)![0],
+          occurrence: f.id(`${name}:birth`, 'occurrence'),
+        }));
+  const name = variant === 'joined' ? 'A2' : 'A1';
+  f.author(
+    name,
+    (f) => [f.split('P', 'S', 'P0', side, 'root', side === 'left' ? 'P:birth' : null, basis)],
+    dependencies,
+    BigInt(dependencies.length + 1),
+  );
+  if (variant === 'disconnected' || variant === 'reordered') {
+    rejected(f, f.envelope(name), dependencies);
+  } else {
+    const peer = store(f);
+    for (const dependency of dependencies) peer.append(f.envelope(dependency));
+    peer.append(f.envelope(name));
+    expect(peer.snapshot().actions.every((entry) => entry.readiness.state === 'ready')).toBe(true);
+    const { result } = project(f, peer);
+    const suffix = variant === 'joined' ? 'bcX' : 'bc';
+    expect(f.text(result, 'fP')).toBe(side === 'left' ? 'a' : suffix);
+    expect(f.text(result, 'fS')).toBe(side === 'left' ? suffix : 'a');
+  }
+});
+
+it.each(['left', 'right'] as const)(
+  'certifies the current traversal after a same-flow transfer (%s retained)',
+  (side) => {
+    const f = fixture([...'abc'].map((text, i) => ({ id: `P${i}`, text })));
+    f.author('A1', (f) => [f.transfer(['P1'], 'P:end', 'rT')]);
+    const before = f.reduce('A');
+    expect(f.text(before, 'fP')).toBe('acb');
+    const basis = ['P0', 'P2', 'P1'].map((name) => ({
+      range: f.ranges.get(name)!,
+      occurrence: before.tokenOwners(f.aliases.get(name)!)[0].occurrence,
+    }));
+    f.author(
+      'A2',
+      (f) => [f.split('P', 'S', 'P0', side, 'root', side === 'left' ? 'P:birth' : null, basis)],
+      ['A1'],
+      2n,
+    );
+    const peer = store(f);
+    peer.append(f.envelope('A1'));
+    peer.append(f.envelope('A2'));
+    expect(peer.snapshot().ready).toHaveLength(2);
+    const { result } = project(f, peer);
+    expect(f.text(result, 'fP')).toBe(side === 'left' ? 'a' : 'cb');
+    expect(f.text(result, 'fS')).toBe(side === 'left' ? 'cb' : 'a');
+    const reopened = store(f);
+    reopened.applyUpdate(peer.encodeUpdate());
+    expect(project(f, reopened).result.assignments).toEqual(result.assignments);
+  },
+);
+
+it.each(['b', ''])(
+  'rejects a basis that skips an intervening ordinary cell containing %j',
+  (text) => {
+    const f = fixture([
+      { id: 'P0', text: 'a' },
+      { id: 'P1', text },
+      { id: 'P2', text: 'c' },
+    ]);
+    const basis = ['P0', 'P2'].map((name) => ({
+      range: f.ranges.get(name)!,
+      occurrence: f.id('P:birth', 'occurrence'),
+    }));
+    f.author('A1', (f) => [f.split('P', 'S', 'P0', 'left', 'root', 'P:birth', basis)]);
+    rejected(f, f.envelope('A1'));
+  },
+);
+
 it.each([
   'missing-home',
   'foreign-home',
