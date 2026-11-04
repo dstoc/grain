@@ -1,3 +1,4 @@
+import { DEFAULT_INGEST_LIMITS, IngestCapacityError, assertLimit } from '../ingest/work.js';
 import { ActionStore } from '../actions/store.js';
 import { SYNC_DIRECTIONS } from '../contracts.js';
 import type { DeliveryRoute, PublicationStatus, SyncMode } from '../contracts.js';
@@ -7,8 +8,19 @@ export interface ProviderOptions {
   readonly store: ActionStore;
   readonly journal: ActionJournal;
   readonly mode: SyncMode;
+  readonly limits?: Partial<ProviderLimits>;
+  readonly restoreOperations?: number;
   readonly onError?: (failure: ProviderFailure) => void;
 }
+
+export interface ProviderLimits {
+  readonly messageBytes: number;
+  readonly persistenceBytes: number;
+}
+export type ReceiveResult =
+  | { readonly state: 'admitted' }
+  | { readonly state: 'disabled' }
+  | { readonly state: 'backpressured'; readonly error: IngestCapacityError };
 
 /** Captured after a successful host publication, never inferred from remote receipt. */
 export interface LocalPublication {
@@ -39,12 +51,22 @@ export class DirectionalActionProvider {
   private stopped = false;
   private journalClosed = false;
   private nextMessage = 0;
+  private queuedBytes = 0;
+  private limits: ProviderLimits;
   private readonly instanceId = crypto.randomUUID();
 
   /** Host must suspend authoring until open resolves. Failed replay fails opening. */
   static async open(options: ProviderOptions): Promise<DirectionalActionProvider> {
     try {
+      const operations = options.restoreOperations ?? DEFAULT_INGEST_LIMITS.operations;
+      assertLimit(operations);
+      if (!operations) throw new IngestCapacityError('validation', 'restoreOperations', 1);
       for (const update of await options.journal.read()) options.store.applyUpdate(update);
+      let readiness = options.store.compute(operations);
+      while (readiness.state === 'deferred') {
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        readiness = readiness.continuation.resume(operations);
+      }
       return new DirectionalActionProvider(options);
     } catch (error) {
       options.journal.close();
@@ -54,6 +76,13 @@ export class DirectionalActionProvider {
 
   private constructor(private readonly options: ProviderOptions) {
     this.mode = options.mode;
+    this.limits = {
+      messageBytes: DEFAULT_INGEST_LIMITS.messageBytes,
+      persistenceBytes: DEFAULT_INGEST_LIMITS.persistenceBytes,
+      ...options.limits,
+    };
+    assertLimit(this.limits.messageBytes);
+    assertLimit(this.limits.persistenceBytes);
     // No await between subscription, full unresolved seed, and returning to the host.
     this.unsubscribe = options.store.onUpdate((update) => {
       if (this.remoteEvents) this.remoteEvents.push(update);
@@ -67,15 +96,33 @@ export class DirectionalActionProvider {
 
   /** All network/catch-up/echo/cross-tab callbacks must use this entry point. */
   receive(route: DeliveryRoute, update: Uint8Array): boolean {
+    return this.receiveResult(route, update).state === 'admitted';
+  }
+
+  receiveResult(route: DeliveryRoute, update: Uint8Array): ReceiveResult {
     this.assertOpen();
     // route is deliberately policy-neutral: every route has the same gate.
     void route;
-    if (!SYNC_DIRECTIONS[this.mode].receive) return false;
+    if (!SYNC_DIRECTIONS[this.mode].receive) return { state: 'disabled' };
+    if (update.byteLength > this.limits.messageBytes)
+      return {
+        state: 'backpressured',
+        error: new IngestCapacityError('carrier', 'messageBytes', update.byteLength),
+      };
+    const required = this.queuedBytes + this.options.store.persistenceReservation(update);
+    if (required > this.limits.persistenceBytes)
+      return {
+        state: 'backpressured',
+        error: new IngestCapacityError('persistence', 'persistenceBytes', required),
+      };
     const copy = update.slice();
     const staged: Uint8Array[] = [];
     this.remoteEvents = staged;
     try {
       this.options.store.applyUpdate(copy);
+    } catch (error) {
+      if (!(error instanceof IngestCapacityError)) throw error;
+      return { state: 'backpressured', error };
     } finally {
       this.remoteEvents = undefined;
     }
@@ -83,7 +130,15 @@ export class DirectionalActionProvider {
     for (const event of staged) this.enqueue(event);
     this.enqueue(copy);
     this.automaticallyPublish();
-    return true;
+    return { state: 'admitted' };
+  }
+
+  setLimits(limits: Partial<ProviderLimits>): void {
+    this.assertOpen();
+    const next = { ...this.limits, ...limits };
+    assertLimit(next.messageBytes);
+    assertLimit(next.persistenceBytes);
+    this.limits = next;
   }
 
   setMode(mode: SyncMode): void {
@@ -178,6 +233,7 @@ export class DirectionalActionProvider {
   }
 
   private enqueue(update: Uint8Array): void {
+    this.queuedBytes += update.byteLength;
     this.queue.push({ position: ++this.tail, update: update.slice() });
     this.startWrite();
   }
@@ -191,6 +247,7 @@ export class DirectionalActionProvider {
       .then(() => {
         this.durable = entry.position;
         this.queue.shift();
+        this.queuedBytes -= entry.update.byteLength;
       })
       .catch((error: unknown) => {
         this.writeFailure = { error };

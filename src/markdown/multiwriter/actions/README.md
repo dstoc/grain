@@ -21,10 +21,13 @@ Lamport values are unsigned 64-bit `bigint`s; native integers and ordinals must
 be nonnegative safe integers. Unknown fields and discriminants are errors.
 
 `decodeEnvelope()` returns a detached logical envelope or throws
-`EnvelopeDecodeError`. When a structurally decodable record has an action ID,
+`EnvelopeDecodeError` for established data errors. Operational failures propagate;
+`IngestCapacityError` reports retryable local capacity. When a structurally decodable record has an action ID,
 the error retains that ID so unsupported versions and malformed variants can be
 quarantined. Records without a trustworthy ID remain collection diagnostics.
-The codec never repairs or normalizes received bytes.
+The codec never repairs or normalizes received bytes. `decodeCbor()` and
+`validReferences()` remain synchronous reference utilities for wire decoding and
+causal resource existence. They do not certify native bodies or author semantics.
 
 ## Collection and readiness
 
@@ -56,8 +59,8 @@ not remove these allocation facts.
 The required `validate(action, { dependencies })` callback must certify native
 bodies/manifests and author-local semantic validity. It receives detached values
 and only the action's full dependency closure in semantic order. It must return
-`null` or a quarantine reason, must be synchronous and deterministic, and must
-not modify external state. Exceptions abort the snapshot; no partial ready set
+`null`, a quarantine reason, or a resumable `Work` generator of that result.
+It must be deterministic and must not modify external state. Exceptions abort the snapshot; no partial ready set
 is returned. MW-02/MW-15 supply this validation. Passing an unconditional success
 callback does not validate nonempty native or semantic actions.
 
@@ -76,13 +79,19 @@ compare closures and rebuild contaminated native/reducer caches with a fresh
 native client before authoring resumes, as the proposal requires.
 
 Snapshots, validator arguments and envelope bytes are detached from internal
-facts. Array position has no semantic meaning. A forbidden collection deletion
-or nonbinary entry sets `integrity:false` and suppresses the materializable
-`ready` and `heads` arrays. Per-record readiness remains diagnostic in that
-case. `applyUpdate()` rejects native delete sets before integration, including
-in cold checkpoints; observing live array deletions alone would miss already
-deleted entries. The private document prevents these writes through the local API; this is
-corruption detection, not a Byzantine-safe protocol.
+facts. Array position has no semantic meaning. `applyUpdate()` preflights the
+pinned append-only update subset before Yjs decode or integration. Forbidden
+collection deletions, nonbinary entries, map writes and unknown roots throw
+without poisoning the existing store or emitting persistence events. The
+private document also checks observed integrity defensively. This is corruption
+detection, not a Byzantine-safe protocol.
+
+Envelope collection queues bytes without decoding inside Yjs observers.
+`compute(operations)` returns a complete snapshot or a deferred continuation;
+it never returns an incomplete ready set as complete. `snapshot()` drains the
+same calculation synchronously. See [MW-15 ingest](../ingest/README.md) for
+continuation lifecycle, capacity changes, actual native certification and the
+reference publication boundary.
 
 ## Verification and limits
 
@@ -95,8 +104,8 @@ Yjs collections, merged/reordered updates, state-vector catch-up and reload.
 This is a reference calculation, not the optimized editing path. A snapshot
 revisits the held graph and constructs per-action dependency closures. MW-13
 owns incremental indexes and performance gates. MW-02 owns native cache
-materialization and rebuild. MW-15 owns full native/semantic validation and
-resource/backpressure limits. MW-08 must compose these components with actual
+materialization and rebuild. MW-15 composes native validation and reducer-owned semantic hooks, and
+provides resource/backpressure limits. MW-08 must compose these components with actual
 reducers and run the independent-replica corpus before browser cutover.
 No canonical pruning, replica expiry, history navigation, projection, checkpoint
 replacement protocol or complete multi-writer convergence is implemented here.

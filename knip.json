@@ -10,6 +10,7 @@
     "src/markdown/multiwriter/layout/index.ts!",
     "src/markdown/multiwriter/ownership/index.ts!",
     "src/markdown/multiwriter/actions/index.ts!",
+    "src/markdown/multiwriter/ingest/index.ts!",
     "src/markdown/multiwriter/providers/index.ts!",
     "src/markdown/multiwriter/visibility/index.ts!",
     "src/markdown/canonical-model.ts!",

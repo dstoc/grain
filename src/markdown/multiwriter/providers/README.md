@@ -31,10 +31,12 @@ const provider = await DirectionalActionProvider.open({
 ```
 
 Suspend authoring until `open()` resolves. Opening replays this replica's own
-journal in every mode. Replay failure rejects opening and closes the journal;
+journal in every mode. Replay and readiness-capacity failure reject opening and close the journal;
 discard the failed store rather than using its partially restored state.
 The provider subscribes and queues a full attachment seed synchronously after
-replay. Call `await provider.flush()` to confirm that seed is durable.
+replay. Readiness resumes in `restoreOperations`-sized slices (10,000 visits
+by default), yielding to the host between slices. A zero slice reports an
+explicit capacity requirement. Call `await provider.flush()` to confirm that seed is durable.
 
 For headless callers, inject an `ActionJournal` with `read()`, `append()` and
 `close()`. `append()` must resolve only after durable completion. The adapter
@@ -73,6 +75,22 @@ Blocked messages are discarded, with no hidden queue. Senders must retransmit.
 Do not call the store's `applyUpdate()` directly while attached: that bypasses
 both the mode gate and raw-ingress persistence. No BroadcastChannel or shared
 foreign journal is installed.
+
+`receiveResult(route, bytes)` distinguishes `admitted`, `disabled` and
+`backpressured`. `receive()` returns true only for admitted bytes. A refused
+message changes neither canonical bytes nor the journal, and must not receive a
+successful receipt acknowledgment. The sender retains it for retry. Established
+carrier violations throw `IngestDataError`; unexpected failures propagate.
+
+Default local admission allows 8 MiB per remote message and 32 MiB of outstanding
+persistence bytes. Configure `limits: { messageBytes, persistenceBytes }` at open,
+or call `setLimits()` and retry the original update. Queue reservation includes
+raw ingress, integrated update events, and held unresolved structs that this
+receipt can unlock. The estimate is conservative; capacity can be raised when a
+valid message cannot safely be split. These values are local policy, not protocol
+maxima or retention limits. Local edits already applied remain queued and unsaved
+even when the queue exceeds the remote limit. Journal replay uses store decode
+safeguards and rejects opening when capacity is insufficient.
 
 A strict one-way channel needs no handshake, acknowledgment or state vector.
 `publish()` exports all held native actionDoc coverage, including other actors'

@@ -403,7 +403,7 @@ it('copies incoming/outgoing payloads, including validator arguments and snapsho
   expect(value.snapshot().ready[0]).toEqual(action());
   value.destroy();
 });
-it('detects forbidden collection deletes and stops exposing a materializable ready set', () => {
+it('rejects forbidden collection deletes before changing the current ready set', () => {
   const value = store();
   value.append(action());
   const badPeer = new Y.Doc();
@@ -411,10 +411,10 @@ it('detects forbidden collection deletes and stops exposing a materializable rea
   badPeer.getArray('envelopes').delete(0, 1);
   expect(() => value.applyUpdate(Y.encodeStateAsUpdate(badPeer))).toThrow('append-only');
   expect(value.snapshot()).toMatchObject({
-    integrity: false,
-    ready: [],
-    heads: [],
-    diagnostics: [expect.stringContaining('append-only')],
+    integrity: true,
+    ready: [action()],
+    heads: [action().id],
+    diagnostics: [],
   });
   expect(value.snapshot().actions).toHaveLength(1);
   badPeer.destroy();
@@ -457,7 +457,12 @@ it('rejects deletion in a cold checkpoint as well as a live update', () => {
   badPeer.getArray('envelopes').delete(0, 1);
   const restored = store();
   expect(() => restored.applyUpdate(Y.encodeStateAsUpdate(badPeer))).toThrow('append-only');
-  expect(restored.snapshot().integrity).toBe(false);
+  expect(restored.snapshot()).toMatchObject({
+    integrity: true,
+    actions: [],
+    ready: [],
+    diagnostics: [],
+  });
   source.destroy();
   badPeer.destroy();
   restored.destroy();
@@ -553,18 +558,15 @@ it('permits same-action allocations while rejecting domain aliases and unknown n
     bad.destroy();
   }
 });
-it('flags nonbinary canonical entries without interpreting them', () => {
+it('rejects nonbinary canonical entries before changing the current ready set', () => {
   const badPeer = new Y.Doc();
   badPeer.getArray('envelopes').push([{ id: 'not an encoded envelope' }]);
   const value = store();
   value.append(action());
-  value.applyUpdate(Y.encodeStateAsUpdate(badPeer));
-  expect(value.snapshot()).toMatchObject({
-    integrity: false,
-    ready: [],
-    heads: [],
-    diagnostics: [expect.stringContaining('encoded envelope')],
-  });
+  const before = value.encodeUpdate();
+  expect(() => value.applyUpdate(Y.encodeStateAsUpdate(badPeer))).toThrow('encoded envelope');
+  expect(value.encodeUpdate()).toEqual(before);
+  expect(value.snapshot()).toMatchObject({ integrity: true, ready: [action()], diagnostics: [] });
   badPeer.destroy();
   value.destroy();
 });
