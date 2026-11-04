@@ -118,8 +118,9 @@ unspecified endpoint in the allocating action:
 - Every inline node's birth coverage includes its fresh full private home range.
   Later native insertions inside that permanent range remain covered, including
   after ownership changes. Containers and the root have no inline birth intervals.
-- A node explicitly created by SplitFlow additionally covers exactly the permanent
-  cells that its own split constructor assigns to its new root run. Recover that
+- A node explicitly created by SplitFlow additionally covers the permanent marker
+  intervals for exactly the cells its own split constructor assigns to its new
+  root run. Recover that
   assignment from the exact author dependency closure and the pre-split effect
   prefix. Include its private home. Certify that the retained captured skeleton
   matches the author's split component through the existing ownership validator.
