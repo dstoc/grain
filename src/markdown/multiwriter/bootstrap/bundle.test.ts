@@ -71,21 +71,23 @@ test('failed journal restoration closes the journal and exposes no replica', asy
 test('own journal restores in disconnected mode and never regenerates genesis', async () => {
   const a = await openBootstrap(options());
   const entries: Uint8Array[] = [];
+  const ownJournal = () => ({
+    read: async () => entries.map((u) => u.slice()),
+    append: async (u: Uint8Array) => {
+      entries.push(u.slice());
+    },
+    close() {},
+  });
   try {
     a.document.store.append(insert(genesis, '!', 1));
-    entries.push(a.document.store.encodeUpdate());
-    const b = await openBootstrap(
-      options({
-        mode: 'disconnected',
-        journal: {
-          read: async () => entries,
-          append: async (u) => {
-            entries.push(u);
-          },
-          close() {},
-        },
-      }),
-    );
+    const prior = await openBootstrap(options({ journal: ownJournal() }));
+    try {
+      expect(prior.receiveBundle('peer', a.captureBundle()).state).toBe('admitted');
+      await prior.provider.flush();
+    } finally {
+      await prior.close();
+    }
+    const b = await openBootstrap(options({ mode: 'disconnected', journal: ownJournal() }));
     try {
       expect(serializeProjection(publication(b.document).value.view)).toBe('original😀!\n');
       expect(b.genesisBytes()).toEqual(bytes);

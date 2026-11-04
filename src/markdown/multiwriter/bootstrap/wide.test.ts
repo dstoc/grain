@@ -1,4 +1,5 @@
 import { expect, test } from 'vitest';
+import { compareBytes } from '../actions/cbor.js';
 import {
   createGenesis,
   decodeBundle,
@@ -32,6 +33,7 @@ for (const count of [1000, 5000])
         mode: 'disconnected',
         journal: { read: async () => [], append: async () => {}, close() {} },
       });
+      console.info(`wide ${count}: opened ${(performance.now() - started).toFixed(0)}ms`);
       try {
         const p = opened.document.publication.status().publication!;
         expect(p.value.view.root.children.map((n) => n.content)).toEqual(
@@ -39,18 +41,22 @@ for (const count of [1000, 5000])
         );
         const bundle = decodeBundle(opened.captureBundle(), limits);
         const descriptor = decodeGenesis(bundle.genesis, limits);
+        console.info(`wide ${count}: decoded ${(performance.now() - started).toFixed(0)}ms`);
         const cache = new NativeTapeCache(limits.nativeOperations);
         try {
           cache.apply('genesis', referenceGenesis(descriptor).body);
-          expect(cache.encodeState()).toEqual(p.native.encodeState());
+          // Vitest's iterable equality expands Uint8Array into Object.entries pairs.
+          // Compare every byte without allocating one assertion object per byte.
+          expect(compareBytes(cache.encodeState(), p.native.encodeState())).toBe(0);
           for (const tape of descriptor.allocations.filter((a) => a.type === 'tape'))
             expect(cache.snapshot(tape.id)).toEqual(p.native.snapshot(tape.id));
         } finally {
           cache.destroy();
         }
-        expect(bundle.genesis).toEqual(bytes);
-        expect(bundle.actionUpdate).toEqual(opened.document.store.encodeUpdate());
-        expect(encodeBundle(bundle, limits)).toEqual(opened.captureBundle());
+        console.info(`wide ${count}: native checked ${(performance.now() - started).toFixed(0)}ms`);
+        expect(compareBytes(bundle.genesis, bytes)).toBe(0);
+        expect(compareBytes(bundle.actionUpdate, opened.document.store.encodeUpdate())).toBe(0);
+        expect(compareBytes(encodeBundle(bundle, limits), opened.captureBundle())).toBe(0);
         console.info(`wide ${count}: complete ${(performance.now() - started).toFixed(0)}ms`);
       } finally {
         await opened.close();
