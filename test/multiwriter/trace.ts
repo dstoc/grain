@@ -105,6 +105,8 @@ export interface Observation {
   readonly cellRuns: Readonly<Record<string, string>>;
   /** Includes zero-character cells, hidden cells and retracted insertions. */
   readonly nativeText: Readonly<Record<string, string>>;
+  /** Retained authored ranges, resolved to stable cell aliases; not effective ownership.
+   * Marker and empty-location identities require separate native assertions. */
   readonly skeletons: Readonly<Record<string, readonly string[]>>;
   readonly slots: Readonly<Record<string, string>>;
   readonly visible: Readonly<Record<string, readonly string[]>>;

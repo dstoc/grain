@@ -111,7 +111,6 @@ const cutState = {
   view: ['P', 'L', 'R'].map((id) => ({ id, parent: 'root', kind: 'paragraph' })),
   markdown: 'ab\n\nc\n\ndef\n',
 } satisfies Partial<Observation>;
-const cutStateReverse = { ...cutState, skeletons: { rP: ids, rL: ['P2'], rR: ['P3', 'P4', 'P5'] } };
 
 export const semanticCorpus: readonly ContractTrace[] = [
   trace(
@@ -124,7 +123,7 @@ export const semanticCorpus: readonly ContractTrace[] = [
     'cuts-later-first',
     ['6.5'],
     'Reverse semantic priority still preserves both cuts and their identities.',
-    concurrent(action('A1', [split('R', 'P2')]), action('B1', [split('L', 'P1')]), cutStateReverse),
+    concurrent(action('A1', [split('R', 'P2')]), action('B1', [split('L', 'P1')]), cutState),
   ),
   trace(
     'split-at-zero-retains-original-right',
