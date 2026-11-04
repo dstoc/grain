@@ -569,6 +569,14 @@ export function referenceFactory(
             history,
           };
         },
+        defineCommand(command) {
+          const previous = commandByName.get(command.id);
+          const json = (value: TraceAction) =>
+            JSON.stringify(value, (_key, v) => (typeof v === 'bigint' ? v.toString() : v));
+          if (previous && json(previous) !== json(command))
+            throw new Error('Conflicting test command definition');
+          commandByName.set(command.id, structuredClone(command));
+        },
         async author(command) {
           materialize();
           const expected = commandByName.get(command.id);

@@ -36,8 +36,15 @@ A factory prepares one immutable native genesis package. Each open clones that
 package and owns its maps, runtime actor, native client, store, validator,
 publication, navigation cursor and in-memory provider journal. NativeFixture is
 used only to prepare that common genesis, never as an author or shared peer
-registry. Every open allocates a fresh runtime actor; the first authored command starts at runtime sequence 1. Test session labels recover symbolic action names without sharing an actor registry. Peers share no mutable
-writer, reducer, alias registry or persistence namespace.
+registry. Every open allocates a fresh runtime actor; the first authored command
+starts at runtime sequence 1. Test session labels recover symbolic action names
+without sharing an actor registry. Peers share no mutable writer, reducer, alias
+registry or persistence namespace. The scheduler supplies a detached copy of each
+new command description through the optional test-only `defineCommand()` hook.
+Each port keeps its own descriptions for symbolic aliases, including on fresh
+open. Descriptions contain no native IDs, reducer results or expected observations.
+Only an envelope received through that port's provider can admit remote facts;
+command metadata alone changes neither canonical bytes nor the publication.
 
 ## Preservation argument
 
@@ -68,8 +75,16 @@ Destroying/reopening drops derived certificates and reruns admission.
 before append. The reference author aborts native preparation on rejection. The
 local-abort regression stages two native homes/texts, rejects ambiguous births,
 and compares canonical/native bytes and navigation with their original values.
+`openReferenceDocument()` catches only `ProvenanceError` at author admission and
+returns `reference`. Ambiguous ordinary bindings and duplicate split constructors
+therefore remain retained as quarantined variants while independent actions can
+publish. Repeated reads and fresh reconstruction repeat that classification.
+Operational capacity errors, host errors and non-Error failures propagate without
+being relabeled as invalid peer data. The catch does not extend into projection
+over a certified ready set: a provenance invariant failure there still stops the
+gate.
 
-Evidence: `actions/store.test.ts`, `ingest/origins.test.ts`, the four malformed/fork
+Evidence: `reference-admission.test.ts` (both receipt orders, valid predecessor-chain controls, fresh reconstruction and error propagation), `actions/store.test.ts`, `ingest/origins.test.ts`, the four malformed/fork
 frozen traces, exact joined-source birth certification, and fresh replay at every
 explicit contract expectation.
 
@@ -223,15 +238,28 @@ MW-18 storage consolidation/crash acceptance remains a separate gate.
 | Losing packets, exact masks/demotion, fences/tasks, repeated text, synthesis | Frozen packet traces; integrated parser/property/synthesis tests                                                                                  |
 | Unicode native intervals                                                     | Emoji/combining-source split with peer insertion; native and parser/address negative suites                                                       |
 | Wrapper aliases/lifting, empty roots, export/reparse                         | Frozen projection traces; parser conversion and paste-shaped cases                                                                                |
-| Three peers, modes/routes, duplicates/reordering/merge/loss                  | Frozen operational traces; eight seeded 60-turn schedules and their serialized replay                                                             |
+| Three peers, modes/routes, duplicates/reordering/merge/loss                  | Frozen operational traces; eight seeded 24-turn semantic schedules and their serialized replay                                                    |
 | Pending/fork/malformed branches and unrelated progress                       | Frozen ingest traces; raw pending inventory; payload-aware canonical-set comparison                                                               |
 | Restart, maintenance, old anchors and >500 groups                            | Frozen lifetime traces, complete-byte checks and explicit reconstruction checkpoints                                                              |
 
 The exhaustive small-state bound is 15 initial structural choices at A × 15 at B.
 C is an independent receiver; all peers catch up and reopen. The generated bound
-is eight seeds, three initial independent authors and 60 subsequent scheduling turns per seed, with controls
-selected only when the current ready closure and live navigation permit them.
-This is finite coverage, not arbitrary command generation or a production command
+is eight seeds, three initial independent authors and two 12-turn scheduling
+phases per seed. A catch-up and fresh replay separate the phases. Each peer then
+creates a paragraph and navigates its undo/redo against its current publication;
+the second phase resumes random command and transport choices. Every generated
+action uses the local heads and their causal Lamport maximum. Local choices
+include creation, movement, multi-intent movement/property changes, interpretation,
+insertion, exact text/subtree deletion, transfer, join, split and live controls.
+The generator chooses an operation family before its operands so a wide view
+does not crowd out deletion or history. Each seed asserts more than five new
+semantic actions, semantic authoring after remote receipt, undo and redo; it logs
+operation counts, deliveries and restarts. Saved schedules replay the exact
+commands, dependencies and delivery steps on new independent replicas.
+
+Generated splits require a complete, unchanged created component with an exact
+cell basis. Other refined/empty-cell splits remain in the frozen traces and
+ordered matrix. This is bounded command generation, not an arbitrary production
 compiler. New failures save their complete schedule to `/tmp/mw08-*.json` for replay
 and reduction. No failing random seed was found in the recorded bounds.
 

@@ -6,7 +6,7 @@ import { createProjectionAuthorValidator, projectMarkdown } from '../projection/
 import type { ProjectionInput } from '../projection/project.js';
 import type { NativeBody } from '../text/types.js';
 import type { ActionEnvelope } from '../contracts.js';
-import { reconstructBirths, reconstructProvenance } from './provenance.js';
+import { ProvenanceError, reconstructBirths, reconstructProvenance } from './provenance.js';
 
 export interface ReferenceGenesis {
   readonly documentId: string;
@@ -21,12 +21,22 @@ export interface ReferenceGenesis {
  */
 export function openReferenceDocument(input: ReferenceGenesis) {
   const genesis = structuredClone(input);
+  const validateAuthor = createProjectionAuthorValidator({
+    genesis: genesis.layout,
+    births: reconstructBirths,
+  });
   const validate = createIngestValidator({
     genesis: genesis.body,
-    validateAuthor: createProjectionAuthorValidator({
-      genesis: genesis.layout,
-      births: reconstructBirths,
-    }),
+    validateAuthor(action, context) {
+      try {
+        return validateAuthor(action, context);
+      } catch (error) {
+        // Retain invalid peer facts without blocking independent ready actions.
+        // Capacity, native-data and host failures keep their existing behavior.
+        if (error instanceof ProvenanceError) return 'reference';
+        throw error;
+      }
+    },
   });
   const store = new ReferenceActionStore({
     documentId: genesis.documentId,

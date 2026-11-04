@@ -66,7 +66,7 @@ test('reference local certification aborts an ambiguous birth before canonical p
   const port = await factory.open({ peer: 'A', genesis: trace });
   try {
     const before = await port.isolationState();
-    await expect(port.author(action)).rejects.toThrow('ambiguous');
+    await expect(port.author(action)).rejects.toThrow('failed certification: reference');
     expect(await port.isolationState()).toEqual(before);
     expect((await port.observe()).held).toEqual([]);
     expect((await port.observe()).undo).toEqual([]);

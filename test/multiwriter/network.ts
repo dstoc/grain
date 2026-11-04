@@ -52,6 +52,10 @@ export interface ReplicaStateBytes {
 }
 export interface ReplicaPort {
   readonly handles: ReplicaHandles;
+  /** Detached test command metadata for symbolic observation aliases only. It cannot
+   * admit facts, supply native identities, or participate in certification.
+   */
+  defineCommand?(action: TraceAction): void;
   author(action: TraceAction): void | Promise<void>;
   setMode(mode: SyncMode): void | Promise<void>;
   /** Export complete envelopes as real transport bytes; subsets can omit semantic prerequisites.
@@ -180,15 +184,15 @@ export class ReplicaNetwork {
       throw error;
     }
   }
-  private openPeer(peer: string, checkpoint?: Uint8Array): Promise<ReplicaPort> {
+  private async openPeer(peer: string, checkpoint?: Uint8Array): Promise<ReplicaPort> {
     const { version, genesis, seed, peers } = this.contract;
-    return Promise.resolve(
-      this.factory.open({
-        peer,
-        genesis: structuredClone({ version, genesis, seed, peers }),
-        checkpoint: checkpoint?.slice(),
-      }),
-    );
+    const port = await this.factory.open({
+      peer,
+      genesis: structuredClone({ version, genesis, seed, peers }),
+      checkpoint: checkpoint?.slice(),
+    });
+    for (const action of this.actions.values()) port.defineCommand?.(structuredClone(action));
+    return port;
   }
   private peer(peer: string): ReplicaPort {
     const replica = this.replicas.get(peer);
@@ -242,6 +246,8 @@ export class ReplicaNetwork {
         if (this.actions.has(action.id)) throw new Error(`Duplicate author action ${action.id}`);
         this.validateAuthor(action, before.get(action.peer)!);
         this.actions.set(action.id, structuredClone(action));
+        for (const replica of this.replicas.values())
+          replica.defineCommand?.(structuredClone(action));
         await this.peer(action.peer).author(structuredClone(action));
         changed = action.peer;
         break;
