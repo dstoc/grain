@@ -39,13 +39,13 @@ Encode checkpoint format version 1 with the deterministic CBOR subset already im
 
 The container holds:
 
-| Field | Meaning |
-| --- | --- |
-| Format version | Checkpoint container version, initially 1 |
-| Protocol/document/genesis | Binding to the existing shared document; protocol remains 3 |
-| Full actionDoc update | Exact detached `ActionStore.encodeUpdate()` bytes, including unresolved outer structs |
-| Manifest | Existing `CheckpointManifest` describing the exact ready dependency closure and its heads at capture |
-| Payload digest | SHA-256 of the full update bytes, to detect accidental payload damage |
+| Field                     | Meaning                                                                                              |
+| ------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Format version            | Checkpoint container version, initially 1                                                            |
+| Protocol/document/genesis | Binding to the existing shared document; protocol remains 3                                          |
+| Full actionDoc update     | Exact detached `ActionStore.encodeUpdate()` bytes, including unresolved outer structs                |
+| Manifest                  | Existing `CheckpointManifest` describing the exact ready dependency closure and its heads at capture |
+| Payload digest            | SHA-256 of the full update bytes, to detect accidental payload damage                                |
 
 Use platform Web Crypto for the digest; add no package. A digest is a corruption check, not authentication or permission to delete history. The container's identity fields and the embedded manifest must agree with the host's expected document binding.
 
@@ -113,11 +113,11 @@ A non-IndexedDB host must provide the same all-or-nothing replacement guarantee,
 
 Keep maintenance operations separate:
 
-| Operation | Allowed effect |
-| --- | --- |
-| Consolidate journal | Replace redundant persisted batches with full checkpoint plus tail |
-| Drop caches | Release derived native/reducer/projection indexes and rebuild before their next use |
-| Evict history | Remove only the owning session's undo/redo navigation metadata |
+| Operation           | Allowed effect                                                                      |
+| ------------------- | ----------------------------------------------------------------------------------- |
+| Consolidate journal | Replace redundant persisted batches with full checkpoint plus tail                  |
+| Drop caches         | Release derived native/reducer/projection indexes and rebuild before their next use |
+| Evict history       | Remove only the owning session's undo/redo navigation metadata                      |
 
 Cache rebuild uses retained ready envelopes and a fresh native client, with `gc:false`. It cannot author envelopes, replace the action store, regenerate shared identities, or change local history membership. Preserve live selection through the owning editing layer when that integration exists. An unusable cached closure falls back to full canonical replay.
 
