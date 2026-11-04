@@ -1,7 +1,7 @@
 # Proposal: MW-04 ownership and split/join/transfer algebra
 
 - **Issue:** grain/85.
-- **Status:** Proposed; requires proposal review before implementation.
+- **Status:** Proposed v2; addresses the v1 Request Changes review. Requires proposal review before implementation, including approval of the corpus correction below.
 - **Authority:** [MW-00 proposal, version 1](https://tines.tbuckley.dev/issues/prj_L8Cva7P0y96K81kq/81), especially §§5–7, 12–14. This document specifies implementation boundaries and verification; it does not replace the schema-3 contracts.
 - **Inspected baseline:** `yjs` at `046410d155fcb9d93414696113a23a7bf4151472`. The implementation branch is `feat/85-ownership-algebra`, based on `origin/yjs`. PRs target `yjs`.
 - **Dependency:** MW-02 native tapes and MW-03 layout. Both modules exist in the inspected tree. Yjs remains pinned to 13.6.33.
@@ -25,6 +25,26 @@ MW-04 implements the component-selection rule and split-cohort ordering already 
 `test/multiwriter/corpus.ts` freezes split, transfer, join, deletion, and undo outcomes. Existing layout tests explicitly cover layout facets without native ownership. `test/multiwriter/network.ts` expects a future integrated replica factory. Neither test suite is an ownership implementation or evidence that the combined algorithm works.
 
 ## Proposal
+
+### Review decision: retain authored skeletons
+
+Keep one meaning for `skeleton`: the ordered permanent ranges retained in the run allocation. `RunLayout.skeleton`, `LayoutPrefix.runLayout()`, and the ownership result expose those same ranges. Refinement can subdivide a range into cells, but cannot replace its endpoints with those of the currently selected component. This follows master §5.1: a skeleton remains addressable after its cells move elsewhere.
+
+An effective assignment is a separate observation. `CellAssignment` identifies the current run and occurrence of each refined cell. Raw traversal walks retained skeletons and attachments, but emits a cell's text only at its effective assignment. A split's selected component is a transient pre-effect decision used to change those assignments. It is not another retained skeleton or a new shared resource.
+
+For independently authored cuts in `abcdef`, L's allocated skeleton is `[cut-after-b, tape-end]` and R's is `[cut-after-c, tape-end]`. The original P skeleton is `[tape-start, tape-end]`. Both authors capture the full suffix available in their own views. After exchange, native refinement preserves L's permanent range containing `cdef`. In either semantic order, effective ownership is P=`ab`, L=`c`, R=`def`. In the later-cut-first order, L selects only `c`; that selection does not rewrite L's allocated skeleton to end at R's cut.
+
+This distinction also preserves ghost addresses. A slot authored at L's retained tape-end boundary still names L's run, boundary, side, and predecessor after `def` belongs to R. Looking up that slot must not redirect it to R or reject it because L currently emits only `c`. Followers attached there remain reachable through L's skeleton. Any new text follows its permanent cell assignment; a retained slot alone does not reassign R's cells to L. A source that needs an independently editable empty location must still satisfy the distinct-boundary rule below.
+
+#### Proposed frozen-corpus correction
+
+`test/multiwriter/trace.ts:Observation.skeletons` will mean retained authored skeleton coverage, expressed through the fixture's stable cell aliases. An adapter resolves the actual allocated ranges against the native partition; it must not reconstruct skeletons from `cellRuns`, visible text, or expected observations. Empty-cell and marker identities need separate assertions because the alias coverage does not encode all native boundaries.
+
+In `test/multiwriter/corpus.ts`, remove the `cutStateReverse` override and pass `cutState` to `cuts-later-first`, just as `cuts-earlier-first` does. The sole changed expected facet is reverse-order `rL` skeleton coverage: `['P2']` becomes `['P2', 'P3', 'P4', 'P5']`. Keep every ownership, visible identity, block order, and Markdown expectation unchanged. Add the authored meaning to `Observation.skeletons` and the corpus documentation. Preserve the full skeleton assertion in both fixtures.
+
+This is a proposed correction to the shared MW-00 corpus, not an already approved change. Proposal review must obtain agreement from the shared-contract owner before implementation changes that fixture. Include the correction in the implementation PR only after that agreement; do not silently omit the assertion, change `LayoutPrefix` to trim allocations, or accept the existing expectation as effective ownership under the name `skeletons`. If the owner intends a component observation instead, return the proposal for revision to define that separate contract before implementation.
+
+The v1 review's logical and native controls are evidence of the mismatch, not acceptance of ownership traversal. Preparation of v2 reruns the logical control against the unchanged corpus. Its assertion that the mismatch exists must be replaced by the positive regressions below when the correction is implemented.
 
 Add a headless full reference reducer under `src/markdown/multiwriter/ownership/`. Use the existing logical types and native/layout modules. Add no dependency, persistent format, shared resource kind, browser integration, or structural authority.
 
@@ -80,7 +100,7 @@ For retain-left splits, implement master §6.5 literally:
 4. Walk right from the cut in the captured basis. Select the maximal component still in that top-level flow and contiguous in the current raw inline traversal. Stop at the basis end, ownership discontinuity, or layout discontinuity.
 5. Assign only that component to the new run/occurrence.
 
-Contiguity comes from the current coupled layout, not tape offset adjacency or equality of the final visible block. Hidden cells still participate. A basis can span tapes and nested joined flows. A concurrent cut can therefore shorten an earlier authored suffix without making its effect malformed.
+Contiguity comes from the current coupled layout, not tape offset adjacency or equality of the final visible block. Hidden cells still participate. A basis can span tapes and nested joined flows. An earlier semantic cut can therefore restrict a later split to a component of its authored suffix without making the later effect malformed. This restricts the assignment, not the retained range skeleton.
 
 Preserve the specified retain-original-on-right start split: the original node and text retain the right side, and the new left sibling has its own empty insertion location. Cover end cuts and empty input as well. Additional retained-side behavior must follow the master contract and receive an explicit regression; do not use an untested generic tail assignment for those cases.
 
@@ -98,7 +118,7 @@ Cuts with different bases or outer gaps use their authored slots and ordinary or
 
 Expose a narrow `index.ts` with a reference reduction entry point and read-only result queries for:
 
-- Complete cell assignments, run skeletons, effective flow/block ancestry, and derived cohort buckets.
+- Complete cell assignments, retained authored run skeletons (unchanged allocation ranges), effective flow/block ancestry, and derived cohort buckets. Do not expose selected-component membership as a run skeleton.
 - Ordered raw inline cells and exact native text fragments, including empty cell locations and retained ghost slots.
 - Permanent-range membership and token-to-cell-to-run-to-inline-owner lookup.
 - Effective ownership/layout intentions that require destination nodes, with original action/effect references.
@@ -119,7 +139,21 @@ Do not move shared contracts or export internal mutable maps. Add the ownership 
 
 Use installed Yjs 13.6.33 through `NativeTapeCache`, with independently allocated caches opened from identical genesis bytes. Authors create native cuts/insertions in their own causal views. Exchange exact published bodies and compare fresh reductions of equal ready sets. Sorting one already-shared synthetic tape order is not a substitute for these controls.
 
-Import actual corpus inputs and compare only implemented ownership/layout facets with the frozen expectations. Expected observations must never supply reducer output. Cover `cuts-earlier-first`, `cuts-later-first`, `same-gap-empty-cut`, `split-at-zero-retains-original-right`, `cross-tape-join`, `split-inside-cross-tape-join`, `opposing-joins`, `move-overrides-join`, `overlapping-transfers`, `ghost-destination-slot`, both `split-sibling-keeps-authored-outer-context` traces, `undo-split-after-peer-insert`, and `undo-cross-tape-join`. Deletion traces must retain the same ownership regardless of visibility filtering; MW-05/MW-08 own the complete visible result.
+After approval of the corpus correction above, import actual corpus inputs and compare every specified implemented ownership/layout facet with the corrected frozen expectations. Until that approval, the reverse skeleton assertion is a documented unresolved contract disagreement, not a passing acceptance case. Expected observations must never supply reducer output. Cover `cuts-earlier-first`, `cuts-later-first`, `same-gap-empty-cut`, `split-at-zero-retains-original-right`, `cross-tape-join`, `split-inside-cross-tape-join`, `opposing-joins`, `move-overrides-join`, `overlapping-transfers`, `ghost-destination-slot`, both `split-sibling-keeps-authored-outer-context` traces, `undo-split-after-peer-insert`, and `undo-cross-tape-join`. Deletion traces must retain the same ownership regardless of visibility filtering; MW-05/MW-08 own the complete visible result.
+
+Add an explicit authored-skeleton regression using real native caches. Author L and R independently from the same genesis and preserve the exact allocations and native bodies. Exercise both semantic priorities by swapping actor order, then exchange bodies in both delivery orders and reconstruct fresh caches. Compare these states separately:
+
+| Active effects after complete native exchange | P emits | L emits | R emits | Retained L range contains | Retained R range contains |
+| --- | --- | --- | --- | --- | --- |
+| L only; R allocation/marker retained | `ab` | `cdef` | empty | `cdef` | `def` |
+| L and R, earlier cut first | `ab` | `c` | `def` | `cdef` | `def` |
+| L and R, later cut first | `ab` | `c` | `def` | `cdef` | `def` |
+| R only; L allocation/marker retained | `abc` | empty | `def` | `cdef` | `def` |
+| Neither; both allocations/markers retained | `abcdef` | empty | empty | `cdef` | `def` |
+
+Also test L before R's body exists. L emits `cdef` with the same authored endpoints; R's later marker refines that interval without changing those endpoints. For each semantic priority, retract and reactivate each split, then both splits. Reactivation restores original priority and the same assignments without allocating a replacement run, occurrence, or native marker.
+
+For each row, assert allocation skeleton endpoint identities, effective cell assignments, raw emitted native identities/order, and retained slot resolution independently. Check total text once, including cells behind ghost locations. Resolve L's original end slot before and after each replay; compare its run/boundary/side/predecessor. Add a causally authored follower at that slot and verify it remains reachable exactly once when L emits only `c` and when L's split is inactive. Use the ordinary retained occurrence ordering; do not move the follower to R. Fresh reconstruction with the same ready facts and activity must reproduce the same endpoints, assignments, traversal, and slot/follower identities. The ownership reducer reads those bodies; it must not allocate native data to make the assertions pass.
 
 Add focused cases beyond the corpus:
 
@@ -140,16 +174,18 @@ Proposal preparation checks source paths, fixture names, the dependency modules,
 
 ## Suggested implementation shape
 
-1. Implement `cells.ts` for native partition/range lookup and home/refinement invariants, with real native-cache tests.
-2. Implement `traversal.ts` for skeleton/attachment order, ghost slots, and exact fragment visitation.
-3. Implement `ownership.ts` for coupled prefix replay, transfers, and split components using `LayoutPrefix`.
-4. Implement `cohorts.ts` for basis/gap grouping and native cut ranking through `OccurrenceBucket`.
-5. Add `index.ts`, focused corpus-facet comparisons, generated checks, and consumer documentation. Keep production optimization out of the reference path.
-6. Open an implementation PR against `yjs`, attach it to grain/85, and request review with actual checks and remaining composition limits.
+1. Obtain shared-contract-owner approval for the corpus correction. Apply the one-facet correction with the observation comment and positive regression; keep the other expected facets unchanged.
+2. Implement `cells.ts` for native partition/range lookup and home/refinement invariants, with real native-cache tests.
+3. Implement `traversal.ts` for skeleton/attachment order, ghost slots, and exact fragment visitation.
+4. Implement `ownership.ts` for coupled prefix replay, transfers, and split components using `LayoutPrefix`.
+5. Implement `cohorts.ts` for basis/gap grouping and native cut ranking through `OccurrenceBucket`.
+6. Add `index.ts`, focused corpus-facet comparisons, generated checks, and consumer documentation. Keep production optimization out of the reference path.
+7. Open an implementation PR against `yjs`, attach it to grain/85, and request review with actual checks and remaining composition limits.
 
 ## Success criteria
 
 - Every ready native cell, including empty and hidden cells, has exactly one effective run/occurrence assignment.
+- Authored skeleton endpoints and ghost slot identities survive both semantic cut orders, retraction/reactivation, and fresh reconstruction; effective assignments are asserted separately.
 - Different-position cuts yield `ab | c | def` in both semantic orders; same-gap cuts retain distinct empty locations.
 - Joins, repeated/cross-tape transfers, and split retraction preserve exact native identities and ghost addresses.
 - Split selection uses the coupled action prefix, and cohorts display in native cut order without moving authored outer contexts.
