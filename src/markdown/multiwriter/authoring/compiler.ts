@@ -58,8 +58,6 @@ function slice(pieces: readonly SourceFragment[], from: number, to: number): Sou
       : [];
   });
 }
-const sameAction = (a: ActionEnvelope['id'], b: ActionEnvelope['id']) =>
-  a.actor === b.actor && a.sequence === b.sequence;
 const same = (a: ResourceId<ResourceKind>, b: ResourceId<ResourceKind>) =>
   resourceKey(a) === resourceKey(b);
 
@@ -195,6 +193,7 @@ export class CommandCompiler {
       retainedSide: 'left' | 'right';
     },
   ) {
+    if (split) this.reserveSplitSlot(slot);
     const node = this.alloc('node'),
       occurrence = this.alloc('occurrence');
     const inline =
@@ -203,39 +202,8 @@ export class CommandCompiler {
     const role = inline ? 'inline' : spec.type === 'block-quote' ? 'quote' : spec.type;
     this.ids.set(handle, node);
     this.births.set(handle, occurrence);
-    const used = effectOccurrences(this.effects);
-    const ordinary = this.allocations.filter(
-      (a) => a.type === 'occurrence' && 'parent' in a.slot && !used.has(resourceKey(a.id)),
-    );
-    // Split constructors bind explicitly, but their occurrences are still candidates
-    // when reconstructing an ordinary birth. Its exact slot must stay unique.
-    const available = (candidate: BlockSlot) =>
-      (candidate.predecessor === null || !used.has(resourceKey(candidate.predecessor))) &&
-      !this.effects.some((e) => e.type === 'SplitFlow' && sameSlot(e.outerSlot, candidate)) &&
-      !ordinary.some((a) => a.type === 'occurrence' && sameSlot(a.slot, candidate));
-    const needsPlacement = !split && !available(slot);
-    let birthSlot = slot;
-    if (needsPlacement) {
-      const predecessors = [
-        ...ordinary.toReversed(),
-        null,
-        ...[
-          ...this.genesis.layout.allocations,
-          ...this.ready.flatMap((a) => a.allocations),
-        ].toReversed(),
-      ];
-      const safe = predecessors
-        .flatMap((a): BlockSlot[] =>
-          a === null
-            ? [{ parent: slot.parent, predecessor: null }]
-            : a.type === 'occurrence' && 'parent' in a.slot && same(a.slot.parent, slot.parent)
-              ? [{ parent: slot.parent, predecessor: a.id }]
-              : [],
-        )
-        .find(available);
-      if (!safe) throw new Error('Ordinary birth has no unambiguous retained slot');
-      birthSlot = safe;
-    }
+    const birthSlot = split ? slot : this.ordinaryBirthSlot(slot);
+    const needsPlacement = !sameSlot(birthSlot, slot);
     this.allocations.push(
       { type: 'node', id: node, role, flow, birthSlot },
       { type: 'occurrence', id: occurrence, slot: birthSlot },
@@ -291,6 +259,68 @@ export class CommandCompiler {
       });
     }
     return node;
+  }
+  private ordinaryBirthSlot(
+    slot: BlockSlot,
+    placements: ReadonlySet<string> = new Set(),
+  ): BlockSlot {
+    const used = new Set([...effectOccurrences(this.effects), ...placements]);
+    const ordinary = this.allocations.filter(
+      (a) => a.type === 'occurrence' && 'parent' in a.slot && !used.has(resourceKey(a.id)),
+    );
+    // Split constructors bind explicitly, but their occurrences are still candidates
+    // when reconstructing an ordinary birth. Its exact slot must stay unique.
+    const available = (candidate: BlockSlot) =>
+      (candidate.predecessor === null || !used.has(resourceKey(candidate.predecessor))) &&
+      !this.effects.some((e) => e.type === 'SplitFlow' && sameSlot(e.outerSlot, candidate)) &&
+      !ordinary.some((a) => a.type === 'occurrence' && sameSlot(a.slot, candidate));
+    if (available(slot)) return slot;
+    const predecessors = [
+      ...ordinary.toReversed(),
+      null,
+      ...[
+        ...this.genesis.layout.allocations,
+        ...this.ready.flatMap((a) => a.allocations),
+      ].toReversed(),
+    ];
+    const safe = predecessors
+      .flatMap((a): BlockSlot[] =>
+        a === null
+          ? [{ parent: slot.parent, predecessor: null }]
+          : a.type === 'occurrence' && 'parent' in a.slot && same(a.slot.parent, slot.parent)
+            ? [{ parent: slot.parent, predecessor: a.id }]
+            : [],
+      )
+      .find(available);
+    if (!safe) throw new Error('Ordinary birth has no unambiguous retained slot');
+    return safe;
+  }
+  /** A later split can claim an earlier ordinary birth's gap. Retain that gap
+   * as a ghost occurrence and put the unpublished birth immediately after it.
+   * This preserves its position and all existing references/effect ordinals,
+   * while leaving the split's authored slot and constructor coverage intact.
+   */
+  private reserveSplitSlot(slot: BlockSlot): void {
+    const nodeIndex = this.allocations.findIndex(
+      (a) =>
+        a.type === 'node' &&
+        a.birthSlot &&
+        sameSlot(a.birthSlot, slot) &&
+        !this.effects.some((e) => e.type === 'SplitFlow' && same(e.newNode, a.id)),
+    );
+    const node = this.allocations[nodeIndex];
+    if (node?.type !== 'node') return;
+    const placed = effectOccurrences(this.effects);
+    const index = this.allocations.findIndex(
+      (a) => a.type === 'occurrence' && !placed.has(resourceKey(a.id)) && sameSlot(a.slot, slot),
+    );
+    const birth = this.allocations[index];
+    if (birth?.type !== 'occurrence') throw new Error('Missing ordinary birth');
+    const anchor = this.alloc('occurrence');
+    const birthSlot = { parent: slot.parent, predecessor: anchor };
+    this.allocations.push({ type: 'occurrence', id: anchor, slot });
+    this.allocations[index] = { ...birth, slot: birthSlot };
+    this.allocations[nodeIndex] = { ...node, birthSlot };
   }
   private flow(handle: Handle): FlowId {
     const id = this.id(handle),
@@ -618,7 +648,6 @@ export class CommandCompiler {
       nodeByKey = new Map<string, MarkdownNode>();
     const parserPlacements = new Set<string>();
     const placementAllocations: Allocation[] = [];
-    const placed = effectOccurrences(this.effects);
     let first = true;
     const visit = (
       node: MarkdownNode,
@@ -640,24 +669,7 @@ export class CommandCompiler {
       parserPlacements.add(resourceKey(occurrence));
       if (!stable) {
         const birth = this.alloc('occurrence');
-        // Ordinary births precede this action's Interpret placements.
-        const priorBirth = this.allocations.findLast(
-          (a) =>
-            a.type === 'occurrence' &&
-            'parent' in a.slot &&
-            same(a.slot.parent, slot.parent) &&
-            !parserPlacements.has(resourceKey(a.id)) &&
-            !placed.has(resourceKey(a.id)),
-        );
-        const retainedPredecessor =
-          slot.predecessor?.birth.type === 'action' &&
-          sameAction(slot.predecessor.birth.action, this.base.id)
-            ? null
-            : slot.predecessor;
-        const birthSlot = {
-          parent: slot.parent,
-          predecessor: (priorBirth?.id as OccurrenceId | undefined) ?? retainedPredecessor,
-        };
+        const birthSlot = this.ordinaryBirthSlot(slot, parserPlacements);
         this.allocations.push(
           {
             type: 'node',

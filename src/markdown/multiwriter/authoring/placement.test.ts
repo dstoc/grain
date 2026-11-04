@@ -288,3 +288,54 @@ test('Paste, split the new paragraph, and indent its tail in one action', () => 
     p.close();
   }
 });
+
+test.each([false, true])(
+  'Paste then split its preceding paragraph in the same action (repeat=%s)',
+  (repeat) => {
+    const p = commandReplica(commandGenesis());
+    try {
+      const nodeId = p.handle(p.nodes()[0]),
+        before = p.markdown();
+      const result = p.editor.edit(
+        session,
+        (ctx) => {
+          insertMarkdown(ctx, { contextId: nodeId, markdown: 'pasted' });
+          const outcome = insertParagraph(ctx, { nodeId, from: 3 });
+          return repeat ? insertParagraph(ctx, { nodeId, from: 1 }) : outcome;
+        },
+        undefined,
+      );
+      expect(p.nodes().map((n) => n.content)).toEqual(
+        repeat ? ['a', 'bc', 'def', 'pasted'] : ['abc', 'def', 'pasted'],
+      );
+      verifyReplay(p, result, before);
+    } finally {
+      p.close();
+    }
+  },
+);
+
+test('Split then wrap its tail through parser conversion in the same action', () => {
+  const p = commandReplica(commandGenesis());
+  try {
+    const nodeId = p.handle(p.nodes()[0]),
+      before = p.markdown();
+    const result = p.editor.edit(
+      session,
+      (ctx) => {
+        const split = insertParagraph(ctx, { nodeId, from: 3 });
+        if (split.status !== 'handled' || !split.focus) throw new Error('Missing split focus');
+        const tail = split.focus.nodeId,
+          source = '> quoted';
+        insertText(ctx, { nodeId: tail, from: 0, to: 3, text: source });
+        interpretMarkdown(ctx, tail, parseBlocks(source, { provenance: true }).provenance);
+        return { status: 'handled' };
+      },
+      undefined,
+    );
+    expect(p.markdown()).toBe('abc\n\n> quoted\n');
+    verifyReplay(p, result, before);
+  } finally {
+    p.close();
+  }
+});
