@@ -1,7 +1,7 @@
+import { commandDraft } from '../command-draft.js';
 import type { DraftNode, TreeDraft } from '../../markdown/semantic/draft.js';
 import type { TextPoint } from '../../markdown/semantic/selection.js';
 import {
-  assertTextRange,
   assertTextPoint,
   isInlineNodeKind,
   type NodeId,
@@ -32,57 +32,32 @@ export function textPoint(
   return Object.freeze({ nodeId, offset, affinity });
 }
 
-function moveInlineRange(
-  draft: TreeDraft,
-  sourceId: NodeId,
-  from: number,
-  to: number,
-  destinationId: NodeId,
-  at: number,
-  affinity: TextAffinity = 'left',
-): void {
-  const source = requireInline(draft, sourceId);
-  const destination = requireInline(draft, destinationId);
-  assertTextRange(source.content, from, to, 'inline transfer range');
-  assertTextPoint(destination.content, at, 'inline transfer destination');
-  if (from === to) return;
-  draft.transferInlineRange({
-    source: sourceId,
-    from,
-    to,
-    destination: destinationId,
-    at,
-    affinity,
-  });
-}
-
-/** Appends literal source content and returns the destination seam. */
+/** Joins the source lineage into the destination and removes its visible header. */
 export function appendInline(draft: TreeDraft, sourceId: NodeId, destinationId: NodeId): TextPoint {
-  const source = requireInline(draft, sourceId);
-  const destination = requireInline(draft, destinationId);
-  const at = destination.content.length;
-  if (source.content.length) {
-    moveInlineRange(draft, sourceId, 0, source.content.length, destinationId, at, 'left');
-  }
+  requireInline(draft, sourceId);
+  const at = requireInline(draft, destinationId).content.length;
+  commandDraft(draft).joinInline(sourceId, destinationId);
   return textPoint(draft, destinationId, at, 'left');
 }
 
-/** Deletes the requested range, then moves the surviving suffix to a chosen node. */
+/** Records a flow partition even when the captured side is empty. */
 export function splitInlineInto(
   draft: TreeDraft,
   sourceId: NodeId,
   from: number,
   to: number,
   destinationId: NodeId,
+  retainedSide: 'left' | 'right' = 'left',
 ): void {
-  const source = requireInline(draft, sourceId);
+  requireInline(draft, sourceId);
   requireInline(draft, destinationId);
-  assertTextRange(source.content, from, to, 'inline split range');
-  if (to > from) draft.spliceText(sourceId, { from, to, insert: '' });
-  const afterDelete = requireInline(draft, sourceId).content;
-  if (from < afterDelete.length) {
-    moveInlineRange(draft, sourceId, from, afterDelete.length, destinationId, 0, 'left');
-  }
+  commandDraft(draft).splitInline({
+    source: sourceId,
+    from,
+    to,
+    destination: destinationId,
+    retainedSide,
+  });
 }
 
 export function previousInline(

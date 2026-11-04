@@ -16,7 +16,12 @@ import type { NativeView } from '../ingest/publication.js';
 import { NativeValidationError } from '../text/identity.js';
 import { reduceActivity, reduceVisibility } from '../visibility/index.js';
 import type { TextToken, VisibilityLayout } from '../visibility/index.js';
-import { ProjectionError, selectInterpretations, validatePacket } from './interpretation.js';
+import {
+  ProjectionError,
+  selectInterpretations,
+  validatePacket,
+  validateMembership,
+} from './interpretation.js';
 import type { PresentedProperties } from './interpretation.js';
 import { normalizeProjection } from './normalize.js';
 import type { BirthContent, MutableViewNode, ProjectionView, ViewNode } from './types.js';
@@ -55,8 +60,15 @@ export function projectMarkdown(input: ProjectionInput) {
   }
 }
 function project(input: ProjectionInput) {
-  const activity = reduceActivity(input.actions.map(({ action }) => action));
-  const interpretations = selectInterpretations(activity, input.initialProperties);
+  const groupActivity = reduceActivity(input.actions.map(({ action }) => action));
+  const interpretations = selectInterpretations(groupActivity, input.initialProperties);
+  const effectActive = (ref: Parameters<typeof groupActivity.isEffectActive>[0]) =>
+    groupActivity.isEffectActive(ref) && interpretations.effectEligible(ref);
+  const activity = {
+    ...groupActivity,
+    effects: groupActivity.effects.filter(effectActive),
+    isEffectActive: effectActive,
+  };
   const allocations = [
     ...input.genesis.allocations,
     ...activity.actions.flatMap((action) => action.allocations),
@@ -78,9 +90,11 @@ function project(input: ProjectionInput) {
       .lookup(range)
       .map((fragment) => fragment.text)
       .join('');
-  for (const action of activity.actions)
+  for (const action of activity.actions) {
+    validateMembership(action, allocations);
     for (const effect of action.effects)
       if (effect.type === 'Interpret') validatePacket(effect.packet, allocations, read);
+  }
   const snapshots = allocations
     .filter((allocation) => allocation.type === 'tape')
     .map((tape) => input.native.snapshot(tape.id));

@@ -1,3 +1,4 @@
+import { commandDraft } from './command-draft.js';
 import type {
   ActionFocus,
   ActionOptions,
@@ -123,14 +124,14 @@ export function prepareEdit<Input>(
   let outcome: EditOutcome | undefined;
   const request = writer.prepareCommand(options, (draft) => {
     const context: EditContext = {
-      draft,
+      draft: commandDraft(draft),
       scopeRoot,
       ...(selectionBefore ? { selectionBefore } : {}),
     };
-    const captured = captureSelection(draft, selectionBefore);
+    const captured = captureSelection(context.draft, selectionBefore);
     outcome = command(context, input);
     if (outcome.status === 'not-applicable') return;
-    return actionFocus(draft, captured, outcome);
+    return actionFocus(context.draft, captured, outcome);
   });
 
   if (!outcome) throw new Error('edit command did not return an outcome');

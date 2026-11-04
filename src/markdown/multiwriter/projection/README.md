@@ -97,6 +97,15 @@ synthesis against the candidate's insertion manifest. It validates losing packet
 placements too. Never call author certification against a cache containing unrelated
 concurrent origins.
 
+Packets can also declare `derivedInlineOutputs` and original `effectOrdinals`.
+These optional lists are absent on older canonical bytes; the encoder omits empty
+logical lists and the decoder rejects present-empty wire lists. Output births,
+member properties and structural effects share packet selection. Independent
+properties and transfers retain their own activity. Allocations, native insertions,
+markers and split constructor coverage remain retained when a packet loses.
+Certification checks each packet's own intentions, including superseded packets,
+against exact author prefixes. See `docs/edit-authoring.md` for command lowering.
+
 Lower layers accept explicit interpretation eligibility and wrapper-birth activity.
 Their defaults preserve existing callers: without eligibility, layout registers
 interpretation occurrences but does not apply their placements. MW-06 supplies the

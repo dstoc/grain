@@ -1,3 +1,4 @@
+import { commandDraft } from '../command-draft.js';
 import type { EditContext } from '../context.js';
 import { assertScopedTarget } from '../context.js';
 import { handled, NOT_APPLICABLE, type Edit } from '../outcomes.js';
@@ -69,7 +70,6 @@ export const deleteBackwardAtStart: Edit<DeleteBackwardInput> = (context, { node
       const seam = appendInline(draft, nodeId, target);
       const source = requireInline(draft, nodeId);
       if (source.type === 'section') liftSectionChildren(draft, nodeId);
-      draft.detach(nodeId);
       return handled({ focus: seam });
     }
     unwrapContainer(draft, quote);
@@ -79,7 +79,6 @@ export const deleteBackwardAtStart: Edit<DeleteBackwardInput> = (context, { node
   const previous = previousInline(draft, scopeRoot, nodeId);
   if (previous) {
     const seam = appendInline(draft, nodeId, previous);
-    draft.detach(nodeId);
     return handled({ focus: seam });
   }
 
@@ -93,8 +92,21 @@ export const deleteBackwardAtStart: Edit<DeleteBackwardInput> = (context, { node
     draft.parentOf(list) === scopeRoot
   ) {
     moveChildren(draft, listItem, scopeRoot, list);
-    draft.detach(listItem);
-    if (draft.node(list).children.length === 0) draft.detach(list);
+    commandDraft(draft).liftChildren({
+      source: listItem,
+      parent: draft.parentOf(listItem)!,
+      before: listItem,
+      children: [],
+      removeSource: true,
+    });
+    if (draft.node(list).children.length === 0)
+      commandDraft(draft).liftChildren({
+        source: list,
+        parent: draft.parentOf(list)!,
+        before: list,
+        children: [],
+        removeSource: true,
+      });
     return handled({ focus: textPoint(draft, nodeId, 0) });
   }
   return NOT_APPLICABLE;

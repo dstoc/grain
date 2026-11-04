@@ -1,3 +1,4 @@
+import { commandDraft } from '../command-draft.js';
 import type { EditContext } from '../context.js';
 import { assertScopedTarget, isBlockSelection, isWithinScope } from '../context.js';
 import { handled, NOT_APPLICABLE, type Edit } from '../outcomes.js';
@@ -65,10 +66,23 @@ export function outdentNode(context: EditContext, nodeId: NodeId): boolean {
     const beforeList = nextAfter(draft, list);
     const children = [...draft.node(listItem).children];
     for (const child of children) placeBefore(draft, child, listParent, beforeList ?? null);
-    draft.detach(listItem);
+    commandDraft(draft).liftChildren({
+      source: listItem,
+      parent: draft.parentOf(listItem)!,
+      before: listItem,
+      children: [],
+      removeSource: true,
+    });
   }
 
-  if (draft.node(list).children.length === 0) draft.detach(list);
+  if (draft.node(list).children.length === 0)
+    commandDraft(draft).liftChildren({
+      source: list,
+      parent: draft.parentOf(list)!,
+      before: list,
+      children: [],
+      removeSource: true,
+    });
   return true;
 }
 

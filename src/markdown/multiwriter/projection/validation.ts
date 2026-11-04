@@ -1,4 +1,4 @@
-import type { ActionEnvelope, NativeTextRange } from '../contracts.js';
+import type { ActionEnvelope, NativeTextRange, RangeRef } from '../contracts.js';
 import type { BirthPlacement, LayoutGenesis } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
 import { createOwnershipAuthorValidator, reduceOwnership } from '../ownership/index.js';
@@ -10,6 +10,7 @@ import {
   ProjectionError,
   selectInterpretations,
   validatePacket,
+  validateMembership,
 } from './interpretation.js';
 
 /** MW-15 invokes this only on genesis + exact dependencies + candidate native body. */
@@ -20,18 +21,17 @@ export function createProjectionAuthorValidator(options: {
   const genesis = structuredClone(options.genesis);
   return (action, context) => {
     const actions = [...context.dependencies, action];
+    // Resolve host-supplied birth bindings before data-rejection catches. Host
+    // failures must propagate; the reference boundary handles ProvenanceError.
+    const inputs = actions.map((action) => ({ action, births: options.births(action) }));
+    const births = (action: ActionEnvelope) =>
+      inputs.find(
+        (entry) =>
+          entry.action.id.actor === action.id.actor &&
+          entry.action.id.sequence === action.id.sequence,
+      )!.births;
     const activity = reduceActivity(actions);
     const selected = selectInterpretations(activity);
-    const ownershipValidator = createOwnershipAuthorValidator({
-      ...options,
-      genesis,
-      interpretationEligible: (_actions, order) =>
-        selected.eligible({ action: order.action.id, ordinal: order.ordinal }),
-    });
-    const validation = ownershipValidator(action, context);
-    const ownershipFailure =
-      validation !== null && typeof validation === 'object' ? finish(validation) : validation;
-    if (ownershipFailure) return ownershipFailure;
     const allocations = [
       ...genesis.allocations,
       ...actions.flatMap((action) => action.allocations),
@@ -45,6 +45,21 @@ export function createProjectionAuthorValidator(options: {
         .map((fragment) => fragment.text)
         .join('');
     try {
+      validateMembership(action, allocations);
+      const certify = (selection: ReturnType<typeof selectInterpretations>) => {
+        const result = createOwnershipAuthorValidator({
+          ...options,
+          births,
+          genesis,
+          effectEligible: (_actions, order) =>
+            selection.effectEligible({ action: order.action.id, ordinal: order.ordinal }),
+          interpretationEligible: (_actions, order) =>
+            selection.eligible({ action: order.action.id, ordinal: order.ordinal }),
+        })(action, context);
+        return result !== null && typeof result === 'object' ? finish(result) : result;
+      };
+      const failure = certify(selected);
+      if (failure) return failure;
       for (const [ordinal, effect] of action.effects.entries()) {
         if (effect.type !== 'Interpret') continue;
         const packet = effect.packet;
@@ -81,18 +96,56 @@ export function createProjectionAuthorValidator(options: {
             throw new ProjectionError(
               'Synthesized editable text must be inserted in its author action',
             );
-        const prefix = reduceOwnership({
-          genesis,
-          actions: actions.map((action) => ({ action, births: options.births(action) })),
-          snapshots,
-          isActive: (order) =>
-            activity.isActive(order.action.id) &&
-            (order.action.id.actor !== action.id.actor ||
-              order.action.id.sequence !== action.id.sequence ||
-              order.ordinal < ordinal),
-          interpretationEligible: (order) =>
-            selected.eligible({ action: order.action.id, ordinal: order.ordinal }),
-        });
+        const validating = selectInterpretations(activity, [], { action: action.id, ordinal });
+        const memberFailure = certify(validating);
+        if (memberFailure) return memberFailure;
+        const prefixAt = (before: number) =>
+          reduceOwnership({
+            genesis,
+            actions: inputs,
+            snapshots,
+            isActive: (order) =>
+              activity.isActive(order.action.id) &&
+              (order.action.id.actor !== action.id.actor ||
+                order.action.id.sequence !== action.id.sequence ||
+                order.ordinal < before) &&
+              validating.effectEligible({ action: order.action.id, ordinal: order.ordinal }),
+            interpretationEligible: (order) =>
+              validating.eligible({ action: order.action.id, ordinal: order.ordinal }),
+          });
+        const prefix = prefixAt(ordinal);
+        for (const index of packet.effectOrdinals ?? []) {
+          const member = action.effects[index];
+          if (member.type !== 'TransferRange') continue;
+          const before = prefixAt(index);
+          const cells = member.ranges.flatMap((range) => before.cells(range));
+          const cellKey = (range: RangeRef) =>
+            [range.tape, range.start, range.end].map(resourceKey).join('|');
+          const traversalKeys = (
+            flow: NonNullable<(typeof before.nodeAllocations)[number]['flow']>,
+          ) =>
+            before
+              .raw(flow)
+              .flatMap((e) => (e.type === 'cell' ? [cellKey(e.assignment.cell)] : []));
+          const wanted = cells.map((cell) => cellKey(cell.cell));
+          const valid = [packet.source, ...(packet.derivedInlineOutputs ?? [])].some((id) => {
+            const node = before.nodeAllocations.find((n) => resourceKey(n.id) === resourceKey(id));
+            if (!node?.flow) return false;
+            const traversal = traversalKeys(node.flow);
+            let previous = -1;
+            return (
+              wanted.length > 0 &&
+              wanted.every((key) => {
+                const at = traversal.indexOf(key);
+                if (at <= previous) return false;
+                previous = at;
+                return true;
+              })
+            );
+          });
+          if (!valid)
+            throw new ProjectionError('Packet transfer is outside author source/output traversal');
+        }
         const source = prefix.nodeAllocations.find(
           (node) => resourceKey(node.id) === resourceKey(packet.source),
         )!;
@@ -112,18 +165,6 @@ export function createProjectionAuthorValidator(options: {
           )
             throw new ProjectionError('Syntax mask is outside author source traversal');
         }
-        // Every retained placement is validated even if a later packet in this action wins.
-        reduceOwnership({
-          genesis,
-          actions: actions.map((action) => ({ action, births: options.births(action) })),
-          snapshots,
-          isActive: (order) => activity.isActive(order.action.id),
-          interpretationEligible: (order) =>
-            (order.action.id.actor === action.id.actor &&
-              order.action.id.sequence === action.id.sequence &&
-              order.ordinal === ordinal) ||
-            selected.eligible({ action: order.action.id, ordinal: order.ordinal }),
-        });
       }
       return null;
     } catch (error) {

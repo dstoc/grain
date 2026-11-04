@@ -1,3 +1,4 @@
+import { commandDraft } from '../command-draft.js';
 import { assertScopedTarget, isWithinScope } from '../context.js';
 import { parseBlocks } from '../../markdown/block-parser/api.js';
 import type { DocumentNode, MarkdownNode } from '../../markdown/node.js';
@@ -98,14 +99,14 @@ function applyReplacement(
     if (!parentId) return undefined;
     if (plan.kind === 'list') selectedItems.add(parentId);
     if (node.type === 'section') liftSectionChildren(draft, id);
-    draft.detach(id);
+    commandDraft(draft).deleteSubtree(id);
   }
 
   const removedItems = new Set<NodeId>();
   if (plan.kind === 'list') {
     for (const itemId of selectedItems) {
       if (itemId === plan.destinationItemId || draft.node(itemId).children.length) continue;
-      draft.detach(itemId);
+      commandDraft(draft).deleteSubtree(itemId);
       removedItems.add(itemId);
     }
   }
@@ -290,14 +291,14 @@ export const insertMarkdown: Edit<InsertMarkdownInput> = (
             itemNode.marker === '* ' &&
             itemNode.checked == null
           ) {
-            draft.detach(contextId);
-            draft.detach(item);
+            commandDraft(draft).deleteSubtree(contextId);
+            commandDraft(draft).deleteSubtree(item);
             targetDetached = true;
           }
         }
       }
     }
-    if (replaceTarget && !targetDetached) draft.detach(contextId);
+    if (replaceTarget && !targetDetached) commandDraft(draft).deleteSubtree(contextId);
   }
 
   const scopeDestination = attachAfter?.parent ?? parentId;
