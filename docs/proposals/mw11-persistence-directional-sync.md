@@ -1,6 +1,7 @@
 # Proposal: Persist actionDoc and enforce directional transport
 
-**Status:** Proposed for grain/92; implementation has not started.
+**Status:** Approved v3 for grain/92; implemented in
+`src/markdown/multiwriter/providers/`. See that module's README for usage and verification limits.
 
 **Authority:** The proposal attached to grain/81, version 1, especially §§3,
 4.3, 9.2–9.3, 10 and 13–14. This document specifies the MW-11 adapter;

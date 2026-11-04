@@ -40,6 +40,7 @@ from every actor, not just local actions. `onUpdate()` reports both local and
 received updates, and gives each subscriber its own byte copy. The transport
 adapter must prevent disallowed receive routes **before** `applyUpdate()`;
 this module does not implement synchronization modes or IndexedDB durability.
+Use the [MW-11 provider](../providers/README.md) for those IO boundaries.
 Only actionDoc updates travel through these methods. Never attach a provider to
 a derived native text cache.
 
