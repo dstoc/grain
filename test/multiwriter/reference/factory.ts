@@ -25,6 +25,7 @@ import { DirectionalActionProvider } from '../../../src/markdown/multiwriter/pro
 import { openReferenceDocument } from '../../../src/markdown/multiwriter/reference/document.js';
 import type { ReferenceGenesis } from '../../../src/markdown/multiwriter/reference/document.js';
 import type { AuthoringDocument } from '../../../src/markdown/multiwriter/authoring/document.js';
+import type { ActionStore } from '../../../src/markdown/multiwriter/actions/store.js';
 import { serializeProjection } from '../../../src/markdown/multiwriter/projection/index.js';
 import type { ViewNode } from '../../../src/markdown/multiwriter/projection/index.js';
 import type { ContractTrace, Observation, TraceAction } from '../trace.js';
@@ -36,6 +37,7 @@ import { selectCarrier } from './carrier.js';
 const key = (id: ActionId) => `${id.actor}:${id.sequence}`;
 
 interface HeadlessDocument extends AuthoringDocument {
+  readonly store: ActionStore;
   readonly publication: AuthoringDocument['publication'] & { evict?(): void };
   nativeStates(): readonly Uint8Array[];
   destroy(): void;
