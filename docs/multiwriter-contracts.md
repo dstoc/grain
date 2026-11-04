@@ -4,9 +4,20 @@ MW-00 implements the contract freeze for **grain/81**. Its source is the complet
 proposal attached to that issue, version 1, reviewed against `yjs` commit
 `1d76dddbd8620c5dc92b02ccb1c45e67af7ddc46`. Yjs remains exactly **13.6.33**.
 
-The new files specify schema 3. They do not change schema-2 authoring, implement a
-reducer, or demonstrate native multi-writer convergence. **MW-08 remains the
+The MW-00 files specify schema 3 and leave schema-2 authoring unchanged.
+Individual workstream tests cover their own contracts. **MW-08 remains the
 required integrated reference gate before browser cutover.**
+
+The [MW-04 private-home amendment](proposals/2026-11-04-mw04-ownership-algebra.md)
+was approved in grain/85 comment `cmt_LZgff2jBdgMdcR2k`. Each flow's root run
+ends with its fresh full home tape. Text-free sentinel-adjacent cells remain
+owned by that root and are omitted only from content bases and split adjacency.
+Movement captures use interior endpoints; edge typing allocates two brackets.
+Empty cuts reuse the source's trailing home slot and retain its ordering domain.
+The approved reverse-cut correction retains L's authored `cdef` skeleton while
+effective ownership stays `ab/c/def`. These are semantic amendments, with no new
+wire field or automatic migration. Persisted publication still needs the stated
+capability/version agreement to prevent mixed-convention writers.
 
 ## Files and use
 
@@ -23,6 +34,11 @@ required integrated reference gate before browser cutover.**
   Its [integration notes](../src/markdown/multiwriter/ingest/README.md) require
   real reducer-owned author checks for structural actions. The publication probe
   does not supply the MW-08 reducer or establish the integrated acceptance gate.
+- `src/markdown/multiwriter/ownership/index.ts` exposes MW-04's cell ownership,
+  split cohorts, derived homes, author-side bracket planning, and ownership
+  validation adapter for MW-15. Its [integration notes](../src/markdown/multiwriter/ownership/README.md)
+  distinguish author-closure certification from concurrent replay and list the
+  remaining projection, command lowering, history, and replica obligations.
 - `test/multiwriter/trace.ts` defines versioned semantic traces, observations and
   `runContractTrace()`. It contains comparisons, not a reference reducer.
 - `test/multiwriter/corpus.ts` contains fixed inputs and expected observations.

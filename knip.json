@@ -8,6 +8,7 @@
     "src/markdown/multiwriter/contracts.ts!",
     "src/markdown/multiwriter/text/cache.ts!",
     "src/markdown/multiwriter/layout/index.ts!",
+    "src/markdown/multiwriter/ownership/index.ts!",
     "src/markdown/multiwriter/actions/index.ts!",
     "src/markdown/multiwriter/ingest/index.ts!",
     "src/markdown/multiwriter/providers/index.ts!",
