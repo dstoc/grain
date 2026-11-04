@@ -63,3 +63,25 @@ Remaining acceptance includes the schema-2 post-M5 matched comparison, mixed
 incremental semantic work gates, separately attributed cache/history memory, and
 actual MW-10/MW-18 eviction/consolidation integration. `--steps 10000` alone runs
 literal input and does not cover that mixed-workload contract.
+
+## Pinned post-M5 control
+
+Use a completed fixture directory to compare the same literal script against the
+schema-2 post-M5 commit `c3a8812e8bbee69c805a50347dd29d11c076d2de`:
+
+```sh
+node benchmarks/multiwriter/post-m5.mjs --fixtures /tmp/mw13-results --output /tmp/mw13-postm5 --size 150
+```
+
+This runs three alternating fresh-process pairs. The historical path uses
+`prepareTextInput` → `apply` → `publish`, with one explicit history group per edit.
+The candidate uses the same `LocalEditor` script as the native-stage measurement.
+Both verify final Markdown against the captured fixture. The historical source
+receives only the benchmark loader/scripts, with no algorithm or capacity patch.
+
+This is a semantic workload comparison across different models. Schema 2 has an
+authority and native undo; schema 3 uses independent immutable action envelopes.
+Schema 2 cannot replay schema-3 carriers. Its canonical checkpoint includes the
+initial document; schema-3 genesis and actionDoc sizes remain separate. Do not
+compare those individual byte fields as equivalent storage categories, and do
+not infer offline/concurrent capability from this literal control.
