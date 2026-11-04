@@ -52,7 +52,11 @@ jobs:
   failed-test:
     runs-on: ubuntu-latest
     steps:
-      - run: node --test --eval "require('node:test').test('intentional failed test', () => { throw new Error('grain/100 control'); })"
+      - run: |
+          cat > /tmp/grain100-failure.cjs <<'JS'
+          require('node:test').test('intentional failed test', () => { throw new Error('grain/100 control'); });
+          JS
+          node --test /tmp/grain100-failure.cjs
   timed-out:
     runs-on: ubuntu-latest
     timeout-minutes: 1
