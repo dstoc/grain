@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { escapePattern, makePlan, nodeJobs, requiredJobs, validateGate } from './partitions.mjs';
@@ -35,6 +35,7 @@ function run(command, args) {
 }
 const vp = resolve('node_modules/.bin/vp');
 if (id === 'plan') {
+  rmSync(path('plan.json'), { force: true });
   run(vp, [
     'test',
     'list',
@@ -64,6 +65,8 @@ if (id === 'plan') {
   validateGate(read('plan.json'), reports, needs, identity, skips);
   console.log('All required jobs and Node test occurrences passed at', identity.sha);
 } else {
+  // A failed local retry must not leave an earlier success receipt behind.
+  rmSync(path(`${id}.json`), { force: true });
   const vitestPath = path(`${id}.vitest.json`);
   const reporter = ['--reporter=default', '--reporter=json', `--outputFile.json=${vitestPath}`];
   if (nodeJobs.includes(id)) {

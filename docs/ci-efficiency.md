@@ -28,6 +28,8 @@ node scripts/ci/run.mjs static
 For the complete partitioned gate, use a fresh output directory:
 
 ```sh
+set -e
+test ! -e ci-results
 node scripts/ci/run.mjs plan
 node scripts/ci/run.mjs static
 node scripts/ci/run.mjs ordinary
@@ -88,6 +90,10 @@ whole workflow to obtain a coherent plan and reports. The stable aggregate name
 is `test`. A repository owner must verify that branch protection requires this
 check. The agent's protection API request returned HTTP 403.
 
+Failed local retries remove their old success receipt before execution. Artifact
+uploads replace earlier versions on a whole-workflow rerun; the attempt check
+still rejects a mixture of old and new reports.
+
 ## Measurements
 
 Wrap each command to record its revision, command, Node/npm/package versions,
@@ -125,6 +131,10 @@ work and instrumented runs rather than treating them as clean baselines.
 
 Initial observations on the local Ryzen 9 5900X runner with Node 26.13.0:
 
+- Accepted full Node baseline: 1,705 passed, 192 skipped, 1,867.862 seconds wall,
+  2,664.807 seconds user CPU, 35.505 seconds system CPU. The largest individual
+  child peak RSS was 1,211,676 KiB. The full retention case took 1,769.667 seconds.
+  That exploratory run overlapped brief probes and another local run.
 - Accepted matrix: 233 passed, 549.596 seconds in the first full Node run.
 - Accepted browser: 330 passed, two skipped, 22.90 seconds with system Chromium.
 - Candidate ordinary before the added regression: 1,426 passed, 192 skipped,
@@ -167,3 +177,27 @@ margin, without changing global test timeouts.
 If the operator cannot change the watcher, hand off the exact pending SHA/run to
 Check and follow it to its terminal conclusion. The unresolved external setting
 and branch-protection verification remain rollout limitations.
+
+## Evidence handoff
+
+Implementation PR: [#85](https://github.com/dstoc/grain/pull/85), targeting `yjs`.
+The initial candidate is `92eac5d59ca38275539995e9ce3fd5b57b613a53`.
+The fixed-worker comparison checks out that exact candidate and the accepted
+merge in independent jobs, three repetitions each, in disposable
+[PR #86](https://github.com/dstoc/grain/pull/86). That experiment must not merge.
+
+Corrected experiment run:
+[41837864440](https://github.com/dstoc/grain/actions/runs/41837864440).
+The earlier experiment run 41837077277 failed static checks because measurement
+outputs were inside the measured checkout. It supplies no timing baseline.
+The corrected run writes results outside the checkout. Its failure observer
+passed after seeing an actual failed test, a cancelled timeout, a skipped job,
+and rejection of missing reports. The full Node jobs were still pending when
+this handoff was written.
+
+Artifact downloads fail at this runner's network proxy with HTTP 403. The
+experiment keeps complete resource/per-test artifacts on GitHub and publishes
+compact summaries through job-step metadata, which the agent can read. Raw
+artifact verification requires an operator with a permitted download route.
+Read the final grain/100 evidence artifact and comments for completion status;
+do not treat this initial handoff or a superseded-head check as acceptance.

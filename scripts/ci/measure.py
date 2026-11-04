@@ -52,6 +52,7 @@ def tree_rss(root):
 metadata = {
     "revision": command("git", "rev-parse", "HEAD"),
     "tree": command("git", "rev-parse", "HEAD^{tree}"),
+    "worktree_status": command("git", "status", "--porcelain"),
     "command": args.command,
     "node": command("node", "--version"),
     "npm": command("npm", "--version"),
@@ -59,6 +60,7 @@ metadata = {
                  for name in ["yjs", "vitest", "vite-plus"] if Path(f"node_modules/{name}/package.json").exists()},
     "platform": platform.platform(),
     "logical_cpus": os.cpu_count(),
+    "cpu_affinity": sorted(os.sched_getaffinity(0)),
     "cpu_model": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines() if line.startswith("model name")), None),
     "memory": read("/proc/meminfo"),
     "cpu_limit": read("/sys/fs/cgroup/cpu.max"),

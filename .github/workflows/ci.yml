@@ -24,6 +24,7 @@ jobs:
         if: always()
         with:
           name: ci-plan
+          overwrite: true
           path: ci-results/
           if-no-files-found: error
 
@@ -42,6 +43,7 @@ jobs:
         if: always()
         with:
           name: ci-static
+          overwrite: true
           path: ci-results/
           if-no-files-found: error
 
@@ -70,6 +72,7 @@ jobs:
         if: always()
         with:
           name: ci-${{ matrix.partition }}
+          overwrite: true
           path: ci-results/${{ matrix.partition }}*
           if-no-files-found: error
 
@@ -89,6 +92,7 @@ jobs:
         if: always()
         with:
           name: ci-browser
+          overwrite: true
           path: ci-results/
           if-no-files-found: error
 
@@ -107,6 +111,7 @@ jobs:
         if: always()
         with:
           name: ci-smoke
+          overwrite: true
           path: ci-results/
           if-no-files-found: error
 

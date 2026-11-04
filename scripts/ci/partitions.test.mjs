@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { mkdtempSync, writeFileSync, existsSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import {
   requiredJobs,
   workflowJobs,
@@ -145,4 +150,23 @@ test('exact name patterns escape Markdown and regexp punctuation', () => {
   const pattern = new RegExp(`^${escapePattern(value)}$`);
   assert(pattern.test(value));
   assert(!pattern.test(value + 'suffix'));
+});
+
+test('a failed CLI retry removes its previous success report', () => {
+  const output = mkdtempSync(join(tmpdir(), 'grain-ci-retry-'));
+  try {
+    const receipt = join(output, 'ordinary.json');
+    writeFileSync(receipt, JSON.stringify({ id: 'ordinary', exitCode: 0 }));
+    // No plan exists. The retry must fail before invoking Vitest.
+    const result = spawnSync(process.execPath, [
+      fileURLToPath(new URL('./run.mjs', import.meta.url)),
+      'ordinary',
+      '--output',
+      output,
+    ]);
+    assert.notEqual(result.status, 0);
+    assert.equal(existsSync(receipt), false);
+  } finally {
+    rmSync(output, { recursive: true, force: true });
+  }
 });
