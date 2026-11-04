@@ -767,6 +767,14 @@
     {
       "file": "src/markdown/inline-parser/commonmark.test.ts",
       "name": "commonmark html serializer > 610 Autolinks"
+    },
+    {
+      "file": "src/markdown/multiwriter/bootstrap/wide.test.ts",
+      "name": "wide 1000-paragraph genesis cold-reconstructs exact native IDs and sibling order"
+    },
+    {
+      "file": "src/markdown/multiwriter/bootstrap/wide.test.ts",
+      "name": "wide 5000-paragraph genesis cold-reconstructs exact native IDs and sibling order"
     }
   ],
   "browser": [
