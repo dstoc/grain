@@ -1,9 +1,12 @@
 # Proposal: MW-15 ingest validation and resource limits
 
-**Issue:** grain/96.  
-**Status:** Proposed; implementation requires proposal review.  
+**Issue:** grain/96.
+
+**Status:** Proposed; implementation requires proposal review.
+
 **Authority:** [MW-00 proposal, version 1](https://tines.tbuckley.dev/issues/prj_L8Cva7P0y96K81kq/81),
-especially §§4, 6–8, 10.1, 13 and 14.  
+especially §§4, 6–8, 10.1, 13 and 14.
+
 **Inspected baseline:** `origin/yjs` at
 `046410d155fcb9d93414696113a23a7bf4151472`. This includes MW-01, MW-02,
 MW-03, MW-05, MW-07 and MW-11. Yjs remains pinned to 13.6.33.
