@@ -291,7 +291,11 @@ it('inventories every baseline suite and requires an explicit disposition before
     expect(existsSync(new URL(path, project)), `missing preserved suite ${path}`).toBe(true);
   expect(
     testFiles(new URL('src/', project))
-      .filter((path) => !path.startsWith('src/markdown/multiwriter/'))
+      .filter(
+        (path) =>
+          !path.startsWith('src/markdown/multiwriter/') ||
+          path.startsWith('src/markdown/multiwriter/providers/'),
+      )
       .sort(),
   ).toEqual([...inventory].sort());
   const manifest = JSON.parse(readFileSync(new URL('package.json', project), 'utf8'));
