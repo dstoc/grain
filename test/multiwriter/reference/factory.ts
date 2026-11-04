@@ -22,6 +22,7 @@ import { resourceKey } from '../../../src/markdown/multiwriter/layout/index.js';
 import { NativeFixture } from '../../../src/markdown/multiwriter/ownership/test-fixtures.js';
 import { NativeTapeCache } from '../../../src/markdown/multiwriter/text/cache.js';
 import { DirectionalActionProvider } from '../../../src/markdown/multiwriter/providers/adapter.js';
+import { journalBytes as measureJournal } from '../../../src/markdown/multiwriter/checkpoints/index.js';
 import { openReferenceDocument } from '../../../src/markdown/multiwriter/reference/document.js';
 import type { ReferenceGenesis } from '../../../src/markdown/multiwriter/reference/document.js';
 import type { AuthoringDocument } from '../../../src/markdown/multiwriter/authoring/document.js';
@@ -41,6 +42,8 @@ interface HeadlessDocument extends AuthoringDocument {
   destroy(): void;
 }
 export interface ReferenceFactoryOptions {
+  /** Integration control only. Local symbolic navigation is not production MW-10 history. */
+  readonly checkpointJournal?: boolean;
   readonly openDocument?: (genesis: ReferenceGenesis) => HeadlessDocument;
   /** Observe each completed publication, including before final convergence. */
   readonly onPublication?: (document: HeadlessDocument, genesis: ReferenceGenesis) => void;
@@ -107,16 +110,34 @@ export function referenceFactory(
       const openDocument = options.openDocument ?? openReferenceDocument;
       let document: HeadlessDocument = openDocument(config.genesis);
       const journalBytes: Uint8Array[] = checkpoint ? [checkpoint.slice()] : [];
+      let journalCheckpoint: Uint8Array | undefined;
+      const plainJournal = {
+        read: async () => {
+          if (journalCheckpoint) throw new Error('Checkpoint requires a capable reader');
+          return journalBytes.map((b) => b.slice());
+        },
+        append: async (b: Uint8Array) => {
+          journalBytes.push(b.slice());
+        },
+        close() {},
+      };
+      const journal = options.checkpointJournal
+        ? {
+            ...plainJournal,
+            readCheckpoint: async () => ({
+              ...(journalCheckpoint ? { checkpoint: journalCheckpoint.slice() } : {}),
+              updates: journalBytes.map((b) => b.slice()),
+            }),
+            replaceWithCheckpoint: async (bytes: Uint8Array) => {
+              journalCheckpoint = bytes.slice();
+              journalBytes.length = 0;
+            },
+          }
+        : plainJournal;
       let provider = await DirectionalActionProvider.open({
         store: document.store,
         mode: 'bidirectional',
-        journal: {
-          read: async () => journalBytes.map((b) => b.slice()),
-          append: async (b) => {
-            journalBytes.push(b.slice());
-          },
-          close() {},
-        },
+        journal,
       });
       function freshNative() {
         const rank = peers.indexOf(peer as 'A' | 'B' | 'C');
@@ -777,13 +798,32 @@ export function referenceFactory(
             return;
           }
           const bytes = document.store.encodeUpdate();
+          if (options.checkpointJournal) {
+            await provider.flush();
+            const before = measureJournal({ checkpoint: journalCheckpoint, updates: journalBytes });
+            await provider.consolidate();
+            const after = measureJournal({ checkpoint: journalCheckpoint, updates: journalBytes });
+            console.info(
+              JSON.stringify({
+                kind: 'real-corpus-checkpoint',
+                trace: trace.id,
+                peer,
+                before,
+                after,
+                canonical: document.store.retainedBytes(),
+                productionHistory: false,
+              }),
+            );
+          }
           await provider.close();
           document.destroy();
           document = openDocument(config.genesis);
           provider = await DirectionalActionProvider.open({
             store: document.store,
             mode,
-            journal: { read: async () => [bytes], append: async () => {}, close() {} },
+            journal: options.checkpointJournal
+              ? journal
+              : { read: async () => [bytes], append: async () => {}, close() {} },
           });
           native.destroy();
           native = freshNative();
