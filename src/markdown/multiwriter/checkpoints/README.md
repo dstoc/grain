@@ -74,8 +74,9 @@ An integrity-failed source cannot produce a checkpoint. Restoration uses native
 updates, never reconstructed arrays of decoded ready actions.
 
 Network messages remain actionDoc update bytes. Checkpoints are local storage
-artifacts, not provider messages. A restart creates a fresh native author/client
-and resets interactive history navigation; consolidation does neither.
+artifacts, not provider messages. Restore creates a fresh native actionDoc client.
+On restart, the host supplies a fresh author/session and resets interactive
+history navigation. Consolidation keeps those live objects unchanged.
 
 ## Implement a host journal
 
