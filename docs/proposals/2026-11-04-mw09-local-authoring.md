@@ -1,7 +1,7 @@
 # Proposal: Compile local semantic commands into multiwriter actions
 
 - **Issue:** grain/90 (MW-09).
-- **Status:** v1 approved in grain/90 comment `cmt_3vzrzLicPnEhq3j8`; v2 amendment below requires owner review.
+- **Status:** v1 approved in grain/90 comment `cmt_3vzrzLicPnEhq3j8`; v3 amendment below requests MW-06/shared-contract owner approval; it is not approved.
 - **Authority:** grain/81 proposal v2, especially §§4.3, 6–9, 13–14; the approved MW-04 private-home contract and MW-08 constructor rule.
 - **Inspected baseline:** `yjs` at `0b500005bb26ebdbd0b8b891428ddd2b84bc4f30`, including accepted MW-08 PR #83. Branch and eventual PR target: `yjs`. Yjs stays pinned to 13.6.33.
 
@@ -336,14 +336,23 @@ This proposal itself requires source/path and formatting checks, not runtime tes
 - The command parity and three-replica partition matrix pass without changing frozen contracts.
 - Tests and limitations explicitly preserve the later history, performance and browser gates.
 
-## V2 amendment: applicability of additional parser outputs
+## V3 amendment: applicability and encoding of additional parser outputs
 
 ### Decision requested
 
-Approve an explicit packet-membership contract for conversion-specific effects
-and additional inline outputs, owned by MW-06, before MW-09 lowers conversions
-with more than one inline output. This amendment does not reopen the approved
-CommandDraft, native planning, publication, provider, or command semantics.
+The decision requested from the MW-06/shared-contract owner is approval of the
+exact additive schema-3 policy below, including its byte-identity and incompatible
+reader boundary. MW-06 is grain/87; the authoritative shared contract is grain/81.
+Approval must be recorded on grain/90 by the responsible owner and identify this
+proposal version. Neither v1 approval nor the v2 review grants that approval.
+The inspected grain/87 and grain/81 records contain no approval of these fields.
+
+This revision responds to grain/90 review `cmt_DfwJdV6Mco6zR46Y`. It replaces the
+choice deferred in v2 with one concrete recommendation. All normative statements
+in this amendment describe the proposed contract, pending that owner's approval.
+Do not implement the fields, alter shared context, or claim the amendment is
+resolved from this document alone. The approved CommandDraft, native planning,
+publication, provider and command semantics remain in force.
 
 ### Motivation and observed boundary
 
@@ -380,46 +389,193 @@ inline properties or ownership. They remain within the approved implementation
 scope. Synthesized text keeps the accepted MW-06 insertion-activity rule; this
 amendment does not make a losing packet delete synthesized native characters.
 
-### Proposed narrow extension
+### Exact proposed wire policy
 
-Have the MW-06 owner define and implement two explicit relationships in the typed
-packet contract:
+Keep `protocolVersion: 3`, the original document/genesis IDs and Yjs 13.6.33.
+Extend only `InterpretationPacket`, with two optional logical fields:
 
-1. Additional inline output identities, with their conversion-specific presentation,
-   marker, and info. These outputs use the same applicability decision as the
-   packet's source presentation and wrapper activation. Their independently needed
-   peer content, children, or later moves can preserve a scaffold, as under creation undo.
-2. The exact effect ordinals for conversion-specific structural ownership changes.
-   Restrict membership to the required `SplitFlow`, `TransferRange`, and associated
-   conversion property effects. Do not infer membership from adjacency, allocation
-   order, shared action ID, or the final tree. An independent transfer or task edit
-   in the same action must remain independent.
+```ts
+readonly derivedInlineOutputs?: readonly NodeId[];
+readonly effectOrdinals?: readonly number[];
+```
 
-The recommended shape is `InterpretationPacket.derivedInlineOutputs: readonly NodeId[]`
-and `InterpretationPacket.effectOrdinals: readonly number[]`. The output list controls
-birth applicability; conversion-specific `SetProperties` effects carry the output
-presentation. Empty membership preserves existing packet behavior. Whether these
-fields are optional with an empty default, or require a protocol revision, is part
-of the owner's compatibility decision. Old readers must not admit an envelope
-whose membership semantics they do not understand. The owner must confirm that
-schema and compatibility rule before code changes. MW-09 must not add fields or
-reinterpret existing effects privately. No mixed-convention rollout is proposed.
+The first field identifies additional inline births whose activation belongs to
+the packet. The second identifies conversion-specific effects in the containing
+action's original `effects` array. Neither field changes allocation order, resource
+IDs, native bodies, effect ordinals or the packet's existing required fields.
 
-Validation must reject duplicate or out-of-range memberships, non-author-allocated
-outputs, source/output identity collisions, memberships in multiple packets, and
-control/Interpret effects as structural members. Author certification must validate
-an output's exact retained ranges and pre-effect basis. Replay must still consume
-every effect ordinal, including an inapplicable packet member. Inactivity changes
-editable effects, never the retained allocation/native facts or constructor coverage.
+| Input or operation                                                | Proposed rule                                                                                                                                       |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Field absent on the wire                                          | Decode with the property absent. Semantic lookup uses an empty list without mutating the packet.                                                    |
+| Field absent or `[]` in a new logical value passed to the encoder | Omit the key from canonical wire output. Do not materialize an empty key.                                                                           |
+| Field present and nonempty on the wire                            | Decode and retain the exact list. The list must satisfy the ordering and membership rules below.                                                    |
+| Field present as `[]`, `null` or another type on the wire         | Reject. Present-empty is a new noncanonical spelling, not an alias to rewrite.                                                                      |
+| Encode a nonempty list                                            | Use the existing deterministic CBOR map/array and resource encodings. Preserve list order; reject invalid ordering instead of sorting the envelope. |
+| Decode then re-encode an old canonical envelope                   | Produce exactly the original bytes. Do not add either key or change existing arrays.                                                                |
+| Retain, transmit, checkpoint or replay                            | Preserve original encoded envelope bytes, including invalid variants. Do not decode/re-encode canonical storage as a migration.                     |
 
-The same selected packet must govern its source presentation, additional output
-presentation/activation, wrappers, placements, masks, and member ownership effects.
-Ordinary independent `SetProperties`, transfer, and text insertion effects retain
-their current behavior. Retraction/reactivation keeps the original semantic order.
+`derivedInlineOutputs` must be in strictly increasing allocation ordinal order.
+All entries are nodes born in the same action, so this is a total order without
+locale or actor ordering. `effectOrdinals` must be strictly increasing safe
+nonnegative integers. Empty omission is field-local: a packet can contain either
+nonempty field without the other. Existing wrapper-only packets need no new field.
+Unknown fields remain errors; this is not a general permissive decoder.
 
-MW-09 can then bind the existing `PreparedConversion.outputs` into the approved
-relationships. This keeps parser provenance, compiler lowering, and projection
-on one contract. It does not add a second parser tree or diff final strings.
+The existing `record(fields, optional)` mechanism in
+`src/markdown/multiwriter/actions/schema.ts` preserves absence. Its optional-field
+support does not by itself implement nonempty-list or encoder-omission rules.
+Those checks must be explicit at the packet codec boundary. The decoder must
+never attach `[]` as an own property to an old decoded packet. Semantic accessors
+may return empty lists; canonical encoders and retained payloads must not depend
+on those accessors' default objects.
+
+`actions/store.ts` compares retained envelope bytes to detect forks. Preserve that
+rule. Adding an empty key to an existing action is a different payload; it must
+still quarantine the identity and its descendants rather than silently replacing,
+normalizing or deduplicating the variant. Repeated local publication and retries
+must use the original envelope, action ID and encoded bytes.
+
+### Reader, upgrade and rollback boundary
+
+A capable reader admits both old envelopes with absent fields and valid new
+nonempty membership under the original genesis. An offline pre-extension writer
+can continue its old chain and deliver it later without expiry, rebasing, native
+ID replacement or prefix rewriting. Its actions keep their original semantics;
+membership is never inferred retroactively.
+
+The pre-extension encoder and decoder reject either new key. In this checkout,
+`decodeEnvelope()` reports an `EnvelopeDecodeError` with reason `reference` for
+an unknown packet field, not a version error. `ActionStore` retains the bytes and
+quarantines that action and dependent actions; it must not apply the envelope
+with membership ignored. The unchanged old reader cannot certify or reproduce
+the extended document. This proposal does not claim transparent mixed-reader
+operation or that the old host automatically stops all further authoring.
+
+Deploy capable readers before enabling nonempty membership authoring. An
+incapable reader must not be used as a live editor of a document containing the
+extension. This is a deployment boundary, not a negotiated capability, a new
+shared metadata record or a promise to retrofit old binaries. Old-prefix writers
+that have not received the extension remain valid offline authors; capable peers
+must still admit their valid tails. Test those tails explicitly.
+
+Before any extended action exists, reverting the implementation preserves the
+old wire format. After an extended action is retained, rollback to an incapable
+reader cannot preserve complete semantic editing for that document. Retain the
+full original bytes and use a capable reader to reopen it. Do not strip fields,
+remove actions, regenerate genesis, or roll back to an old checkpoint as a way
+to resume the same document. Markdown export/import creates a separate document
+and is not identity-preserving rollback. An owner who requires live old-reader
+compatibility must reject this policy and request a different proposal; there is
+no automatic protocol-revision fallback in this amendment.
+
+### Exact membership and target rules
+
+A packet's source keeps its current `properties` field. Every additional inline
+output appears exactly once in `derivedInlineOutputs`, has raw role `inline`, and
+is allocated by the containing action. It cannot equal the source, a wrapper,
+a genesis node or a node from another action. An output cannot belong to two
+packets, including two packets that convert the same source in one action.
+Birth activation follows packet selection; independent content, children and
+placements can preserve a scaffold under the existing creation-undo rules.
+
+An ordinal belongs to at most one packet in its action. It must name an effect
+strictly after the owning `Interpret`. This makes the source mask's pre-effect
+traversal available before conversion-specific ownership changes. Membership
+can refer forward to those effects, but cannot reference another action. Source
+text insertion can precede `Interpret`; no text insertion is a packet member.
+The compiler must place the packet before its member effects and retain their
+original semantic order. Do not relocate an existing retained effect.
+
+Only these effect/target combinations are permitted:
+
+| Member effect                                  | Permitted targets and values                                                                                                                                                                                                                                                |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SplitFlow`                                    | `newNode` is one of this packet's derived inline outputs. Its cut source is the packet source or an earlier derived output of the same packet. Validate the exact pre-effect basis and fresh home using the existing split rules.                                           |
+| `TransferRange`                                | The destination run belongs to the packet source or a derived inline output. Captured cells come from that packet's source/output flow traversal at the member's exact author prefix. Validate retained ranges, order and destination through real ownership certification. |
+| `SetProperties` on a derived inline output     | A nonempty subset of `presentation`, `marker`, `info`. `checked` is forbidden, including `null`. Source presentation belongs in `packet.properties`.                                                                                                                        |
+| `SetProperties` on a node in `packet.wrappers` | A nonempty subset of `marker` for a list or quote, or `marker` and `checked` for a list-item. `presentation` and `info` are forbidden. Wrapper identities remain author-allocated under the existing rule.                                                                  |
+
+No other member type is permitted. In particular, reject `InsertText`,
+`DeleteText`, `DeleteSubtree`, `JoinFlow`, `MoveBlock`, `LiftChildren`, `Interpret`
+and `SetGroupActive`. Packet placements already carry conversion placement
+intent; they are not independent `MoveBlock` members. A future parser lowering
+that needs another effect kind must expose that boundary before expanding this
+whitelist.
+
+Parser-authored marker/checked initialization for a fresh wrapper is a member
+`SetProperties`. An independent task checkbox edit is an ordinary nonmember
+`SetProperties`, even when another conversion is in the same action. The compiler
+must split mixed intent into separate effects; one effect cannot combine a
+packet-owned marker initialization with an independent task toggle. An ordinary
+independent transfer likewise stays outside `effectOrdinals`. Membership is
+explicit, not inferred from target identity, adjacency, allocation order, action
+ID or final ownership. Existing envelopes with absent membership keep their
+current independent property behavior.
+
+### Applicability, certification and retained facts
+
+Select the winning active packet for each stable source using the existing
+semantic order. Resolve membership before replay. A member is effective exactly
+when its action/group is active and its owning packet is selected. An ordinary
+nonmember retains existing activity. Source presentation, additional output
+activation and properties, wrappers, packet placements, masks and member
+ownership changes therefore share one applicability decision. Independent
+property edits retain their own order and can override packet initialization.
+
+Pass the combined effect eligibility to ownership/layout replay, property
+selection and destination/scaffold requirements. Updating only the existing
+`interpretationEligible` callback is insufficient: that callback currently
+controls `Interpret` placements. The shared activity/history model must still
+retain independent effects and the complete action. Replay consumes every
+original ordinal, including an inactive member, without filtering or renumbering
+`action.effects`. Retraction/reactivation preserves original priority.
+
+Allocation, native insertion manifests, permanent markers, private homes and
+birth-causal constructor coverage are retained regardless of packet selection.
+In particular, a member `SplitFlow` still contributes its approved retained
+capture plus private home to birth coverage when its ownership effect is
+inactive. Ordinary creation plus transfer still covers only the private home.
+Do not derive either coverage from the merged owner map. Synthesis keeps the
+accepted insertion-activity rule; losing a packet does not delete native text.
+A preserved scaffold gets default paragraph presentation plus effective
+independent edits, rather than the losing packet's heading/code properties.
+Deletion-wins and existing scaffold availability rules remain unchanged.
+
+Validate membership structure and all target roles before selection can hide an
+invalid member. `createProjectionAuthorValidator()` must compose the MW-04
+validator against genesis plus the exact candidate dependency closure and native
+body. Validate every candidate packet's members at their original pre-effect
+prefix, including a packet superseded later in that action. Use a candidate
+validation replay in which that packet's own intentions are checked; do not let
+the final winner bypass an invalid split basis, range, destination or property.
+Unrelated concurrent state is not an author-certification input.
+
+Reject duplicate, unsorted, out-of-range, pre-packet or cross-packet ordinal
+membership; invalid output births; source/output collisions; wrong property keys
+or roles; and foreign ownership ranges. Bad membership rejects the complete
+candidate before local append, or quarantines it on remote ingest. Never drop
+just the bad field/member. Native preparation aborts through the approved
+compiler failure path. Existing packet/source/synthesis validation still applies.
+
+### Suggested implementation ownership
+
+After explicit owner approval, change the shared contract in this order:
+
+1. MW-01/shared-contract code: add the optional fields in `contracts.ts` and packet
+   codec rules in `actions/schema.ts`. Keep all existing canonical byte fixtures.
+2. MW-06 with MW-04 integration: extend `projection/interpretation.ts`,
+   `projection/project.ts` and `projection/validation.ts` with one membership
+   decision used for effects, output births, properties and author certification.
+   Audit visibility destination requirements and split suppression too.
+   `reference/provenance.ts` must preserve retained constructor coverage.
+3. MW-09: bind `PreparedConversion.outputs` and explicit command intent to these
+   fields in `authoring/`. Complete multi-inline and same-action origin mapping.
+4. Run compatibility acceptance and the real-command matrix below before
+   requesting implementation review. Keep the existing browser path active.
+
+These are shared-contract changes, not private compiler fields. The amendment
+does not authorize storage ownership changes, new provider modes, a capability
+negotiation service, new effect types, new dependencies or frozen-corpus edits.
 
 ### Alternatives
 
@@ -450,16 +606,76 @@ The parser-facing TreeDraft and shared wire/reducer semantics remain unchanged.
 No browser cutover, navigation stack, storage ownership, or performance acceptance
 is claimed. Reference full replay is used; the release fast path remains MW-13 work.
 
-### Verification and success criteria for this decision
+### Compatibility acceptance after approval
 
-Retain the native boundary probe and frozen MW-08 corpus unchanged. After approval,
-add chosen-behavior assertions through real parser commands for paragraph-plus-heading,
-multiple list items, fenced output, repeated text, synthesis, and both merge orders.
-Cover a competing source packet, conversion undo/redo, independent peer edits to an
-additional output, and an independent same-action transfer. Reopen from complete
-canonical bytes and compare raw owners, packet applicability, native identities,
-legal tree, and Markdown.
+Implement executable acceptance in `actions/codec.test.ts`, `actions/store.test.ts`
+and `authoring/parser-membership.test.ts` (new). These tests must use the production
+codec, real author certification and full reference projection, not a callback
+that only disables ownership. Until that implementation exists, these are required
+acceptance tests, not passing evidence:
 
-This amendment is resolved only when the MW-06 owner specifies the exact output
-and effect-membership contract or explicitly approves one of the narrower
-alternatives. The draft's local parity or convergence tests cannot make that decision.
+1. **Old bytes:** freeze exact pre-extension packet bytes from `3cdb6bd` plus the
+   existing codec golden. Assert absent own properties after decode and exact
+   byte equality after re-encode. Exercise each logical field as `[]` at encode
+   and assert the same bytes. Reject present-empty wire keys. Reopen old complete
+   canonical bytes and verify unchanged actions, native IDs and projection.
+2. **New bytes:** golden-round-trip a real paragraph-plus-heading conversion with
+   both nonempty fields and a wrapper-only conversion with `effectOrdinals` only.
+   Certify and project them. Assert stable canonical bytes, original ordinals,
+   retained allocations and complete birth coverage. Reject every invalid
+   membership/target class listed above before local append and on remote ingest.
+3. **Incompatible reader:** run a frozen pre-extension codec/store control against
+   the new encoded envelope. Assert whole-envelope rejection, retained original
+   bytes, quarantined descendants and no partial native/semantic publication.
+   Do not assert a version diagnostic the old codec does not emit. Keep that
+   old-reader control independent of the newly changed codec.
+4. **Mixed reopen:** build an old prefix, append a new member-bearing action,
+   checkpoint/close and reopen under the same genesis in a capable reader. Then
+   deliver a valid old writer's offline tail based only on the old prefix. Try
+   both receipt orders, duplicates and deferred dependencies. Compare complete
+   retained envelope payloads, raw owners, placements, native identities, legal
+   tree and Markdown across three independent replicas and cold reconstruction.
+5. **No false fork:** republish the exact old and new payloads through append,
+   duplicate Yjs delivery, refresh, close/reopen and persistence retry. Assert one
+   variant per ID, a ready descendant and identical original envelope bytes.
+   Also inject the altered old payload with an empty key: retain both variants
+   and assert fork quarantine. The fix must not weaken actual fork detection.
+
+Use `compareBytes(actual, expected) === 0` for large canonical/native byte
+comparisons. Preserve the frozen MW-08 corpus and native boundary probe. The
+attached `review-v2-probes` remains evidence for the current behavior and its
+compatibility hazard; it does not test the proposed new codec or membership.
+
+### Command and conflict acceptance after approval
+
+Through real parser commands, cover paragraph-plus-heading, multiple list items,
+fenced output, repeated text, fresh synthesis, parser-authored wrapper task state,
+and independent task edits. Check serial output, both merge orders, duplicate
+delivery, conversion undo/redo and cold replay. When a competing source-code
+packet wins, retained source text stays with the winning source flow; the losing
+packet contributes no heading properties or ownership transfer. An otherwise
+unneeded additional output is suppressed. Independent peer content, children or
+placements may preserve its scaffold with ordinary effective properties.
+
+Exercise an independent same-action transfer and task toggle beside member
+effects; neither retracts with the packet. Test peer typing in an additional
+output before its conversion loses, same-action type/convert/transfer, discarded
+buffers across structural intents, concurrent delete/transfer and a member split
+whose constructor coverage outlives applicability. Compare raw ownership,
+packet selection, retained native identities, legal tree and Markdown. Run the
+full approved wrapper/scope and seeded scheduler/replay matrix from v1.
+
+### Success criteria for this decision
+
+- The MW-06/shared-contract owner explicitly approves this version's wire,
+  applicability and incompatible-reader/rollback boundary on grain/90.
+- The production codec preserves old canonical bytes and implements the exact
+  nonempty/absence policy without weakening fork detection.
+- Real certification and projection pass all five compatibility controls and
+  the command/merge/retraction/scaffold matrix above.
+- The compiler completes the v1 obligations before MW-09 implementation review.
+
+This revision proposes an exact policy; it does not supply owner agreement or
+production membership acceptance. If the owner rejects it, keep the current
+safe fallback and revise the proposal before implementation. MW-10 history,
+MW-13 performance and browser/mobile/release gates remain separate.
