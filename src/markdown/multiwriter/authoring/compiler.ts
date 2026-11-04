@@ -29,6 +29,7 @@ import type {
   SemanticEffect,
 } from '../contracts.js';
 import { resourceKey } from '../layout/index.js';
+import { sameSlot } from '../layout/occurrences.js';
 import { CellIndex, HomeIndex } from '../ownership/index.js';
 import type { OwnershipResult } from '../ownership/index.js';
 import type { NativeView } from '../ingest/publication.js';
@@ -61,6 +62,21 @@ const sameAction = (a: ActionEnvelope['id'], b: ActionEnvelope['id']) =>
   a.actor === b.actor && a.sequence === b.sequence;
 const same = (a: ResourceId<ResourceKind>, b: ResourceId<ResourceKind>) =>
   resourceKey(a) === resourceKey(b);
+
+/** These occurrences are ordered at their effect, after ordinary births. */
+function effectOccurrences(effects: readonly SemanticEffect[]): Set<string> {
+  return new Set(
+    effects.flatMap((effect) =>
+      'occurrence' in effect
+        ? [resourceKey(effect.occurrence)]
+        : effect.type === 'Interpret'
+          ? effect.packet.placements.map((p) => resourceKey(p.occurrence))
+          : effect.type === 'LiftChildren'
+            ? effect.placements.map((p) => resourceKey(p.occurrence))
+            : [],
+    ),
+  );
+}
 
 export class ConversionDeclined extends Error {
   constructor(
@@ -187,44 +203,38 @@ export class CommandCompiler {
     const role = inline ? 'inline' : spec.type === 'block-quote' ? 'quote' : spec.type;
     this.ids.set(handle, node);
     this.births.set(handle, occurrence);
-    const needsPlacement =
-      !split &&
-      slot.predecessor !== null &&
-      this.effects.some(
-        (e) =>
-          ((e.type === 'MoveBlock' ||
-            e.type === 'JoinFlow' ||
-            e.type === 'TransferRange' ||
-            e.type === 'SplitFlow') &&
-            same(e.occurrence, slot.predecessor!)) ||
-          (e.type === 'LiftChildren' &&
-            e.placements.some((p) => same(p.occurrence, slot.predecessor!))),
-      );
+    const used = effectOccurrences(this.effects);
+    const ordinary = this.allocations.filter(
+      (a) => a.type === 'occurrence' && 'parent' in a.slot && !used.has(resourceKey(a.id)),
+    );
+    // Split constructors bind explicitly, but their occurrences are still candidates
+    // when reconstructing an ordinary birth. Its exact slot must stay unique.
+    const available = (candidate: BlockSlot) =>
+      (candidate.predecessor === null || !used.has(resourceKey(candidate.predecessor))) &&
+      !this.effects.some((e) => e.type === 'SplitFlow' && sameSlot(e.outerSlot, candidate)) &&
+      !ordinary.some((a) => a.type === 'occurrence' && sameSlot(a.slot, candidate));
+    const needsPlacement = !split && !available(slot);
     let birthSlot = slot;
     if (needsPlacement) {
-      const used = new Set(
-        this.effects.flatMap((e) =>
-          e.type === 'MoveBlock' ||
-          e.type === 'JoinFlow' ||
-          e.type === 'TransferRange' ||
-          e.type === 'SplitFlow'
-            ? [resourceKey(e.occurrence)]
-            : e.type === 'LiftChildren'
-              ? e.placements.map((p) => resourceKey(p.occurrence))
+      const predecessors = [
+        ...ordinary.toReversed(),
+        null,
+        ...[
+          ...this.genesis.layout.allocations,
+          ...this.ready.flatMap((a) => a.allocations),
+        ].toReversed(),
+      ];
+      const safe = predecessors
+        .flatMap((a): BlockSlot[] =>
+          a === null
+            ? [{ parent: slot.parent, predecessor: null }]
+            : a.type === 'occurrence' && 'parent' in a.slot && same(a.slot.parent, slot.parent)
+              ? [{ parent: slot.parent, predecessor: a.id }]
               : [],
-        ),
-      );
-      const earlier = this.allocations.findLast(
-        (a) =>
-          a.type === 'occurrence' &&
-          'parent' in a.slot &&
-          same(a.slot.parent, slot.parent) &&
-          !used.has(resourceKey(a.id)),
-      );
-      birthSlot = {
-        parent: slot.parent,
-        predecessor: earlier?.type === 'occurrence' ? earlier.id : null,
-      };
+        )
+        .find(available);
+      if (!safe) throw new Error('Ordinary birth has no unambiguous retained slot');
+      birthSlot = safe;
     }
     this.allocations.push(
       { type: 'node', id: node, role, flow, birthSlot },
@@ -294,17 +304,26 @@ export class CommandCompiler {
     const at = before === null ? children.length : children.indexOf(before);
     if (at < 0) throw new Error('Insertion reference is not a destination child');
     const view = this.draft.origins.get(parent);
-    // A merged wrapper's original boundaries decide its raw insertion container.
-    if (view && view.wrappers.length > 1) {
-      if (before !== null) {
-        const target = this.draft.origins.get(before);
-        if (!target?.edge) throw new Error('Ambiguous normalized wrapper insertion');
-        return structuredClone(target.edge.slot);
-      }
-      return structuredClone(view.wrappers.at(-1)!.end);
-    }
     const previous = at > 0 ? children[at - 1] : undefined;
     const placement = previous ? this.ownership().blockPlacement(this.id(previous)) : undefined;
+    // Original boundaries choose the raw constituent. An inserted or moved sibling
+    // advances that gap, while unchanged siblings preserve retained hidden slots.
+    if (view && view.wrappers.length > 1) {
+      const target = before !== null ? this.draft.origins.get(before) : undefined;
+      const slot =
+        before !== null
+          ? (target?.edge?.slot ?? this.ownership().blockPlacement(this.id(before))?.slot)
+          : view.wrappers.at(-1)!.end;
+      if (!slot) throw new Error('Ambiguous normalized wrapper insertion');
+      if (
+        placement &&
+        same(placement.slot.parent, slot.parent) &&
+        previous &&
+        (!this.draft.origins.has(previous) || this.seenPlacements.has(previous))
+      )
+        return { parent: slot.parent, predecessor: placement.occurrence };
+      return structuredClone(slot);
+    }
     if (placement && !same(placement.slot.parent, parentId))
       return { parent: placement.slot.parent, predecessor: placement.occurrence };
     const predecessor =
@@ -599,17 +618,7 @@ export class CommandCompiler {
       nodeByKey = new Map<string, MarkdownNode>();
     const parserPlacements = new Set<string>();
     const placementAllocations: Allocation[] = [];
-    const effectOccurrences = new Set(
-      this.effects.flatMap((e) =>
-        'occurrence' in e
-          ? [resourceKey(e.occurrence)]
-          : e.type === 'Interpret'
-            ? e.packet.placements.map((p) => resourceKey(p.occurrence))
-            : e.type === 'LiftChildren'
-              ? e.placements.map((p) => resourceKey(p.occurrence))
-              : [],
-      ),
-    );
+    const placed = effectOccurrences(this.effects);
     let first = true;
     const visit = (
       node: MarkdownNode,
@@ -638,7 +647,7 @@ export class CommandCompiler {
             'parent' in a.slot &&
             same(a.slot.parent, slot.parent) &&
             !parserPlacements.has(resourceKey(a.id)) &&
-            !effectOccurrences.has(resourceKey(a.id)),
+            !placed.has(resourceKey(a.id)),
         );
         const retainedPredecessor =
           slot.predecessor?.birth.type === 'action' &&

@@ -3,6 +3,7 @@ import { parseBlocks } from '../../block-parser/api.js';
 import { commandGenesis, commandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import type { CommandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import { insertText } from '../../../editing/commands/insert-text.js';
+import { insertMarkdown } from '../../../editing/commands/insert-markdown.js';
 import type { LocalEditResult } from './editor.js';
 import { actorId } from '../contracts.js';
 import type { ActionEnvelope, ActionId } from '../contracts.js';
@@ -349,13 +350,18 @@ function supersedeWithCode(
   p.editor.refresh();
 }
 
-test.each(['transfer', 'task'] as const)(
+test.each(['transfer', 'task', 'paste'] as const)(
   'losing parser membership preserves an independent same-action %s',
   async (kind) => {
     const { interpretMarkdown } = await import('./interpret.js');
     const { genesis, a, b, c } = peers(),
       nodeId = a.handle(a.nodes()[0]),
-      source = kind === 'transfer' ? 'first\n\n# second' : '- [x] task\n- [ ] other';
+      source =
+        kind === 'transfer'
+          ? 'first\n\n# second'
+          : kind === 'task'
+            ? '- [x] task\n- [ ] other'
+            : '```js\ncode\n```';
     const result = a.editor.edit(
       { local: 'independent', group: 1n },
       (ctx) => {
@@ -374,7 +380,8 @@ test.each(['transfer', 'task'] as const)(
             at: 5,
             affinity: 'right',
           });
-        else ctx.draft.setChecked(handles[1], false);
+        else if (kind === 'task') ctx.draft.setChecked(handles[1], false);
+        else insertMarkdown(ctx, { contextId: nodeId, markdown: 'pasted\n\ntail' });
         return { status: 'handled' };
       },
       undefined,
@@ -393,11 +400,18 @@ test.each(['transfer', 'task'] as const)(
       }),
     ).toBe(true);
     if (kind === 'transfer') expect(a.nodes().map((n) => n.content)).toEqual(['firstse\n\n# cond']);
-    else {
+    else if (kind === 'task') {
       if (last.type !== 'SetProperties') throw new Error();
       expect(state.interpretations.properties(last.node).checked).toBe(false);
       expect(a.nodes().map((n) => n.content)).toEqual([source]);
-    }
+    } else
+      // The paste follows the retained Interpret occurrence. When that packet
+      // loses, its followers stay there and the source returns to its older edge.
+      expect(a.nodes().map((n) => [n.type, n.content])).toEqual([
+        ['paragraph', 'pasted'],
+        ['paragraph', 'tail'],
+        ['code-block', source],
+      ]);
     expect(a.observe()).toEqual(b.observe());
     expect(a.observe()).toEqual(c.observe());
     const cold = commandReplica(genesis, a.document.store.encodeUpdate());
