@@ -4,6 +4,7 @@ import { publication, insert } from '../../../../test/multiwriter/bootstrap-help
 import { serializeProjection } from '../projection/index.js';
 import { encodeEnvelope } from '../actions/codec.js';
 import { IngestCapacityError } from '../ingest/work.js';
+import { scanUpdate } from '../ingest/preflight.js';
 import { envelopeToWire } from '../actions/schema.js';
 import { decodeCbor, encodeCbor } from '../actions/cbor.js';
 import type { CborValue } from '../actions/cbor.js';
@@ -329,6 +330,94 @@ test('bundle/provider capacity retries preserve the live session', async () => {
     await receiver.close();
   }
 });
+
+test.each(['certification', 'publication'] as const)(
+  'native %s capacity retry publishes retained facts in the same live replica',
+  async (stage) => {
+    const seed = createGenesis('native-retry', '');
+    const descriptor = decodeGenesis(seed);
+    const g = referenceGenesis(descriptor);
+    const smallLimit = Math.max(
+      ...descriptor.nativeInsertUpdates.map((u) => [...scanUpdate(u, 'native')].length + 1),
+    );
+    const source = await openBootstrap(options({ genesis: seed, persistedGenesis: seed }));
+    const target = await openBootstrap(
+      options({
+        genesis: seed,
+        persistedGenesis: seed,
+        bootstrapLimits: { nativeOperations: stage === 'certification' ? smallLimit : 100_000 },
+      }),
+    );
+    const { document, provider, session } = target;
+    const previous = document.publication.status().publication!;
+    try {
+      // Isolate publication failure from successful native certification using its public API.
+      if (stage === 'publication') document.publication.setDecodeLimit(smallLimit);
+      source.document.store.append(insert(g, 'x'.repeat(10_000), 1));
+      expect(target.receiveBundle('peer', source.captureBundle()).state).toBe('admitted');
+      const held = target.captureBundle();
+      if (stage === 'certification')
+        expect(() => document.store.snapshot()).toThrow(IngestCapacityError);
+      else expect(document.store.snapshot().ready).toHaveLength(1);
+      expect(() => publication(document)).toThrow(IngestCapacityError);
+
+      document.setNativeDecodeLimit(100_000);
+      expect(document.publication.status()).toMatchObject({ stale: true, canAuthor: false });
+      expect(document.publication.status().publication!.value).toBe(previous.value);
+      // No retransmission or reopening: retry the original retained facts.
+      const recovered = publication(document);
+      expect(serializeProjection(recovered.value.view)).toBe('x'.repeat(10_000) + '\n');
+      expect(recovered.native.encodeState()).toEqual(
+        publication(source.document).native.encodeState(),
+      );
+      expect(document.store.snapshot()).toMatchObject({
+        diagnostics: [],
+        ready: [expect.anything()],
+      });
+      expect(document.publication.status()).toMatchObject({ stale: false, canAuthor: true });
+      expect(target.captureBundle()).toEqual(held);
+      expect(target.document).toBe(document);
+      expect(target.provider).toBe(provider);
+      expect(target.session).toBe(session);
+      await provider.flush();
+    } finally {
+      await source.close();
+      await target.close();
+    }
+  },
+);
+
+test.each(['store', 'publication'] as const)(
+  'changing live native capacity cancels suspended %s work and permits fresh publication',
+  async (owner) => {
+    const source = await openBootstrap(options());
+    const target = await openBootstrap(options());
+    try {
+      source.document.store.append(insert(genesis, 'x'.repeat(10_000), 1));
+      target.receiveBundle('peer', source.captureBundle());
+      const held = target.captureBundle();
+      let work =
+        owner === 'store'
+          ? target.document.store.compute(0)
+          : target.document.publication.refresh(0);
+      // Advance partially, then change capacity while the computation is suspended.
+      for (let step = 0; step < 100 && work.state === 'deferred'; step++)
+        work = work.continuation.resume(1);
+      expect(work.state).toBe('deferred');
+      if (work.state !== 'deferred') throw new Error('Expected suspended computation');
+      expect(() => target.document.setNativeDecodeLimit(-1)).toThrow('Invalid local ingest limit');
+      target.document.setNativeDecodeLimit(200_000);
+      expect(() => work.continuation.resume()).toThrow('invalidated');
+      expect(serializeProjection(publication(target.document).value.view)).toBe(
+        'original😀' + 'x'.repeat(10_000) + '\n',
+      );
+      expect(target.captureBundle()).toEqual(held);
+    } finally {
+      await source.close();
+      await target.close();
+    }
+  },
+);
 
 test.each(['', 'abc'])(
   'genesis subtree deletion wins concurrent typing and cold open never revives the initial paragraph: %j',

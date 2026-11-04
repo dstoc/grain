@@ -113,7 +113,15 @@ operations and 100,000 native decode operations. Large documents can require
 larger capacities. `IngestCapacityError` is retryable with the same input and
 larger limits. Provider message/persistence capacities remain separate settings.
 `captureBundle(limits)` and `receiveBundle(route, bytes, limits)` accept per-call
-bundle limits, so capacity retries do not require reopening a live session.
+bundle limits. These do not update live native certification or publication
+capacity. For a native capacity error, call
+`replica.document.setNativeDecodeLimit(operations)`, then retry
+`replica.document.publication.refresh()` and resume any deferred continuation.
+The method updates both native capacities and cancels unfinished store and
+publication computations. It preserves canonical facts, the last publication,
+the provider and the live session. Already admitted facts need no retransmission.
+If envelope decoding also exceeds capacity, raise
+`replica.document.store.setDecodeLimits({ depth, operations })` before retrying.
 These are decoder capacities, not latency or retained-storage budgets.
 
 ## Export and retention

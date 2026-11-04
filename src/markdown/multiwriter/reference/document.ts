@@ -6,6 +6,7 @@ import { createProjectionAuthorValidator, projectMarkdown } from '../projection/
 import type { ProjectionInput } from '../projection/project.js';
 import type { NativeBody } from '../text/types.js';
 import type { ActionEnvelope } from '../contracts.js';
+import { assertLimit } from '../ingest/work.js';
 import { ProvenanceError, reconstructBirths, reconstructProvenance } from './provenance.js';
 
 export interface ReferenceGenesis {
@@ -68,6 +69,15 @@ export function openReferenceDocument(
   return {
     store,
     publication,
+    /** Raise native capacity, then refresh retained facts without replacing this replica.
+     * Cancel both publication-owned and directly requested store computations first.
+     */
+    setNativeDecodeLimit(operations: number): void {
+      assertLimit(operations);
+      publication.setDecodeLimit(operations);
+      store.setDecodeLimits({});
+      validate.setDecodeLimit(operations);
+    },
     /** Preflight the actual store's ready past before publishing any local facts. */
     certifyLocal(action: ActionEnvelope): void {
       const reason = store.checkLocal(action);
