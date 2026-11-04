@@ -152,4 +152,15 @@ These are storage and transport tests. They do not compose the full native text,
 layout, deletion, selection or history algorithms. MW-08 owns that reference
 composition; MW-14 owns browser integration and MW-16 owns end-to-end acceptance,
 including physical mobile/IME checks. There is no semantic server, replica expiry,
-canonical pruning, journal consolidation or persistent interactive history here.
+canonical pruning or persistent interactive history here.
+
+## Consolidate storage
+
+MW-18 adds `await provider.consolidate()` for checkpoint-capable journals.
+IndexedDB opens database version 2, preserving the version-1 journal while fencing
+old readers even before consolidation. Checkpoint-aware startup restores the
+full checkpoint plus committed tail; inherited `read()` refuses partial replay.
+The live persistence queue orders replacement with edits and raw ingress.
+See [lossless checkpoints and retention](../checkpoints/README.md) for the host
+contract, retry behavior, version fence, rollback export and remaining integration
+gates.

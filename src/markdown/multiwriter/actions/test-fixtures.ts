@@ -127,3 +127,35 @@ export function fullEnvelope(): ActionEnvelope {
     ],
   };
 }
+
+/** Storage fixtures certify only bodyless actions and first retractions of known local groups. */
+export function validateStorageAction(
+  value: ActionEnvelope,
+  context: { readonly dependencies: readonly ActionEnvelope[] },
+): 'native-body' | null {
+  if (value.allocations.length || value.nativeInsertUpdates.length || value.nativeManifest.length)
+    return 'native-body';
+  for (const effect of value.effects) {
+    if (
+      effect.type !== 'SetGroupActive' ||
+      effect.previousControl !== null ||
+      effect.group.session.actor !== value.id.actor ||
+      !effect.actions.length
+    )
+      return 'native-body';
+    for (const id of effect.actions) {
+      const target = context.dependencies.find(
+        (a) => a.id.actor === id.actor && a.id.sequence === id.sequence,
+      );
+      if (
+        !target ||
+        target.effects.some((e) => e.type === 'SetGroupActive') ||
+        target.groupId.session.actor !== effect.group.session.actor ||
+        target.groupId.session.local !== effect.group.session.local ||
+        target.groupId.sequence !== effect.group.sequence
+      )
+        return 'native-body';
+    }
+  }
+  return null;
+}

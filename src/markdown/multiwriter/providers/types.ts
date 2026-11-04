@@ -10,6 +10,7 @@ export interface JournalIdentity {
 
 /** Implementations resolve append only after durable transaction completion. */
 export interface ActionJournal {
+  /** Complete replay source. Checkpoint-capable adapters reject when a checkpoint exists. */
   read(): Promise<readonly Uint8Array[]>;
   append(update: Uint8Array): Promise<void>;
   close(): void;
@@ -33,4 +34,32 @@ export interface ProviderFailure {
   readonly operation: 'persistence' | 'send' | 'catch-up';
   readonly error: unknown;
   readonly peer?: string;
+}
+
+export interface CheckpointJournalState {
+  /** Absent means legacy journal. A present invalid/undefined record must fail reading. */
+  readonly checkpoint?: Uint8Array;
+  readonly updates: readonly Uint8Array[];
+}
+
+/**
+ * One exclusive provider owns this journal. Both reads use a consistent storage snapshot.
+ * Fence unsupported readers before replacing their complete replay source. Inherited read()
+ * returns all updates without a checkpoint, and rejects whenever a checkpoint is present.
+ */
+export interface CheckpointActionJournal extends ActionJournal {
+  readCheckpoint(): Promise<CheckpointJournalState>;
+  /** Copy synchronously; atomically replace checkpoint + whole persisted prefix at durable commit.
+   * Failure preserves the old recoverable state. Direct writes during provider ownership are forbidden.
+   */
+  replaceWithCheckpoint(checkpoint: Uint8Array): Promise<void>;
+}
+
+export function isCheckpointJournal(journal: ActionJournal): journal is CheckpointActionJournal {
+  return (
+    'readCheckpoint' in journal &&
+    typeof journal.readCheckpoint === 'function' &&
+    'replaceWithCheckpoint' in journal &&
+    typeof journal.replaceWithCheckpoint === 'function'
+  );
 }
