@@ -21,11 +21,15 @@ only after their native prerequisites. No full reducer proof is claimed.
 
 The adjacent MW-04 proposal specifies binding, ordering, capture restrictions,
 reserved-cell contiguity, retraction behavior, alternatives, and required positive
-acceptance tests. Those rules are proposed for review. Production code and the
-positive failing seed `34064` remain unchanged.
+acceptance tests. Those rules were approved in grain/85 comment
+`cmt_LZgff2jBdgMdcR2k`. The ownership implementation and positive seed `34064`
+are covered by the runtime suites under `src/markdown/multiwriter/ownership/`.
+These historical probes retain their narrower native/layout evidence limits.
 
-`resolve-ts.mjs` registers a Node source resolver for this repository's `.js`
-imports in TypeScript. It affects this standalone probe process only.
+`resolve-ts.mjs` resolves this repository's `.js` imports to TypeScript and
+compiles them with the installed Vite transformer. This includes parameter
+properties that Node 26 cannot erase. It affects this probe process only and
+adds no dependency.
 
 ## Empty-basis cohort revision
 
@@ -48,6 +52,7 @@ This probe feeds real native snapshots to `CellIndex` and real layout inputs to
 `LayoutPrefix`. Its `proposedBuckets()` function models the proposed rule locally.
 It supplies no ownership assignments, certified action envelopes, or history
 controls. Activity inputs do not test history navigation. Later typing tests
-native/domain stability, not text ownership or visibility. Runtime cohort and
-ownership code remains unchanged. The proposal's certified authoring, reducer,
-history, and MW-08 acceptance tests remain required after proposal approval.
+native/domain stability, not text ownership or visibility. Runtime ownership
+and author-certification controls are separate suites under
+`src/markdown/multiwriter/ownership/`. Full history and MW-08 acceptance remain
+integration requirements.

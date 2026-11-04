@@ -1,71 +1,122 @@
-# Draft ownership reference reducer
+# Ownership reference reducer
 
-`reduceOwnership()` replays raw cell ownership with the existing native tape and
-layout modules. It preserves authored run skeletons while assigning each refined
-native cell to one run and occurrence. It reads native data and performs no
-shared writes.
+`reduceOwnership()` assigns every retained native cell to one run and occurrence.
+Splits select contiguous components in the current flow layout. Joins preserve
+whole flows. Transfers preserve native text identities and authored range order.
+Replay reads native snapshots and allocates no shared data.
 
-**Status:** incomplete implementation for grain/85. The `empty-source-gap` issue
-artifact demonstrates that concurrent split components and later transfers can
-leave an addressable flow with no independently editable cell. The approved
-proposal requires a stop at this encoding gap. Generated seed `34064` remains a
-positive failing regression. Do not treat this draft as MW-04 acceptance.
+The implementation follows [grain/85's approved home convention](../../../../docs/proposals/2026-11-04-mw04-ownership-algebra.md),
+approved in issue comment `cmt_LZgff2jBdgMdcR2k`. The generated empty-source
+regression at seed `34064` now passes. The frozen corpus correction remains
+limited to the approved reverse-cut retained L skeleton; effective ownership is
+still `ab/c/def`.
 
-## Inputs and queries
+## Reduce a complete ready set
 
-Supply the same complete, validated ready closure to all layers:
+Supply one validated, dependency-closed set to native, layout, activity, and
+ownership reduction. Include inactive allocations and every ready tape snapshot.
 
 ```ts
 const result = reduceOwnership({
-  genesis, // LayoutGenesis: allocations and node-to-birth-occurrence bindings
-  actions, // LayoutActionInput[], including inactive allocations
+  genesis, // LayoutGenesis: allocations and retained node/birth bindings
+  actions, // LayoutActionInput[], including inactive actions
   snapshots, // NativeTapeCache.snapshot(tape) for every ready tape
-  homes, // explicit initial CellAssignment intervals from each tape's birth batch
-  isActive, // effect activity from history/visibility, in original priority
+  isActive, // original effect priorities, from history/activity
 });
 ```
 
-Home bindings must cover each tape exactly once, use retained birth endpoints,
-and identify the home run and its birth occurrence. Overlapping split and
-transfer skeletons do not establish home ownership. This draft requires one
-root run per flow; transfer runs retain their destination occurrence locations.
+Each flow has one root run. Its last skeleton range is its own fresh full private
+home tape. Earlier ranges retain captured source content. `deriveHomes()` checks
+this pairing from each birth batch. An optional `homes` input must equal those
+bindings exactly. `result.homeBindings` returns the derived bindings.
 
-`assignments`, `runLayouts`, `flowPlacements`, `blockPlacement()`, and `children()`
-return detached raw facts. `raw(flow)` walks retained skeletons and occurrence
-locations, including ghosts, and emits cells only at their effective assignment.
-It includes empty cells, exact native text fragments, slots, and attachment
-locations. An inactive transfer location can lead to later active followers
-without assigning the transfer's cells or asserting a flow edge.
+The first and last refined cells of each home tape stay text-free and assigned
+to its root. Structural captures use strictly interior endpoints. These reserved
+cells remain in raw traversal but do not enter split bases or content adjacency.
+Ordinary interior empty cells still participate. A transfer can therefore move
+all source content while leaving an independently editable home.
 
-`resolveSlot()` preserves the run, boundary, side, and predecessor.
-`owner()` maps one native UTF-16 identity to its cell assignment without slicing
-characters. `contains()` checks permanent-range membership for that identity.
-`tokenOwners()` and `inlineOwner()` accept complete native text ranges; they
-reject ranges that split surrogate pairs. `destinationRequirements` identifies
-effective destination/scaffold needs by original action/effect reference.
+Empty splits capture no content. They reuse the source root's trailing home
+slot. Their cohorts use that retained source domain and authored outer gap.
+Content cohorts use the original ordered basis and gap. Equal cuts sort by
+ascending effect order inside a cohort; MW-03 ranks distinct cohorts and ordinary
+followers by descending unit priority. Later source text does not reclassify a
+recorded empty split or become its captured content.
 
-## Integration obligations
+`assignments`, `runLayouts`, `flowPlacements`, `blockPlacement()`, `children()`, and
+`homeBindings` return detached values. `raw(flow)` includes exact text fragments,
+empty cells, ghost slots, and attachment locations. `resolveSlot()` preserves the
+original run, boundary, affinity, and predecessor. `owner()`, `tokenOwners()`,
+`inlineOwner()`, and `contains()` query native identities and permanent intervals.
+Text range queries reject surrogate-pair splits.
 
-Readiness, author-closure certification, and group activity remain upstream.
-Results do not filter deletion, hide absorbed headers, normalize Markdown, or
-provide a replica factory. The visibility adapter must derive
-`containsBirthContent()` from each node's birth-causal intervals and retain that
-coverage through later transfers. Current ownership is not birth coverage.
+## Certify before readiness
 
-Structural replay cannot allocate native endpoints to rescue a source. The
-current safeguard rejects a transfer when it leaves a source with no assigned
-cell. The attached counterexample shows why this safeguard also rejects some
-independently valid ready sets. A reviewed allocation or semantic contract is
-needed before implementation can continue.
+Use the ownership adapter through MW-15's exact-author native validator:
 
-Run the focused controls with:
+```ts
+const validate = createIngestValidator({
+  genesis: nativeGenesis,
+  validateAuthor: createOwnershipAuthorValidator({
+    genesis: layoutGenesis,
+    births: retainedBirthBindings, // MW-03 node/occurrence bindings for an envelope
+  }),
+});
+```
+
+`births` must derive deterministic bindings from retained allocations and effects.
+A `SplitFlow` explicitly names its new node and birth occurrence. The adapter
+checks the binding against the retained slots and private home. It does not
+invent bindings by allocation order. Validate the host's genesis before opening
+an editable document.
+
+The adapter uses only MW-15's isolated dependency closure plus the candidate.
+It checks home uniqueness, interior captures, non-overlapping skeletons, authored
+basis occurrences and captured components, and canonical empty cuts at each
+effect prefix. An empty basis must omit no ordinary content cell, including
+joined or text-free interior content. The new root captures no source content.
+Same-action dependent splits must follow their source's creating effect.
+
+Native manifests must leave text-free home edges. Edge typing also needs two
+interior markers allocated by that author action, even when one new marker would
+make the final edges text-free. `HomeIndex.planTextInsertion()` returns native operations
+for an explicit slot and brackets the whole string when the adjacent cell is
+reserved. Both queries use the same snapshot. The caller owns the marker
+allocator, publication transaction, native insertion identities,
+and selection mapping. Prefer an ordinary content slot for continued typing;
+use the flow's own trailing home slot after evacuation. Old ghost addresses
+continue to address their original cells.
+
+`certifyOwnership()` exposes the ownership-only checks for an already isolated
+author closure. It does not replace native manifest certification. Never run
+these author-local checks against a merged cache: later concurrent text and
+ownership can differ from the author's valid view. `reduceOwnership()` replays
+certified facts without repeating author-local emptiness or ownership checks.
+
+## Verify and integrate
+
+Run the owned controls with:
 
 ```sh
 npm run test -- src/markdown/multiwriter/ownership/
 ```
 
-The corpus-facet tests compare actual native ownership, layout, and authored
-skeleton coverage. Empty-only ranges have separate native assertions; the
-existing split-at-zero symbolic fixture omits its empty run from `skeletons`.
-These tests do not implement action-store readiness, visibility, projection,
-full history, or MW-08/MW-16 composition gates.
+The tests compare raw ownership, retained skeletons, slots, native identities,
+component order, independent native reconstruction, and exact-author readiness.
+They include real ActionStore exchanges and owner group control envelopes.
+The 501-group retention control preserves complete native facts and accepts an
+old-checkpoint writer; it does not simulate history-limit eviction.
+
+The adapter supplies ownership/home validation. Compose it with MW-06's remaining
+projection/address validation. MW-09 must lower real commands using the same
+home/capture convention. MW-05 must derive `containsBirthContent()` from each
+node's birth-causal intervals, including home text, rather than current ownership.
+`destinationRequirements` identifies effective scaffold needs by original effect
+reference; deletion masks and visibility remain separate.
+
+These controls do not provide the MW-08 replica factory, MW-10 history navigation,
+normalized Markdown projection, MW-13 incremental replay, or MW-16 browser gate.
+They do not establish the combined algorithm's acceptance. A persisted rollout
+requires the approved capability/version agreement. This change introduces no
+wire field, migration, mixed-convention writer support, canonical pruning, or
+old-replica expiration.

@@ -73,7 +73,7 @@ it.each(['left', 'right'] as const)(
   },
 );
 
-it('rejects a full-cell transfer that omits a distinct source insertion cell', () => {
+it('rejects sentinel captures even when their creator is inactive', () => {
   const f = new NativeFixture([
     { id: 'root', parent: null, role: 'root' },
     {
@@ -90,20 +90,20 @@ it('rejects a full-cell transfer that omits a distinct source insertion cell', (
   fixtures.push(f);
   f.author('A1', (f) => [f.transferRanges([f.homes[0].cell], f.slots.get('Q:end')!, 'rT')]);
   const snapshot = f.peers.get('A')!.snapshot(f.id('tP', 'tape'));
-  expect(() => f.reduce('A')).toThrow('distinct permanent insertion cell');
+  expect(() => f.reduce('A')).toThrow('interior home endpoints');
   expect(f.peers.get('A')!.snapshot(f.id('tP', 'tape'))).toEqual(snapshot);
-  // Discarded replay state cannot leak assignments into the next successful replay.
-  expect(f.text(f.reduce('A', ['A1']), 'fP')).toBe('x');
+  expect(() => f.reduce('A', ['A1'])).toThrow('interior home endpoints');
+  f.fresh('C', []);
+  expect(f.text(f.reduce(), 'fP')).toBe('x');
 });
 
 it('accepts deeply frozen decoded identities and returns detached query values', () => {
   const f = fixture('abc');
   f.author('A1', (f) => [f.split('P', 'S', 'P0')]);
-  const tape = f.id('tP', 'tape');
   const input: OwnershipInput = {
     genesis: structuredClone(f.genesis),
     actions: structuredClone([...f.actions.values()]),
-    snapshots: [f.peers.get('A')!.snapshot(tape)],
+    snapshots: f.homes.map((home) => f.peers.get('A')!.snapshot(home.cell.tape)),
     homes: structuredClone(f.homes),
     isActive: () => true,
   };

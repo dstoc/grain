@@ -1,6 +1,7 @@
 import { actorId } from '../contracts.js';
 import type {
   ActionId,
+  ActionEnvelope,
   Allocation,
   FlowId,
   InlineSlot,
@@ -18,6 +19,8 @@ import { resourceKey } from '../layout/index.js';
 import { NativeTapeCache } from '../text/cache.js';
 import type { NativeBody, NativeInsertion } from '../text/cache.js';
 import { reduceOwnership } from './index.js';
+import { CellIndex } from './cells.js';
+import { HomeIndex } from './homes.js';
 import type { HomeBinding, OwnershipResult } from './index.js';
 import type { SeedBlock } from '../../../../test/multiwriter/trace.js';
 
@@ -30,6 +33,7 @@ export class NativeFixture {
   readonly bodies = new Map<string, NativeBody>();
   readonly actions = new Map<string, LayoutActionInput>();
   readonly homes: HomeBinding[] = [];
+  readonly contentRanges = new Map<string, RangeRef[]>();
   readonly genesis: LayoutGenesis;
   readonly peers = new Map<string, NativeTapeCache>();
   readonly held = new Map<string, Set<string>>();
@@ -69,6 +73,10 @@ export class NativeFixture {
     for (const block of seed)
       for (const cell of block.cells ?? []) {
         const range = this.ranges.get(cell.id)!;
+        if (!cell.text.length) {
+          this.emptyAliases.set(cell.id, range);
+          continue;
+        }
         const text = this.target.range(range);
         if (text.length !== 1) throw new Error('Fixture cell must have one native text range');
         this.aliases.set(cell.id, text[0].range);
@@ -118,8 +126,9 @@ export class NativeFixture {
       const end = this.allocate(`${block.id}:end`, 'marker');
       this.operations.push({ type: 'createTape', tape, start, end });
       // Empty permanent guards retain source insertion locations after full text transfer.
-      const first = this.allocate(`${block.id}:guard`, 'marker');
-      this.operations.push({ type: 'marker', tape, index: 1, marker: first, affinity: 'left' });
+      const first = block.cells?.length ? this.allocate(`${block.id}:guard`, 'marker') : start;
+      if (block.cells?.length)
+        this.operations.push({ type: 'marker', tape, index: 1, marker: first, affinity: 'left' });
       let before = first;
       let offset = 2;
       for (const cell of block.cells ?? []) {
@@ -136,6 +145,10 @@ export class NativeFixture {
         this.ranges.set(cell.id, { tape, start: before, end: after });
         before = after;
       }
+      this.contentRanges.set(
+        block.id,
+        block.cells?.length ? [{ tape, start: first, end: before }] : [],
+      );
       const range = { tape, start, end };
       this.batch.push(
         { type: 'flow', id: flow, home: node },
@@ -147,6 +160,12 @@ export class NativeFixture {
         [`${block.id}:end`, end, 'left'],
       ] as const)
         this.slots.set(name, { run, boundary, side, predecessor: null });
+      this.slots.set(`${block.id}:home-end`, {
+        run,
+        boundary: end,
+        side: 'left',
+        predecessor: null,
+      });
       for (const cell of block.cells ?? [])
         this.slots.set(`${block.id}:after-${cell.text}`, {
           run,
@@ -202,24 +221,23 @@ export class NativeFixture {
     basisRanges?: readonly { range: RangeRef; occurrence: OccurrenceId }[],
   ): SemanticEffect {
     const sourceRun = this.id(`r${source}`, 'run');
-    const range = [
-      ...this.genesis.allocations,
-      ...[...this.actions.values()].flatMap((entry) => entry.action.allocations),
-    ].find(
-      (allocation) =>
-        allocation.type === 'run' && resourceKey(allocation.id) === resourceKey(sourceRun),
-    );
-    if (!range || range.type !== 'run') throw new Error('Missing source fixture run');
-    const full = range.skeleton[0];
-    const marker = this.allocate(`cut:${node}`, 'marker');
-    const index =
-      after === null
-        ? this.target.marker(full.start).index + 1
-        : this.target.locate(this.aliases.get(after)!.tape, {
-            client: this.aliases.get(after)!.client,
-            clock: this.aliases.get(after)!.clock,
-          }) + this.aliases.get(after)!.length;
-    this.operations.push({ type: 'marker', tape: full.tape, index, marker, affinity: 'right' });
+    const captured =
+      basisRanges ??
+      (this.contentRanges.get(source) ?? []).map((range) => ({
+        range,
+        occurrence: this.id(`${source}:birth`, 'occurrence'),
+      }));
+    const full = captured[0]?.range;
+    const sourceHome = this.homes.find((home) => resourceKey(home.run) === resourceKey(sourceRun))!;
+    const marker = full ? this.allocate(`cut:${node}`, 'marker') : sourceHome.cell.end;
+    if (full) {
+      const index =
+        after === null
+          ? this.target.marker(full.start).index + 1
+          : this.target.locate(this.aliases.get(after)!.tape, this.aliases.get(after)!) +
+            this.aliases.get(after)!.length;
+      this.operations.push({ type: 'marker', tape: full.tape, index, marker, affinity: 'right' });
+    }
     const newNode = this.allocate(node, 'node');
     const newFlow = this.allocate(`f${node}`, 'flow');
     const newRun = this.allocate(`r${node}`, 'run');
@@ -228,14 +246,26 @@ export class NativeFixture {
       parent: this.id(parent, 'node'),
       predecessor: predecessor ? this.id(predecessor, 'occurrence') : null,
     };
-    const skeleton = [
-      { ...full, ...(retainedSide === 'left' ? { start: marker } : { end: marker }) },
-      ...(retainedSide === 'left'
-        ? (basisRanges ?? [])
-            .filter((entry) => resourceKey(entry.range.tape) !== resourceKey(full.tape))
-            .map((entry) => entry.range)
-        : []),
-    ];
+    const content = full
+      ? [
+          { ...full, ...(retainedSide === 'left' ? { start: marker } : { end: marker }) },
+          ...(retainedSide === 'left' ? captured.slice(1).map((entry) => entry.range) : []),
+        ]
+      : [];
+    const homeTape = this.allocate(`t${node}`, 'tape');
+    const homeStart = this.allocate(`${node}:home-start`, 'marker');
+    const homeEnd = this.allocate(`${node}:home-end`, 'marker');
+    const homeRange = { tape: homeTape, start: homeStart, end: homeEnd };
+    this.operations.push({ type: 'createTape', tape: homeTape, start: homeStart, end: homeEnd });
+    const skeleton = [...content, homeRange];
+    this.homes.push({ cell: homeRange, run: newRun, occurrence });
+    this.contentRanges.set(node, content);
+    this.slots.set(`${node}:home-end`, {
+      run: newRun,
+      boundary: homeEnd,
+      side: 'left',
+      predecessor: null,
+    });
     this.batch.push(
       { type: 'node', id: newNode, role: 'inline', flow: newFlow, birthSlot: outerSlot },
       { type: 'flow', id: newFlow, home: newNode },
@@ -245,24 +275,20 @@ export class NativeFixture {
     this.births.push({ node: newNode, occurrence });
     this.slots.set(`${node}:end`, {
       run: newRun,
-      boundary: retainedSide === 'left' ? full.end : marker,
+      boundary: full ? (retainedSide === 'left' ? full.end : marker) : homeEnd,
       side: 'left',
       predecessor: null,
     });
     this.slots.set(`${node}:start`, {
       run: newRun,
-      boundary: retainedSide === 'left' ? marker : full.start,
+      boundary: full ? (retainedSide === 'left' ? marker : full.start) : homeStart,
       side: 'right',
       predecessor: null,
     });
     return {
       type: 'SplitFlow',
-      basis: {
-        ranges: basisRanges ?? [
-          { range: full, occurrence: this.id(`${source}:birth`, 'occurrence') },
-        ],
-      },
-      cut: { run: sourceRun, boundary: marker, side: 'right', predecessor: null },
+      basis: { ranges: captured },
+      cut: { run: sourceRun, boundary: marker, side: full ? 'right' : 'left', predecessor: null },
       retainedSide,
       newNode,
       newFlow,
@@ -341,12 +367,42 @@ export class NativeFixture {
       standaloneFlow: allocation.flow,
     };
   }
+  deleteSubtree(
+    node: string,
+    intervals: readonly RangeRef[],
+    heads: readonly string[],
+  ): SemanticEffect {
+    const tag = this.allocate(`delete:${this.actionName}:${node}`, 'deletion');
+    this.batch.push({ type: 'deletion', id: tag });
+    const target = this.id(node, 'node');
+    return {
+      type: 'DeleteSubtree',
+      tag,
+      scope: {
+        target,
+        observedNodes: [target],
+        ownedIntervals: intervals,
+        joinedFlows: [],
+        heads: heads.map((name) => this.actions.get(name)!.action.id),
+      },
+    };
+  }
   insert(_cell: string, text: string, slot: string): readonly SemanticEffect[] {
     const target = this.slots.get(slot)!;
-    const boundary = this.target.marker(target.boundary);
-    const tape = boundary.tape;
-    const index = boundary.index + (target.side === 'right' ? 1 : 0);
-    this.operations.push({ type: 'text', tape, index, text });
+    const homes = this.homes.filter((home) => {
+      try {
+        this.target.marker(home.cell.start);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const index = new CellIndex(homes.map((home) => this.target.snapshot(home.cell.tape)));
+    this.operations.push(
+      ...new HomeIndex(homes, index).planTextInsertion(target, text, () =>
+        this.allocate(`typing:${this.actionName}:${this.ordinal}`, 'marker'),
+      ),
+    );
     // Native ranges are bound after publication, when the cache exposes exact identities.
     return [];
   }
@@ -391,6 +447,35 @@ export class NativeFixture {
       }
     }
     return [...ready];
+  }
+  envelope(name: string): ActionEnvelope {
+    const action = this.actions.get(name)!.action;
+    const body = this.bodies.get(name)!;
+    return {
+      ...structuredClone(action),
+      protocolVersion: 3,
+      documentId: 'D',
+      genesisId: 'G',
+      groupId: {
+        session: { actor: action.id.actor, local: 'editor' },
+        sequence: action.id.sequence,
+      },
+      nativeManifest: structuredClone(body.nativeManifest),
+      nativeInsertUpdates: body.nativeInsertUpdates.map((bytes) => bytes.slice()),
+      effects: [
+        ...structuredClone(action.effects),
+        ...(body.nativeManifest.some((birth) => birth.type === 'text')
+          ? [
+              {
+                type: 'InsertText' as const,
+                ranges: body.nativeManifest.flatMap((birth) =>
+                  birth.type === 'text' ? [{ tape: birth.tape, ...birth.native }] : [],
+                ),
+              },
+            ]
+          : []),
+      ],
+    };
   }
   reduce(peer = 'C', inactive: readonly string[] = []): OwnershipResult {
     const held = this.ready(peer);

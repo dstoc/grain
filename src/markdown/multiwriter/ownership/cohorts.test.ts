@@ -140,7 +140,7 @@ it('retains cohort eligibility after a cycle-rejected move', () => {
 it('does not combine equal-text cuts with different captured permanent bases', () => {
   const f = fixture();
   f.author('A1', (f) => [f.split('P', 'L', 'P1')]);
-  const range = { ...f.homes[0].cell, start: f.ranges.get('P0')!.start };
+  const range = { ...f.contentRanges.get('P')![0], start: f.ranges.get('P0')!.end };
   f.author('B1', (f) => [
     f.split('P', 'R', 'P2', 'left', 'root', 'P:birth', [
       { range, occurrence: f.id('P:birth', 'occurrence') },

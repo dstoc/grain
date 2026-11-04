@@ -26,7 +26,7 @@ function observation(f: NativeFixture, result: OwnershipResult) {
     );
   expect(new Set(text).size).toBe(text.length);
   expect(text.length).toBe(8);
-  for (const home of f.homes) {
+  for (const home of result.homeBindings) {
     expect(result.containsBoundary(home.cell, home.cell.start)).toBe(true);
     expect(result.containsBoundary(home.cell, home.cell.end)).toBe(true);
   }

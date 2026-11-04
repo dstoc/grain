@@ -4,13 +4,25 @@ import type { EffectOrder, LayoutPrefix, OccurrenceBucket } from '../layout/inde
 import { resourceKey } from '../layout/index.js';
 import { cellKey, sameId } from './cells.js';
 import type { CellIndex } from './cells.js';
+import type { HomeIndex } from './homes.js';
 
 type Split = Extract<SemanticEffect, { type: 'SplitFlow' }>;
 export interface SplitBirth {
   readonly effect: Split;
   readonly order: EffectOrder;
 }
-export function cutPosition(effect: Split, index: CellIndex): number {
+export function cutPosition(effect: Split, index: CellIndex, homes?: HomeIndex): number {
+  if (!effect.basis.ranges.length) {
+    if (!homes) throw new Error('Empty split requires its retained home domain');
+    const home = homes.home(effect.cut.run);
+    if (
+      !sameId(effect.cut.boundary, home.cell.end) ||
+      effect.cut.side !== 'left' ||
+      effect.cut.predecessor !== null
+    )
+      throw new Error('Empty split needs the canonical trailing home cut');
+    return index.range(home.cell).length;
+  }
   const cells = effect.basis.ranges.flatMap((entry) => index.range(entry.range));
   if (new Set(cells.map((cell) => cellKey(cell.range))).size !== cells.length)
     throw new Error('Overlapping captured flow basis');
@@ -26,6 +38,7 @@ export function splitBuckets(
   births: readonly SplitBirth[],
   layout: LayoutPrefix,
   index: CellIndex,
+  homes?: HomeIndex,
 ): readonly OccurrenceBucket[] {
   const groups = new Map<string, SplitBirth[]>();
   for (const birth of births) {
@@ -33,7 +46,15 @@ export function splitBuckets(
     const placement = layout.blockPlacement(effect.newNode);
     if (!placement || !sameId(placement.occurrence, effect.occurrence)) continue;
     const key = JSON.stringify([
-      effect.basis.ranges.map(({ range, occurrence }) => [cellKey(range), resourceKey(occurrence)]),
+      effect.basis.ranges.length
+        ? [
+            'content',
+            effect.basis.ranges.map(({ range, occurrence }) => [
+              cellKey(range),
+              resourceKey(occurrence),
+            ]),
+          ]
+        : ['empty-home', resourceKey(effect.cut.run)],
       resourceKey(effect.outerSlot.parent),
       effect.outerSlot.predecessor && resourceKey(effect.outerSlot.predecessor),
     ]);
@@ -47,7 +68,7 @@ export function splitBuckets(
       roots: group
         .sort(
           (a, b) =>
-            cutPosition(a.effect, index) - cutPosition(b.effect, index) ||
+            cutPosition(a.effect, index, homes) - cutPosition(b.effect, index, homes) ||
             compareEffects(a.order, b.order),
         )
         .map((birth) => birth.effect.occurrence),

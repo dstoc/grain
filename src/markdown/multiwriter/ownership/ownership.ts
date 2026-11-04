@@ -1,5 +1,6 @@
 import { compareActions } from '../contracts.js';
 import type {
+  ActionId,
   CellAssignment,
   FlowId,
   InlineSlot,
@@ -21,19 +22,18 @@ import type {
 import type { TapeSnapshot } from '../text/cache.js';
 import { CellIndex, assignmentKey, cellKey, sameId } from './cells.js';
 import { cutPosition, splitBuckets } from './cohorts.js';
+import { deriveHomes, HomeIndex } from './homes.js';
+import type { HomeBinding } from './homes.js';
+export type { HomeBinding } from './homes.js';
 import type { SplitBirth } from './cohorts.js';
 import { traverse } from './traversal.js';
 import type { RawInlineEntry, RunAttachment, RunOrigin } from './traversal.js';
 
-/** Derived from retained allocation facts. Only the tape's birth batch seeds its home.
- * Overlapping split/transfer skeletons are never inferred to be home bindings.
- */
-export type HomeBinding = CellAssignment;
 export interface OwnershipInput {
   readonly genesis: LayoutGenesis;
   readonly actions: readonly LayoutActionInput[];
   readonly snapshots: readonly TapeSnapshot[];
-  readonly homes: readonly HomeBinding[];
+  readonly homes?: readonly HomeBinding[];
   readonly isActive: (order: EffectOrder) => boolean;
 }
 export interface DestinationRequirement {
@@ -54,7 +54,11 @@ export class OwnershipResult {
     private readonly attachments: ReadonlyMap<string, RunAttachment>,
     private readonly cohorts: readonly OccurrenceBucket[],
     private readonly requirements: readonly DestinationRequirement[],
+    private readonly homes: readonly HomeBinding[],
   ) {}
+  get homeBindings(): readonly HomeBinding[] {
+    return structuredClone(this.homes);
+  }
   get assignments(): readonly CellAssignment[] {
     return structuredClone([...this.owners.values()]);
   }
@@ -140,11 +144,44 @@ function actionKey(input: LayoutActionInput): string {
  * author-closure certification and history activity remain caller obligations.
  */
 export function reduceOwnership(input: OwnershipInput): OwnershipResult {
+  return replayOwnership(input);
+}
+
+/** Exact author closure only; concurrent merge must never re-run these author-local checks. */
+export function certifyOwnership(input: OwnershipInput, author: ActionId): void {
+  if (
+    !input.actions.some(
+      (entry) =>
+        entry.action.id.actor === author.actor && entry.action.id.sequence === author.sequence,
+    )
+  )
+    throw new Error('Certification requires the candidate action');
+  replayOwnership(input, author);
+}
+
+function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipResult {
   const genesis = structuredClone(input.genesis);
   const actions = [
     ...new Map(input.actions.map((entry) => [actionKey(entry), structuredClone(entry)])).values(),
   ].sort((a, b) => compareActions(a.action, b.action));
-  const homes = structuredClone(input.homes);
+  const homes = [
+    ...deriveHomes(genesis),
+    ...actions.flatMap((entry) =>
+      deriveHomes(
+        { allocations: entry.action.allocations, births: entry.births },
+        entry.action.effects,
+      ),
+    ),
+  ];
+  if (input.homes) {
+    const keys = (values: readonly HomeBinding[]) =>
+      values.map((home) => `${cellKey(home.cell)}:${assignmentKey(home)}`).sort();
+    const supplied = keys(input.homes);
+    if (new Set(supplied).size !== supplied.length) throw new Error('Conflicting home bindings');
+    if (supplied.length !== homes.length) throw new Error('Incomplete home bindings');
+    if (JSON.stringify(supplied) !== JSON.stringify(keys(homes)))
+      throw new Error('Home endpoints or binding differ from retained births');
+  }
   const index = new CellIndex(input.snapshots);
   const layout = new LayoutPrefix(genesis);
   const owners = new Map<string, CellAssignment>();
@@ -191,6 +228,48 @@ export function reduceOwnership(input: OwnershipInput): OwnershipResult {
   )
     throw new Error('Native snapshots must cover exactly the ready markers');
 
+  const homeIndex = new HomeIndex(homes, index);
+  for (const allocation of allAllocations) {
+    if (allocation.type !== 'run') continue;
+    const home = homes.find((home) => sameId(home.run, allocation.id));
+    const captures = home ? allocation.skeleton.slice(0, -1) : allocation.skeleton;
+    const seen = new Set<string>();
+    for (const range of allocation.skeleton)
+      for (const cell of index.range(range)) {
+        const key = cellKey(cell.range);
+        if (seen.has(key)) throw new Error('Overlapping retained run skeleton');
+        seen.add(key);
+      }
+    for (const range of captures) homeIndex.assertCapture(range);
+  }
+  for (const entry of actions)
+    for (const effect of entry.action.effects) {
+      if (effect.type === 'SplitFlow') {
+        for (const member of effect.basis.ranges) homeIndex.assertCapture(member.range);
+        const newHome = homeIndex.home(effect.newRun);
+        if (!sameId(newHome.occurrence, effect.occurrence))
+          throw new Error('Split root occurrence differs from retained home');
+        if (!effect.basis.ranges.length) {
+          const home = homeIndex.home(effect.cut.run);
+          if (
+            !sameId(effect.cut.boundary, home.cell.end) ||
+            effect.cut.side !== 'left' ||
+            effect.cut.predecessor !== null
+          )
+            throw new Error('Empty split needs the canonical trailing home cut');
+          if (layoutRun(effect.newRun).skeleton.length !== 1)
+            throw new Error('Empty split must capture no source content');
+        }
+      } else if (effect.type === 'TransferRange')
+        for (const range of effect.ranges) homeIndex.assertCapture(range);
+    }
+  function layoutRun(run: RunId) {
+    const allocation = allAllocations.find(
+      (entry) => entry.type === 'run' && sameId(entry.id, run),
+    );
+    if (!allocation || allocation.type !== 'run') throw new Error('Missing retained run');
+    return allocation;
+  }
   function install(batch: LayoutGenesis, effects: readonly SemanticEffect[]): void {
     const transfers = effects.filter((effect) => effect.type === 'TransferRange');
     // Retained occurrence locations are ghost traversal paths, even when inactive.
@@ -214,58 +293,20 @@ export function reduceOwnership(input: OwnershipInput): OwnershipResult {
         destination: transfer.destination,
       });
     }
-    for (const allocation of batch.allocations) {
-      if (allocation.type === 'run') {
-        for (const range of allocation.skeleton) index.range(range);
-        if (transfers.some((effect) => sameId(effect.run, allocation.id))) continue;
-        const flowKey = resourceKey(allocation.flow);
-        const flow = batch.allocations.find(
-          (entry) => entry.type === 'flow' && sameId(entry.id, allocation.flow),
-        );
-        if (!flow || flow.type !== 'flow')
-          throw new Error('Non-transfer root run must be born with its flow');
-        const birth = batch.births.find((entry) => sameId(entry.node, flow.home));
-        if (!birth) throw new Error('Missing home run occurrence binding');
-        if (roots.has(flowKey)) throw new Error('Ambiguous home run order');
-        roots.set(flowKey, [{ run: allocation.id, occurrence: birth.occurrence }]);
-      }
-    }
-    for (const allocation of batch.allocations) {
-      if (allocation.type !== 'tape') continue;
-      const tapeKey = resourceKey(allocation.id);
+    for (const home of homes.filter((home) =>
+      batch.allocations.some((entry) => entry.type === 'tape' && sameId(entry.id, home.cell.tape)),
+    )) {
+      const tapeKey = resourceKey(home.cell.tape);
       if (installedTapes.has(tapeKey)) throw new Error('Duplicate tape birth');
       installedTapes.add(tapeKey);
-      const bindings = homes.filter((home) => sameId(home.cell.tape, allocation.id));
-      for (const home of bindings) {
-        if (
-          [home.cell.start, home.cell.end].some(
-            (marker) =>
-              !batch.allocations.some(
-                (entry) => entry.type === 'marker' && sameId(entry.id, marker),
-              ),
-          )
-        )
-          throw new Error('Home endpoints must be retained in the tape birth batch');
-        const run = batch.allocations.find(
-          (entry) => entry.type === 'run' && sameId(entry.id, home.run),
-        );
-        if (!run || run.type !== 'run' || transfers.some((effect) => sameId(effect.run, home.run)))
-          throw new Error('Home run must be retained in the tape birth batch');
-        const origin = roots.get(resourceKey(run.flow))?.[0];
-        if (!origin || assignmentKey(origin) !== assignmentKey(home))
-          throw new Error('Home occurrence does not match retained birth');
-        const skeletonCells = new Set(
-          run.skeleton.flatMap((range) => index.range(range)).map((cell) => cellKey(cell.range)),
-        );
-        for (const cell of index.range(home.cell)) {
-          const key = cellKey(cell.range);
-          if (!skeletonCells.has(key)) throw new Error('Home interval outside retained skeleton');
-          if (owners.has(key)) throw new Error('Conflicting home coverage');
-          owners.set(key, { cell: cell.range, run: home.run, occurrence: home.occurrence });
-        }
+      const flowKey = resourceKey(layout.runLayout(home.run).flow);
+      if (roots.has(flowKey)) throw new Error('Ambiguous home run order');
+      roots.set(flowKey, [{ run: home.run, occurrence: home.occurrence }]);
+      for (const cell of index.range(home.cell)) {
+        const key = cellKey(cell.range);
+        if (owners.has(key)) throw new Error('Conflicting home coverage');
+        owners.set(key, { cell: cell.range, run: home.run, occurrence: home.occurrence });
       }
-      if (index.tape(allocation.id).some((cell) => !owners.has(cellKey(cell.range))))
-        throw new Error('Incomplete home coverage');
     }
   }
   function rawCells(flow: FlowId) {
@@ -284,6 +325,15 @@ export function reduceOwnership(input: OwnershipInput): OwnershipResult {
       }
     }
     if (visited.size !== owners.size) throw new Error('Owned cell is unreachable in raw traversal');
+    for (const home of homes) {
+      if (!installedTapes.has(resourceKey(home.cell.tape))) continue;
+      for (const cell of index.range(home.cell)) {
+        if (!homeIndex.isReserved(cell.range)) continue;
+        const owner = owners.get(cellKey(cell.range));
+        if (!owner || assignmentKey(owner) !== assignmentKey(home))
+          throw new Error('Reserved home cell lost its root assignment');
+      }
+    }
   }
   function assign(
     ranges: readonly RangeRef[],
@@ -315,62 +365,90 @@ export function reduceOwnership(input: OwnershipInput): OwnershipResult {
     for (const [ordinal, effect] of entry.action.effects.entries()) {
       const order = { action: { id: entry.action.id, lamport: entry.action.lamport }, ordinal };
       const active = input.isActive(order);
+      const certifying =
+        author &&
+        author.actor === entry.action.id.actor &&
+        author.sequence === entry.action.id.sequence;
+      if (certifying && effect.type === 'SplitFlow') {
+        const sourceRun = layout.runLayout(effect.cut.run);
+        const laterBirth = entry.action.effects.findIndex(
+          (candidate) => candidate.type === 'SplitFlow' && sameId(candidate.newRun, effect.cut.run),
+        );
+        if (laterBirth >= ordinal)
+          throw new Error('Split source is not yet available at its effect prefix');
+        if (!effect.basis.ranges.length) {
+          const source = layout.flowPlacement(sourceRun.flow);
+          if (source.parent.type !== 'block')
+            throw new Error('Empty split source must be standalone');
+          if (rawCells(sourceRun.flow).some((cell) => !homeIndex.isReserved(cell.cell)))
+            throw new Error('Empty split omits author-visible content cells');
+        } else {
+          for (const member of effect.basis.ranges)
+            for (const cell of index.range(member.range)) {
+              const owner = owners.get(cellKey(cell.range));
+              if (!owner || !sameId(owner.occurrence, member.occurrence))
+                throw new Error('Basis occurrence differs from author ownership');
+            }
+          const basis = effect.basis.ranges.flatMap((member) => index.range(member.range));
+          const cut = cutPosition(effect, index, homeIndex);
+          const expected = (
+            effect.retainedSide === 'left' ? basis.slice(cut) : basis.slice(0, cut)
+          ).map((cell) => cellKey(cell.range));
+          const actual = layout
+            .runLayout(effect.newRun)
+            .skeleton.slice(0, -1)
+            .flatMap((range) => index.range(range))
+            .map((cell) => cellKey(cell.range));
+          if (JSON.stringify(actual) !== JSON.stringify(expected))
+            throw new Error('Split skeleton differs from authored captured component');
+        }
+      }
       if (active && effect.type === 'TransferRange') {
         // Resolve all source ranges before installing the destination attachment.
         for (const range of effect.ranges) index.range(range);
-        const sourceFlows = new Map(
-          effect.ranges
-            .flatMap((range) => index.range(range))
-            .map((cell) => {
-              const owner = owners.get(cellKey(cell.range));
-              if (!owner) throw new Error('Structural range uses an unavailable tape');
-              const block = layout.flowBlock(layout.runLayout(owner.run).flow);
-              const flow = layout.flowPlacements.find(
-                (entry) => entry.parent.type === 'block' && sameId(entry.parent.node, block),
-              )!.flow;
-              return [resourceKey(flow), flow];
-            }),
-        );
         assign(effect.ranges, effect.run, effect.occurrence);
-        for (const flow of sourceFlows.values())
-          if (!rawCells(flow).length)
-            throw new Error('Transfer empties source without a distinct permanent insertion cell');
       } else if (active && effect.type === 'SplitFlow') {
         layout.resolveInlineSlot(effect.cut, index);
         for (const range of effect.basis.ranges) layout.occurrence(range.occurrence);
         const basis = effect.basis.ranges.flatMap((range) => index.range(range.range));
-        const cut = cutPosition(effect, index);
-        const left = effect.retainedSide === 'left';
-        const reference = basis[left ? Math.max(0, cut - 1) : Math.min(cut, basis.length - 1)];
-        if (!reference) throw new Error('Split needs an addressable basis cell');
-        const referenceOwner = owners.get(cellKey(reference.range));
-        if (!referenceOwner) throw new Error('Split basis uses an unavailable tape');
-        const block = layout.flowBlock(layout.runLayout(referenceOwner.run).flow);
-        const flow = layout.flowPlacements.find(
-          (placement) => placement.parent.type === 'block' && sameId(placement.parent.node, block),
-        )!.flow;
-        const current = rawCells(flow);
-        const positions = new Map(
-          current.map((assignment, position) => [cellKey(assignment.cell), position]),
-        );
-        const candidates = left ? basis.slice(cut) : basis.slice(0, cut).reverse();
-        const selected: RangeRef[] = [];
-        let previous: number | undefined = left
-          ? cut > 0
-            ? positions.get(cellKey(reference.range))
-            : undefined
-          : cut < basis.length
-            ? positions.get(cellKey(reference.range))
-            : undefined;
-        for (const cell of candidates) {
-          const position = positions.get(cellKey(cell.range));
-          if (
-            position === undefined ||
-            (previous !== undefined && position !== previous + (left ? 1 : -1))
-          )
-            break;
-          selected.push(cell.range);
-          previous = position;
+        const cut = cutPosition(effect, index, homeIndex);
+        if (basis.length) {
+          const left = effect.retainedSide === 'left';
+          const reference = basis[left ? Math.max(0, cut - 1) : Math.min(cut, basis.length - 1)];
+          if (!reference) throw new Error('Split needs an addressable basis cell');
+          const referenceOwner = owners.get(cellKey(reference.range));
+          if (!referenceOwner) throw new Error('Split basis uses an unavailable tape');
+          const block = layout.flowBlock(layout.runLayout(referenceOwner.run).flow);
+          const flow = layout.flowPlacements.find(
+            (placement) =>
+              placement.parent.type === 'block' && sameId(placement.parent.node, block),
+          )!.flow;
+          const current = rawCells(flow).filter(
+            (assignment) => !homeIndex.isReserved(assignment.cell),
+          );
+          const positions = new Map(
+            current.map((assignment, position) => [cellKey(assignment.cell), position]),
+          );
+          const candidates = left ? basis.slice(cut) : basis.slice(0, cut).reverse();
+          const selected: RangeRef[] = [];
+          let previous: number | undefined = left
+            ? cut > 0
+              ? positions.get(cellKey(reference.range))
+              : undefined
+            : cut < basis.length
+              ? positions.get(cellKey(reference.range))
+              : undefined;
+          for (const cell of candidates) {
+            const position = positions.get(cellKey(cell.range));
+            if (
+              position === undefined ||
+              (previous !== undefined && position !== previous + (left ? 1 : -1))
+            )
+              break;
+            selected.push(cell.range);
+            previous = position;
+          }
+          assign(selected, effect.newRun, effect.occurrence);
         }
         const run = layout.runLayout(effect.newRun);
         const node = layout.nodeAllocations.find((node) => sameId(node.id, effect.newNode));
@@ -388,7 +466,6 @@ export function reduceOwnership(input: OwnershipInput): OwnershipResult {
           !sameNullableId(birth.slot.predecessor, effect.outerSlot.predecessor)
         )
           throw new Error('Split outer slot differs from retained birth');
-        assign(selected, effect.newRun, effect.occurrence);
         splits.push({ effect, order });
       }
       const result = layout.step(ordinal, active);
@@ -463,8 +540,9 @@ export function reduceOwnership(input: OwnershipInput): OwnershipResult {
     owners,
     roots,
     attachments,
-    splitBuckets(splits, layout, index),
+    splitBuckets(splits, layout, index, homeIndex),
     requirements,
+    homes,
   );
 }
 function sameNullableId(a: InlineSlot['predecessor'], b: InlineSlot['predecessor']): boolean {

@@ -475,8 +475,8 @@ it('replays a split across two tapes using the joined prefix, then stops when a 
   const f = fixture(twoParagraphs);
   f.author('A1', (f) => [f.join('fQ', 'P:end')]);
   f.deliver('A', 'B', ['A1']);
-  const pRange = f.homes[0].cell;
-  const qRange = f.homes[1].cell;
+  const pRange = f.contentRanges.get('P')![0];
+  const qRange = f.contentRanges.get('Q')![0];
   const basis = [
     { range: pRange, occurrence: f.id('P:birth', 'occurrence') },
     { range: qRange, occurrence: f.id('Q:birth', 'occurrence') },
@@ -487,7 +487,7 @@ it('replays a split across two tapes using the joined prefix, then stops when a 
   invariant(joined);
   expect(f.text(joined, 'fP')).toBe('ab');
   expect(f.text(joined, 'fS')).toBe('cdXY');
-  expect(joined.runLayouts.find((run) => f.alias(run.run) === 'rS')!.skeleton).toHaveLength(2);
+  expect(joined.runLayouts.find((run) => f.alias(run.run) === 'rS')!.skeleton).toHaveLength(3);
   const inactive = f.reduce('C', ['A1']);
   invariant(inactive);
   expect(f.text(inactive, 'fS')).toBe('cd');

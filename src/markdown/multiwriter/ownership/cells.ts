@@ -81,6 +81,15 @@ export class CellIndex implements BoundaryIndex {
     if (!found || !sameId(found.tape, tape)) throw new Error('Unknown native range endpoint');
     return found.position;
   }
+  adjacent(boundary: MarkerId, side: 'left' | 'right'): NativeCell {
+    const marker = this.markers.get(resourceKey(boundary));
+    if (!marker) throw new Error('Unknown permanent marker');
+    const cell = this.tape(marker.tape).find((cell) =>
+      sameId(side === 'left' ? cell.range.end : cell.range.start, boundary),
+    );
+    if (!cell) throw new Error('Slot points outside permanent tape endpoints');
+    return cell;
+  }
   range(range: RangeRef): readonly NativeCell[] {
     const start = this.position(range.tape, range.start);
     const end = this.position(range.tape, range.end);
