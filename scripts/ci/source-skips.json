@@ -1,0 +1,782 @@
+{
+  "node": [
+    {
+      "file": "src/markdown/canonical-actions.benchmark.test.ts",
+      "name": "reports canonical editing latency and retained history growth"
+    },
+    {
+      "file": "src/markdown/canonical-m0.benchmark.test.ts",
+      "name": "Grain/Yjs M0 core benchmark > reports acceptance, projection, serialization, checkpoint, and native state distributions"
+    },
+    {
+      "file": "src/markdown/canonical-m0.benchmark.test.ts",
+      "name": "Grain/Yjs M0 core benchmark > reports retained native history callbacks and a 10000-action trace"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 329 Code spans"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 330 Code spans"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 331 Code spans"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 335 Code spans"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 336 Code spans"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 337 Code spans"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 340 Code spans"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 343 Code spans"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 344 Code spans"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 345 Code spans"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 346 Code spans"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 347 Code spans"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 351 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 352 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 353 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 354 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 358 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 359 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 360 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 361 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 362 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 363 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 366 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 367 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 368 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 369 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 371 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 372 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 373 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 374 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 375 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 376 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 379 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 380 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 383 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 384 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 385 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 386 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 387 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 388 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 389 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 391 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 392 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 395 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 397 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 398 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 400 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 401 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 402 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 407 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 408 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 409 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 413 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 414 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 415 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 416 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 417 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 418 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 419 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 425 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 426 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 427 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 430 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 431 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 432 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 437 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 440 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 442 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 443 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 444 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 445 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 446 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 447 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 449 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 452 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 454 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 455 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 456 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 457 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 458 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 459 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 464 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 465 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 466 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 467 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 468 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 469 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 470 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 471 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 472 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 473 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 474 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 475 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 476 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 477 Emphasis and strong emphasis"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 486 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 489 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 491 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 492 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 493 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 494 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 495 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 498 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 499 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 500 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 502 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 503 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 504 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 506 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 507 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 508 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 515 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 516 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 517 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 518 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 519 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 520 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 521 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 522 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 524 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 526 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 527 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 528 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 529 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 530 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 531 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 532 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 533 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 534 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 535 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 536 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 537 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 538 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 539 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 540 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 541 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 542 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 543 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 544 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 545 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 549 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 550 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 552 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 553 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 554 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 555 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 556 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 557 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 558 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 559 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 560 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 561 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 562 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 563 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 564 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 565 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 566 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 567 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 568 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 569 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 570 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 571 Links"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 573 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 574 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 575 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 576 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 577 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 580 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 582 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 583 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 584 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 585 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 586 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 587 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 588 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 589 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 590 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 591 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 592 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 593 Images"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 602 Autolinks"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 603 Autolinks"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 604 Autolinks"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 605 Autolinks"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 606 Autolinks"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 607 Autolinks"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 608 Autolinks"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 609 Autolinks"
+    },
+    {
+      "file": "src/markdown/inline-parser/commonmark.test.ts",
+      "name": "commonmark html serializer > 610 Autolinks"
+    }
+  ],
+  "browser": [
+    {
+      "file": "src/main.yjs-m0.browser.test.ts",
+      "name": "measures full demo harness input, coalesced exports, and projection at 150 paragraphs"
+    },
+    {
+      "file": "src/editing/canonical-m0.browser.test.ts",
+      "name": "measures 200 mounted Chromium editor input and projection operations at 150 paragraphs"
+    }
+  ]
+}
