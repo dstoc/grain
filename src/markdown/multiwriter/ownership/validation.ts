@@ -1,7 +1,7 @@
 import type { ActionEnvelope } from '../contracts.js';
 import type { AuthorValidationContext, IngestValidatorOptions } from '../ingest/validator.js';
 import { IngestCapacityError, IngestDataError } from '../ingest/work.js';
-import type { BirthPlacement, LayoutGenesis } from '../layout/index.js';
+import type { BirthPlacement, EffectOrder, LayoutGenesis } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
 import { reduceActivity } from '../visibility/activity.js';
 import { CellIndex, sameId } from './cells.js';
@@ -16,6 +16,10 @@ import type { TapeSnapshot } from '../text/types.js';
 export function createOwnershipAuthorValidator(options: {
   readonly genesis: LayoutGenesis;
   readonly births: (action: ActionEnvelope) => readonly BirthPlacement[];
+  readonly interpretationEligible?: (
+    actions: readonly ActionEnvelope[],
+    order: EffectOrder,
+  ) => boolean;
 }): NonNullable<IngestValidatorOptions['validateAuthor']> {
   const genesis = structuredClone(options.genesis);
   return (action: ActionEnvelope, context: AuthorValidationContext) => {
@@ -44,6 +48,8 @@ export function createOwnershipAuthorValidator(options: {
           actions: inputs,
           snapshots,
           isActive: (order) => activity.isActive(order.action.id),
+          interpretationEligible: (order) =>
+            options.interpretationEligible?.(actions, order) ?? false,
         },
         action.id,
       );

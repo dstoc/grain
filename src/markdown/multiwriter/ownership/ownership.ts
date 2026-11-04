@@ -1,6 +1,7 @@
 import { compareActions } from '../contracts.js';
 import type {
   ActionId,
+  BlockSlot,
   CellAssignment,
   FlowId,
   InlineSlot,
@@ -35,6 +36,8 @@ export interface OwnershipInput {
   readonly snapshots: readonly TapeSnapshot[];
   readonly homes?: readonly HomeBinding[];
   readonly isActive: (order: EffectOrder) => boolean;
+  /** Whole-packet eligibility selected before replay; absent means no interpretation placements. */
+  readonly interpretationEligible?: (order: EffectOrder) => boolean;
 }
 export interface DestinationRequirement {
   readonly order: EffectOrder;
@@ -90,6 +93,9 @@ export class OwnershipResult {
       return 'parent' in slot && sameId(slot.parent, parent);
     });
     return structuredClone(this.layout.children(parent, buckets));
+  }
+  resolveBlockSlot(slot: BlockSlot): BlockSlot {
+    return this.layout.resolveBlockSlot(slot);
   }
   resolveSlot(slot: InlineSlot) {
     return structuredClone(this.layout.resolveInlineSlot(slot, this.index));
@@ -489,8 +495,9 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
           throw new Error('Split outer slot differs from retained birth');
         splits.push({ effect, order });
       }
-      const result = layout.step(ordinal, active);
-      if (active) candidates.push({ order, effect });
+      const eligible = effect.type !== 'Interpret' || !!input.interpretationEligible?.(order);
+      const result = layout.step(ordinal, active, eligible);
+      if (active && eligible) candidates.push({ order, effect });
       for (const changed of result.flows)
         if (changed.result === 'applied') flowIntentions.set(resourceKey(changed.flow), order);
       assertCoverage();
@@ -541,8 +548,11 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
         )
           nodes.push(flowHome(effect.standaloneFlow));
         break;
+      case 'Interpret':
       case 'LiftChildren':
-        for (const placement of effect.placements)
+        for (const placement of effect.type === 'Interpret'
+          ? effect.packet.placements
+          : effect.placements)
           if (sameId(layout.blockPlacement(placement.node)!.occurrence, placement.occurrence))
             nodes.push(placement.slot.parent);
         break;
