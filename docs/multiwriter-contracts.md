@@ -37,8 +37,10 @@ npm run build
 npm run test -- src/markdown/multiwriter/
 ```
 
-MW-07 supplies an independent-replica adapter. MW-08 connects it to real action
-storage, Yjs insertion bodies and the reference reducers. For each trace, call
+MW-07 supplies the independent-port network harness and the `replicaTraceAdapter()`
+bridge in `test/multiwriter/network.ts`. See `test/multiwriter/README.md` for its
+schedule, factory contract, checks, and limits. MW-08 supplies the integrated
+factory for real action storage, Yjs insertion bodies and the reference reducers. For each trace, call
 `runContractTrace(adapter, trace, (actual, expected, context) =>
 expect(actual, context).toEqual(expected))`. The comparison callback must throw on
 a mismatch. The runner always disposes the adapter, including after failure.
