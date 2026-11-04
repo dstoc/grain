@@ -1,8 +1,8 @@
 # Proposal: Per-instance history and selection grouping
 
 - **Issue:** grain/91 (MW-10).
-- **Status:** Proposed v1; implementation requires proposal review.
-- **Authority:** grain/81 proposal v2, especially §§7.4, 9.1–9.3, 10.2 and 13–14. MW-05 owns the retraction algebra. This proposal supplies the local navigation policy and its MW-09 integration.
+- **Status:** Proposed v2; implementation requires proposal review.
+- **Authority:** grain/81 proposal v2, especially §§7.4, 9.1–9.4, 10.2 and 13–14. MW-05 owns the retraction algebra. This proposal supplies the local navigation policy and its MW-09 integration.
 - **Inspected baseline:** `yjs` at `415363a4e85549a33eee3010d69e55ce6161002d`. Branch and eventual implementation PR target: `yjs`. Yjs remains exactly 13.6.33.
 
 ## Motivation
@@ -145,14 +145,14 @@ returns `invalid-scope` without publishing or moving a cursor.
 Classify each group's retained footprint as inside, outside or mixed using the
 current ownership, retained raw placement and normalized origin mappings:
 
-| Footprint component | Scope evidence |
-| --- | --- |
-| Insert/delete text and interpretation masks/synthesis | Exact native ID ranges, partitioned at current ownership boundaries |
-| Split/transfer | Exact captured intervals, permanent empty cells, and structural source/destination endpoints |
-| Join | Source flow lineage, destination slot, and lifted children |
-| Node birth, move, property update or wrapper placement | Affected raw node and relevant retained source/destination edges |
-| Subtree deletion | Recorded observed nodes, owned intervals and joined flows |
-| Interpretation | Source, output nodes, wrapper/placement intentions and packet-owned effects |
+| Footprint component                                    | Scope evidence                                                                               |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| Insert/delete text and interpretation masks/synthesis  | Exact native ID ranges, partitioned at current ownership boundaries                          |
+| Split/transfer                                         | Exact captured intervals, permanent empty cells, and structural source/destination endpoints |
+| Join                                                   | Source flow lineage, destination slot, and lifted children                                   |
+| Node birth, move, property update or wrapper placement | Affected raw node and relevant retained source/destination edges                             |
+| Subtree deletion                                       | Recorded observed nodes, owned intervals and joined flows                                    |
+| Interpretation                                         | Source, output nodes, wrapper/placement intentions and packet-owned effects                  |
 
 Ignore infrastructure-only allocations when they add no semantic footprint.
 Do not classify all characters on a tape as one target. Two disjoint ranges of
@@ -172,24 +172,95 @@ to the opposite stack. A wholly inside no-effect group still consumes one step.
 
 Resolve a group's before-selection after undo and after-selection after redo
 against the newly published view. Preserve native character neighbors, run/marker
-origins, affinities, anchor/focus direction and ordered block constituents.
-Reuse `StableSelection` and extend it only where block endpoint or empty-root
-intent cannot currently be represented. Projection-local `construction:*`
-handles and numeric pre-edit offsets are never saved as durable anchors.
+origins, caller affinities, anchor/focus direction and ordered block constituents.
+Extend local `StableSelection` metadata for affinity, gap capture, block endpoints,
+host context and empty-root intent. These fields do not enter action envelopes or
+change `TextPoint.side`, control encoding or the retraction algebra.
+Projection-local `construction:*` handles and numeric pre-edit offsets are never
+saved as durable anchors.
+
+#### Capture caller affinity and the native gap
+
+`TextPoint.side` identifies the side of one native neighbor. It is not the caller's
+selection affinity: `textPoint()` can return the same point for left and right
+at offset zero or the text end. Save the caller's `affinity: 'left' | 'right'`
+separately for each endpoint. Capture it directly from `EditSelection` before
+calling `textPoint()`. For command-produced after-selections, use the command's
+focus affinity; when preserving a selection, preserve both endpoint affinities.
+Never reconstruct caller affinity from `side` during refresh or recovery.
+
+Alongside each existing point, capture the native gap's left and right neighbors
+in its retained lineage. Use whole Unicode scalar identities for text neighbors
+and existing permanent marker identities at lineage edges or empty cells. This
+is local metadata; capture allocates no shared markers. Retain both bounds so an
+edge caret can distinguish staying before from staying after later text inserted
+in that gap. A marker's own affinity and `TextPoint.side` keep their existing
+meanings. Neither substitutes for the captured caller affinity.
 
 Add a pure selection resolver beside the existing projection address helpers.
-Follow a retained text point's current effective flow and visible fragment
-mapping. When its native neighbor is hidden, use the nearest visible boundary
-in that same retained lineage according to affinity, with scalar-safe UTF-16
-offsets. Do not redirect a deleted source to an unrelated replacement node or
-search by matching text. If the lineage is unavailable, return unavailable.
+Follow the retained gap through current effective ownership and visible fragment
+mapping. Left affinity chooses the visible start of the gap; right affinity
+chooses its visible end, including concurrent insertions between its retained
+bounds. If a neighbor is hidden or masked, walk retained native order outward to
+the nearest visible boundary on the affinity side in the same lineage. If that
+side has no visible text, use that lineage's visible edge or empty boundary.
+Return only scalar-safe UTF-16 offsets. At a split/transfer seam, affinity chooses
+the corresponding surviving side of the retained gap; it never selects a block
+by matching text.
 
-Resolve block selections through their saved constituent addresses and directional
-endpoints. Restore the complete range only when those endpoints and constituents
-remain available in the requested host scope. Otherwise return an available saved
-focus as a collapsed caret; if it too is unavailable, return unavailable. When
-the saved selection explicitly names the empty-root caret, restore it only while
-that view exists. Resolution allocates no paragraph or shared marker.
+#### Exact resolution and caret fallback
+
+Keep exact address resolution separate from selection restoration.
+`resolveAddress()` must continue to reject a deleted source. A selection fallback
+returns a new collapsed caret target with a `fallback` reason; it does not rewrite
+the saved point, make its mutation address available, or change the stored group.
+A later edit must capture a fresh address from the resolved caret's current view.
+
+Capture a fallback context for each endpoint: the host root's stable origin,
+the containing inline's constituent origins, and its raw block placement slot
+and occurrence. Capture this from the same publication as the selection, using
+`blockPlacement()` and the projection's origin mappings. A merged wrapper retains
+its constituent identities. No rendered handles or copied document text are needed.
+The caller must supply the current initiating host scope when restoring.
+
+Validate the saved host identity against the current initiating host scope before
+any exact restoration or fallback. Resolve a text range exactly only when both
+endpoints remain available inside that host. Resolve a block range only when its
+directional endpoints and all saved constituents remain available there. If a complete range cannot be restored,
+first try its saved focus as a collapsed caret with its captured affinity. If
+that fails, apply this nearest-visible policy around the saved focus:
+
+1. Validate the saved host identity against the current host scope. A deleted,
+   unavailable or different host returns unavailable. Do not climb into another
+   host, a parent editor or a nested delegated editor.
+2. Locate the saved focus inline in the current retained raw block order, even
+   if deletion or creation undo hides it. If it has moved outside this host, use
+   its captured placement occurrence as a gap in the saved slot instead. Retained
+   inactive occurrences remain valid gap anchors. If neither location can be
+   established inside the host, return unavailable.
+3. Search backward and forward from that position in retained depth-first inline
+   order. Use `occurrenceOrder()`/`children()`, current ownership and normalized
+   origin mappings. Include hidden inline records when measuring distance, but
+   accept only editable boundaries in the current visible projection. New peer
+   blocks participate in this current order. Map merged constituents to their
+   projected node and deduplicate candidates. Skip deleted, unavailable and
+   out-of-host candidates, and masked-only nodes without an editable boundary.
+   An empty visible inline with an editable boundary is a candidate.
+4. Choose the candidate with the fewest intervening raw inline records. Prefer
+   the predecessor on a tie. Restore at a predecessor's text end with left
+   affinity, or a successor's text start with right affinity. Continue outward
+   when immediate neighbors are unavailable; never search by text equality.
+5. If there is no candidate, restore the existing `view.emptyRoot` caret only
+   when this host is the document root and that empty-root view exists. Otherwise
+   return unavailable. Do not create a paragraph, marker or action.
+
+The same empty-root rule applies to an explicitly saved empty-root selection.
+If that root now contains editable blocks, choose the first editable boundary
+in current document order. An empty nested host without an editable boundary
+returns unavailable. Fallback never expands a range or restores partial block
+selection. For example, if B deletes `first` while `second` survives, A's undo
+can succeed with no visible effect and return a fallback caret at `second`'s
+start. The deleted address for `first` remains unavailable.
 
 Return a restoration request with the publication version and session identity.
 The headless caller can inspect resolved node origins and offsets. The later
@@ -238,6 +309,8 @@ host policy and outbound-only controls need no reverse acknowledgment.
    tests using real `LocalEditor` commands and `openReferenceDocument()`.
 3. Add exact-footprint scope classification and pure selection resolution. Cover
    normalized wrappers, split/join/transfer, inactive content and empty-root cases.
+   Capture caller affinity and native gap bounds before lowering command selections;
+   keep exact address availability separate from caret fallback.
 4. Extend independent command replicas with the managed facade and provider-backed
    delivery. Retain the fixed reference corpus as an independent algebra oracle;
    its symbolic stack bookkeeping alone does not establish MW-10 acceptance.
@@ -266,8 +339,21 @@ do not demand equal projections during asymmetric delivery.
   cross-scope move/transfer/join, merged wrappers and deletion footprints. Verify
   outside skipping, mixed blocking and unchanged stacks/bytes on rejection.
 - Remote prepend, transfer, join, syntax masking, deleted anchors, surrogate
-  pairs and backward block ranges. Resolve by identities; verify unavailable
-  fallback without extra actions or synthesized canonical content.
+  pairs and backward block ranges. Resolve by identities without extra actions
+  or synthesized canonical content. Test left/right affinity at offset zero,
+  interior offsets, text end and empty cells, before and after concurrent gap
+  insertion and hiding either neighbor. Cover before-selection, command focus,
+  preserved block selection and retained-publication recovery capture paths.
+- Delete the saved focus block with a real peer command, then undo a hidden local
+  edit. Verify successful no-effect control plus a collapsed caret in the nearest
+  surviving block, while the original mutation address stays unavailable. Cover
+  predecessor/successor distance and tie order, several deleted neighbors, moved
+  focus using its saved gap, newly inserted neighbors, merged constituents,
+  partially deleted backward ranges and normalized/lifted blocks. Test a deleted
+  or changed host, out-of-scope neighbors, empty document root, empty nested host,
+  explicit empty-root becoming nonempty and an unresolvable gap. Assert fallback
+  reason/target/affinity or unavailable, unchanged canonical bytes after pure
+  resolution, and no cross-host target.
 - Three common-genesis replicas with partitions, duplicate/reordered delivery,
   strict A→B publication and a control received before its targets. Use MW-11
   providers, not direct receive bypasses. Verify local controls work outbound-only,
@@ -295,6 +381,7 @@ do not demand equal projections during asymmetric delivery.
 3. Scoped navigation uses exact current ownership, skips outside groups and blocks
    mixed or unresolved groups without partial retraction.
 4. Grouped input/promotion and stable directional selection restoration pass real
-   command tests, with explicit unavailable-selection fallback.
+   command tests, including distinct edge affinities and deterministic host-scoped
+   caret fallback. Unavailable mutation addresses remain unavailable.
 5. One-way delivery, retained-failure recovery and 501-group checkpoint controls
    pass without canonical pruning or claims about later release/browser gates.
