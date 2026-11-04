@@ -4,6 +4,8 @@ import { ActionStore } from '../actions/store.js';
 import { action, A, B, C } from '../actions/test-fixtures.js';
 import { SYNC_DIRECTIONS } from '../contracts.js';
 import type { DeliveryRoute, SyncMode } from '../contracts.js';
+import { IngestCapacityError, IngestDataError } from '../ingest/work.js';
+import type { ProviderLimits } from './adapter.js';
 import { DirectionalActionProvider } from './adapter.js';
 import type { ActionJournal, OutboundMessage } from './types.js';
 
@@ -42,12 +44,14 @@ async function open(
   mode: SyncMode = 'bidirectional',
   journal = new MemoryJournal(),
   value = store(),
+  limits?: Partial<ProviderLimits>,
 ) {
   const errors: unknown[] = [];
   const provider = await DirectionalActionProvider.open({
     store: value,
     journal,
     mode,
+    limits,
     onError: (error) => errors.push(error),
   });
   providers.push(provider);
@@ -626,4 +630,205 @@ it('rejects native delete sets without journaling rejected bytes', async () => {
   } finally {
     corrupt.destroy();
   }
+});
+
+describe('MW-15 remote admission', () => {
+  it.each(modes.flatMap((mode) => routes.map((route) => ({ mode, route }))))(
+    '$mode/$route checks direction and size before copying, decoding or persistence',
+    async ({ mode, route }) => {
+      const sender = store();
+      sender.append(action());
+      const update = sender.encodeUpdate();
+      const receiver = await open(mode, new MemoryJournal(), store(), {
+        messageBytes: update.length - 1,
+      });
+      await receiver.provider.flush();
+      const before = receiver.value.encodeUpdate();
+      const vector = receiver.value.encodeStateVector();
+      const snapshot = receiver.value.snapshot();
+      const journal = receiver.journal.entries.map((entry) => entry.slice());
+      const copy = vi.spyOn(update, 'slice');
+      const result = receiver.provider.receiveResult(route, update);
+      expect(result.state).toBe(SYNC_DIRECTIONS[mode].receive ? 'backpressured' : 'disabled');
+      if (result.state === 'backpressured')
+        expect(result.error).toBeInstanceOf(IngestCapacityError);
+      expect(copy).not.toHaveBeenCalled();
+      expect(receiver.value.encodeUpdate()).toEqual(before);
+      expect(receiver.value.encodeStateVector()).toEqual(vector);
+      expect(receiver.value.snapshot()).toEqual(snapshot);
+      await receiver.provider.flush();
+      expect(receiver.journal.entries).toEqual(journal);
+      receiver.provider.setLimits({ messageBytes: update.length });
+      expect(receiver.provider.receive(route, update)).toBe(SYNC_DIRECTIONS[mode].receive);
+      if (SYNC_DIRECTIONS[mode].receive)
+        expect(receiver.value.snapshot()).toEqual(sender.snapshot());
+    },
+  );
+
+  it('leaves rejected carrier bytes out of canonical storage and persistence', async () => {
+    const receiver = await open();
+    await receiver.provider.flush();
+    const before = receiver.value.encodeUpdate();
+    const journal = receiver.journal.entries.map((entry) => entry.slice());
+    expect(() => receiver.provider.receive('peer', new Uint8Array([1, 255]))).toThrow(
+      IngestDataError,
+    );
+    expect(receiver.value.encodeUpdate()).toEqual(before);
+    await receiver.provider.flush();
+    expect(receiver.journal.entries).toEqual(journal);
+  });
+
+  it('backpressures remote ingress when failed local writes fill capacity, keeping local edits unsaved', async () => {
+    const journal = new MemoryJournal();
+    const receiver = await open('bidirectional', journal);
+    await receiver.provider.flush();
+    journal.fail = new Error('disk full');
+    receiver.value.append(action());
+    const publication = receiver.provider.capturePublication();
+    await expect(receiver.provider.flush()).rejects.toThrow('disk full');
+    receiver.provider.setLimits({ persistenceBytes: 0 });
+    const sender = store();
+    sender.append(action(B));
+    const update = sender.encodeUpdate();
+    const before = receiver.value.encodeUpdate();
+    const result = receiver.provider.receiveResult('cross-tab', update);
+    expect(result.state).toBe('backpressured');
+    expect(receiver.value.encodeUpdate()).toEqual(before);
+    expect(publication.status()).toEqual({ applied: true, persisted: false });
+    journal.fail = undefined;
+    await receiver.provider.retryPersistence();
+    receiver.provider.setLimits({ persistenceBytes: 32 * 1024 * 1024 });
+    expect(receiver.provider.receive('cross-tab', update)).toBe(true);
+    await receiver.provider.flush();
+    expect(publication.status()).toEqual({ applied: true, persisted: true });
+  });
+
+  it('reserves events unlocked from already-held pending structs before admitting a small prefix', async () => {
+    const sender = store();
+    const updates: Uint8Array[] = [];
+    sender.onUpdate((update) => updates.push(update));
+    const first = action();
+    sender.append(first);
+    const second = action(A, 2n, [first]);
+    sender.append({
+      ...second,
+      groupId: {
+        ...second.groupId,
+        session: { ...second.groupId.session, local: 'x'.repeat(40_000) },
+      },
+    });
+    const receiver = await open();
+    await receiver.provider.flush();
+    expect(receiver.provider.receive('peer', updates[1])).toBe(true);
+    await receiver.provider.flush();
+    expect(receiver.value.snapshot().ready).toEqual([]);
+    const held = receiver.value.encodeUpdate();
+    receiver.provider.setLimits({ persistenceBytes: updates[0].length * 2 + 2048 });
+    const result = receiver.provider.receiveResult('catch-up', updates[0]);
+    expect(result.state).toBe('backpressured');
+    if (result.state === 'backpressured')
+      expect(result.error.required).toBeGreaterThan(updates[1].length);
+    expect(receiver.value.encodeUpdate()).toEqual(held);
+    receiver.provider.setLimits({ persistenceBytes: 32 * 1024 * 1024 });
+    expect(receiver.provider.receive('catch-up', updates[0])).toBe(true);
+    const pending = receiver.value.compute(1);
+    expect(pending.state).toBe('deferred');
+    await receiver.provider.flush();
+    const restart = await open('disconnected', receiver.journal);
+    expect(restart.value.encodeUpdate()).toEqual(sender.encodeUpdate());
+    expect(restart.value.snapshot()).toEqual(sender.snapshot());
+  });
+
+  it('journals unresolved raw ingress while envelope computation is deferred and persistence retries', async () => {
+    const updates = source();
+    const journal = new MemoryJournal();
+    const receiver = await open('bidirectional', journal);
+    await receiver.provider.flush();
+    journal.fail = new Error('temporarily unavailable');
+    expect(receiver.provider.receive('peer', updates[1])).toBe(true);
+    const held = receiver.value.encodeUpdate();
+    expect(receiver.value.compute(0).state).toBe('deferred');
+    await expect(receiver.provider.close()).rejects.toThrow('temporarily unavailable');
+    journal.fail = undefined;
+    await receiver.provider.retryPersistence();
+    await receiver.provider.close();
+    const replacement = new MemoryJournal();
+    replacement.entries.push(...journal.entries);
+    const restart = await open('disconnected', replacement);
+    expect(restart.value.encodeUpdate()).toEqual(held);
+    restart.provider.setMode('bidirectional');
+    restart.provider.receive('peer', updates[0]);
+    expect(restart.value.snapshot().ready).toHaveLength(2);
+  });
+
+  it('fails journal restoration instead of opening a successful partial document under decode capacity', async () => {
+    const sender = store();
+    sender.append(action());
+    const journal = new MemoryJournal();
+    journal.entries.push(sender.encodeUpdate());
+    const receiver = store();
+    receiver.setDecodeLimits({ operations: 1 });
+    await expect(
+      DirectionalActionProvider.open({ store: receiver, journal, mode: 'disconnected' }),
+    ).rejects.toThrow(IngestCapacityError);
+    expect(journal.closed).toBe(true);
+    expect(receiver.snapshot().ready).toEqual([]);
+    receiver.setDecodeLimits({ operations: 100_000 });
+    const retry = new MemoryJournal();
+    retry.entries.push(...journal.entries);
+    const restored = await open('disconnected', retry, receiver);
+    expect(restored.value.snapshot()).toEqual(sender.snapshot());
+  });
+});
+
+it('resumes journal readiness in small slices before returning an open provider', async () => {
+  const sender = store();
+  const first = action();
+  sender.append(first);
+  sender.append(action(A, 2n, [first]));
+  const journal = new MemoryJournal();
+  journal.entries.push(sender.encodeUpdate());
+  const receiver = store();
+  const provider = await DirectionalActionProvider.open({
+    store: receiver,
+    journal,
+    mode: 'disconnected',
+    restoreOperations: 7,
+  });
+  providers.push(provider);
+  expect(receiver.snapshot()).toEqual(sender.snapshot());
+  const noProgress = new MemoryJournal();
+  await expect(
+    DirectionalActionProvider.open({
+      store: store(),
+      journal: noProgress,
+      mode: 'disconnected',
+      restoreOperations: 0,
+    }),
+  ).rejects.toThrow(IngestCapacityError);
+  expect(noProgress.closed).toBe(true);
+});
+
+it('durably holds admitted bytes when envelope decode needs more capacity than carrier admission', async () => {
+  const sender = store();
+  const large = action();
+  sender.append({
+    ...large,
+    dependencies: Array.from({ length: 1000 }, (_, index) => ({
+      ...action(B).id,
+      sequence: BigInt(index + 1),
+    })),
+  });
+  const receiver = await open();
+  receiver.value.setDecodeLimits({ operations: 100 });
+  expect(receiver.provider.receive('peer', sender.encodeUpdate())).toBe(true);
+  expect(() => receiver.value.snapshot()).toThrow(IngestCapacityError);
+  await receiver.provider.flush();
+  const held = receiver.value.encodeUpdate();
+  await receiver.provider.close();
+  const replacement = new MemoryJournal();
+  replacement.entries.push(...receiver.journal.entries);
+  const restored = await open('disconnected', replacement);
+  expect(restored.value.encodeUpdate()).toEqual(held);
+  expect(restored.value.snapshot()).toEqual(sender.snapshot());
 });
