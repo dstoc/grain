@@ -15,6 +15,7 @@
     "analyze:unused:production": "knip --production --no-progress --reporter compact",
     "check:boundaries": "node --test scripts/check-boundaries.test.mjs && node scripts/check-boundaries.mjs",
     "test": "vp test run --project node",
+    "test:bootstrap:wide": "MULTIWRITER_BOOTSTRAP_WIDE=1 vp test run --project node src/markdown/multiwriter/bootstrap/wide.test.ts --disableConsoleIntercept",
     "test:watch": "vp test --project node",
     "test:browser": "vp test run --project browser",
     "test:all": "vp test run",

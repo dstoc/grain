@@ -12,6 +12,9 @@ SplitFlow birth additionally covers its certified constructor component. Transfe
 and joins add no inherited birth coverage. Retraction and packet loss do not erase
 retained constructor facts.
 
+For new documents and peer joining, use the portable
+[bootstrap API](multiwriter-bootstrap.md). The trace factory below remains a test caller.
+
 ## Components and responsibility
 
 - [`reference/document.ts`](../src/markdown/multiwriter/reference/document.ts)
