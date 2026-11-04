@@ -181,6 +181,7 @@ export function inspectBody(
       births.push({ type: 'marker', tape, native, marker: marker.id });
     }
   }
+  assertInsertionOrder(items, lookup);
   if (bornMarkers.size !== markers.length)
     throw new Error('Marker allocation has no native insertion');
   if (JSON.stringify(manifestKeys(births)) !== JSON.stringify(manifestKeys(body.nativeManifest)))
@@ -188,6 +189,85 @@ export function inspectBody(
   for (const tape of tapes)
     if (!touched.has(resourceKey(tape.id))) throw new Error('Empty tape body');
   return { tapes, markers, touched };
+}
+
+/** Check strict ordering without integrating untrusted structs or requiring adjacent anchors. */
+function assertInsertionOrder(items: readonly Y.Item[], lookup: (id: NativeId) => Y.Item): void {
+  const edges = new Map<string, Set<string>>();
+  const references = new Map<Y.Item, NativeId[]>();
+  function vertex(id: NativeId): string {
+    const key = nativeKey(id);
+    if (!edges.has(key)) {
+      edges.set(key, new Set());
+      const item = lookup(id);
+      const ids = references.get(item) ?? [];
+      ids.push(id);
+      references.set(item, ids);
+    }
+    return key;
+  }
+  function before(left: NativeId, right: NativeId): void {
+    const from = vertex(left);
+    const to = vertex(right);
+    edges.get(from)!.add(to);
+  }
+  for (const item of items) {
+    const first = item.id;
+    const last = { client: item.id.client, clock: item.id.clock + item.length - 1 };
+    vertex(first);
+    vertex(last);
+    if (item.origin) before(item.origin, first);
+    if (item.rightOrigin) before(last, item.rightOrigin);
+  }
+  // IDs within a string retain clock order even if later insertions split the string.
+  const own = new Set(items);
+  const retained = new Map<Y.Text, { id: NativeId; index: number }[]>();
+  const positions = new Map<Y.Item, number>();
+  function position(item: Y.Item): number {
+    const path: Y.Item[] = [];
+    let cursor: Y.Item | null = item;
+    while (cursor && !positions.has(cursor)) {
+      path.push(cursor);
+      cursor = cursor.left;
+    }
+    let index = cursor ? positions.get(cursor)! + cursor.length : 0;
+    for (const entry of path.reverse()) {
+      positions.set(entry, index);
+      index += entry.length;
+    }
+    return positions.get(item)!;
+  }
+  for (const [item, ids] of references) {
+    ids.sort((a, b) => a.clock - b.clock);
+    for (let i = 1; i < ids.length; i++) before(ids[i - 1], ids[i]);
+    if (!own.has(item)) {
+      const parent = item.parent as Y.Text;
+      const ordered = retained.get(parent) ?? [];
+      const start = position(item);
+      for (const id of ids) ordered.push({ id, index: start + id.clock - item.id.clock });
+      retained.set(parent, ordered);
+    }
+  }
+  // Existing native order is immutable. Concurrent insertions may occupy the open interval.
+  for (const ordered of retained.values()) {
+    ordered.sort((a, b) => a.index - b.index);
+    for (let i = 1; i < ordered.length; i++) before(ordered[i - 1].id, ordered[i].id);
+  }
+  const incoming = new Map([...edges.keys()].map((key) => [key, 0]));
+  for (const next of edges.values())
+    for (const key of next) incoming.set(key, incoming.get(key)! + 1);
+  const ready = [...incoming.keys()].filter((key) => incoming.get(key) === 0);
+  let visited = 0;
+  while (ready.length) {
+    const key = ready.pop()!;
+    visited++;
+    for (const next of edges.get(key)!) {
+      const count = incoming.get(next)! - 1;
+      incoming.set(next, count);
+      if (!count) ready.push(next);
+    }
+  }
+  if (visited !== edges.size) throw new Error('Contradictory native insertion bounds');
 }
 
 function manifestKeys(manifest: readonly NativeResourceBirth[]): readonly string[] {

@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 // @ts-expect-error Node APIs are supplied by Vitest; Grain has no @types/node dependency.
 import { createRequire } from 'node:module';
 import { actorId, YJS_VERSION } from '../contracts.js';
-import type { NativeResourceBirth, ResourceId, ResourceKind } from '../contracts.js';
+import type { NativeId, NativeResourceBirth, ResourceId, ResourceKind } from '../contracts.js';
 import { NativeTapeCache } from './cache.js';
 import type { NativeBody, NativeInsertion } from './types.js';
 import { resourceKey } from './identity.js';
@@ -318,6 +318,24 @@ function textBody(update: Uint8Array, targetTape = tape): NativeBody {
   };
 }
 
+/** Encode altered real native structs to exercise bounds that Y.Text itself never authors. */
+function withOrigins(body: NativeBody, change: (items: Y.Item[]) => void): NativeBody {
+  const items = Y.decodeUpdate(body.nativeInsertUpdates[0]).structs as Y.Item[];
+  change(items);
+  const encoder = new Y.UpdateEncoderV1();
+  // V1 counts and clocks use the same varuint encoding as writeLen.
+  encoder.writeLen(1);
+  encoder.writeLen(items.length);
+  encoder.writeClient(items[0].id.client);
+  encoder.writeLen(items[0].id.clock);
+  for (const item of items) item.write(encoder, 0);
+  encoder.writeLen(0); // no native delete set
+  return textBody(encoder.toUint8Array());
+}
+function nativeId(id: NativeId): Y.ID {
+  return Y.createID(id.client, id.clock);
+}
+
 describe('native body admission', () => {
   it.each([
     ['deletion', (_doc: Y.Doc, text: Y.Text) => text.delete(1, 1)],
@@ -338,6 +356,97 @@ describe('native body admission', () => {
     expect(target.clientId).toBe(client); // preflight failed, so no mutation or rebuild needed
     publish(target, 'next', [{ type: 'text', tape, index: 1, text: 'ok' }]);
     expect(string(target)).toBe('oktext');
+  });
+
+  it.each(['identical', 'reversed', 'sentinels'] as const)(
+    'rejects %s insertion bounds before mutation in either delivery order',
+    (kind) => {
+      const g = genesis('ab');
+      const a = birth(g).native;
+      const b = { client: a.client, clock: a.clock + 1 };
+      const source = cache();
+      source.apply('G', g);
+      const valid = publish(source, 'X', [{ type: 'text', tape, index: 2, text: 'X' }]);
+      const invalid = withOrigins(valid, ([item]) => {
+        item.origin = nativeId(kind === 'sentinels' ? source.marker(end).native : b);
+        item.rightOrigin = nativeId(
+          kind === 'sentinels' ? source.marker(start).native : kind === 'identical' ? b : a,
+        );
+      });
+      const peer = cache();
+      peer.apply('G', g);
+      const concurrent = publish(peer, 'Y', [{ type: 'text', tape, index: 2, text: 'Y' }]);
+      const results = [];
+      for (const peerFirst of [false, true]) {
+        const target = cache();
+        target.apply('G', g);
+        if (peerFirst) target.apply('Y', concurrent);
+        const before = target.snapshot(tape);
+        const client = target.clientId;
+        expect(() => target.apply('X', invalid)).toThrow(/Contradictory/);
+        expect(target.snapshot(tape)).toEqual(before);
+        expect(target.clientId).toBe(client);
+        if (!peerFirst) target.apply('Y', concurrent);
+        // The rejected key and native IDs were not retained. Valid concurrent endpoints need
+        // not be adjacent in this cache, and the same valid body remains admissible.
+        target.apply('X', valid);
+        results.push(target.snapshot(tape));
+        const next = publish(target, 'next', [{ type: 'text', tape, index: 1, text: 'ok' }]);
+        const fresh = cache();
+        fresh.rebuild([
+          { key: 'G', body: g },
+          { key: 'X', body: valid },
+          { key: 'Y', body: concurrent },
+          { key: 'next', body: next },
+        ]);
+        expect(fresh.snapshot(tape)).toEqual(target.snapshot(tape));
+        expect(string(target)).toMatch(/^oka[XY]{2}b$/);
+      }
+      expect(results[0]).toEqual(results[1]);
+    },
+  );
+
+  it('rejects contradictory bounds through another insertion in the same body', () => {
+    const g = genesis('ab');
+    const source = cache();
+    source.apply('G', g);
+    const valid = publish(source, 'X', [
+      { type: 'text', tape, index: 2, text: 'X' },
+      { type: 'text', tape, index: 1, text: 'Z' },
+    ]);
+    const a = birth(g).native;
+    const invalid = withOrigins(valid, ([x, z]) => {
+      z.origin = Y.createID(a.client, a.clock + 1); // after b, but before X which is before b
+      z.rightOrigin = nativeId(x.id);
+    });
+    const target = cache();
+    target.apply('G', g);
+    const before = target.snapshot(tape);
+    expect(() => target.apply('X', invalid)).toThrow(/Contradictory/);
+    expect(target.snapshot(tape)).toEqual(before);
+    target.apply('X', valid);
+    expect(string(target)).toBe('ZaXb');
+  });
+
+  it('rejects overlapping bounds inside a same-body string', () => {
+    const g = genesis('ab');
+    const source = cache();
+    source.apply('G', g);
+    const valid = publish(source, 'X', [
+      { type: 'text', tape, index: 2, text: 'XYZ' },
+      { type: 'text', tape, index: 1, text: 'Z' },
+    ]);
+    const invalid = withOrigins(valid, ([x, z]) => {
+      z.origin = Y.createID(x.id.client, x.id.clock + 2);
+      z.rightOrigin = Y.createID(x.id.client, x.id.clock + 1);
+    });
+    const target = cache();
+    target.apply('G', g);
+    const before = target.snapshot(tape);
+    expect(() => target.apply('X', invalid)).toThrow(/Contradictory/);
+    expect(target.snapshot(tape)).toEqual(before);
+    target.apply('X', valid);
+    expect(string(target)).toBe('ZaXYZb');
   });
 
   it('rejects a remote insertion between surrogate halves before Yjs can split them', () => {
