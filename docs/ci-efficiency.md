@@ -6,9 +6,9 @@ independently. Node jobs wait for runtime discovery. A failed or cancelled matri
 member does not cancel its siblings.
 
 This implements the approved [grain/100 proposal](proposals/2026-11-04-ci-efficiency.md).
-Repeated comparable CI measurements and owner verification of branch protection
-are required before accepting the speedup. The initial local observations below
-do not establish that acceptance.
+The [measurement report](ci-measurements.md) records matched hosted controls,
+local repetitions, actual workflow timings and evidence limits. Check must follow
+the final PR head to its terminal result.
 
 ## Commands
 
@@ -88,8 +88,9 @@ node --test scripts/ci/partitions.test.mjs
 
 An attempt identity prevents mixing artifacts after partial job reruns. Rerun the
 whole workflow to obtain a coherent plan and reports. The stable aggregate name
-is `test`. A repository owner must verify that branch protection requires this
-check. The agent's protection API request returned HTTP 403.
+is `test`. GitHub PR metadata confirms that this aggregate is required and
+successful at the verified implementation head. Branch-rule administration APIs
+returned HTTP 403; no protection change was needed.
 
 Failed local retries remove their old success receipt before execution. Artifact
 uploads replace earlier versions on a whole-workflow rerun; the attempt check
@@ -177,7 +178,7 @@ margin, without changing global test timeouts.
 
 If the operator cannot change the watcher, hand off the exact pending SHA/run to
 Check and follow it to its terminal conclusion. The unresolved external setting
-and branch-protection verification remain rollout limitations.
+remains an external orchestration limitation.
 
 ## Evidence handoff
 
