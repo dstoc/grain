@@ -19,7 +19,7 @@ const replica = await openBootstrap({
 });
 ```
 
-The default remains `reference`. The choice is absent from genesis, action
+The default remains `reference`. Unknown implementation names fail before journal attachment. The choice is absent from genesis, action
 envelopes, bundles and provider settings. Both implementations certify against
 exact author closures. `openReferenceDocument()` and `projectMarkdown()` remain
 independent full-replay oracles.

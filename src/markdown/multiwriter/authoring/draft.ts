@@ -280,12 +280,15 @@ export class MultiwriterCommandDraft implements CommandDraft {
     return result;
   }
   parentOf(id: NodeId) {
+    if (!this.tree_ && !this.origins.has(id)) throw new Error(`unknown construction node ${id}`);
     return this.tree_ ? this.tree_.draft.parentOf(id) : this.parents.get(id);
   }
   previousSiblingOf(id: NodeId) {
+    if (!this.tree_ && !this.origins.has(id)) throw new Error(`unknown construction node ${id}`);
     return this.tree_ ? this.tree_.draft.previousSiblingOf(id) : this.siblings.get(id)?.previous;
   }
   nextSiblingOf(id: NodeId) {
+    if (!this.tree_ && !this.origins.has(id)) throw new Error(`unknown construction node ${id}`);
     return this.tree_ ? this.tree_.draft.nextSiblingOf(id) : this.siblings.get(id)?.next;
   }
   bookmark(id: NodeId, offset: number, affinity: TextAffinity) {

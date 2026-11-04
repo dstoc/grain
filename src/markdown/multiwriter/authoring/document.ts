@@ -9,7 +9,7 @@ import type { projectMarkdown } from '../projection/project.js';
  */
 export interface AuthoringDocument {
   readonly commandMode?: 'overlay';
-  readonly store: ActionStore;
+  readonly store: Pick<ActionStore, 'snapshot' | 'append' | 'encodeUpdate'>;
   readonly publication: {
     status(): ProjectionStatus<ReturnType<typeof projectMarkdown>>;
     refresh(

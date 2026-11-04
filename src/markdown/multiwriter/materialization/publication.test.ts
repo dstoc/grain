@@ -250,3 +250,60 @@ test('split undo/redo, retained peer insertion, reversed carrier and cold reopen
     b.close();
   }
 });
+
+test('a reducer failure after native integration preserves the old tuple and retries without reintegration', () => {
+  const genesis = commandGenesis();
+  const source = commandReplica(genesis),
+    target = open(genesis);
+  const tape = genesis.body.allocations.find((a) => a.type === 'tape')!;
+  if (tape.type !== 'tape') throw new Error();
+  let fail = false;
+  const publication = new MaterializedPublication(
+    target.document.store,
+    genesis.body,
+    function* (_actions, native) {
+      yield;
+      if (fail) throw new Error('semantic reducer failed');
+      return native
+        .range({ tape: tape.id, start: tape.start, end: tape.end })
+        .map((p) => p.text)
+        .join('');
+    },
+  );
+  const refresh = () => {
+    let result = publication.refresh();
+    while (result.state === 'deferred') result = result.continuation.resume();
+    return result.value;
+  };
+  try {
+    const old = refresh(),
+      oldBytes = old.native.encodeState();
+    applied(
+      source.editor.edit({ local: 'source', group: 1n }, insertText, {
+        nodeId: source.handle(source.nodes()[0]),
+        from: 0,
+        text: 'X',
+      }),
+    );
+    target.document.store.applyUpdate(source.document.store.encodeUpdate());
+    const canonical = target.document.store.encodeUpdate();
+    fail = true;
+    expect(refresh).toThrow('semantic reducer failed');
+    expect(publication.status()).toMatchObject({ stale: true, canAuthor: false });
+    expect(publication.status().publication).toBe(old);
+    expect(old.value).toBe('abcdef');
+    expect(compareBytes(old.native.encodeState(), oldBytes)).toBe(0);
+    const beforeRetry = publication.diagnostics();
+    fail = false;
+    expect(refresh().value).toBe('Xabcdef');
+    expect(publication.diagnostics().nativeBodiesIntegrated).toBe(
+      beforeRetry.nativeBodiesIntegrated,
+    );
+    expect(compareBytes(old.native.encodeState(), oldBytes)).toBe(0);
+    expect(compareBytes(target.document.store.encodeUpdate(), canonical)).toBe(0);
+  } finally {
+    publication.destroy();
+    source.close();
+    target.close();
+  }
+});

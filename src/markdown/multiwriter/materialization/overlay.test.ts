@@ -51,6 +51,13 @@ test('a held overlay node stays live through literal changes and structural mate
     const first = 'construction:1',
       second = 'construction:2';
     const held = draft.node(first);
+    for (const query of [
+      () => draft.node('unknown'),
+      () => draft.parentOf('unknown'),
+      () => draft.previousSiblingOf('unknown'),
+      () => draft.nextSiblingOf('unknown'),
+    ])
+      expect(query).toThrow('unknown construction node');
     draft.spliceText(first, { from: 1, to: 2, insert: '😀' });
     expect(held.content).toBe('a😀c');
     expect(() => draft.place(second, first, null)).toThrow('cannot be a child');
