@@ -13,6 +13,11 @@ required integrated reference gate before browser cutover.**
 - `src/markdown/multiwriter/contracts.ts` defines the shared logical types and
   policies. It has no authority, browser, parser, or Yjs runtime dependency. It is
   a Knip entry because downstream workstreams consume this contract directly.
+- `src/markdown/multiwriter/actions/index.ts` exposes MW-01's deterministic codec
+  and append-only action store. Its [integration notes](../src/markdown/multiwriter/actions/README.md)
+  describe causal readiness, the required validation callback and cache invalidation
+  after a late fork. Native materialization and the integrated reducer gate remain
+  separate workstreams.
 - `test/multiwriter/trace.ts` defines versioned semantic traces, observations and
   `runContractTrace()`. It contains comparisons, not a reference reducer.
 - `test/multiwriter/corpus.ts` contains fixed inputs and expected observations.
@@ -57,7 +62,7 @@ ownership, visible position, accepted revision, wall time or authority epoch.
 
 `ActionEnvelope` has protocol version 3, document/genesis IDs, action ID, Lamport
 counter, dependencies, group ID, allocations, exact native insertion update
-bytes, native birth manifest and semantic effects. The MW-01 codec must use RFC
+bytes, native birth manifest and semantic effects. The MW-01 codec uses RFC
 8949 core deterministic CBOR with definite lengths, no duplicate map keys, no
 floating point and no optional tags. Sequence and Lamport counters are exact
 unsigned 64-bit integers. Native clocks, lengths, allocation ordinals and effect
