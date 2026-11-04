@@ -46,6 +46,7 @@ export interface ReplicaHandles {
   readonly history: object;
 }
 export interface ReplicaStateBytes {
+  /** Complete encodeStateAsUpdate(actionDoc), preserving outer native structs and payloads. */
   readonly canonical: Uint8Array;
   readonly native: Uint8Array;
 }
@@ -128,6 +129,7 @@ export class ReplicaNetwork {
   private readonly messages = new Map<string, Message>();
   private readonly actions = new Map<string, TraceAction>();
   private readonly bindings = new Map<string, unknown>();
+  private readonly inventories = new Map<string, Pick<Observation, 'held' | 'variants'>>();
   private readonly steps: NetworkStep[] = [];
   private readonly random: SeededRandom;
   private serial = 0;
@@ -312,6 +314,11 @@ export class ReplicaNetwork {
           await replacement.setMode(this.modes.get(step.peer)!);
           const restored = await replacement.observe();
           compareDocument(restored, before.get(step.peer)!, this.equal, `${step.peer} restart`);
+          this.equal(
+            (await replacement.isolationState()).canonical,
+            retained.get(step.peer)!.canonical,
+            `${step.peer} restart preserves canonical native state`,
+          );
           this.equal(restored.undo, [], `${step.peer} restart resets undo navigation`);
           this.equal(restored.redo, [], `${step.peer} restart resets redo navigation`);
         } catch (error) {
@@ -332,6 +339,11 @@ export class ReplicaNetwork {
           this.equal,
           `${step.peer} ${step.operation} retains canonical facts`,
         );
+        this.equal(
+          (await this.peer(step.peer).isolationState()).canonical,
+          retained.get(step.peer)!.canonical,
+          `${step.peer} ${step.operation} preserves canonical native state`,
+        );
         if (step.operation !== 'evict-history')
           for (const key of localFacets)
             this.equal(
@@ -351,6 +363,11 @@ export class ReplicaNetwork {
             before.get(step.peer)!,
             this.equal,
             `${step.peer} fresh replay`,
+          );
+          this.equal(
+            (await replay.isolationState()).canonical,
+            retained.get(step.peer)!.canonical,
+            `${step.peer} fresh replay preserves canonical native state`,
           );
         } finally {
           await replay.dispose();
@@ -437,6 +454,16 @@ export class ReplicaNetwork {
       const state = await this.observe(peer);
       observations.push(state);
       const label = `${context} ${peer}`;
+      const prior = this.inventories.get(peer);
+      for (const id of prior?.held ?? [])
+        this.equal(state.held.includes(id), true, `${label} retains prior canonical action ${id}`);
+      for (const [id, count] of Object.entries(prior?.variants ?? {}))
+        this.equal(
+          state.variants[id] >= count,
+          true,
+          `${label} retains prior payload variants ${id}`,
+        );
+      this.inventories.set(peer, structuredClone({ held: state.held, variants: state.variants }));
       const statuses = [...state.ready, ...state.pending, ...state.quarantined];
       this.equal(new Set(statuses).size, statuses.length, `${label} disjoint readiness`);
       this.equal([...statuses].sort(), [...state.held].sort(), `${label} total readiness`);

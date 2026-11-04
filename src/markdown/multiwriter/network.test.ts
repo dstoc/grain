@@ -1,4 +1,4 @@
-import type { Doc } from 'yjs';
+import { applyUpdate, Doc, encodeStateAsUpdate, encodeStateVector } from 'yjs';
 import { describe, expect, it } from 'vitest';
 import {
   decodeNetworkTrace,
@@ -239,7 +239,224 @@ function alter(
     },
   };
 }
+
+/** Use original action-store structs, including the prior array item's native origin.
+ * The ordinary probe repackages subsets into independent carrier arrays instead.
+ */
+function incrementalTransport(): ReplicaFactory {
+  return alter(transportProbe(), (port) => {
+    let sent: Uint8Array = new Uint8Array([0]); // Empty Yjs state vector.
+    return {
+      ...port,
+      exportUpdate() {
+        const doc = port.handles.actionStore as Doc;
+        const update = encodeStateAsUpdate(doc, sent);
+        sent = encodeStateVector(doc);
+        return update;
+      },
+    };
+  });
+}
+
+it('continues original native incremental exchange after checkpoint reconstruction', async () => {
+  await withNetwork(async (network) => {
+    await network.step(link('A', 'B'));
+    await network.step({ type: 'author', action: insert('A', 1) });
+    await send(network, 'A', 'B', ['A1'], 'original-prefix');
+    await network.step({ type: 'author', action: insert('A', 2, ['A1']) });
+    await network.step({
+      type: 'send',
+      id: 'original-tail',
+      from: 'A',
+      to: 'B',
+      actions: ['A2'],
+      route: 'peer',
+    });
+    await network.step({ type: 'replay', peer: 'B' });
+    await network.step({ type: 'restart', peer: 'B' });
+    await network.step({ type: 'deliver', id: 'original-tail' });
+    expect((await network.observe('B')).ready).toEqual(['A1', 'A2']);
+    expect((await network.observe('B')).markdown).toBe('aa\n');
+    await network.step({ type: 'replay', peer: 'B' });
+  }, incrementalTransport());
+});
+
+async function pendingOuterPrefix(network: ReplicaNetwork): Promise<void> {
+  await network.step(link('A', 'B'));
+  await network.step({ type: 'author', action: insert('A', 1) });
+  await network.step({
+    type: 'send',
+    id: 'missing-prefix',
+    from: 'A',
+    to: 'B',
+    actions: ['A1'],
+    route: 'peer',
+  });
+  await network.step({ type: 'drop', id: 'missing-prefix' });
+  await network.step({ type: 'author', action: insert('A', 2, ['A1']) });
+  await send(network, 'A', 'B', ['A2'], 'pending-outer');
+  // The second native array item cannot integrate yet; neither envelope is visible.
+  expect((await network.observe('B')).held).toEqual([]);
+}
+
+it('retains pending outer structs across reconstruction and integrates their delayed prefix', async () => {
+  await withNetwork(async (network) => {
+    await pendingOuterPrefix(network);
+    await network.step({ type: 'replay', peer: 'B' });
+    await network.step({ type: 'restart', peer: 'B' });
+    await network.step({ type: 'duplicate', source: 'missing-prefix', id: 'retry-prefix' });
+    await network.step({ type: 'deliver', id: 'retry-prefix' });
+    expect((await network.observe('B')).ready).toEqual(['A1', 'A2']);
+    expect((await network.observe('B')).markdown).toBe('aa\n');
+  }, incrementalTransport());
+});
+
 describe('harness negative controls', () => {
+  it.each(['restart', 'replay'] as const)(
+    'rejects %s that drops unintegrated outer structs while preserving the empty observation',
+    async (type) => {
+      const factory = alter(incrementalTransport(), (port, peer) => ({
+        ...port,
+        checkpoint: () => (peer === 'B' ? new Uint8Array([0, 0]) : port.checkpoint()),
+      }));
+      await expect(
+        withNetwork(async (network) => {
+          await pendingOuterPrefix(network);
+          await network.step({ type, peer: 'B' });
+        }, factory),
+      ).rejects.toThrow('canonical native state');
+    },
+  );
+
+  it('rejects losing a previously pending action while authoring independent local work', async () => {
+    const factory = alter(transportProbe(), (port, peer) => ({
+      ...port,
+      async observe() {
+        const state = await port.observe();
+        if (peer !== 'B' || !state.held.includes('B1')) return state;
+        return {
+          ...state,
+          held: state.held.filter((id) => id !== 'A2'),
+          retainedActions: state.retainedActions.filter((id) => id !== 'A2'),
+          pending: state.pending.filter((id) => id !== 'A2'),
+          variants: Object.fromEntries(
+            Object.entries(state.variants).filter(([id]) => id !== 'A2'),
+          ),
+        };
+      },
+    }));
+    await expect(
+      withNetwork(async (network) => {
+        await network.step(link('A', 'B'));
+        await network.step({ type: 'author', action: insert('A', 1) });
+        await network.step({ type: 'author', action: insert('A', 2, ['A1']) });
+        await send(network, 'A', 'B', ['A2'], 'pending');
+        await network.step({ type: 'author', action: insert('B', 1) });
+      }, factory),
+    ).rejects.toThrow('retains prior canonical action A2');
+  });
+
+  it('rejects loss of an independent previously held action during delivery', async () => {
+    const base = transportProbe();
+    const factory: ReplicaFactory = {
+      async open(input) {
+        let port = await base.open(input);
+        let received = false;
+        return {
+          get handles() {
+            return port.handles;
+          },
+          author: (action) => port.author(action),
+          setMode: (mode) => port.setMode(mode),
+          exportUpdate: (ids, mutation) => port.exportUpdate(ids, mutation),
+          async receive(bytes, route) {
+            if (input.peer === 'B' && received) {
+              await port.dispose();
+              port = await base.open(input);
+            }
+            await port.receive(bytes, route);
+            received = true;
+          },
+          control: () => port.control(),
+          receiveControl: (bytes) => port.receiveControl(bytes),
+          observe: () => port.observe(),
+          isolationState: () => port.isolationState(),
+          checkpoint: () => port.checkpoint(),
+          maintain: (operation) => port.maintain(operation),
+          dispose: () => port.dispose(),
+        };
+      },
+    };
+    await expect(
+      withNetwork(async (network) => {
+        await network.step(link('A', 'B'));
+        await network.step(link('C', 'B'));
+        await network.step({ type: 'author', action: insert('A', 1) });
+        await send(network, 'A', 'B', ['A1'], 'first');
+        await network.step({ type: 'author', action: insert('C', 1) });
+        await send(network, 'C', 'B', ['C1'], 'independent');
+      }, factory),
+    ).rejects.toThrow('retains prior canonical action A1');
+  });
+
+  it.each(['restart', 'replay'] as const)(
+    'rejects %s that re-encodes the same envelopes with new outer native identities',
+    async (type) => {
+      const base = incrementalTransport();
+      const factory: ReplicaFactory = {
+        async open(input) {
+          if (!input.checkpoint) return base.open(input);
+          const original = new Doc({ gc: false });
+          const rewritten = new Doc({ gc: false });
+          try {
+            applyUpdate(original, input.checkpoint);
+            rewritten
+              .getArray<Uint8Array>('envelopes')
+              .push(original.getArray<Uint8Array>('envelopes').toArray());
+            return await base.open({ ...input, checkpoint: encodeStateAsUpdate(rewritten) });
+          } finally {
+            original.destroy();
+            rewritten.destroy();
+          }
+        },
+      };
+      await expect(
+        withNetwork(async (network) => {
+          await network.step(link('A', 'B'));
+          await network.step({ type: 'author', action: insert('A', 1) });
+          await send(network, 'A', 'B', ['A1'], 'prefix');
+          await network.step({ type, peer: 'B' });
+        }, factory),
+      ).rejects.toThrow('canonical native state');
+    },
+  );
+
+  it('rejects loss of payload variants even when the action identity remains held', async () => {
+    let loseVariant = false;
+    const factory = alter(transportProbe(), (port, peer) => ({
+      ...port,
+      async observe() {
+        const state = await port.observe();
+        if (peer !== 'B' || !state.held.includes('A1')) return state;
+        return { ...state, variants: { ...state.variants, A1: loseVariant ? 1 : 2 } };
+      },
+      async receive(bytes, route) {
+        await port.receive(bytes, route);
+        if (peer === 'B' && (await port.observe()).held.includes('C1')) loseVariant = true;
+      },
+    }));
+    await expect(
+      withNetwork(async (network) => {
+        await network.step(link('A', 'B'));
+        await network.step(link('C', 'B'));
+        await network.step({ type: 'author', action: insert('A', 1) });
+        await network.step({ type: 'author', action: insert('A', 2, ['A1']) });
+        await send(network, 'A', 'B', ['A1'], 'first');
+        await network.step({ type: 'author', action: insert('C', 1) });
+        await send(network, 'C', 'B', ['C1'], 'variant-loss');
+      }, factory),
+    ).rejects.toThrow('retains prior payload variants A1');
+  });
   it('rejects shared state handles and disposes every opened replica', async () => {
     let disposed = 0;
     const shared = {};
@@ -329,6 +546,38 @@ describe('harness negative controls', () => {
     }, factory);
     expect(disposed).toBe(4);
   });
+});
+
+it('allows readiness changes and additional variants without losing canonical inventory', async () => {
+  const factory = alter(transportProbe(), (port, peer) => ({
+    ...port,
+    async observe() {
+      const state = await port.observe();
+      if (peer !== 'B' || !state.held.includes('C1')) return state;
+      return {
+        ...state,
+        pending: [],
+        quarantined: ['A2'],
+        variants: { ...state.variants, A2: 2 },
+      };
+    },
+  }));
+  await withNetwork(async (network) => {
+    await network.step(link('A', 'B'));
+    await network.step(link('C', 'B'));
+    await network.step({ type: 'author', action: insert('A', 1) });
+    await network.step({ type: 'author', action: insert('A', 2, ['A1']) });
+    await send(network, 'A', 'B', ['A2'], 'pending');
+    expect((await network.observe('B')).pending).toEqual(['A2']);
+    await network.step({ type: 'author', action: insert('C', 1) });
+    await send(network, 'C', 'B', ['C1'], 'quarantine');
+    const state = await network.observe('B');
+    expect(state.quarantined).toEqual(['A2']);
+    expect(state.variants.A2).toBe(2);
+    expect(state.held).toEqual(['C1', 'A2']);
+    await network.step({ type: 'restart', peer: 'B' });
+    await network.step({ type: 'replay', peer: 'B' });
+  }, factory);
 });
 
 function localActions() {

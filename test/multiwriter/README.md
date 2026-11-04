@@ -44,7 +44,9 @@ The scheduler does not manufacture invalid native bytes or validate envelopes.
 `isolationState()` returns complete canonical and native Yjs state bytes, including
 pending outer structs and data outside the visible projection. The scheduler
 compares these bytes for unaffected and receive-disabled replicas. Transport
-control metadata must remain separate.
+control metadata must remain separate. The canonical bytes must be the complete
+`Y.encodeStateAsUpdate(actionDoc)` result. Restart, fresh replay, and maintenance
+must preserve these bytes, including outer native identities and coverage.
 
 `receive()` must enforce the current receive policy before canonical ingestion
 on every route. The scheduler deliberately calls it while receiving is disabled.
@@ -77,7 +79,10 @@ native bindings, retained facts, and receive-disabled isolation. Remote delivery
 cannot enter local history or clear redo. Equal ready sets must have equal
 materialized views even when pending inventory differs. Different ready sets
 may have different views. Restart and fresh replay compare all document facets,
-including hidden content, origin mappings, and canonical inventory.
+including hidden content, origin mappings, and canonical inventory. Each peer's
+held identities and payload-variant counts must retain its previous inventory
+after every step. Pending and quarantine status can change without removing
+held identities or reducing variant counts.
 
 Use the existing semantic corpus with an integrated factory:
 
@@ -113,7 +118,14 @@ reordering, duplication, merged updates, loss, maintenance, and restart. Four
 seeds generate local insert/delete/undo commands, repeat the schedules, complete
 catch-up, and compare fresh replay. Negative controls reject shared handles,
 receive leaks (including hidden raw-state contamination), unclosed readiness,
-control-data and navigation leaks, and checkpoint data loss.
+control-data and navigation leaks, loss of previously held identities or payload
+variants, and checkpoint data loss or replacement of outer native identities.
+A separate incremental transport control sends original action-store structs
+with a state-vector delta. It delivers a queued tail after restart, so the tail
+must resolve against the checkpoint's original native prefix. The ordinary
+probe's subset carriers do not exercise that outer native prerequisite. Another
+control checkpoints an unintegrated tail, then delivers its missing native
+prefix after restart; semantic observations alone cannot detect loss of that tail.
 
 MW-08 must supply the actual combined factory and run the full structural corpus
 and structural command generator. MW-01/MW-15 own malformed-envelope and fork
