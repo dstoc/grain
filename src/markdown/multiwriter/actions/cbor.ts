@@ -1,3 +1,18 @@
+import { scanUtf8 } from '../ingest/utf8.js';
+import {
+  DEFAULT_INGEST_LIMITS,
+  IngestCapacityError,
+  IngestDataError,
+  finish,
+} from '../ingest/work.js';
+import type { Work } from '../ingest/work.js';
+
+export class CborDecodeError extends IngestDataError {
+  constructor(message: string) {
+    super('envelope', 'cbor', message);
+  }
+}
+
 /** The schema-3 CBOR subset: unsigned integers, bytes, UTF-8, arrays and text-keyed maps. */
 export type CborValue =
   | bigint
@@ -56,55 +71,107 @@ export function encodeCbor(value: CborValue): Uint8Array {
 }
 
 /** Reject nonpreferred encodings rather than silently normalizing immutable payloads. */
-export function decodeCbor(bytes: Uint8Array): CborValue {
+export function decodeCbor(
+  bytes: Uint8Array,
+  depth = DEFAULT_INGEST_LIMITS.depth as number,
+): CborValue {
+  return finish(decodeCborSteps(bytes, depth));
+}
+
+/** Iterative decoding: a visit per value and per 1 KiB of byte/string content. */
+export function* decodeCborSteps(bytes: Uint8Array, depth: number): Work<CborValue> {
   let offset = 0;
   function take(length: number): Uint8Array {
-    if (length > bytes.length - offset) throw new Error('Truncated CBOR');
+    if (length > bytes.length - offset) throw new CborDecodeError('Truncated CBOR');
     const result = bytes.subarray(offset, offset + length);
     offset += length;
     return result;
   }
-  function read(): CborValue {
+  type Frame = {
+    remaining: number;
+    value: CborValue[] | Record<string, CborValue>;
+    map: boolean;
+    key?: string;
+    previous?: Uint8Array;
+    start: number;
+  };
+  const stack: Frame[] = [];
+  let result: CborValue | undefined;
+  while (result === undefined || stack.length) {
+    yield;
+    const start = offset;
     const first = take(1)[0];
-    if (first === 0xf4) return false;
-    if (first === 0xf5) return true;
-    if (first === 0xf6) return null;
-    const major = first >> 5;
-    const info = first & 31;
-    if (![0, 2, 3, 4, 5].includes(major) || info > 27)
-      throw new Error('Unsupported CBOR type or indefinite length');
-    let n = BigInt(info);
-    if (info >= 24) {
-      const size = 1 << (info - 24);
-      n = 0n;
-      for (const byte of take(size)) n = (n << 8n) | BigInt(byte);
-      const minimum = size === 1 ? 24n : 1n << BigInt((size / 2) * 8);
-      if (n < minimum) throw new Error('Nonpreferred CBOR integer/length');
+    let value: CborValue;
+    if (first === 0xf4 || first === 0xf5 || first === 0xf6)
+      value = first === 0xf6 ? null : first === 0xf5;
+    else {
+      const major = first >> 5;
+      const info = first & 31;
+      if (![0, 2, 3, 4, 5].includes(major) || info > 27)
+        throw new CborDecodeError('Unsupported CBOR type or indefinite length');
+      let n = BigInt(info);
+      if (info >= 24) {
+        const size = 1 << (info - 24);
+        n = 0n;
+        for (const byte of take(size)) n = (n << 8n) | BigInt(byte);
+        const minimum = size === 1 ? 24n : 1n << BigInt((size / 2) * 8);
+        if (n < minimum) throw new CborDecodeError('Nonpreferred CBOR integer/length');
+      }
+      if (major === 0) value = n;
+      else {
+        const members = major === 5 ? n * 2n : n;
+        if (members > BigInt(bytes.length - offset))
+          throw new CborDecodeError('Truncated CBOR container');
+        const length = Number(n);
+        if (major === 2 || major === 3) {
+          const data = take(length);
+          for (let i = 0; i < length; i += 1024) yield;
+          if (major === 2) value = data.slice();
+          else {
+            yield* scanUtf8(data, 'envelope');
+            value = textDecoder.decode(data);
+          }
+        } else {
+          if (stack.length + 1 > depth)
+            throw new IngestCapacityError('envelope', 'depth', stack.length + 1);
+          value = major === 4 ? [] : Object.create(null);
+          if (length) {
+            stack.push({
+              remaining: Number(members),
+              value: value as Frame['value'],
+              map: major === 5,
+              start,
+            });
+            continue;
+          }
+        }
+      }
     }
-    if (major === 0) return n;
-    // Each container member consumes at least one byte. Check before allocation/iteration.
-    if (n > BigInt(bytes.length - offset)) throw new Error('Truncated CBOR container');
-    const length = Number(n);
-    if (major === 2) return take(length).slice();
-    if (major === 3) return textDecoder.decode(take(length));
-    if (major === 4) return Array.from({ length }, () => read());
-    const result: Record<string, CborValue> = Object.create(null);
-    let previous: Uint8Array | undefined;
-    for (let i = 0; i < length; i++) {
-      const start = offset;
-      const key = read();
-      const encoded = bytes.subarray(start, offset);
-      if (typeof key !== 'string') throw new Error('CBOR map key must be text');
-      if (previous && compareBytes(previous, encoded) >= 0)
-        throw new Error('Duplicate or unordered CBOR map key');
-      previous = encoded;
-      result[key] = read();
+    let valueStart = start;
+    for (;;) {
+      const frame = stack.at(-1);
+      if (!frame) {
+        result = value;
+        break;
+      }
+      if (!frame.map) (frame.value as CborValue[]).push(value);
+      else if (frame.remaining % 2 === 0) {
+        if (typeof value !== 'string') throw new CborDecodeError('CBOR map key must be text');
+        const encoded = bytes.subarray(valueStart, offset);
+        if (frame.previous && compareBytes(frame.previous, encoded) >= 0)
+          throw new CborDecodeError('Duplicate or unordered CBOR map key');
+        frame.previous = encoded;
+        frame.key = value;
+      } else (frame.value as Record<string, CborValue>)[frame.key!] = value;
+      if (--frame.remaining) break;
+      yield;
+      stack.pop();
+      value = frame.value;
+      valueStart = frame.start;
     }
-    return result;
   }
-  const result = read();
-  if (offset !== bytes.length) throw new Error('Trailing CBOR data');
-  return result;
+  if (offset !== bytes.length) throw new CborDecodeError('Trailing CBOR data');
+  return result!;
 }
 
 /** Reject isolated UTF-16 surrogates before TextEncoder could replace them. */

@@ -294,3 +294,30 @@ it('propagates IndexedDB open/version errors without opening an empty replacemen
   database.close();
   await expect(IndexedDBActionJournal.open(id)).rejects.toMatchObject({ name: 'VersionError' });
 });
+
+it.each(routes)(
+  'does not persist backpressured bytes via %s; retry survives IndexedDB reopen',
+  async (route) => {
+    const id = identity();
+    const target = await open(id);
+    await target.provider.flush();
+    const sender = store();
+    sender.append(action());
+    const update = sender.encodeUpdate();
+    const before = target.value.encodeUpdate();
+    target.provider.setLimits({ messageBytes: update.length - 1 });
+    expect(target.provider.receiveResult(route, update).state).toBe('backpressured');
+    await target.provider.flush();
+    const storage = await journal(id);
+    const unchanged = store();
+    for (const entry of await storage.read()) unchanged.applyUpdate(entry);
+    expect(unchanged.encodeUpdate()).toEqual(before);
+    target.provider.setLimits({ messageBytes: update.length });
+    expect(target.provider.receive(route, update)).toBe(true);
+    expect(target.value.compute(1).state).toBe('deferred');
+    await target.provider.close();
+    const restored = await open(id, 'disconnected');
+    expect(restored.value.encodeUpdate()).toEqual(sender.encodeUpdate());
+    expect(restored.value.snapshot()).toEqual(sender.snapshot());
+  },
+);

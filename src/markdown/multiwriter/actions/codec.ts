@@ -1,9 +1,15 @@
+import { DEFAULT_INGEST_LIMITS, IngestDataError, finish, guardDecode } from '../ingest/work.js';
+import type { Work } from '../ingest/work.js';
 import { PROTOCOL_VERSION } from '../contracts.js';
 import type { ActionEnvelope, ActionId } from '../contracts.js';
-import { decodeCbor, encodeCbor } from './cbor.js';
-import { actionIdSchema, envelopeFromWire, envelopeToWire } from './schema.js';
+import { CborDecodeError, decodeCborSteps, encodeCbor } from './cbor.js';
+import { actionIdSchema, envelopeFromWire, envelopeToWire, EnvelopeSchemaError } from './schema.js';
 
 export class EnvelopeDecodeError extends Error {
+  readonly stage = 'envelope';
+  get code(): string {
+    return this.reason;
+  }
   constructor(
     message: string,
     readonly reason: 'version' | 'reference',
@@ -22,14 +28,23 @@ export function encodeEnvelope(envelope: ActionEnvelope): Uint8Array {
 }
 
 export function decodeEnvelope(bytes: Uint8Array): ActionEnvelope {
+  return finish(decodeEnvelopeSteps(bytes, DEFAULT_INGEST_LIMITS.depth));
+}
+
+export function* decodeEnvelopeSteps(
+  bytes: Uint8Array,
+  depth: number,
+  operations = DEFAULT_INGEST_LIMITS.decodeOperations as number,
+): Work<ActionEnvelope> {
   let id: ActionId | undefined;
   try {
-    const wire = decodeCbor(bytes);
+    const wire = yield* guardDecode(decodeCborSteps(bytes, depth), operations, 'envelope');
     if (wire && typeof wire === 'object' && !Array.isArray(wire) && !(wire instanceof Uint8Array)) {
       const fields = wire as Record<string, unknown>;
       try {
         id = actionIdSchema(fields.id, 'decode') as ActionId;
-      } catch {
+      } catch (error) {
+        if (!(error instanceof EnvelopeSchemaError)) throw error;
         // Malformed records with no trustworthy identity remain collection diagnostics.
       }
       if (typeof fields.protocolVersion === 'bigint' && fields.protocolVersion !== 3n)
@@ -38,10 +53,14 @@ export function decodeEnvelope(bytes: Uint8Array): ActionEnvelope {
     return envelopeFromWire(wire) as ActionEnvelope;
   } catch (error) {
     if (error instanceof EnvelopeDecodeError) throw error;
-    throw new EnvelopeDecodeError(
-      error instanceof Error ? error.message : 'Invalid envelope',
-      'reference',
-      id,
-    );
+    if (
+      !(
+        error instanceof CborDecodeError ||
+        error instanceof EnvelopeSchemaError ||
+        (error instanceof IngestDataError && error.stage === 'envelope')
+      )
+    )
+      throw error;
+    throw new EnvelopeDecodeError(error.message, 'reference', id);
   }
 }

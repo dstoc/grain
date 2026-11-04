@@ -1,3 +1,5 @@
+import { DEFAULT_INGEST_LIMITS, assertLimit, finish } from '../ingest/work.js';
+import type { Work } from '../ingest/work.js';
 import * as Y from 'yjs';
 import type { MarkerId, NativeId, NativeTextRange, RangeRef, TapeId } from '../contracts.js';
 import type {
@@ -10,8 +12,14 @@ import type {
   TapePart,
   TapeSnapshot,
 } from './types.js';
-import { assertNative, assertTextBoundary, assertUnicode, resourceKey } from './identity.js';
-import { inspectBody } from './validate.js';
+import {
+  NativeValidationError,
+  assertNative,
+  assertTextBoundary,
+  assertUnicode,
+  resourceKey,
+} from './identity.js';
+import { inspectBody, inspectBodySteps } from './validate.js';
 export type {
   NativeBody,
   NativeInsertion,
@@ -33,6 +41,12 @@ export class NativeTapeCache {
   #retained = new Map<string, NativeBody>();
   #pending: object | null = null;
   #closed = false;
+  #decodeOperations: number;
+
+  constructor(decodeOperations = DEFAULT_INGEST_LIMITS.decodeOperations as number) {
+    assertLimit(decodeOperations);
+    this.#decodeOperations = decodeOperations;
+  }
 
   /** Diagnostic identity only; no Yjs object or synchronization interface escapes. */
   get clientId(): number {
@@ -130,6 +144,7 @@ export class NativeTapeCache {
         },
         body,
         true,
+        this.#decodeOperations,
       );
       this.#assertSettled(inspection.touched);
     } catch (error) {
@@ -159,6 +174,11 @@ export class NativeTapeCache {
 
   /** Apply a complete ready body. An identical repeat is idempotent; changed bytes are an error. */
   apply(key: string, input: NativeBody): void {
+    finish(this.applySteps(key, input));
+  }
+
+  /** Stages validation across slices; no native mutation occurs until inspection completes. */
+  *applySteps(key: string, input: NativeBody): Work<void> {
     this.#idle();
     if (!key) throw new Error('Invalid native body key');
     const body = copyBody(input);
@@ -168,26 +188,39 @@ export class NativeTapeCache {
       return;
     }
     // Decode and reject forbidden writes before mutation. Post-integration failure also rebuilds.
-    const inspection = inspectBody(this.#doc, { tapes: this.#tapes, markers: this.#markers }, body);
+    const token = {};
+    this.#pending = token;
     try {
-      for (const tape of inspection.tapes) {
-        this.#tapes.set(resourceKey(tape.id), tape);
-        this.#doc.getText(resourceKey(tape.id));
+      const inspection = yield* inspectBodySteps(
+        this.#doc,
+        { tapes: this.#tapes, markers: this.#markers },
+        body,
+        false,
+        this.#decodeOperations,
+      );
+      if (this.#pending !== token || this.#closed) throw new Error('Native inspection invalidated');
+      try {
+        for (const tape of inspection.tapes) {
+          this.#tapes.set(resourceKey(tape.id), tape);
+          this.#doc.getText(resourceKey(tape.id));
+        }
+        for (const marker of inspection.markers) this.#markers.set(resourceKey(marker.id), marker);
+        for (const update of body.nativeInsertUpdates) Y.applyUpdate(this.#doc, update);
+        this.#assertSettled(inspection.touched);
+        this.#retained.set(key, body);
+      } catch (error) {
+        this.#recover();
+        throw error;
       }
-      for (const marker of inspection.markers) this.#markers.set(resourceKey(marker.id), marker);
-      for (const update of body.nativeInsertUpdates) Y.applyUpdate(this.#doc, update);
-      this.#assertSettled(inspection.touched);
-      this.#retained.set(key, body);
-    } catch (error) {
-      this.#recover();
-      throw error;
+    } finally {
+      if (this.#pending === token) this.#pending = null;
     }
   }
 
   /** Replace a contaminated/evicted cache with the caller's exact ready closure in causal order. */
   rebuild(ready: readonly { readonly key: string; readonly body: NativeBody }[]): void {
     this.#open();
-    const candidate = new NativeTapeCache();
+    const candidate = new NativeTapeCache(this.#decodeOperations);
     try {
       for (const entry of ready) candidate.apply(entry.key, entry.body);
     } catch (error) {
@@ -205,11 +238,16 @@ export class NativeTapeCache {
   }
 
   snapshot(tape: TapeId): TapeSnapshot {
+    return finish(this.snapshotSteps(tape));
+  }
+
+  *snapshotSteps(tape: TapeId): Work<TapeSnapshot> {
     this.#open();
     const text = this.#text(tape);
     const parts: TapePart[] = [];
     let index = 0;
     for (let item = text._start; item; item = item.right) {
+      yield;
       const native = { client: item.id.client, clock: item.id.clock };
       if (item.content instanceof Y.ContentString)
         parts.push({ type: 'text', index, native, text: item.content.str });
@@ -233,7 +271,7 @@ export class NativeTapeCache {
       resourceKey(end.tape) !== resourceKey(ref.tape) ||
       start.index >= end.index
     )
-      throw new Error('Invalid open native range');
+      throw new NativeValidationError('Invalid open native range');
     return this.snapshot(ref.tape).parts.flatMap((part) =>
       part.type === 'text' && part.index > start.index && part.index < end.index
         ? [
@@ -253,10 +291,19 @@ export class NativeTapeCache {
     readonly index: number;
     readonly affinity: 'left' | 'right';
   } {
+    return finish(this.markerSteps(id));
+  }
+
+  *markerSteps(id: MarkerId): Work<{
+    readonly tape: TapeId;
+    readonly native: NativeId;
+    readonly index: number;
+    readonly affinity: 'left' | 'right';
+  }> {
     this.#open();
     const allocation = this.#markers.get(resourceKey(id));
-    if (!allocation) throw new Error('Unknown permanent marker');
-    const position = this.locate(allocation.tape, allocation.native);
+    if (!allocation) throw new NativeValidationError('Unknown permanent marker');
+    const position = yield* this.locateSteps(allocation.tape, allocation.native);
     return structuredClone({
       tape: allocation.tape,
       native: allocation.native,
@@ -266,32 +313,46 @@ export class NativeTapeCache {
   }
 
   locate(tape: TapeId, id: NativeId): number {
+    return finish(this.locateSteps(tape, id));
+  }
+
+  *locateSteps(tape: TapeId, id: NativeId): Work<number> {
     this.#open();
     assertNative(id);
-    if (id.clock >= Y.getState(this.#doc.store, id.client)) throw new Error('Unknown native ID');
+    if (id.clock >= Y.getState(this.#doc.store, id.client))
+      throw new NativeValidationError('Unknown native ID');
     const item = Y.getItem(this.#doc.store, Y.createID(id.client, id.clock));
-    if (item.parent !== this.#text(tape)) throw new Error('Native ID belongs to another tape');
+    if (item.parent !== this.#text(tape))
+      throw new NativeValidationError('Native ID belongs to another tape');
     // The offset itself must address a whole Unicode character or an embed.
     const offset = id.clock - item.id.clock;
     if (item.content instanceof Y.ContentString) assertTextBoundary(item.content.str, offset);
     let index = offset;
-    for (let left = item.left; left; left = left.left) index += left.length;
+    for (let left = item.left; left; left = left.left) {
+      yield;
+      index += left.length;
+    }
     return index;
   }
 
   /** Exact observed IDs. Concurrent insertions inside the native interval are excluded. */
   lookup(range: NativeTextRange): readonly LocatedText[] {
+    return finish(this.lookupSteps(range));
+  }
+
+  *lookupSteps(range: NativeTextRange): Work<readonly LocatedText[]> {
     this.#open();
     assertNative(range, range.length);
     const result: LocatedText[] = [];
     let clock = range.clock;
     const end = clock + range.length;
     while (clock < end) {
+      yield;
       const id = { client: range.client, clock };
-      const index = this.locate(range.tape, id);
+      const index = yield* this.locateSteps(range.tape, id);
       const item = Y.getItem(this.#doc.store, Y.createID(range.client, clock));
       if (!(item.content instanceof Y.ContentString))
-        throw new Error('Text range includes a marker');
+        throw new NativeValidationError('Text range includes a marker');
       const from = clock - item.id.clock;
       const length = Math.min(end - clock, item.length - from);
       assertTextBoundary(item.content.str, from + length);
@@ -323,7 +384,7 @@ export class NativeTapeCache {
   }
   #text(tape: TapeId): Y.Text {
     const name = resourceKey(tape);
-    if (!this.#tapes.has(name)) throw new Error('Unknown native tape');
+    if (!this.#tapes.has(name)) throw new NativeValidationError('Unknown native tape');
     return this.#doc.getText(name);
   }
   #insertMarker(
@@ -363,7 +424,7 @@ export class NativeTapeCache {
   }
   #assertSettled(touched: ReadonlySet<string>): void {
     if (this.#doc.store.pendingStructs || this.#doc.store.pendingDs)
-      throw new Error('Unresolved native dependencies');
+      throw new NativeValidationError('Unresolved native dependencies');
     for (const name of touched) {
       const tape = this.#tapes.get(name)!;
       const text = this.#text(tape.id);
@@ -377,7 +438,7 @@ export class NativeTapeCache {
         first.left !== null ||
         last.right !== null
       )
-        throw new Error('Insertion lies outside permanent tape markers');
+        throw new NativeValidationError('Insertion lies outside permanent tape markers');
     }
   }
   #freshClient(previous: number): void {

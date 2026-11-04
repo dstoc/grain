@@ -1,17 +1,19 @@
-import { actorId, assertCounter } from '../contracts.js';
+import { actorId } from '../contracts.js';
 import { isWellFormed } from './cbor.js';
 import type { CborValue } from './cbor.js';
+
+export class EnvelopeSchemaError extends Error {}
 
 type Direction = 'encode' | 'decode';
 type Schema = (value: unknown, direction: Direction) => unknown;
 function fail(): never {
-  throw new Error('Invalid schema-3 envelope field');
+  throw new EnvelopeSchemaError('Invalid schema-3 envelope field');
 }
 const string: Schema = (v) => (typeof v === 'string' && isWellFormed(v) ? v : fail());
 const bool: Schema = (v) => (typeof v === 'boolean' ? v : fail());
 const counter: Schema = (v) => {
   if (typeof v !== 'bigint') fail();
-  assertCounter(v);
+  if (v < 0n || v > (1n << 64n) - 1n) fail();
   return v;
 };
 const integer: Schema = (v, direction) => {

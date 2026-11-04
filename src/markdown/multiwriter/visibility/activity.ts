@@ -1,3 +1,8 @@
+import { finish } from '../ingest/work.js';
+import type { Work } from '../ingest/work.js';
+
+export class ActivityValidationError extends Error {}
+
 import { compareActions } from '../contracts.js';
 import type { ActionEnvelope, ActionId, SemanticEffect } from '../contracts.js';
 import { actionKey, groupKey } from './identity.js';
@@ -29,6 +34,10 @@ export interface Activity {
  * remains with ingest. Incomplete input throws instead of applying half a control.
  */
 export function reduceActivity(input: readonly ActionEnvelope[]): Activity {
+  return finish(reduceActivitySteps(input));
+}
+
+export function* reduceActivitySteps(input: readonly ActionEnvelope[]): Work<Activity> {
   const actions = [...input].sort(compareActions);
   const byId = new Map<string, ActionEnvelope>();
   const past = new Map<string, ReadonlySet<string>>();
@@ -38,30 +47,37 @@ export function reduceActivity(input: readonly ActionEnvelope[]): Activity {
 
   function requireAction(id: ActionId): ActionEnvelope {
     const action = byId.get(actionKey(id));
-    if (!action) throw new Error(`Action is outside the ready closure: ${actionKey(id)}`);
+    if (!action)
+      throw new ActivityValidationError(`Action is outside the ready closure: ${actionKey(id)}`);
     return action;
   }
 
   for (const action of actions) {
+    yield;
     const key = actionKey(action.id);
-    if (byId.has(key)) throw new Error(`Duplicate action in ready set: ${key}`);
+    if (byId.has(key)) throw new ActivityValidationError(`Duplicate action in ready set: ${key}`);
     byId.set(key, action);
     const closure = new Set<string>();
     for (const dependency of action.dependencies) {
+      yield;
       const dependencyKey = actionKey(dependency);
       const ancestors = past.get(dependencyKey);
-      if (!ancestors) throw new Error(`Missing or unordered dependency: ${dependencyKey}`);
+      if (!ancestors)
+        throw new ActivityValidationError(`Missing or unordered dependency: ${dependencyKey}`);
       closure.add(dependencyKey);
-      for (const ancestor of ancestors) closure.add(ancestor);
+      for (const ancestor of ancestors) {
+        yield;
+        closure.add(ancestor);
+      }
     }
     past.set(key, closure);
     active.set(key, true);
     if (action.groupId.session.actor !== action.id.actor)
-      throw new Error('An action must belong to its actor session');
+      throw new ActivityValidationError('An action must belong to its actor session');
     const control = action.effects.find((effect) => effect.type === 'SetGroupActive');
     if (!control) {
       const group = groupKey(action.groupId);
-      if (controls.has(group)) throw new Error('A controlled group is sealed');
+      if (controls.has(group)) throw new ActivityValidationError('A controlled group is sealed');
       const members = groups.get(group) ?? [];
       members.push(action);
       groups.set(group, members);
@@ -73,12 +89,14 @@ export function reduceActivity(input: readonly ActionEnvelope[]): Activity {
       action.nativeManifest.length ||
       action.nativeInsertUpdates.length
     )
-      throw new Error('A group control cannot contain editable effects or allocations');
+      throw new ActivityValidationError(
+        'A group control cannot contain editable effects or allocations',
+      );
     if (
       action.id.actor !== control.group.session.actor ||
       action.groupId.session.local !== control.group.session.local
     )
-      throw new Error('Only the owning session can control a group');
+      throw new ActivityValidationError('Only the owning session can control a group');
 
     const group = groupKey(control.group);
     const previous = controls.get(group);
@@ -86,9 +104,9 @@ export function reduceActivity(input: readonly ActionEnvelope[]): Activity {
       (previous ? actionKey(previous.id) : null) !==
       (control.previousControl ? actionKey(control.previousControl) : null)
     )
-      throw new Error('Control must extend the previous owner control');
+      throw new ActivityValidationError('Control must extend the previous owner control');
     if (previous && !closure.has(actionKey(previous.id)))
-      throw new Error('Control must observe the previous owner control');
+      throw new ActivityValidationError('Control must observe the previous owner control');
     const members = groups.get(group) ?? [];
     const targets = new Set(control.actions.map(actionKey));
     if (
@@ -97,10 +115,14 @@ export function reduceActivity(input: readonly ActionEnvelope[]): Activity {
       targets.size !== members.length ||
       members.some((member) => !targets.has(actionKey(member.id)))
     )
-      throw new Error('Control must target every action in one nonempty sealed group');
+      throw new ActivityValidationError(
+        'Control must target every action in one nonempty sealed group',
+      );
     for (const id of control.actions) {
+      yield;
       requireAction(id);
-      if (!closure.has(actionKey(id))) throw new Error('Control must observe all target actions');
+      if (!closure.has(actionKey(id)))
+        throw new ActivityValidationError('Control must observe all target actions');
       active.set(actionKey(id), control.active);
     }
     controls.set(group, action);
@@ -119,7 +141,7 @@ export function reduceActivity(input: readonly ActionEnvelope[]): Activity {
     const action = requireAction(ref.action);
     const effect = action.effects[ref.ordinal];
     if (!Number.isSafeInteger(ref.ordinal) || ref.ordinal < 0 || !effect)
-      throw new Error('Unknown effect ordinal');
+      throw new ActivityValidationError('Unknown effect ordinal');
     return effect.type !== 'SetGroupActive' && isActive(ref.action);
   }
 

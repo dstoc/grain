@@ -1,11 +1,14 @@
+import { DEFAULT_INGEST_LIMITS, assertLimit, compute, finish } from '../ingest/work.js';
+import type { Computation, Work } from '../ingest/work.js';
+import { preflightUpdate } from '../ingest/preflight.js';
 import * as Y from 'yjs';
 import { compareActions } from '../contracts.js';
 import type { ActionEnvelope, ActionId, ActionReadiness, Allocation } from '../contracts.js';
 import { compareBytes } from './cbor.js';
-import { decodeEnvelope, encodeEnvelope, EnvelopeDecodeError } from './codec.js';
-import { actionKey, validReferences } from './references.js';
+import { decodeEnvelopeSteps, encodeEnvelope, EnvelopeDecodeError } from './codec.js';
+import { actionKey, validReferencesSteps } from './references.js';
 
-type QuarantineReason = Extract<ActionReadiness, { state: 'quarantined' }>['reason'];
+export type QuarantineReason = Extract<ActionReadiness, { state: 'quarantined' }>['reason'];
 export interface ActionValidationContext {
   /** Full ready dependency closure, in semantic order. Never the later merged projection. */
   readonly dependencies: readonly ActionEnvelope[];
@@ -14,15 +17,18 @@ export interface ActionStoreOptions {
   readonly documentId: string;
   readonly genesisId: string;
   readonly genesisAllocations: readonly Allocation[];
+  readonly decodeDepth?: number;
+  readonly decodeOperations?: number;
   /**
    * Required certification of native bodies/manifests and author-local semantic validity.
-   * Must be synchronous, deterministic and side-effect free. MW-02/MW-15 supply the validator.
+   * Must be deterministic and side-effect free; generators charge resumable work.
+   * MW-02/MW-15 supply the validator.
    * No action is ready before it returns null. Exceptions fail closed and propagate to the caller.
    */
   readonly validate: (
     action: ActionEnvelope,
     context: ActionValidationContext,
-  ) => QuarantineReason | null;
+  ) => QuarantineReason | null | Work<QuarantineReason | null>;
 }
 export interface StoredAction {
   readonly id: ActionId;
@@ -73,11 +79,21 @@ export class ActionStore {
   private readonly entries = new Map<string, Entry>();
   private readonly diagnostics: string[] = [];
   private integrity = true;
+  private readonly undecoded: Uint8Array[] = [];
+  private revision = 0;
+  private computation = 0;
+  private active?: Work<ActionStoreSnapshot>;
+  private decodeDepth: number;
+  private decodeOperations: number;
   private readonly options: ActionStoreOptions;
 
   constructor(options: ActionStoreOptions) {
     if (typeof options.validate !== 'function') throw new Error('Action validation is required');
     // Keep configuration/genesis insulated from later caller mutations as well.
+    this.decodeDepth = options.decodeDepth ?? DEFAULT_INGEST_LIMITS.depth;
+    this.decodeOperations = options.decodeOperations ?? DEFAULT_INGEST_LIMITS.decodeOperations;
+    assertLimit(this.decodeDepth);
+    assertLimit(this.decodeOperations);
     this.options = { ...options, genesisAllocations: structuredClone(options.genesisAllocations) };
     this.envelopes.observe((event) => {
       for (const delta of event.changes.delta) {
@@ -105,15 +121,32 @@ export class ActionStore {
   }
 
   applyUpdate(update: Uint8Array): void {
-    // An already-deleted entry in a checkpoint never produces an observer delete event.
-    // Reject native deletion before integration, including on cold restore.
-    if (Y.decodeUpdate(update).ds.clients.size) {
-      this.integrity = false;
-      const message = 'Canonical update deletion violates append-only storage';
-      this.diagnostics.push(message);
-      throw new Error(message);
-    }
-    Y.applyUpdate(this.doc, update);
+    preflightUpdate(update, 'carrier', this.decodeOperations);
+    this.revision++;
+    Y.applyUpdate(this.doc, update.slice());
+  }
+
+  /** Retry held bytes after a local capacity change. No canonical facts are removed. */
+  setDecodeLimits(limits: { depth?: number; operations?: number }): void {
+    const depth = limits.depth ?? this.decodeDepth;
+    const operations = limits.operations ?? this.decodeOperations;
+    assertLimit(depth);
+    assertLimit(operations);
+    this.computation++;
+    this.active?.return(undefined as unknown as ActionStoreSnapshot);
+    this.decodeDepth = depth;
+    this.decodeOperations = operations;
+  }
+
+  /** Changes on every receipt, including unresolved outer structs with no observer event. */
+  get factsVersion(): number {
+    return this.revision;
+  }
+
+  /** Conservative reservation includes facts a small receipt can unlock from pending structs. */
+  persistenceReservation(update: Uint8Array): number {
+    const pending = this.doc.store.pendingStructs ? this.encodeUpdate().byteLength : 0;
+    return update.byteLength * 2 + pending * 2 + 1024;
   }
 
   encodeUpdate(stateVector?: Uint8Array): Uint8Array {
@@ -132,20 +165,25 @@ export class ActionStore {
   }
 
   destroy(): void {
+    this.computation++;
+    this.active?.return(undefined as unknown as ActionStoreSnapshot);
     this.doc.destroy();
   }
 
   private collect(value: unknown): void {
-    if (!(value instanceof Uint8Array)) {
+    this.revision++;
+    if (value instanceof Uint8Array) this.undecoded.push(value.slice());
+    else {
       this.integrity = false;
       this.diagnostics.push('Canonical collection entry must be an encoded envelope');
-      return;
     }
-    const bytes = value.slice();
+  }
+
+  private *decode(bytes: Uint8Array): Work<void> {
     let id: ActionId;
     let variant: Variant;
     try {
-      const envelope = decodeEnvelope(bytes);
+      const envelope = yield* decodeEnvelopeSteps(bytes, this.decodeDepth, this.decodeOperations);
       id = envelope.id;
       variant = { bytes, envelope };
     } catch (error) {
@@ -167,23 +205,50 @@ export class ActionStore {
   }
 
   snapshot(): ActionStoreSnapshot {
+    this.computation++;
+    this.active?.return(undefined as unknown as ActionStoreSnapshot);
+    this.active = this.calculate();
+    return finish(this.active);
+  }
+
+  /** No partial ready set escapes. A changed receipt invalidates an outstanding continuation. */
+  compute(operations?: number): Computation<ActionStoreSnapshot> {
+    const revision = this.revision;
+    const computation = ++this.computation;
+    this.active?.return(undefined as unknown as ActionStoreSnapshot);
+    this.active = this.calculate();
+    return compute(
+      this.active,
+      operations,
+      () => this.revision === revision && this.computation === computation,
+    );
+  }
+
+  private *calculate(): Work<ActionStoreSnapshot> {
+    while (this.undecoded.length) {
+      yield* this.decode(this.undecoded[0]);
+      this.undecoded.shift();
+    }
     const entries = [...this.entries.values()].sort((a, b) => compareIds(a.id, b.id));
     const states = new Map<string, ActionReadiness>();
     const candidates: ActionEnvelope[] = [];
     for (const entry of entries) {
+      yield;
       const key = actionKey(entry.id);
       const variant = entry.variants[0];
       if (entry.variants.length > 1) states.set(key, quarantined('fork'));
       else if (!variant.envelope) states.set(key, quarantined(variant.reason!));
       else {
         const action = variant.envelope;
-        const reason = this.chainError(action);
+        const reason = yield* this.chainError(action);
         if (reason) states.set(key, quarantined(reason));
         else candidates.push(action);
       }
     }
     // Reject impossible known causal edges before topological evaluation, including cycles.
     for (const action of candidates) {
+      yield;
+      for (const _id of action.dependencies) yield;
       const dependencies = action.dependencies.map((id) => this.entries.get(actionKey(id)));
       if (
         dependencies.some(
@@ -198,6 +263,7 @@ export class ActionStore {
     candidates.sort(compareActions);
     const ready = new Map<string, ActionEnvelope>();
     for (const action of candidates) {
+      yield;
       const key = actionKey(action.id);
       if (states.has(key)) continue;
       const dependencies = [...action.dependencies].sort(compareIds);
@@ -210,10 +276,14 @@ export class ActionStore {
       }
       const missing = new Map<string, ActionId>();
       for (const id of dependencies) {
+        yield;
         const state = states.get(actionKey(id));
         if (!state) missing.set(actionKey(id), id);
         else if (state.state === 'pending')
-          for (const absent of state.missing) missing.set(actionKey(absent), absent);
+          for (const absent of state.missing) {
+            yield;
+            missing.set(actionKey(absent), absent);
+          }
       }
       if (missing.size) {
         states.set(key, { state: 'pending', missing: [...missing.values()].sort(compareIds) });
@@ -230,26 +300,41 @@ export class ActionStore {
       const closure = new Map<string, ActionEnvelope>();
       const stack = [...dependencies];
       while (stack.length) {
+        yield;
         const id = stack.pop()!;
         const depKey = actionKey(id);
         if (closure.has(depKey)) continue;
         const ancestor = ready.get(depKey)!;
         closure.set(depKey, ancestor);
-        stack.push(...ancestor.dependencies);
+        for (const dependency of ancestor.dependencies) {
+          yield;
+          stack.push(dependency);
+        }
       }
       const causalBase = [...closure.values()].sort(compareActions);
       // Pass detached values to validators; neither validator nor snapshot callers own facts.
-      const reason = !validReferences(action, causalBase, this.options.genesisAllocations)
+      const validation = !(yield* validReferencesSteps(
+        action,
+        causalBase,
+        this.options.genesisAllocations,
+      ))
         ? 'reference'
         : this.options.validate(structuredClone(action), {
             dependencies: structuredClone(causalBase),
           });
+      const reason =
+        typeof validation === 'object' && validation !== null ? yield* validation : validation;
       states.set(key, reason ? quarantined(reason) : { state: 'ready' });
       if (!reason) ready.set(key, action);
     }
     const heads = new Map([...ready].map(([key, action]) => [key, action.id]));
-    for (const action of ready.values())
-      for (const id of action.dependencies) heads.delete(actionKey(id));
+    for (const action of ready.values()) {
+      yield;
+      for (const id of action.dependencies) {
+        yield;
+        heads.delete(actionKey(id));
+      }
+    }
     return structuredClone({
       actions: entries.map((entry) => ({
         id: entry.id,
@@ -263,7 +348,7 @@ export class ActionStore {
     });
   }
 
-  private chainError(action: ActionEnvelope): QuarantineReason | null {
+  private *chainError(action: ActionEnvelope): Work<QuarantineReason | null> {
     if (
       action.documentId !== this.options.documentId ||
       action.genesisId !== this.options.genesisId
@@ -275,19 +360,22 @@ export class ActionStore {
       action.groupId.session.actor !== action.id.actor
     )
       return 'actor-chain';
-    const keys = action.dependencies.map(actionKey);
-    if (new Set(keys).size !== keys.length || keys.includes(actionKey(action.id)))
-      return 'actor-chain';
-    if (
-      action.dependencies.some(
-        (id) =>
-          id.sequence === 0n || (id.actor === action.id.actor && id.sequence >= action.id.sequence),
+    const keys = new Set<string>();
+    for (const id of action.dependencies) {
+      yield;
+      const key = actionKey(id);
+      if (
+        keys.has(key) ||
+        key === actionKey(action.id) ||
+        id.sequence === 0n ||
+        (id.actor === action.id.actor && id.sequence >= action.id.sequence)
       )
-    )
-      return 'actor-chain';
+        return 'actor-chain';
+      keys.add(key);
+    }
     if (
       action.id.sequence > 1n &&
-      !keys.includes(
+      !keys.has(
         actionKey({
           actor: action.id.actor,
           sequence: action.id.sequence - 1n,

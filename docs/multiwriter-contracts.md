@@ -18,6 +18,11 @@ required integrated reference gate before browser cutover.**
   describe causal readiness, the required validation callback and cache invalidation
   after a late fork. Native materialization and the integrated reducer gate remain
   separate workstreams.
+- `src/markdown/multiwriter/ingest/index.ts` exposes MW-15's exact-author native
+  certification, retryable decoder capacity and budgeted reference publication.
+  Its [integration notes](../src/markdown/multiwriter/ingest/README.md) require
+  real reducer-owned author checks for structural actions. The publication probe
+  does not supply the MW-08 reducer or establish the integrated acceptance gate.
 - `test/multiwriter/trace.ts` defines versioned semantic traces, observations and
   `runContractTrace()`. It contains comparisons, not a reference reducer.
 - `test/multiwriter/corpus.ts` contains fixed inputs and expected observations.

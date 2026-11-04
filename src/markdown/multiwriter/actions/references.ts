@@ -1,3 +1,5 @@
+import { finish } from '../ingest/work.js';
+import type { Work } from '../ingest/work.js';
 import type {
   ActionEnvelope,
   ActionId,
@@ -19,11 +21,23 @@ export function validReferences(
   closure: readonly ActionEnvelope[],
   genesis: readonly Allocation[],
 ): boolean {
+  return finish(validReferencesSteps(action, closure, genesis));
+}
+
+export function* validReferencesSteps(
+  action: ActionEnvelope,
+  closure: readonly ActionEnvelope[],
+  genesis: readonly Allocation[],
+): Work<boolean> {
   const resources = new Map<string, ResourceKind>();
-  for (const allocation of [...genesis, ...closure.flatMap((entry) => entry.allocations)])
-    resources.set(resourceKey(allocation.id), allocation.id.kind);
+  for (const entries of [genesis, ...closure.map((entry) => entry.allocations)])
+    for (const allocation of entries) {
+      yield;
+      resources.set(resourceKey(allocation.id), allocation.id.kind);
+    }
   const allocated = new Set<number>();
   for (const allocation of action.allocations) {
+    yield;
     const id = allocation.id;
     if (
       id.birth.type !== 'action' ||
@@ -35,21 +49,29 @@ export function validReferences(
     resources.set(resourceKey(id), id.kind);
   }
   const past = new Set(closure.map((entry) => actionKey(entry.id)));
-  function visit(value: unknown): boolean {
-    if (!value || typeof value !== 'object' || value instanceof Uint8Array) return true;
-    if (Array.isArray(value)) return value.every(visit);
+  const stack: unknown[] = [action.allocations, action.nativeManifest, action.effects];
+  while (stack.length) {
+    yield;
+    const value = stack.pop();
+    if (!value || typeof value !== 'object' || value instanceof Uint8Array) continue;
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        yield;
+        stack.push(item);
+      }
+      continue;
+    }
     const record = value as Record<string, unknown>;
     if ('kind' in record && 'birth' in record && 'ordinal' in record) {
       const id = value as ResourceId<ResourceKind>;
-      return resources.get(resourceKey(id)) === id.kind;
-    }
-    if ('actor' in record && 'sequence' in record) return past.has(actionKey(value as ActionId));
-    return Object.values(record).every(visit);
+      if (resources.get(resourceKey(id)) !== id.kind) return false;
+    } else if ('actor' in record && 'sequence' in record) {
+      if (!past.has(actionKey(value as ActionId))) return false;
+    } else
+      for (const item of Object.values(record)) {
+        yield;
+        stack.push(item);
+      }
   }
-  // Allocation IDs are validated above. Their resource references may target same-action births.
-  return (
-    action.allocations.every(visit) &&
-    action.nativeManifest.every(visit) &&
-    action.effects.every(visit)
-  );
+  return true;
 }
