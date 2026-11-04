@@ -63,6 +63,14 @@ export async function openBootstrap(options: BootstrapOpenOptions) {
   requireSameGenesis(options.persistedGenesis, bytes);
   const limits = bootstrapLimits(options.bootstrapLimits);
   const descriptor = decodeGenesis(bytes, limits);
+  const session: Readonly<SessionId> = Object.freeze({
+    actor: actorId(
+      Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) =>
+        b.toString(16).padStart(2, '0'),
+      ).join(''),
+    ),
+    local: crypto.randomUUID(),
+  });
   const document = openReferenceDocument(referenceGenesis(descriptor), {
     nativeDecodeOperations: limits.nativeOperations,
   });
@@ -95,14 +103,6 @@ export async function openBootstrap(options: BootstrapOpenOptions) {
     throw error;
   }
   const provider = attachment;
-  const session: Readonly<SessionId> = Object.freeze({
-    actor: actorId(
-      Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) =>
-        b.toString(16).padStart(2, '0'),
-      ).join(''),
-    ),
-    local: crypto.randomUUID(),
-  });
   return {
     session,
     document,

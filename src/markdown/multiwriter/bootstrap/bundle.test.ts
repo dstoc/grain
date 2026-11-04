@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import * as Y from 'yjs';
 import { publication, insert } from '../../../../test/multiwriter/bootstrap-helpers.js';
 import { serializeProjection } from '../projection/index.js';
@@ -397,3 +397,29 @@ test.each(['', 'abc'])(
     }
   },
 );
+
+test('session allocation failure occurs before any journal attachment', async () => {
+  let reads = 0;
+  const random = vi.spyOn(crypto, 'getRandomValues').mockImplementationOnce(() => {
+    throw new Error('RNG unavailable');
+  });
+  try {
+    await expect(
+      openBootstrap(
+        options({
+          journal: {
+            read: async () => {
+              reads++;
+              return [];
+            },
+            append: async () => {},
+            close() {},
+          },
+        }),
+      ),
+    ).rejects.toThrow('RNG unavailable');
+    expect(reads).toBe(0);
+  } finally {
+    random.mockRestore();
+  }
+});
