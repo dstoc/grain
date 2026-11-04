@@ -1,3 +1,4 @@
+import { convertedOffset } from './parser-focus.js';
 import { prepareParserConversion, bindParserConversion } from '../projection/parser-plan.js';
 import type { OutputBinding } from '../projection/parser-plan.js';
 import type { ParserConversionPlan } from '../../block-parser/types.js';
@@ -77,6 +78,10 @@ export class CommandCompiler {
   private ordinal = 0;
   private memo?: { key: string; value: ReturnType<typeof projectMarkdown> };
   private readonly ids = new Map<Handle, NodeId>();
+  private readonly focusMappings = new Map<
+    Handle,
+    (offset: number, affinity: TextAffinity) => number
+  >();
   private readonly text = new Map<Handle, readonly SourceFragment[]>();
   private readonly specs = new Map<Handle, CreateNodeSpec>();
   private readonly firstPlaces = new Map<Handle, { parent: Handle; before: Handle | null }>();
@@ -718,6 +723,16 @@ export class CommandCompiler {
       retained,
     );
     this.effects.push({ type: 'Interpret', packet: bound.packet });
+    const sourceOutput = prepared.outputs.find((o) => same(o.binding.node, source))!;
+    const findOutput = (node: ViewNode): ViewNode | undefined =>
+      same(node.origin.representative, source) ? node : node.children.map(findOutput).find(Boolean);
+    const projected = findOutput(this.state().view.root);
+    if (projected?.content !== sourceOutput.pieces.map((piece) => piece.text).join(''))
+      throw new ConversionDeclined(
+        'unsupported-conversion',
+        'Conversion requires unsupported retained-piece ownership',
+      );
+    this.focusMappings.set(handle, convertedOffset(fragments, sourceOutput));
     for (const output of prepared.outputs)
       if (output.type === 'list-item')
         this.effects.push({
@@ -931,6 +946,9 @@ export class CommandCompiler {
         return e;
       }),
     };
+  }
+  focusOffset(handle: Handle, offset: number, affinity: TextAffinity): number {
+    return this.focusMappings.get(handle)?.(offset, affinity) ?? offset;
   }
   resource(handle: Handle) {
     return this.ids.get(handle);

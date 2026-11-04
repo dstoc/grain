@@ -1,3 +1,4 @@
+import type { ParserConversionPlan } from '../../block-parser/types.js';
 import { parseBlocks } from '../../block-parser/api.js';
 import { afterEach, expect, test } from 'vitest';
 import { NativeFixture } from '../ownership/test-fixtures.js';
@@ -257,5 +258,48 @@ test('explicit unsupported parser conversion declines the complete action withou
     reason: 'unsupported-conversion',
   });
   expect(h.document.store.encodeUpdate()).toEqual(before);
+  expect(h.text()).toBe('abcdef\n');
+});
+test.each(['# ', '> ', '- [x] ', '```js\n'])(
+  'promotion maps a caret after consumed prefix %j to the first retained character',
+  (prefix) => {
+    const h = open(),
+      nodeId = h.handle(h.nodes()[0]!);
+    const result = h.editor.edit(
+      session,
+      insertText,
+      { nodeId, from: 0, text: prefix },
+      { promote: nodeId },
+    );
+    if (result.status !== 'applied') throw new Error('Expected promotion');
+    const first = h.nodes()[0]!.fragments.find((f) => f.visible)!;
+    expect(result.focus?.native).toEqual({ client: first.range.client, clock: first.range.clock });
+    expect(result.focus?.side).toBe('left');
+  },
+);
+
+test('unsupported retained-piece reordering declines the entire explicit conversion', () => {
+  const h = open(),
+    nodeId = h.handle(h.nodes()[0]!),
+    bytes = h.document.store.encodeUpdate();
+  const plan: ParserConversionPlan = {
+    output: { type: 'document', children: [{ type: 'paragraph', content: 'cdabef!' }] },
+    inlinePieces: {
+      '0': [
+        { kind: 'retain', sourceFrom: 2, sourceTo: 4 },
+        { kind: 'retain', sourceFrom: 0, sourceTo: 2 },
+        { kind: 'retain', sourceFrom: 4, sourceTo: 7 },
+      ],
+    },
+    consumed: [],
+  };
+  const result = h.editor.edit(
+    session,
+    insertText,
+    { nodeId, from: 6, text: '!' },
+    { conversion: { nodeId, plan } },
+  );
+  expect(result).toMatchObject({ status: 'declined', reason: 'unsupported-conversion' });
+  expect(h.document.store.encodeUpdate()).toEqual(bytes);
   expect(h.text()).toBe('abcdef\n');
 });

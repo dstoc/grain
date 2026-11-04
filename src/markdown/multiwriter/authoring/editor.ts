@@ -283,7 +283,14 @@ export class LocalEditor {
         if (node)
           focus = textPoint(
             node,
-            Math.min(outcome.focus.offset, node.content.length),
+            Math.min(
+              compiler.focusOffset(
+                outcome.focus.nodeId,
+                outcome.focus.offset,
+                outcome.focus.affinity,
+              ),
+              node.content.length,
+            ),
             outcome.focus.affinity,
           );
       }
