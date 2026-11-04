@@ -27,27 +27,63 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: measured/package-lock.json
-      - run: python3 ../harness/scripts/ci/measure.py results/install.metrics.json npm ci
+      - run: python3 ../harness/scripts/ci/measure.py ../results/install.metrics.json npm ci
         working-directory: measured
-      - run: python3 ../harness/scripts/ci/measure.py results/chromium-install.metrics.json ./node_modules/.bin/playwright install --with-deps chromium
+      - run: python3 ../harness/scripts/ci/measure.py ../results/chromium-install.metrics.json ./node_modules/.bin/playwright install --with-deps chromium
         working-directory: measured
       - name: Static commands
         working-directory: measured
         run: |
           for script in build build:web lint check:boundaries analyze:unused analyze:unused:production format:check; do
-            python3 ../harness/scripts/ci/measure.py "results/${script//:/-}.metrics.json" npm run "$script"
+            python3 ../harness/scripts/ci/measure.py "../results/${script//:/-}.metrics.json" npm run "$script"
           done
-      - run: python3 ../harness/scripts/ci/measure.py results/node.metrics.json npm run test -- --maxWorkers=2 --reporter=default --reporter=json --outputFile.json=results/node.vitest.json
+      - run: python3 ../harness/scripts/ci/measure.py ../results/node.metrics.json npm run test -- --maxWorkers=2 --reporter=default --reporter=json --outputFile.json=../results/node.vitest.json
         working-directory: measured
-      - run: python3 ../harness/scripts/ci/measure.py results/browser.metrics.json npm run test:browser -- --reporter=default --reporter=json --outputFile.json=results/browser.vitest.json
+      - run: python3 ../harness/scripts/ci/measure.py ../results/browser.metrics.json npm run test:browser -- --reporter=default --reporter=json --outputFile.json=../results/browser.vitest.json
         working-directory: measured
-      - run: python3 ../harness/scripts/ci/measure.py results/smoke.metrics.json npm run test:extensive-smoke -- --maxWorkers=2 --reporter=default --reporter=json --outputFile.json=results/smoke.vitest.json
+      - run: python3 ../harness/scripts/ci/measure.py ../results/smoke.metrics.json npm run test:extensive-smoke -- --maxWorkers=2 --reporter=default --reporter=json --outputFile.json=../results/smoke.vitest.json
         working-directory: measured
+      - id: metrics
+        name: Prepare measurement summaries
+        working-directory: measured
+        run: |
+          python3 - <<'PYMETRICS'
+          import json, os
+          from pathlib import Path
+          read = lambda name: json.loads(Path('../results/' + name).read_text())
+          metric = lambda name: read(name + '.metrics.json')
+          node = metric('node')
+          report = read('node.vitest.json')
+          tests = [test for file in report['testResults'] for test in file['assertionResults']]
+          duration = lambda prefix: round(sum(test.get('duration', 0) or 0 for test in tests if test['fullName'].startswith(prefix)) / 1000, 3)
+          phase = lambda name: str(round(metric(name)['wall_seconds'], 3))
+          memory = next(line.split()[1] for line in node['memory'].splitlines() if line.startswith('MemTotal:'))
+          values = {
+            'environment': f"Environment sha={node['revision'][:12]} Node={node['node']} Yjs={node['packages']['yjs']} cpus={node['logical_cpus']} RAM-KiB={memory} image={node['runner']['ImageVersion']}",
+            'node': f"Node wall={phase('node')}s CPU={round(node['user_seconds']+node['system_seconds'],3)}s peak-tree-RSS={node['sampled_tree_peak_rss_kib']}KiB passed={report['numPassedTests']} skipped={report['numPendingTests']}",
+            'reference': f"Reference retention={duration('independent reference: history-limit-retains-canonical-facts')}s old-prefix={duration('independent reference: old-prefix-after-lossless-maintenance')}s matrix-pairs={duration('independent matrix:')}s generated={duration('independent generated structural schedule:')}s",
+            'phases': f"Phases install={phase('install')}s Chromium={phase('chromium-install')}s browser={phase('browser')}s smoke={phase('smoke')}s",
+            'static': 'Static ' + ' '.join(f"{name}={phase(name)}s" for name in ['build','build-web','lint','check-boundaries','analyze-unused','analyze-unused-production','format-check']),
+          }
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            for name, value in values.items():
+              print(f'{name}={value}', file=output)
+          PYMETRICS
+      - name: ${{ steps.metrics.outputs.environment }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.node }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.reference }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.phases }}
+        run: ':'
+      - name: ${{ steps.metrics.outputs.static }}
+        run: ':'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: measurement-${{ matrix.revision }}-${{ matrix.repeat }}
-          path: measured/results/
+          path: results/
           if-no-files-found: error
   failed-test:
     runs-on: ubuntu-latest
@@ -83,7 +119,7 @@ jobs:
           import assert from 'node:assert/strict';
           const needs = JSON.parse(process.env.CI_NEEDS);
           assert.equal(needs['failed-test'].result, 'failure');
-          assert.equal(needs['timed-out'].result, 'failure');
+          assert.equal(needs['timed-out'].result, 'cancelled');
           assert.equal(needs.skipped.result, 'skipped');
           JS
           if node scripts/ci/run.mjs aggregate --output missing-reports; then
