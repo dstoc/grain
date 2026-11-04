@@ -5,6 +5,7 @@
     "src/markdown/block-parser/api.ts!",
     "src/markdown/inline-parser/index.ts!",
     "src/markdown/canonical-actions.ts!",
+    "src/markdown/multiwriter/contracts.ts!",
     "src/markdown/canonical-model.ts!",
     "src/markdown/block-serializer.ts!",
     "src/markdown/node.ts!",
@@ -31,7 +32,8 @@
     "index.html",
     "vite.config.ts",
     "vitest.config.ts",
-    "!src/**/*.test.ts!"
+    "!src/**/*.test.ts!",
+    "test/multiwriter/**/*.ts"
   ],
   "ignoreDependencies": ["@babel/plugin-proposal-decorators"]
 }
