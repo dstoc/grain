@@ -3,29 +3,135 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, yjs]
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
-      - run: ./node_modules/.bin/playwright install --with-deps chromium
-      - run: npm run build
-      - run: npm run build:web
-      - run: npm run lint
-      - run: npm run check:boundaries
-      - run: npm run analyze:unused
-      - run: npm run analyze:unused:production
-      - run: npm run format:check
-      - run: npm run test
-      - run: npm run test:browser
-      - run: npm run test:extensive-smoke
+      - run: python3 scripts/ci/measure.py ci-results/plan-install.metrics.json npm ci
+      - run: python3 scripts/ci/measure.py ci-results/plan.metrics.json node scripts/ci/run.mjs plan
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-plan
+          overwrite: true
+          path: ci-results/
+          if-no-files-found: error
+
+  static:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: python3 scripts/ci/measure.py ci-results/static-install.metrics.json npm ci
+      - run: python3 scripts/ci/measure.py ci-results/static.metrics.json node scripts/ci/run.mjs static
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-static
+          overwrite: true
+          path: ci-results/
+          if-no-files-found: error
+
+  node:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [ordinary, reference, retention, matrix-1, matrix-2, matrix-3, matrix-4]
+    name: Node (${{ matrix.partition }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: python3 scripts/ci/measure.py ci-results/${{ matrix.partition }}-install.metrics.json npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-plan
+          path: ci-results/
+      - run: python3 scripts/ci/measure.py ci-results/${{ matrix.partition }}.metrics.json node scripts/ci/run.mjs ${{ matrix.partition }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-${{ matrix.partition }}
+          overwrite: true
+          path: ci-results/${{ matrix.partition }}*
+          if-no-files-found: error
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: python3 scripts/ci/measure.py ci-results/browser-install.metrics.json npm ci
+      - run: python3 scripts/ci/measure.py ci-results/chromium-install.metrics.json ./node_modules/.bin/playwright install --with-deps chromium
+      - run: python3 scripts/ci/measure.py ci-results/browser.metrics.json node scripts/ci/run.mjs browser
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-browser
+          overwrite: true
+          path: ci-results/
+          if-no-files-found: error
+
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: python3 scripts/ci/measure.py ci-results/smoke-install.metrics.json npm ci
+      - run: python3 scripts/ci/measure.py ci-results/smoke.metrics.json node scripts/ci/run.mjs smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ci-smoke
+          overwrite: true
+          path: ci-results/
+          if-no-files-found: error
+
+  # Keep this stable name required by branch protection. Validate individual
+  # reports as well as the matrix group's result.
+  test:
+    if: always()
+    needs: [plan, static, node, browser, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ci-*
+          merge-multiple: true
+          path: ci-results/
+      - run: node scripts/ci/run.mjs aggregate
+        env:
+          CI_NEEDS: ${{ toJSON(needs) }}
