@@ -142,9 +142,15 @@ export function resolveAddress(
         const home = nodes.find(
           (node) => node.flow && resourceKey(node.flow) === resourceKey(resolved.run.flow),
         );
+        const homeVisibility = visibility.nodes.find(
+          (node) => home && resourceKey(node.node) === resourceKey(home.id),
+        );
+        // Creation undo can suppress the source header while its joined flow
+        // survives. Keep that lineage, but reject deleted sources/destinations.
         valid =
-          !!home &&
-          available(home.id) &&
+          !!homeVisibility &&
+          !homeVisibility.deleted &&
+          available(ownership.flowBlock(resolved.run.flow)) &&
           ownership.containsBoundary(address.origin, address.slot.boundary);
       } catch {
         valid = false;
