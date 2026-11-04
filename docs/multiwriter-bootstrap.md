@@ -112,6 +112,8 @@ This checks equality; it does not authenticate the sender.
 operations and 100,000 native decode operations. Large documents can require
 larger capacities. `IngestCapacityError` is retryable with the same input and
 larger limits. Provider message/persistence capacities remain separate settings.
+`captureBundle(limits)` and `receiveBundle(route, bytes, limits)` accept per-call
+bundle limits, so capacity retries do not require reopening a live session.
 These are decoder capacities, not latency or retained-storage budgets.
 
 ## Export and retention

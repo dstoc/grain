@@ -3,6 +3,7 @@ import * as Y from 'yjs';
 import { publication, insert } from '../../../../test/multiwriter/bootstrap-helpers.js';
 import { serializeProjection } from '../projection/index.js';
 import { encodeEnvelope } from '../actions/codec.js';
+import { IngestCapacityError } from '../ingest/work.js';
 import { envelopeToWire } from '../actions/schema.js';
 import { decodeCbor, encodeCbor } from '../actions/cbor.js';
 import type { CborValue } from '../actions/cbor.js';
@@ -301,18 +302,28 @@ test('raw schema-2 storage update is rejected before live carrier mutation', asy
   }
 });
 
-test('provider backpressure can retry a matching bundle after capacity increases', async () => {
+test('bundle/provider capacity retries preserve the live session', async () => {
   const source = await openBootstrap(options());
-  const receiver = await openBootstrap(options({ limits: { messageBytes: 0 } }));
+  const receiver = await openBootstrap(
+    options({
+      bootstrapLimits: { bytes: bytes.length },
+      limits: { messageBytes: 0 },
+    }),
+  );
+  const larger = { bytes: 1024 * 1024 };
+  const session = receiver.session;
   try {
     source.document.store.append(insert(genesis, '!', 1));
     const bundle = source.captureBundle();
-    const before = receiver.captureBundle();
-    expect(receiver.receiveBundle('peer', bundle).state).toBe('backpressured');
-    expect(receiver.captureBundle()).toEqual(before);
+    const before = receiver.captureBundle(larger);
+    expect(() => receiver.captureBundle()).toThrow(IngestCapacityError);
+    expect(() => receiver.receiveBundle('peer', bundle)).toThrow(IngestCapacityError);
+    expect(receiver.receiveBundle('peer', bundle, larger).state).toBe('backpressured');
+    expect(receiver.captureBundle(larger)).toEqual(before);
     receiver.provider.setLimits({ messageBytes: 1024 * 1024 });
-    expect(receiver.receiveBundle('peer', bundle).state).toBe('admitted');
-    expect(receiver.captureBundle()).toEqual(bundle);
+    expect(receiver.receiveBundle('peer', bundle, larger).state).toBe('admitted');
+    expect(receiver.captureBundle(larger)).toEqual(bundle);
+    expect(receiver.session).toBe(session);
   } finally {
     await source.close();
     await receiver.close();

@@ -108,10 +108,13 @@ export async function openBootstrap(options: BootstrapOpenOptions) {
     document,
     provider,
     genesisBytes: () => bytes.slice(),
-    captureBundle: () =>
-      encodeBundle({ genesis: bytes, actionUpdate: document.store.encodeUpdate() }, limits),
-    receiveBundle(route: DeliveryRoute, bundleBytes: Uint8Array) {
-      const bundle = decodeBundle(bundleBytes, limits);
+    captureBundle: (input?: Partial<BootstrapLimits>) =>
+      encodeBundle(
+        { genesis: bytes, actionUpdate: document.store.encodeUpdate() },
+        { ...limits, ...input },
+      ),
+    receiveBundle(route: DeliveryRoute, bundleBytes: Uint8Array, input?: Partial<BootstrapLimits>) {
+      const bundle = decodeBundle(bundleBytes, { ...limits, ...input });
       requireSameGenesis(bytes, bundle.genesis);
       return provider.receiveResult(route, bundle.actionUpdate);
     },
