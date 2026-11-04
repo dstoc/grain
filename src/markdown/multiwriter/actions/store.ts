@@ -2,10 +2,15 @@ import { DEFAULT_INGEST_LIMITS, assertLimit, compute, finish } from '../ingest/w
 import type { Computation, Work } from '../ingest/work.js';
 import { preflightUpdate } from '../ingest/preflight.js';
 import * as Y from 'yjs';
-import { compareActions } from '../contracts.js';
+import { compareActions, PROTOCOL_VERSION } from '../contracts.js';
 import type { ActionEnvelope, ActionId, ActionReadiness, Allocation } from '../contracts.js';
 import { compareBytes } from './cbor.js';
-import { decodeEnvelopeSteps, encodeEnvelope, EnvelopeDecodeError } from './codec.js';
+import {
+  decodeEnvelope,
+  decodeEnvelopeSteps,
+  encodeEnvelope,
+  EnvelopeDecodeError,
+} from './codec.js';
 import { actionKey, validReferencesSteps } from './references.js';
 
 export type QuarantineReason = Extract<ActionReadiness, { state: 'quarantined' }>['reason'];
@@ -208,6 +213,51 @@ export class ActionStore {
     const callback = (update: Uint8Array) => listener(update.slice());
     this.doc.on('update', callback);
     return () => this.doc.off('update', callback);
+  }
+
+  /** Detached binding and a fresh reader with the same genesis/validator for checkpoint validation. */
+  get identity() {
+    return {
+      protocolVersion: PROTOCOL_VERSION,
+      documentId: this.options.documentId,
+      genesisId: this.options.genesisId,
+    };
+  }
+
+  emptyClone(): ActionStore {
+    return new ActionStore(this.options);
+  }
+
+  /** Actual stored records, including duplicates/anonymous payloads and unresolved outer structs. */
+  retainedBytes() {
+    const update = this.encodeUpdate();
+    let envelopePayloadBytes = 0;
+    let nativeInsertionBodyBytes = 0;
+    let envelopeRecords = 0;
+    // Full export includes pending structs. ContentBinary is the native encoding of each
+    // envelope-array byte record; count stored entries rather than deduplicated variants.
+    for (const struct of Y.decodeUpdate(update).structs) {
+      if (!(struct instanceof Y.Item) || !(struct.content instanceof Y.ContentBinary)) continue;
+      const bytes = struct.content.content;
+      envelopeRecords++;
+      envelopePayloadBytes += bytes.byteLength;
+      try {
+        const envelope = decodeEnvelope(bytes);
+        nativeInsertionBodyBytes += envelope.nativeInsertUpdates.reduce(
+          (n, body) => n + body.byteLength,
+          0,
+        );
+      } catch (error) {
+        if (!(error instanceof EnvelopeDecodeError)) throw error;
+        // Undecodable payloads remain in the total; their native subset is unknown.
+      }
+    }
+    return {
+      envelopeRecords,
+      envelopePayloadBytes,
+      nativeInsertionBodyBytes,
+      actionDocUpdateBytes: update.byteLength,
+    };
   }
 
   destroy(): void {

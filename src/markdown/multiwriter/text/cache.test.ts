@@ -714,3 +714,23 @@ it('preserves all native text and marker IDs across seeded independent-client in
     expect(new Set(textIds).size).toBe(textIds.length);
   }
 });
+
+it('accepts the same native subset inside a decoded envelope regardless of record property order', async () => {
+  const { action, A } = await import('../actions/test-fixtures.js');
+  const { encodeEnvelope, decodeEnvelope } = await import('../actions/codec.js');
+  const target = cache();
+  const g = genesis('a');
+  target.apply('G', g);
+  const body = publish(target, 'A1', [{ type: 'text', tape, index: 2, text: 'x' }]);
+  const envelope = decodeEnvelope(encodeEnvelope({ ...action(A), ...body }));
+  const before = target.snapshot(tape);
+  target.apply('A1', envelope);
+  expect(target.snapshot(tape)).toEqual(before);
+  // The restored cache receives an envelope first and a bare native body on a later retry.
+  const restored = cache();
+  restored.apply('G', g);
+  restored.apply('A1', envelope);
+  restored.apply('A1', body);
+  expect(restored.snapshot(tape)).toEqual(before);
+  expect(() => restored.apply('A1', { ...body, nativeManifest: [] })).toThrow('Conflicting');
+});

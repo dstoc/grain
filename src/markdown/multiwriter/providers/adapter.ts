@@ -1,8 +1,15 @@
 import { DEFAULT_INGEST_LIMITS, IngestCapacityError, assertLimit } from '../ingest/work.js';
 import { ActionStore } from '../actions/store.js';
+import { prepareCheckpoint, restoreCheckpoint } from '../checkpoints/index.js';
+import { isCheckpointJournal } from './types.js';
 import { SYNC_DIRECTIONS } from '../contracts.js';
 import type { DeliveryRoute, PublicationStatus, SyncMode } from '../contracts.js';
 import type { ActionJournal, PeerTransport, ProviderFailure } from './types.js';
+
+type PersistenceEntry = { readonly position: number } & (
+  | { readonly update: Uint8Array }
+  | { readonly checkpoint: () => Promise<Uint8Array> }
+);
 
 export interface ProviderOptions {
   readonly store: ActionStore;
@@ -41,7 +48,7 @@ const equal = (a: Uint8Array | undefined, b: Uint8Array): boolean =>
 export class DirectionalActionProvider {
   private mode: SyncMode;
   private readonly peers = new Map<string, Peer>();
-  private readonly queue: { position: number; update: Uint8Array }[] = [];
+  private readonly queue: PersistenceEntry[] = [];
   private tail = 0;
   private durable = 0;
   private write?: Promise<void>;
@@ -61,7 +68,20 @@ export class DirectionalActionProvider {
       const operations = options.restoreOperations ?? DEFAULT_INGEST_LIMITS.operations;
       assertLimit(operations);
       if (!operations) throw new IngestCapacityError('validation', 'restoreOperations', 1);
-      for (const update of await options.journal.read()) options.store.applyUpdate(update);
+      const state = isCheckpointJournal(options.journal)
+        ? await options.journal.readCheckpoint()
+        : { updates: await options.journal.read() };
+      if ('checkpoint' in state) {
+        if (!(state.checkpoint instanceof Uint8Array))
+          throw new Error('Invalid journal checkpoint');
+        const restored = await restoreCheckpoint(state.checkpoint, options.store);
+        try {
+          options.store.applyUpdate(restored.encodeUpdate());
+        } finally {
+          restored.destroy();
+        }
+      }
+      for (const update of state.updates) options.store.applyUpdate(update);
       let readiness = options.store.compute(operations);
       while (readiness.state === 'deferred') {
         await new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -206,6 +226,22 @@ export class DirectionalActionProvider {
     };
   }
 
+  /** Capture synchronously and reserve the queue barrier before hashing or later writes. */
+  consolidate(): Promise<void> {
+    this.assertOpen();
+    if (!isCheckpointJournal(this.options.journal))
+      return Promise.reject(new Error('Journal does not support checkpoint consolidation'));
+    let checkpoint: () => Promise<Uint8Array>;
+    try {
+      checkpoint = prepareCheckpoint(this.options.store);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    this.queue.push({ position: ++this.tail, checkpoint });
+    this.startWrite();
+    return this.flush();
+  }
+
   /** Captures a contiguous prefix; later appends do not delay this fence. */
   async flush(): Promise<void> {
     const target = this.tail;
@@ -243,11 +279,21 @@ export class DirectionalActionProvider {
     const entry = this.queue[0];
     // One transaction per entry makes the acknowledged prefix explicit.
     this.write = Promise.resolve()
-      .then(() => this.options.journal.append(entry.update.slice()))
+      .then(async () => {
+        if ('update' in entry) await this.options.journal.append(entry.update.slice());
+        else {
+          const journal = this.options.journal;
+          if (!isCheckpointJournal(journal)) throw new Error('Checkpoint journal capability lost');
+          const checkpoint = await entry.checkpoint();
+          const verified = await restoreCheckpoint(checkpoint, this.options.store);
+          verified.destroy();
+          await journal.replaceWithCheckpoint(checkpoint.slice());
+        }
+      })
       .then(() => {
         this.durable = entry.position;
         this.queue.shift();
-        this.queuedBytes -= entry.update.byteLength;
+        if ('update' in entry) this.queuedBytes -= entry.update.byteLength;
       })
       .catch((error: unknown) => {
         this.writeFailure = { error };

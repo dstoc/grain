@@ -8,6 +8,8 @@ export type {
 export { IndexedDBActionJournal } from './indexeddb.js';
 export type {
   ActionJournal,
+  CheckpointActionJournal,
+  CheckpointJournalState,
   JournalIdentity,
   OutboundMessage,
   PeerTransport,

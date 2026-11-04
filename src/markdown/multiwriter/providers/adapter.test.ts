@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as Y from 'yjs';
 import { ActionStore } from '../actions/store.js';
-import { action, A, B, C } from '../actions/test-fixtures.js';
+import { action, A, B, C, validateStorageAction } from '../actions/test-fixtures.js';
 import { SYNC_DIRECTIONS } from '../contracts.js';
 import type { DeliveryRoute, SyncMode } from '../contracts.js';
 import { IngestCapacityError, IngestDataError } from '../ingest/work.js';
@@ -18,7 +18,7 @@ function store() {
     documentId: 'D',
     genesisId: 'G',
     genesisAllocations: [],
-    validate: () => null,
+    validate: validateStorageAction,
   });
   stores.push(value);
   return value;
@@ -831,4 +831,312 @@ it('durably holds admitted bytes when envelope decode needs more capacity than c
   const restored = await open('disconnected', replacement);
   expect(restored.value.encodeUpdate()).toEqual(held);
   expect(restored.value.snapshot()).toEqual(sender.snapshot());
+});
+/** Transactional host adapter: its inherited read refuses a partial replay source. */
+class CheckpointMemoryJournal extends MemoryJournal {
+  declare checkpoint?: Uint8Array;
+  replacementGate?: Promise<void>;
+  replacementFailure?: Error;
+  replacements = 0;
+  attempts = 0;
+  async readCheckpoint() {
+    return {
+      ...('checkpoint' in this ? { checkpoint: this.checkpoint?.slice() } : {}),
+      updates: this.entries.map((entry) => entry.slice()),
+    };
+  }
+  override async read() {
+    if ('checkpoint' in this) throw new Error('Checkpoint-aware read required');
+    return super.read();
+  }
+  async replaceWithCheckpoint(checkpoint: Uint8Array) {
+    const copy = checkpoint.slice();
+    this.attempts++;
+    await this.replacementGate;
+    if (this.replacementFailure) throw this.replacementFailure;
+    this.checkpoint = copy;
+    this.entries.length = 0;
+    this.replacements++;
+  }
+}
+
+describe('lossless checkpoint persistence barriers', () => {
+  it.each(modes)(
+    'captures before later appends/raw ingress, with delayed prior writes in %s',
+    async (mode) => {
+      const journal = new CheckpointMemoryJournal();
+      const target = await open(mode, journal);
+      const prior = deferred();
+      journal.delay = prior.promise;
+      const a1 = action();
+      target.value.append(a1);
+      const before = target.value.encodeUpdate();
+      const consolidation = target.provider.consolidate();
+      const a2 = action(A, 2n, [a1]);
+      target.value.append(a2);
+      const updates = source();
+      const admitted = target.provider.receive('cross-tab', updates[1]);
+      expect(admitted).toBe(SYNC_DIRECTIONS[mode].receive);
+      let settled = false;
+      void consolidation.then(() => {
+        settled = true;
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(journal.replacements).toBe(0);
+      prior.resolve();
+      await consolidation;
+      await target.provider.flush();
+      const { decodeCheckpoint } = await import('../checkpoints/index.js');
+      expect(decodeCheckpoint(journal.checkpoint!).update).toEqual(before);
+      expect(journal.entries.length).toBeGreaterThan(0);
+      await expect(journal.read()).rejects.toThrow('Checkpoint-aware');
+      await target.provider.close();
+      const loaded = await open(mode, journal);
+      expect(loaded.value.encodeUpdate()).toEqual(target.value.encodeUpdate());
+      expect(loaded.value.snapshot()).toEqual(target.value.snapshot());
+      if (admitted) {
+        target.value.applyUpdate(updates[0]);
+        loaded.value.applyUpdate(updates[0]);
+        expect(loaded.value.encodeUpdate()).toEqual(target.value.encodeUpdate());
+      }
+    },
+  );
+
+  it.each(modes)(
+    'keeps a failed replacement and later tail retryable without regressing durability in %s',
+    async (mode) => {
+      const journal = new CheckpointMemoryJournal();
+      const target = await open(mode, journal);
+      const a1 = action();
+      target.value.append(a1);
+      await target.provider.flush();
+      const publication = target.provider.capturePublication();
+      const old = journal.entries.map((entry) => entry.slice());
+      const gate = deferred();
+      journal.replacementGate = gate.promise;
+      journal.replacementFailure = new Error('replacement quota');
+      const consolidation = target.provider.consolidate();
+      const rejection = expect(consolidation).rejects.toThrow('replacement quota');
+      target.value.append(action(A, 2n, [a1]));
+      const later = target.provider.capturePublication();
+      const updates = source();
+      expect(target.provider.receive('peer', updates[1])).toBe(SYNC_DIRECTIONS[mode].receive);
+      const closing = target.provider.close();
+      const closeRejection = expect(closing).rejects.toThrow('replacement quota');
+      await vi.waitFor(() => expect(journal.attempts).toBe(1));
+      expect(later.status().persisted).toBe(false);
+      expect(publication.status().persisted).toBe(true);
+      expect(journal.closed).toBe(false);
+      gate.resolve();
+      await rejection;
+      await closeRejection;
+      expect(journal.entries).toEqual(old);
+      expect(journal.checkpoint).toBeUndefined();
+      expect(journal.replacements).toBe(0);
+      expect(publication.status().persisted).toBe(true);
+      expect(target.errors).toContainEqual({
+        operation: 'persistence',
+        error: journal.replacementFailure,
+      });
+      journal.replacementFailure = undefined;
+      await target.provider.retryPersistence();
+      await target.provider.close();
+      expect(journal.replacements).toBe(1);
+      expect(later.status().persisted).toBe(true);
+      const loaded = await open(mode, journal);
+      expect(loaded.value.encodeUpdate()).toEqual(target.value.encodeUpdate());
+      expect(loaded.value.snapshot()).toEqual(target.value.snapshot());
+    },
+  );
+
+  it('serializes concurrent consolidations and flushes through both barriers without losing tails', async () => {
+    const journal = new CheckpointMemoryJournal();
+    const target = await open('bidirectional', journal);
+    const a1 = action();
+    target.value.append(a1);
+    const gate = deferred();
+    journal.replacementGate = gate.promise;
+    const first = target.provider.consolidate();
+    target.value.append(action(A, 2n, [a1]));
+    const secondBytes = target.value.encodeUpdate();
+    const second = target.provider.consolidate();
+    target.value.append(action(B));
+    const flush = target.provider.flush();
+    await vi.waitFor(() => expect(journal.attempts).toBe(1));
+    expect(journal.replacements).toBe(0);
+    gate.resolve();
+    await Promise.all([first, second, flush]);
+    expect(journal.replacements).toBe(2);
+    const { decodeCheckpoint } = await import('../checkpoints/index.js');
+    expect(decodeCheckpoint(journal.checkpoint!).update).toEqual(secondBytes);
+    expect(journal.entries).toHaveLength(1);
+    await target.provider.close();
+    const loaded = await open('disconnected', journal);
+    expect(loaded.value.encodeUpdate()).toEqual(target.value.encodeUpdate());
+  });
+
+  it('rejects unsupported consolidation before changing an append-only journal', async () => {
+    const target = await open();
+    await target.provider.flush();
+    const before = target.journal.entries.map((entry) => entry.slice());
+    await expect(target.provider.consolidate()).rejects.toThrow('does not support');
+    expect(target.journal.entries).toEqual(before);
+    target.value.append(action());
+    await target.provider.flush();
+  });
+
+  it.each([false, true])(
+    'fences inherited old-provider reads with nonempty tail=%s',
+    async (tail) => {
+      const journal = new CheckpointMemoryJournal();
+      const target = await open('disconnected', journal);
+      target.value.append(action());
+      await target.provider.consolidate();
+      if (tail) {
+        target.value.append(action(B));
+        await target.provider.flush();
+      }
+      // Model the unchanged old provider's complete-read startup path before subscription/seed.
+      const append = vi.spyOn(journal, 'append');
+      append.mockClear();
+      const value = store();
+      const subscribe = vi.spyOn(value, 'onUpdate');
+      const legacy: ActionJournal = {
+        read: () => journal.read(),
+        append: (update) => journal.append(update),
+        close: () => journal.close(),
+      };
+      await expect(
+        DirectionalActionProvider.open({ store: value, journal: legacy, mode: 'disconnected' }),
+      ).rejects.toThrow('Checkpoint-aware');
+      expect(subscribe).not.toHaveBeenCalled();
+      expect(append).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'fails startup on corrupt/unsupported checkpoint before authoring with tail=%s',
+    async (tail) => {
+      const journal = new CheckpointMemoryJournal();
+      journal.checkpoint = new Uint8Array([255]);
+      if (tail) journal.entries.push(source()[0]);
+      const value = store();
+      const subscribe = vi.spyOn(value, 'onUpdate');
+      const append = vi.spyOn(journal, 'append');
+      await expect(open('disconnected', journal, value)).rejects.toThrow();
+      expect(journal.closed).toBe(true);
+      expect(subscribe).not.toHaveBeenCalled();
+      expect(append).not.toHaveBeenCalled();
+      expect(value.snapshot().actions).toHaveLength(0);
+    },
+  );
+
+  it('retains checkpoint state through strict one-way retransmission, state-vector suffix and old dependencies', async () => {
+    const journal = new CheckpointMemoryJournal();
+    const sender = await open('outbound-only', journal);
+    const a1 = action();
+    sender.value.append(a1);
+    await sender.provider.consolidate();
+    await sender.provider.close();
+    const resumed = await open('outbound-only', journal);
+    const receiver = await open('inbound-only');
+    const offline = await open('disconnected');
+    offline.provider.setMode('bidirectional');
+    offline.provider.receive('peer', sender.value.encodeUpdate());
+    offline.provider.setMode('disconnected');
+    const messages: OutboundMessage[] = [];
+    resumed.provider.attachPeer('receiver', {
+      send: (message) => {
+        messages.push(message);
+      },
+    });
+    await resumed.provider.publish();
+    messages.length = 0; // lost bootstrap, no acknowledgment or return channel
+    resumed.value.append(action(A, 2n, [a1]));
+    await resumed.provider.publish();
+    const retry = messages.at(-1)!;
+    receiver.provider.receive('peer', retry.update);
+    receiver.provider.receive('peer', retry.update);
+    offline.value.append(action(C, 1n, [a1]));
+    offline.provider.setMode('outbound-only');
+    offline.provider.attachPeer('receiver', {
+      send: ({ update }) => {
+        receiver.provider.receive('peer', update);
+      },
+    });
+    await offline.provider.publish();
+    expect(receiver.value.snapshot().ready).toHaveLength(3);
+    resumed.provider.setMode('bidirectional');
+    const vector = resumed.value.encodeStateVector();
+    resumed.provider.receive('peer', receiver.value.encodeUpdate(vector));
+    expect(resumed.value.encodeUpdate()).toEqual(receiver.value.encodeUpdate());
+    await resumed.provider.consolidate();
+    await resumed.provider.close();
+    const loaded = await open('disconnected', journal);
+    expect(loaded.value.encodeUpdate()).toEqual(receiver.value.encodeUpdate());
+    expect(loaded.value.snapshot()).toEqual(receiver.value.snapshot());
+  });
+});
+
+it('reserves replacement before delayed hashing and rejects a present undefined in-memory checkpoint', async () => {
+  const journal = new CheckpointMemoryJournal();
+  const target = await open('bidirectional', journal);
+  target.value.append(action());
+  await target.provider.flush();
+  const original = crypto.subtle.digest.bind(crypto.subtle);
+  const gate = deferred();
+  let first = true;
+  const spy = vi.spyOn(crypto.subtle, 'digest').mockImplementation(async (algorithm, data) => {
+    if (first) {
+      first = false;
+      await gate.promise;
+    }
+    return original(algorithm, data);
+  });
+  const oldEntries = journal.entries.map((entry) => entry.slice());
+  const consolidating = target.provider.consolidate();
+  target.value.append(action(B));
+  let settled = false;
+  const flush = target.provider.flush().then(() => {
+    settled = true;
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(journal.entries).toEqual(oldEntries);
+  expect(settled).toBe(false);
+  gate.resolve();
+  await consolidating;
+  await flush;
+  spy.mockRestore();
+  expect(journal.entries).toHaveLength(1);
+  const invalid = new CheckpointMemoryJournal();
+  invalid.checkpoint = undefined;
+  await expect(invalid.read()).rejects.toThrow('Checkpoint-aware');
+  await expect(open('disconnected', invalid)).rejects.toThrow('Invalid journal checkpoint');
+});
+
+it('retries a failed hash from the original detached prefix before persisting later tail work', async () => {
+  const journal = new CheckpointMemoryJournal();
+  const target = await open('bidirectional', journal);
+  target.value.append(action());
+  await target.provider.flush();
+  const captured = target.value.encodeUpdate();
+  const original = crypto.subtle.digest.bind(crypto.subtle);
+  const spy = vi
+    .spyOn(crypto.subtle, 'digest')
+    .mockRejectedValueOnce(new Error('temporary digest failure'));
+  const consolidating = target.provider.consolidate();
+  target.value.append(action(B));
+  await expect(consolidating).rejects.toThrow('temporary digest failure');
+  expect(journal.checkpoint).toBeUndefined();
+  spy.mockImplementation(original);
+  await target.provider.retryPersistence();
+  spy.mockRestore();
+  const { decodeCheckpoint } = await import('../checkpoints/index.js');
+  expect(decodeCheckpoint(journal.checkpoint!).update).toEqual(captured);
+  expect(journal.entries).toHaveLength(1);
+  await target.provider.close();
+  const restored = await open('disconnected', journal);
+  expect(restored.value.encodeUpdate()).toEqual(target.value.encodeUpdate());
 });
