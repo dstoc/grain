@@ -220,8 +220,15 @@ function projectInline(
     fragments: TextFragment[] = [];
   const tapes = new Map<string, ReturnType<NativeView['snapshot']>>();
   const addresses = new Map(before.boundaries.map((b) => [addressKey(b.address), b.address]));
-  for (const fragment of before.fragments)
-    addresses.set(addressKey(fragment.address), fragment.address);
+  const retainedFragments = new Map<string, TextFragment>(),
+    seen = new WeakSet<object>();
+  for (const fragment of before.fragments) {
+    if (!seen.has(fragment.address)) {
+      addresses.set(addressKey(fragment.address), fragment.address);
+      seen.add(fragment.address);
+    }
+    retainedFragments.set(tokenKey(fragment.range), fragment);
+  }
   const address = (value: ReturnType<typeof textOrigin>) =>
     addresses.get(addressKey(value)) ?? freeze(value);
   for (const entry of ownership.raw(flow)) {
@@ -245,7 +252,19 @@ function projectInline(
       boundaries.push(
         Object.freeze({ offset: content.length, address: address(textOrigin(entry.slot, origin)) }),
       );
-    } else if (entry.type === 'cell')
+    } else if (entry.type === 'cell') {
+      const origin = entry.assignment.cell;
+      const location = address(
+        textOrigin(
+          {
+            run: entry.assignment.run,
+            boundary: origin.start,
+            side: 'right',
+            predecessor: null,
+          },
+          origin,
+        ),
+      );
       for (const fragment of entry.fragments) {
         let start = 0;
         while (start < fragment.text.length) {
@@ -267,29 +286,25 @@ function projectInline(
             clock: fragment.range.clock + start,
             length: end - start,
           };
-          const text = native
-            .lookup(range)
-            .map((part) => part.text)
-            .join('');
-          const origin = entry.assignment.cell;
-          const location = address(
-            textOrigin(
-              {
-                run: entry.assignment.run,
-                boundary: origin.start,
-                side: 'right',
-                predecessor: null,
-              },
-              origin,
-            ),
-          );
+          // Raw fragments already come from the exact immutable native view.
+          // Rereading each retained substring repeats native lookup and copying.
+          const text = fragment.text.slice(start, end),
+            prior = retainedFragments.get(tokenKey(range));
           fragments.push(
-            freeze({ text, range, address: location, visible: shown && !mask, masked: mask }),
+            prior &&
+              prior.range.length === range.length &&
+              prior.text === text &&
+              prior.address === location &&
+              prior.visible === (shown && !mask) &&
+              prior.masked === mask
+              ? prior
+              : freeze({ text, range, address: location, visible: shown && !mask, masked: mask }),
           );
           if (shown && !mask) content += text;
           start = end;
         }
       }
+    }
   }
   return Object.freeze({
     ...before,
