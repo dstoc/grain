@@ -218,3 +218,65 @@ test('paired runners reuse an exact retained fixture and reject a changed schedu
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('discarded publication roots are collectable while held publications remain readable', () => {
+  const result = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [
+        '--expose-gc',
+        '--import',
+        './benchmarks/multiwriter/resolve-ts.mjs',
+        '--input-type=module',
+        '--eval',
+        String.raw`
+      import { commandGenesis, commandReplica } from './test/multiwriter/commands/replica.ts';
+      import { insertText } from './src/editing/commands/insert-text.ts';
+      const turn = () => new Promise(resolve => setImmediate(resolve));
+      const results = [];
+      for (const managed of [false, true]) {
+        const peer = commandReplica(commandGenesis('abc'), undefined, 'materialized');
+        const history = managed ? peer.editor.session('gc') : undefined;
+        const edit = i => history
+          ? history.edit(insertText, {nodeId: peer.handle(peer.nodes()[0]), from: 1, text: 'x'})
+          : peer.editor.edit({local: 'gc', group: BigInt(i)}, insertText, {nodeId: peer.handle(peer.nodes()[0]), from: 1, text: 'x'});
+        const retired = (() => {
+          edit(1);
+          const value = peer.document.publication.status().publication;
+          return [new WeakRef(value.value), new WeakRef(value.native), new WeakRef(value.value.view.root)];
+        })();
+        let held = peer.document.publication.status().publication;
+        const retainedNative = held.native.encodeState(), retainedText = held.value.view.root.children[0].content;
+        for (let i = 2; i <= 16; i++) edit(i);
+        await turn(); global.gc(); global.gc();
+        const heldBefore = retired.every(ref => ref.deref() !== undefined);
+        await turn(); peer.document.publication.evict();
+        await turn(); global.gc(); global.gc();
+        const heldAfter = retired.every(ref => ref.deref() !== undefined);
+        if (held.value.view.root.children[0].content !== retainedText ||
+            !Buffer.from(held.native.encodeState()).equals(retainedNative)) throw new Error('Held publication changed');
+        held = undefined;
+        let released = false;
+        for (let i = 0; i < 10; i++) {
+          await turn(); global.gc(); global.gc();
+          if (retired.every(ref => ref.deref() === undefined)) { released = true; break; }
+        }
+        results.push({managed, heldBefore, heldAfter, released});
+        peer.close();
+      }
+      console.log(JSON.stringify(results));
+    `,
+      ],
+      { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ),
+  );
+  assert.deepEqual(
+    result,
+    [false, true].map((managed) => ({
+      managed,
+      heldBefore: true,
+      heldAfter: true,
+      released: true,
+    })),
+  );
+});

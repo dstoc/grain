@@ -1,9 +1,9 @@
 # Incremental multiwriter materialization status
 
 The opt-in reader reuses native state, readiness certificates, activity roots and
-coupled placement/ownership checkpoints. A narrow literal-input path updates the
-affected text flow and its ancestors while preserving unrelated view and address
-objects. MW-13 remains incomplete. The approved contract is
+coupled placement/ownership checkpoints. Insertions, exact text replacements and
+text-only history controls update affected flows and their ancestors while
+preserving unrelated view and address objects. MW-13 remains incomplete. The approved contract is
 [proposal v1](proposals/2026-11-05-mw13-incremental-materialization.md).
 
 Select the reader locally through bootstrap's
@@ -13,16 +13,17 @@ Yjs remains pinned to 13.6.33. No browser cutover or canonical pruning is includ
 
 ## Current behavior
 
-| Boundary             | Reused work                                                                                                  | Remaining cost or fallback                                                                                                                                                                                            |
-| -------------------- | ------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Readiness            | Reverse dependencies, immutable certificates, actor causal frontiers and resource queries                    | Ordered ready/head/variant arrays are still rebuilt. Public `snapshot()`/`compute()` exports deliberately clone detached diagnostics.                                                                                 |
-| Author certification | Exact causal native branch; touched-tape text/refinement checks; exact local certificate reused after append | Structural and control validation still materialize full causal arrays. A different author branch can reconstruct native state.                                                                                       |
-| Native publication   | New bodies integrate once; old views retain immutable roots                                                  | The affected tape is still indexed as a whole. Long tapes require interval work.                                                                                                                                      |
-| Activity             | Persistent roots and deterministic suffix replay                                                             | Exact prefix comparison and compatibility-array construction still visit retained payloads.                                                                                                                           |
-| Coupled replay       | Persistent placement forests, ownership maps, attachments, cohorts and structural intentions                 | Marker refinement before structural readers preserves home assignments/checkpoints; other existing-tape marker changes replay from genesis. The general preparation path still enumerates native snapshots/resources. |
-| Text projection      | Affected tape/flow and ancestor path; unchanged nodes and addresses retain identity                          | Deletions, inactive births, scaffolds and structural/interpretation changes use full projection. The touched tape/flow is still scanned.                                                                              |
-| Command preparation  | Publication-local handle indexes, lazy text pieces and native-resource access                                | Structural compiler queries still use the full projector. Ready metadata and writer synchronization still enumerate retained actions.                                                                                 |
-| Managed history      | Existing MW-10 semantics and private literal selection staging                                               | Non-literal or visibility-changing selection staging still constructs a full author projection. Managed and unmanaged timings remain separate.                                                                        |
+| Boundary             | Reused work                                                                                                                                                        | Remaining cost or fallback                                                                                                                            |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Readiness            | Reverse dependencies, immutable certificates, actor causal frontiers and resource queries                                                                          | Ordered ready/head/variant arrays are rebuilt. Public diagnostic exports still clone detached values.                                                 |
+| Author certification | Exact causal native branch; touched-tape refinement and exact deletion checks; text-only controls reuse certified raw structure after complete activity validation | Structural/property actions still materialize full causal arrays. A different author branch can reconstruct native state.                             |
+| Native publication   | New bodies integrate once; old views retain immutable roots                                                                                                        | The affected tape is indexed as a whole. Long tapes require interval work.                                                                            |
+| Activity             | Persistent roots and deterministic suffix replay                                                                                                                   | Exact prefix comparison and compatibility arrays still visit retained payloads.                                                                       |
+| Coupled replay       | Persistent placement/ownership roots; tape-local split reader frontiers; compatible cell subdivision; continuous native snapshot/cell roots                        | Invalidation is conservative within a read tape. General preparation still enumerates retained resources, homes and compatibility arrays.             |
+| Text projection      | Insertions, exact deletion/replacement and text-only controls update affected flows/ancestors; tape readers include ghost addresses                                | Subtree deletion, dormant births, scaffolds and structural/interpretation changes use full projection. Touched tapes/flows are scanned.               |
+| Command preparation  | Publication-local handles, lazy text pieces/native resources, raw ownership reuse between replacement deletion and insertion                                       | Structural compiler queries still use the full projector. Writer synchronization still enumerates retained actions.                                   |
+| Managed history      | Exact pre-append text selection staging; text-only Undo/Redo updates visibility locally                                                                            | Structural/property selection staging uses full author projection. Generic control validation still constructs causal arrays.                         |
+| Cache eviction       | Drops readiness/author certificates and preimages, private native caches and historical reducer roots; reverse indexes rebuild on the next read                    | Active publications retain shared roots. Cache counts and controlled released-heap deltas do not establish total cache heap or peak candidate memory. |
 
 The independent reference entry still performs full readiness, native, activity,
 ownership, visibility and semantic replay. It does not call the optimized
@@ -37,12 +38,17 @@ cache policies. They do not limit canonical facts or local history groups.
 
 A coupled checkpoint forks placement and ownership together. Compatibility
 requires exact payloads and matching effective activity/interpretation decisions.
-A late control invalidates its earliest affected target, even when the control
-itself sorts later. Before the first structural reader, native marker refinement inherits each old
-cell’s home assignment and refines all retained checkpoint cell roots. Those
-checkpoints retain their original layout prefixes. Old publications keep their
-original roots. Marker changes after structural readers still invalidate all
-structural checkpoints, including the zero-action checkpoint.
+A structural control invalidates its earliest affected target, even when the
+control sorts later. Text-only controls change insertion activity and exact tags
+without changing raw placement or ownership. Their raw roots stay reusable.
+
+Active split replay records every tape read by its current component traversal,
+including joined tapes outside its authored basis. Marker subdivision refines each
+checkpoint's own assignments before the first affected reader. A tape unrelated
+to that reader does not invalidate its prefix. Checkpoints before a tape's birth
+do not acquire its ownership. Marker withdrawal or reordering forces replay from
+genesis. Old publications keep their original roots. Reader dependencies remain
+conservative at tape granularity; this is not interval-local invalidation.
 
 Preparation returns a candidate. The reader commits activity and projection only
 after complete publication. Cancellation, failure or changed receipts preserve
@@ -50,24 +56,38 @@ the previous tuple. Old native/ownership/view reads remain valid after later
 commits and cache eviction. Work counters can include attempted candidates;
 `lastReplayFrom` and `lastReplayLength` describe committed replay.
 
-Private managed literal staging uses the same flow projection against the writer’s
+Private managed text staging uses the same flow projection against the writer's
 exact native draft before append. It captures stable selection without committing
 activity, ownership or projection roots. Rejection leaves canonical facts and local
 history unchanged. Reentrant peer changes after append do not alter that captured
 author result.
 
-The local text path requires one new final action, identical retained payloads,
-only text/marker refinement, a continuous native branch, and unchanged
-visibility/interpretation decisions. It admits only insertion effects. Marker births additionally require a prefix
-without structural readers; marker-only changes update edit addresses. It keeps
-full diagnostic action/effect/text arrays lazy. New text cannot enter an existing
-exact syntax mask because it has fresh native identities.
+The local path requires one new final action, identical retained payloads, a
+continuous native branch, active node births and no active subtree deletion.
+It admits insertion/exact-deletion actions or an owner control whose complete
+target group contains only those actions. Ingest still validates control ownership,
+complete groups and control chains. Structural/mixed targets keep full replay.
+New text cannot enter an existing exact syntax mask because its identities are
+fresh. Marker births require no preceding split reader of the affected tape;
+marker-only changes update all projected address readers, including ghost runs.
+Diagnostic action/effect/text arrays stay lazy.
 
-Eviction releases publication-native, activity and coupled/projection caches. It
-retains the active publication and canonical facts. Readiness certificates and
-the separate author-certification cache still need explicit eviction accounting.
-MW-18 journal consolidation remains a separate operation on the integration
-branch. A cached projection is never a canonical checkpoint.
+Exact deletion stores native tags without removing text. Undo recomputes insertion
+activity and active tags on affected tapes in semantic order. Managed command
+results retain the staged native focus; re-lowering an old numeric offset after a
+reentrant peer prepend can split a surrogate pair. Both readers have that regression.
+
+Eviction releases publication-native, activity, coupled/projection, readiness and
+author-certification caches, including detached certification preimages. It first
+cancels suspended readiness validation, then releases its private native branch.
+Retained decoded facts and undecoded ingress remain in the canonical store;
+reverse dependencies rebuild on the next read. The active publication, live
+history and canonical bytes remain intact. `cacheDiagnostics()` reports direct
+counts/encoded lengths, not heap. Controlled before/after-GC probes report only
+uniquely released whole-process heap while those retained roots stay fixed.
+Shared active-publication roots and peak candidate memory remain unmeasured.
+MW-18 journal consolidation remains separate on the integration branch. A cached
+projection is never a canonical checkpoint.
 
 ## Retention-test profiling
 
@@ -110,6 +130,36 @@ This work does not yet replace full touched-tape index construction, conservativ
 structural marker invalidation or general projection. The issue's profiling
 artifacts record the source and limits of each measurement.
 
+## Reader, replacement and eviction stage
+
+Engine/test source `fc866472c92dba3595af99cafe5466569551efc6` passes the
+unfiltered Node suite: 2,252 tests, the same 194 original source skips, 648.45
+seconds with three workers. The unchanged frozen 501-group materialization case
+takes 292.179 seconds in that suite. No isolated rerun is claimed. The later
+formatting commit changes one test's layout only; its compiled JavaScript is equal.
+An occurrence audit preserves every previous test after one performance-case
+rename and adds 30 cases. Text-control work expectations now assert reusable raw
+roots; semantic/frozen assertions, seeds, schedules and deadlines remain unchanged.
+Structural rollback still checks checkpoint 128.
+
+Combined MW-10/MW-18 source `d1f8bed01cb01c3573b192be537e677c101b3212`
+passes 230 checks across 11 files in 213.92 seconds. It includes the real managed
+501-group control, both frozen maintenance traces, journal replacement/retry,
+cache eviction, old-prefix edits, restart and the new text/history regressions.
+Managed 501 groups use task-state commands, not mixed-text performance. Journal
+consolidation reduces batches but can increase serialized bytes. The dependency's
+normal conflict resolution and review/merge remain required. No new browser run
+is claimed; storage behavior is unchanged.
+
+Focused controls cover unrelated split tapes, transferred ghost addresses,
+checkpoints before transfers/new home births, joined traversal readers, cancelled
+candidates, marker withdrawal, exact deletion, overlapping peer tags, Unicode,
+managed observer recovery, live history after eviction and malformed ranges.
+Independent full replay remains the oracle. New short measurement probes retain
+exact common genesis bytes, alternating fresh processes and post-timing reference
+checks. Reports keep their source/scope and do not establish scale or mixed-history
+acceptance. See grain/94's current-stage artifacts for raw reports and limitations.
+
 ## Evidence and outstanding gates
 
 Focused checks cover detached exports, concurrent-resource exclusion, exact
@@ -122,13 +172,15 @@ column. The issue artifacts identify exact source heads and completed runs.
 
 Complete the following before accepting MW-13:
 
-1. Extend the text-prefix marker refinement to precise structural-reader
-   invalidation and compatible structural cell refinement. Remove full resource/native enumeration from the
-   general suffix preparation path.
+1. Refine tape-local structural reader invalidation to affected intervals. Remove
+   retained resource/home enumeration from general suffix preparation. Native
+   snapshot/cell construction now reuses continuous roots, but resource validation
+   still traverses the inventory.
 2. Extend affected-container projection through deletion, dormant births,
    interpretation selection, lifting, wrapper grouping and ordered numbering.
-3. Finish lazy writer metadata, action-local structural
-   compilation and non-literal managed-history staging without full replay.
+3. Finish lazy writer metadata, action-local structural compilation and structural/
+   property history staging without full replay. Exact text replacement and
+   text-only history staging now use the local path.
 4. Replace whole touched-tape work with affected native interval indexes.
 5. Verify cancellation/capacity/withdrawal at the new boundaries against the full
    oracle, including the frozen corpus, generated schedules and real commands.
