@@ -63,6 +63,8 @@ export function projectMarkdown(input: ProjectionInput) {
 export interface PreparedStructure {
   readonly ownership: OwnershipResult;
   readonly snapshots: readonly TapeSnapshot[];
+  /** Optional derived text index; reference projection always uses the full scan. */
+  readonly visibility?: typeof reduceVisibility;
 }
 export function projectWithActivity(
   input: ProjectionInput,
@@ -220,7 +222,8 @@ function project(input: ProjectionInput, groupActivity: Activity, structure?: Pr
     containsBirthContent: (node, token) =>
       birthContent.get(resourceKey(node))!.some((range) => ownership.contains(range, token)),
   };
-  const initialVisibility = reduceVisibility(
+  const visibilityReducer = structure?.visibility ?? reduceVisibility;
+  const initialVisibility = visibilityReducer(
     activity,
     visibilityLayout,
     tokens,
@@ -271,7 +274,7 @@ function project(input: ProjectionInput, groupActivity: Activity, structure?: Pr
     ),
   );
   const visibility = hiddenDerivations.size
-    ? reduceVisibility(
+    ? visibilityReducer(
         activity,
         {
           ...visibilityLayout,

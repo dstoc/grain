@@ -27,6 +27,7 @@ import { selectInterpretations } from '../projection/interpretation.js';
 import type { PresentedProperties } from '../projection/interpretation.js';
 import { isPropertyRefinement } from './properties.js';
 import { finish } from '../ingest/work.js';
+import { indexedVisibility } from './text-deletions.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
 interface NodeRecord {
@@ -366,6 +367,9 @@ export class MaterializedProjection {
     stagedStructureTapesRead: 0,
     localPropertyProjections: 0,
     stagedPropertyProjections: 0,
+    exactDeletionRangesIndexed: 0,
+    exactDeletionQueries: 0,
+    exactDeletionNodesVisited: 0,
   };
   fullProjectionCount(): number {
     return this.counts.fullProjections;
@@ -434,7 +438,10 @@ export class MaterializedProjection {
       };
       const prepared = yield* this.ownership.prepare(input, activity, variants, undefined, actions);
       yield;
-      const value = projectWithActivity(input, activity, prepared.value);
+      const value = projectWithActivity(input, activity, {
+        ...prepared.value,
+        visibility: indexedVisibility(this.counts),
+      });
       state = index(value, input);
       commitStructure = prepared.commit;
       this.counts.fullProjections++;
@@ -581,7 +588,10 @@ export class MaterializedProjection {
     ];
     try {
       const structure = finish(branch.prepare(input, activity, variants, touched, sequence));
-      const value = projectWithActivity(input, activity, structure.value);
+      const value = projectWithActivity(input, activity, {
+        ...structure.value,
+        visibility: indexedVisibility(this.counts),
+      });
       this.counts.stagedStructuralProjections++;
       return value;
     } finally {

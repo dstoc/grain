@@ -88,6 +88,30 @@ export function reduceVisibility(
   /** Packet-owned births may be dormant while their allocating action remains active. */
   birthEnabled: (node: NodeId) => boolean = () => true,
 ): Visibility {
+  return reduce(activity, layout, tokens, birthEnabled);
+}
+
+/** Internal materialization seam. The supplied query must describe exactly the
+ * active DeleteText effects, in their semantic order, at this ready set. The
+ * reference entry above always scans those effects independently.
+ */
+export function reduceVisibilityWithTextTags(
+  activity: Activity,
+  layout: VisibilityLayout,
+  tokens: readonly TextToken[],
+  birthEnabled: (node: NodeId) => boolean,
+  exactTextTags: (token: TextToken) => readonly DeletionId[],
+): Visibility {
+  return reduce(activity, layout, tokens, birthEnabled, exactTextTags);
+}
+
+function reduce(
+  activity: Activity,
+  layout: VisibilityLayout,
+  tokens: readonly TextToken[],
+  birthEnabled: (node: NodeId) => boolean,
+  exactTextTags?: (token: TextToken) => readonly DeletionId[],
+): Visibility {
   const nodes = new Map(layout.nodes.map((node) => [resourceKey(node.id), node]));
   if (nodes.size !== layout.nodes.length) throw new Error('Duplicate node allocation');
   const tags = new Map<string, Map<string, DeletionId>>();
@@ -115,6 +139,16 @@ export function reduceVisibility(
   const deletes = activity.effects.filter(
     (entry) => entry.effect.type === 'DeleteText' || entry.effect.type === 'DeleteSubtree',
   );
+  const tokenDeletes = exactTextTags
+    ? deletes.filter((entry) => entry.effect.type === 'DeleteSubtree')
+    : deletes;
+  const tagOrder = new Map<string, number>();
+  if (exactTextTags)
+    for (const { effect } of deletes) {
+      if (effect.type !== 'DeleteText' && effect.type !== 'DeleteSubtree') continue;
+      const key = resourceKey(effect.tag);
+      if (!tagOrder.has(key)) tagOrder.set(key, tagOrder.size);
+    }
   const inheritedCoverage = new Map<string, NodeId[]>();
   for (const { action, effect } of deletes) {
     if (effect.type !== 'DeleteSubtree') continue;
@@ -161,7 +195,8 @@ export function reduceVisibility(
     requireNode(owner);
     const insertionActive = token.birth === null || activity.isActive(token.birth);
     const tokenTags = new Map<string, DeletionId>();
-    for (const { effect } of deletes) {
+    for (const tag of exactTextTags?.(token) ?? []) tokenTags.set(resourceKey(tag), tag);
+    for (const { effect } of tokenDeletes) {
       if (effect.type !== 'DeleteText' && effect.type !== 'DeleteSubtree') continue;
       const covered =
         effect.type === 'DeleteText'
@@ -181,7 +216,11 @@ export function reduceVisibility(
     return {
       token,
       insertionActive,
-      tags: [...tokenTags.values()],
+      tags: exactTextTags
+        ? [...tokenTags.values()].sort(
+            (a, b) => tagOrder.get(resourceKey(a))! - tagOrder.get(resourceKey(b))!,
+          )
+        : [...tokenTags.values()],
       deletedDestination,
       visible: insertionActive && !tokenTags.size && !deletedDestination,
     };
