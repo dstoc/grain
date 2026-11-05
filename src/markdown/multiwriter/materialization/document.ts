@@ -81,6 +81,10 @@ export function openMaterializedDocument(
         projection.cancel();
       },
       evict() {
+        // A suspended readiness validator must finish cancellation before its
+        // private branch/preimages can be released. No canonical facts change.
+        store.evict();
+        validate.evict();
         activity.evict();
         projection.evict();
       },
@@ -92,6 +96,10 @@ export function openMaterializedDocument(
     activityDiagnostics: () => activity.diagnostics(),
     ownershipDiagnostics: () => projection.diagnostics().ownership,
     projectionDiagnostics: () => projection.diagnostics(),
+    cacheDiagnostics: () => ({
+      readiness: store.cacheDiagnostics(),
+      author: validate.cacheDiagnostics(),
+    }),
     store,
     publication,
     setNativeDecodeLimit(operations: number): void {

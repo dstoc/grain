@@ -313,6 +313,10 @@ export class ActionStore {
   protected fact(key: string): ActionFact | undefined {
     return this.entries.get(key);
   }
+  /** Rebuild derived readers from retained decoded facts without canonical writes. */
+  protected retainedFacts(): Iterable<ActionFact> {
+    return this.entries.values();
+  }
   protected factChanged(_fact: ActionFact): void {}
   protected *decodePending(): Work<void> {
     while (this.undecoded.length) {
