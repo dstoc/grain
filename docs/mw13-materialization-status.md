@@ -2,7 +2,7 @@
 
 The opt-in reader reuses native state, readiness certificates, activity roots and
 coupled placement/ownership checkpoints. Insertions, exact text replacements and
-text-only history controls update affected flows and their ancestors while
+text-only history controls update affected flows and their ancestors. Checked/info edits update affected view records while
 preserving unrelated view and address objects. MW-13 remains incomplete. The approved contract is
 [proposal v1](proposals/2026-11-05-mw13-incremental-materialization.md).
 
@@ -13,17 +13,17 @@ Yjs remains pinned to 13.6.33. No browser cutover or canonical pruning is includ
 
 ## Current behavior
 
-| Boundary             | Reused work                                                                                                                                                        | Remaining cost or fallback                                                                                                                                              |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Readiness            | Reverse dependencies, immutable certificates, actor causal frontiers, ready-membership roots and resource queries                                                  | Ordered ready/head/variant arrays are rebuilt. Public diagnostic exports still clone detached values.                                                                   |
-| Author certification | Exact causal native branch; touched-tape refinement and exact deletion checks; text-only controls reuse certified raw structure after complete activity validation | Structural/property actions still materialize full causal arrays. A different author branch can reconstruct native state.                                               |
-| Native publication   | Shared ready-root differences select new native bodies; old views retain immutable roots                                                                           | The affected tape is indexed as a whole. Long tapes require interval work.                                                                                              |
-| Activity             | Persistent roots and deterministic suffix replay                                                                                                                   | Exact prefix comparison and compatibility arrays still visit retained payloads.                                                                                         |
-| Coupled replay       | Persistent placement/ownership roots; tape-local split readers; compatible cell subdivision; native snapshot/cell roots; retained-resource/home certificates       | Invalidation is conservative within a read tape. General projection exports all snapshots; coverage, compatibility and output arrays still traverse retained structure. |
-| Text projection      | Insertions, exact deletion/replacement and text-only controls update affected flows/ancestors; tape readers include ghost addresses                                | Subtree deletion, dormant births, scaffolds and structural/interpretation changes use full projection. Touched tapes/flows are scanned.                                 |
-| Command preparation  | Publication-local handles, lazy text pieces/native resources, indexed native planning and writer synchronization, raw ownership reuse during replacement           | Structural compiler queries still use full projection. Readiness compatibility arrays remain global work; exceptional writer synchronization scans retained actions.    |
-| Managed history      | Exact pre-append text selection staging; text-only Undo/Redo updates visibility locally                                                                            | Structural/property selection staging uses full author projection. Generic control validation still constructs causal arrays.                                           |
-| Cache eviction       | Drops readiness/author certificates and preimages, private native caches and historical reducer roots; reverse indexes rebuild on the next read                    | Active publications retain shared roots. Cache counts and controlled released-heap deltas do not establish total cache heap or peak candidate memory.                   |
+| Boundary             | Reused work                                                                                                                                       | Remaining cost or fallback                                                                                                                                                                    |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Readiness            | Reverse dependencies, immutable certificates, actor causal frontiers, ready-membership roots and resource queries                                 | Ordered ready/head/variant arrays are rebuilt. Public diagnostic exports still clone detached values.                                                                                         |
+| Author certification | Exact causal native branch; touched-tape refinement; property-only updates query exact author-past resources                                      | Structural actions and property controls still construct causal arrays. Different author branches can reconstruct native state. Fresh replay now indexes occurrence sequences.                |
+| Native publication   | Shared ready-root differences select new native bodies; old views retain immutable roots                                                          | The affected tape is indexed as a whole. Long tapes require interval work.                                                                                                                    |
+| Activity             | Persistent roots and deterministic suffix replay                                                                                                  | Exact prefix comparison and compatibility arrays still visit retained payloads.                                                                                                               |
+| Coupled replay       | Persistent placement/ownership roots, resource/home certificates and split topology-read intervals                                                | Marker births outside retained read intervals reuse the prefix. Matching scans intervals on the changed tape; tape/cell construction and general coverage remain global within touched tapes. |
+| Local projection     | Insertions, exact deletion/replacement, text controls and checked/info updates replace affected view records and ancestors                        | Subtree deletion, dormant births, scaffolds, presentation/marker changes, structural edits and interpretation still use full projection.                                                      |
+| Command preparation  | Lazy text/checked/info overlays; participating split tapes; private coupled ownership forks; indexed native planning                              | Structural drafts still copy the semantic tree. Parser-conversion state queries, cold ownership preparation and retained compatibility arrays remain whole-state work.                        |
+| Managed history      | Exact pre-append selection staging; local text and checked/info projection; structural staging reuses suffix-replayed ownership on a private fork | Structural staging still runs full visibility/normalization projection. Structural/property controls retain full author validation.                                                           |
+| Cache eviction       | Drops readiness/author certificates and preimages, private native caches and historical reducer roots; reverse indexes rebuild on the next read   | Active publications retain shared roots. Cache counts and controlled released-heap deltas do not establish total cache heap or peak candidate memory.                                         |
 
 The independent reference entry still performs full readiness, native, activity,
 ownership, visibility and semantic replay. It does not call the optimized
@@ -47,8 +47,7 @@ including joined tapes outside its authored basis. Marker subdivision refines ea
 checkpoint's own assignments before the first affected reader. A tape unrelated
 to that reader does not invalidate its prefix. Checkpoints before a tape's birth
 do not acquire its ownership. Marker withdrawal or reordering forces replay from
-genesis. Old publications keep their original roots. Reader dependencies remain
-conservative at tape granularity; this is not interval-local invalidation.
+genesis. Old publications keep their original roots. Split readers now retain the marker intervals read by range, adjacency and token queries. New markers outside those intervals do not invalidate the split. Marker-order validation makes position and membership queries stable under subdivision. Range matching remains linear within each affected tape, and native construction still indexes the whole touched tape.
 
 Preparation returns a candidate. The reader commits activity and projection only
 after complete publication. Cancellation, failure or changed receipts preserve
@@ -289,6 +288,154 @@ complete edit takes 699.491 ms including cache reconstruction. Timing workers
 attach no journal. Canonical, embedded native, synthetic-descriptor and serialized
 history byte fields remain separate.
 
+## Command, property and native-interval stage
+
+Engine/test source `c103ad106ca3ee90c42f13bdc0fb98f8f90af2eb` includes compiler
+checkpoint `bbb0b6c38f3b21b204dab777fd155b47717179a7` and property/interval
+checkpoint `2595b9901ce64c2870fc1b925c20bcb04bd95aa3`. Earlier sources and reports
+remain preserved.
+
+Compiler ownership queries fork the committed coupled checkpoint and replay the
+unpublished action. Each query starts from the committed prefix. Partial effects
+are never committed. Receipt/version guards reject stale branches. Split planning
+uses participating tapes and direct home queries. Cold preparation retains full
+raw replay. Parser-conversion view queries still use full projection. Managed
+structural selection staging reuses a private ownership fork, then runs the full
+visibility/normalization projector before append.
+
+Checked and code-info edits stay in command overlays until a structural operation
+requires the isolated tree. The draft and compiler flush those properties before
+materialization. Exact author-past resource queries certify property-only actions
+without cloning the causal closure or reading native tapes. This shortcut accepts
+no births, native bodies or interpretation members. Checked/info publication and
+owner controls update affected records and ancestors while preserving text
+addresses. Presentation/marker changes, mixed groups and hidden/merged targets
+retain full projection. Property controls still use full author validation.
+
+Split replay records topology-read marker intervals, including transferred and
+joined ranges outside the authored basis. New markers outside a reader's intervals
+reuse its prefix. New markers inside a read interval invalidate the first reader.
+Withdrawal or reordered retained markers force conservative reconstruction.
+Checkpoint forks preserve each prefix's own assignments and read intervals.
+Interval matching scans retained ranges on the affected tape. It does not replace
+whole touched-tape snapshots or CellIndex construction.
+
+Native clock queries now select overlapping disjoint intervals and return cells
+in tape order. Clock order can differ from tape order after later insertions.
+Overlapping diagnostic snapshots retain the original coverage/duplicate checks.
+The old source reads 11/1,001 cell-fragment lists for one token in 10/1,000-cell
+controls; current controls read only the selected cell. The same-tape transferred
+split control skips an outside marker and still replays for an inside marker.
+
+A sampled three-cycle structural diagnostic at `2595b99` excludes genesis and the
+final cold oracle. About 65% of sampled time is in author certification; retained
+occurrence scans dominate its fresh replay. `LayoutPrefix` now builds its own
+sequence index during each reconstruction and uses its existing block-owner map
+for child queries. Empty boundary queries call `slotSequence` once rather than
+11/151 times with 10/150 unrelated births. The independent reference still builds
+all inputs and state from scratch. It receives no candidate checkpoints or
+materializer state. Pure ordering and cycle rules remain unchanged.
+
+Verification is source-scoped:
+
+- `bbb0b6c`: broad Node 2,285 passed; two short trace audits pass separately.
+  Together they cover 2,287 cases with only the two long history-limit cases
+  deferred and the original 194 skips. The raw broad filter excluded four names;
+  the audit preserves that distinction.
+- `2595b99`: broad Node 2,305 passed, exactly the two long cases filtered and the
+  original 194 source skips. Every prior occurrence is preserved; 24 cases were
+  added over `5f09381`.
+- `c103ad1`: broad Node 2,308 passed, the same two explicit filters and 194 source
+  skips. The runtime occurrence inventory preserves all previous cases and adds
+  27 over `5f09381`. The unchanged materialization and independent-reference 501-group cases pass separately in 278.386 and 220.739 seconds. The joined runtime audit covers all 2,310 runnable Node cases plus 194 source skips. This is partitioned coverage, not one unfiltered command.
+- Combined MW-10/MW-18 source `55387b17887989dc40e1386161e57845381897b0` passes
+  272 checks in 18 files. Coverage includes real managed 501 groups, both frozen
+  maintenance traces, strict one-way/catch-up, consolidation/retry, cache eviction,
+  old-prefix editing/restart and the new compiler/property/interval controls.
+  This remains correctness/storage evidence rather than mixed-text performance.
+
+Build, web build, lint, format, boundaries, both Knip modes and all five benchmark
+harness checks pass at `c103ad1`. No assertion, source skip, seed, schedule, restart,
+or retention deadline was weakened. The frozen materialization retention case was
+not repeated per edit. Normal dependency conflict resolution/review/merge remains
+required for PR #79. No fresh Chromium run is claimed.
+
+At benchmark source `4bdee7253ad5f6168464e171d92fbf49b0b602a0`, three
+alternating fresh-process structural/task triples and three cache-eviction pairs
+complete on the exact retained 150-paragraph genesis or a separately retained
+150-task-item genesis. Both retain real managed history and native selection;
+cold reference checks stay outside timed intervals. The first two of six cycles
+are warm-up. Values below are medians of three per-process p50/p95s.
+
+| Whole command      | Candidate p50/p95 ms | Prior source p50/p95 ms | Current full reference p50/p95 ms |
+| ------------------ | -------------------- | ----------------------- | --------------------------------- |
+| Split              | 846.956 / 1,090.888  | 4,012.584 / 6,045.769   | 1,167.724 / 1,478.650             |
+| Join               | 664.087 / 846.078    | 2,942.749 / 4,258.180   | 952.932 / 1,178.669               |
+| Task checked state | 46.664 / 65.821      | 1,023.956 / 1,032.445   | 525.635 / 538.512                 |
+
+Candidate structural Undo/Redo p50 is 417.563/425.068 ms; task Undo/Redo is
+106.670/106.057 ms. The structural target is not met at this source. These are
+shallow whole-command observations, not core phases or portable budgets. They do
+not describe the later initial-property lookup source. The prior source is
+`45a86d4` (engine `5f09381`); full reference uses the same current source and
+accepted managed history, not the pinned pre-MW-10 baseline.
+
+Three 64-group literal eviction pairs release median candidate process heap of
+5,777,432 bytes with canonical export, active publication and history fixed.
+Median before/after heap is 34,083,024/28,303,208 bytes. This is uniquely released
+whole-process heap, not total/shared/peak cache or isolated history heap. The
+writer still retains its 63-action ready root plus one appended-ahead identity;
+all 64 canonical facts remain. Eviction takes 0.329 ms excluding GC and the next
+edit takes 515.242 ms including reconstruction. Timed workers attach no journal.
+Native/canonical/descriptor/serialized-history fields remain separate.
+
+A subsequent full-projector lookup stage is pinned to engine/test/benchmark source
+`7b9417b50cf69fc375479d5c5c38cef39a6bc75c`. Initial-property validation now
+builds a fresh set of retained node origins instead of scanning allocations for
+every initial property. Duplicate/unknown rejection and full reconstruction remain.
+The 150-node old guard makes 23,250 resource-key calls before its first native
+snapshot; the new linear-work bounds pass. The three controls preserve rejection
+behavior and fail on the old lookup where expected.
+
+This latest source passes 2,311 Node cases with exactly the two long history-limit
+cases filtered and the original 194 skips. Runtime auditing preserves all previous
+occurrences and adds 30 over `5f09381`. Build/web/lint/format/boundaries/both Knip
+modes and all five expanded harness checks pass. The frozen reference-factory
+retention descriptors omit initialProperties, so the new set branch is unused
+there. Per the approved cadence those unchanged long cases were not repeated for
+this lookup edit; their `c103ad1` isolated evidence remains above. No new complete
+latest-source/unfiltered pass is claimed. Combined head
+`124ad2212e7da47ae8def566b387f54bdaf226cc` passes 82 affected checks; the
+full combined 272-case report remains pinned to `55387b1`.
+
+Three alternating replacement pairs at 1,000 paragraphs complete at `7b9417b`,
+reusing the same retained genesis bytes captured before the lookup edit. Six real
+managed replacements carry native selection; the first two warm up. Candidate
+whole-command median per-process p50/p95 is 5.062/6.770 ms. Full reference is
+7,785.771/7,892.091 ms. One actual Undo/Redo runs per process, and each completed
+process compares its exact final state with cold full reference outside timing.
+This does not establish core-phase, structural, fragmentation or mixed-10k gates.
+Controlled-GC process readings include the synthetic genesis, instance, writer,
+history and runtime; they are not total/shared/peak cache measurements.
+
+The 5,000-paragraph paired replacement workload did not complete within this
+run. Its exact 19,433,457-byte synthetic genesis and interrupted report are retained.
+No 5,000-paragraph pair is verified. A separate candidate-only probe reached its
+240-second benchmark limit before returning a cold-reference comparison (exit
+124), so it supplies no verified latency sample. This benchmark limit changes no
+correctness-test deadline. The 1,000-paragraph six-process result is complete;
+the overall wide report stays incomplete. No extrapolated 5k or mixed-10k result
+is claimed.
+
+A final three-cycle profile at `7b9417b`, with other workers stopped, still attributes about 38.5% inclusive sampled time to publication refresh, 26.6% self samples to resourceKey and 22.3% to structuredClone. Nested inclusive samples overlap; these are cost diagnostics, not core-phase wall times or a matched speedup.
+
+The stage artifacts retain all raw samples, exact fixtures, source inventories,
+negative controls, scripts, CPU profile and interrupted development diagnostics.
+No prior evidence is relabeled as the latest source. Remaining scale, memory,
+projection, compatibility, mixed-10k and real maintenance performance gates stay
+open. PR #88 remains draft and PR #79 still needs normal conflict resolution,
+independent review and merge.
+
 ## Evidence and outstanding gates
 
 Focused checks cover detached exports, concurrent-resource exclusion, exact
@@ -301,16 +448,20 @@ column. The issue artifacts identify exact source heads and completed runs.
 
 Complete the following before accepting MW-13:
 
-1. Refine tape-local structural reader invalidation and touched-tape construction
-   to affected native intervals. Resource/home validation now reuses compatible
-   certificates; general coverage, compatibility and projection exports still
-   traverse retained structure. Earlier-arrival resource reconstruction is cold.
+1. Finish affected-interval native construction and indexed invalidation queries.
+   Split read intervals now exclude unrelated same-tape marker births, but matching
+   scans retained ranges and touched tapes are rebuilt. General coverage,
+   compatibility and projection exports still traverse retained structure.
+   Earlier-arrival resource reconstruction is cold.
 2. Extend affected-container projection through deletion, dormant births,
    interpretation selection, lifting, wrapper grouping and ordered numbering.
-3. Finish lazy retained readiness/head/variant metadata, action-local structural
-   compilation and structural/property history staging without full replay. Writer
-   frontiers/native synchronization and private native-plan reads now use indexes.
-   Exact replacement and text-only history staging use the local path.
+3. Finish lazy retained readiness/head/variant metadata and action-local structural
+   compilation. Intermediate ownership and structural selection staging now reuse
+   private coupled forks, but semantic structural drafts still copy the tree,
+   parser conversion still projects fully and structural selection staging still
+   runs full visibility/normalization. Property-only author certification and
+   checked/info overlays/projection are local; property controls retain full author
+   validation.
 4. Replace whole touched-tape work with affected native interval indexes.
 5. Verify cancellation/capacity/withdrawal at the new boundaries against the full
    oracle, including the frozen corpus, generated schedules and real commands.
