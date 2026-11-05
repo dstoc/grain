@@ -14,6 +14,8 @@ import { compareBytes } from '../actions/cbor.js';
 import { resourceKey } from '../layout/index.js';
 import type { OwnershipCheckpoint } from './ownership.js';
 import { MaterializedCells } from './cells.js';
+import { OwnershipResources } from './resources.js';
+import type { ResourceWork } from './resources.js';
 import type { ActionSequence, PayloadIndex } from './activity.js';
 import { replayOwnershipSuffix, orderedOwners } from './ownership.js';
 
@@ -67,7 +69,7 @@ interface Payload {
   readonly bytes: Uint8Array;
   readonly decisions: string;
 }
-export interface CoupledWork {
+export interface CoupledWork extends ResourceWork {
   actionsReplayed: number;
   effectsReplayed: number;
   checkpointRestores: number;
@@ -89,7 +91,7 @@ export class MaterializedOwnership {
   private state?: OwnershipCheckpoint;
   private resources?: Pick<
     ReturnType<typeof replayOwnershipSuffix>,
-    'homes' | 'cohorts' | 'requirements'
+    'homes' | 'cohorts' | 'requirements' | 'retained'
   >;
   private native?: NativeView;
   private order: readonly Payload[] = [];
@@ -98,6 +100,12 @@ export class MaterializedOwnership {
   private snapshots = new PersistentMap<TapeSnapshot>();
   private generation = 0;
   private readonly counts: CoupledWork = {
+    allocationsIndexed: 0,
+    homesDerived: 0,
+    snapshotMarkersValidated: 0,
+    skeletonCellsValidated: 0,
+    resourceRebuilds: 0,
+    homeTapesValidated: 0,
     actionsReplayed: 0,
     effectsReplayed: 0,
     checkpointRestores: 0,
@@ -118,6 +126,7 @@ export class MaterializedOwnership {
     const interpretations = selectInterpretations(activity, input.initialProperties);
     let frontier = Math.min(this.order.length, input.actions.length);
     const order: Payload[] = [];
+    let retainedPrefix = input.actions.length >= this.order.length;
     for (let i = 0; i < input.actions.length; i++) {
       yield;
       const action = input.actions[i].action,
@@ -131,47 +140,43 @@ export class MaterializedOwnership {
         })
         .join('');
       const previous = this.order[i];
-      if (
-        previous?.key === key &&
-        previous.decisions === decisions &&
-        compareBytes(previous.bytes, bytes) === 0
-      )
-        order.push(previous);
+      const samePayload = previous?.key === key && compareBytes(previous.bytes, bytes) === 0;
+      if (previous && !samePayload) retainedPrefix = false;
+      if (samePayload && previous.decisions === decisions) order.push(previous);
       else {
         frontier = Math.min(frontier, i);
         order.push({ key, bytes, decisions });
       }
     }
-    const allocations = [
-      ...input.genesis.allocations,
-      ...input.actions.flatMap(({ action }) => action.allocations),
-    ];
     const touched = this.native && changedNativeTapes(this.native, input.native);
     const continuous = touched !== undefined && this.state !== undefined;
-    const dirty = new Set(touched?.map(resourceKey));
     const snapshotCache = continuous ? this.snapshots.fork() : new PersistentMap<TapeSnapshot>();
     const markers = continuous ? this.markers.fork() : new PersistentMap<string>();
     const updated: TapeSnapshot[] = [];
-    const snapshots = allocations.flatMap((allocation) => {
-      if (allocation.type !== 'tape') return [];
-      const key = resourceKey(allocation.id);
-      let snapshot = snapshotCache.get(key);
-      if (!snapshot || dirty.has(key)) {
-        snapshot = input.native.snapshot(allocation.id);
-        snapshotCache.set(key, snapshot);
-        markers.set(key, markerSignature(snapshot));
-        updated.push(snapshot);
-        this.counts.nativeTapeReads++;
-      }
-      return [snapshot];
-    });
-    const index = continuous ? this.state!.index.refine(updated) : new MaterializedCells(snapshots);
-    this.counts.cellTapesIndexed += continuous ? updated.length : snapshots.length;
-    const changed = snapshots.filter((snapshot) => {
+    const tapes = continuous
+      ? touched
+      : [
+          ...input.genesis.allocations,
+          ...input.actions.flatMap(({ action }) => action.allocations),
+        ].flatMap((allocation) => (allocation.type === 'tape' ? [allocation.id] : []));
+    for (const tape of tapes) {
+      const snapshot = input.native.snapshot(tape),
+        key = resourceKey(tape);
+      snapshotCache.set(key, snapshot);
+      markers.set(key, markerSignature(snapshot));
+      updated.push(snapshot);
+      this.counts.nativeTapeReads++;
+    }
+    const coldSnapshots = continuous ? undefined : [...snapshotCache.values()];
+    const index = continuous
+      ? this.state!.index.refine(updated)
+      : new MaterializedCells(coldSnapshots!);
+    this.counts.cellTapesIndexed += continuous ? updated.length : coldSnapshots!.length;
+    const changed = updated.filter((snapshot) => {
       const signature = this.markers.get(resourceKey(snapshot.tape));
       return signature !== undefined && signature !== markers.get(resourceKey(snapshot.tape));
     });
-    const withdrawn = [...this.markers.keys()].some((key) => !markers.has(key));
+    const withdrawn = !continuous && [...this.markers.keys()].some((key) => !markers.has(key));
     const compatible =
       !withdrawn &&
       changed.every(
@@ -191,6 +196,22 @@ export class MaterializedOwnership {
       frontier = Math.min(frontier, readerFrontier);
       this.counts.nativeMarkerRefinements++;
     }
+    const retained =
+      continuous && compatible && retainedPrefix && this.resources
+        ? this.resources.retained.append(
+            input.actions.slice(this.order.length),
+            updated,
+            index,
+            this.counts,
+          )
+        : OwnershipResources.create(
+            input.genesis,
+            input.actions,
+            coldSnapshots ?? [...snapshotCache.values()],
+            index,
+            this.counts,
+          );
+    const snapshots = retained.snapshots(snapshotCache);
     let checkpoints = this.checkpoints
       .filter((checkpoint) => checkpoint.count <= frontier)
       .map((checkpoint) => refineCheckpoint(checkpoint, changed, index));
@@ -217,6 +238,7 @@ export class MaterializedOwnership {
       resume,
       (checkpoint) => checkpoints.push(checkpoint),
       index,
+      retained,
     );
     this.counts.actionsReplayed += input.actions.length - from;
     this.counts.effectsReplayed += input.actions
@@ -235,6 +257,7 @@ export class MaterializedOwnership {
           homes: result.homes,
           cohorts: result.cohorts,
           requirements: result.requirements,
+          retained: result.retained,
         };
         this.native = input.native;
         this.order = order;
@@ -282,6 +305,12 @@ export class MaterializedOwnership {
     const generation = ++this.generation;
     const snapshots = touched.map((tape) => native.snapshot(tape));
     const index = prior.index.refine(snapshots);
+    const retained = resources.retained.append(
+      [{ action, births: [] }],
+      snapshots,
+      index,
+      this.counts,
+    );
     this.counts.nativeTapeReads += snapshots.length;
     this.counts.cellTapesIndexed += snapshots.length;
     const { owners } = hasMarkers ? refineCheckpoint(prior, snapshots, index) : prior;
@@ -329,6 +358,7 @@ export class MaterializedOwnership {
           throw new Error('Coupled text candidate is no longer current');
         committed = true;
         this.state = state;
+        this.resources = { ...resources, retained };
         this.markers = markers;
         this.snapshots = snapshotCache;
         this.native = native;

@@ -14,7 +14,7 @@ export interface SplitBirth {
 export function cutPosition(
   effect: Split,
   index: Pick<CellIndex, keyof CellIndex>,
-  homes?: HomeIndex,
+  homes?: Pick<HomeIndex, 'home'>,
 ): number {
   if (!effect.basis.ranges.length) {
     if (!homes) throw new Error('Empty split requires its retained home domain');
@@ -42,7 +42,7 @@ export function splitBuckets(
   births: readonly SplitBirth[],
   layout: Pick<LayoutPrefix, keyof LayoutPrefix>,
   index: Pick<CellIndex, keyof CellIndex>,
-  homes?: HomeIndex,
+  homes?: Pick<HomeIndex, 'home'>,
 ): readonly OccurrenceBucket[] {
   const groups = new Map<string, SplitBirth[]>();
   for (const birth of births) {
