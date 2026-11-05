@@ -29,7 +29,10 @@ import { journalBytes as measureJournal } from '../../../src/markdown/multiwrite
 import { openReferenceDocument } from '../../../src/markdown/multiwriter/reference/document.js';
 import type { ReferenceGenesis } from '../../../src/markdown/multiwriter/reference/document.js';
 import type { AuthoringDocument } from '../../../src/markdown/multiwriter/authoring/document.js';
-import type { ActionStore } from '../../../src/markdown/multiwriter/actions/store.js';
+import type {
+  ActionStore,
+  ActionStoreSnapshot,
+} from '../../../src/markdown/multiwriter/actions/store.js';
 import { serializeProjection } from '../../../src/markdown/multiwriter/projection/index.js';
 import type { ViewNode } from '../../../src/markdown/multiwriter/projection/index.js';
 import type { ContractTrace, Observation, TraceAction } from '../trace.js';
@@ -56,6 +59,18 @@ function freezeObservation(value: Observation): Observation {
     Object.freeze(item);
   }
   return value;
+}
+
+/** Retain the actual immutable payloads rather than re-encoding every old
+ * envelope for fixture-native prefix checks. Readiness guarantees one variant.
+ */
+function readyPayloads(snapshot: ActionStoreSnapshot): Uint8Array[] {
+  const entries = new Map(snapshot.actions.map((entry) => [key(entry.id), entry]));
+  return snapshot.ready.map((action) => {
+    const entry = entries.get(key(action.id));
+    if (entry?.variants.length !== 1) throw new Error('Ready action lacks one exact payload');
+    return entry.variants[0];
+  });
 }
 
 function lowerBoundIndex(entries: readonly { readonly index: number }[], position: number): number {
@@ -223,7 +238,7 @@ export function referenceFactory(
       function materialize() {
         if (cached && materializedVersion === document.store.factsVersion) return cached;
         const snapshot = document.store.snapshot();
-        const bytes = snapshot.ready.map(encodeEnvelope);
+        const bytes = readyPayloads(snapshot);
         if (
           readyBytes.length > bytes.length ||
           readyBytes.some((b, i) => compareBytes(b, bytes[i]) !== 0)
@@ -733,13 +748,14 @@ export function referenceFactory(
           try {
             document.certifyLocal(prepared.envelope);
             document.store.append(prepared.envelope);
-            if (!document.store.snapshot().ready.some((v) => key(v.id) === key(id)))
+            const accepted = document.store.snapshot();
+            if (!accepted.ready.some((v) => key(v.id) === key(id)))
               throw new Error(
-                `Local action refused: ${command.id} ${JSON.stringify(document.store.snapshot().actions.map((v) => v.readiness))}`,
+                `Local action refused: ${command.id} ${JSON.stringify(accepted.actions.map((v) => v.readiness))}`,
               );
             prepared.commit();
             writerSequence++;
-            readyBytes = document.store.snapshot().ready.map(encodeEnvelope);
+            readyBytes = readyPayloads(accepted);
           } catch (error) {
             prepared.abort();
             native.destroy();
