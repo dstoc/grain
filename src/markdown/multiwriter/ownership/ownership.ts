@@ -14,6 +14,7 @@ import type {
   SemanticEffect,
 } from '../contracts.js';
 import { LayoutPrefix, resourceKey } from '../layout/index.js';
+import { copyLayoutAction } from '../layout/layout.js';
 import type {
   EffectOrder,
   LayoutActionInput,
@@ -215,7 +216,15 @@ export function certifyOwnership(input: OwnershipInput, author: ActionId): void 
 function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipResult {
   const genesis = structuredClone(input.genesis);
   const actions = [
-    ...new Map(input.actions.map((entry) => [actionKey(entry), structuredClone(entry)])).values(),
+    ...new Map(
+      input.actions.map((entry) => [
+        actionKey(entry),
+        {
+          action: copyLayoutAction(entry.action),
+          births: structuredClone(entry.births),
+        },
+      ]),
+    ).values(),
   ].sort((a, b) => compareActions(a.action, b.action));
   const homes = [
     ...deriveHomes(genesis),

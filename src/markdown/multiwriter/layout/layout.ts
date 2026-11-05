@@ -35,6 +35,18 @@ export type LayoutAction = Pick<
   ActionEnvelope,
   'id' | 'lamport' | 'dependencies' | 'allocations' | 'effects'
 >;
+/** Copy only the declared layout contract, insulating replay from caller mutation
+ * without copying unrelated envelope transport bytes or manifests.
+ */
+export function copyLayoutAction({
+  id,
+  lamport,
+  dependencies,
+  allocations,
+  effects,
+}: LayoutAction): LayoutAction {
+  return structuredClone({ id, lamport, dependencies, allocations, effects });
+}
 export interface LayoutActionInput {
   readonly action: LayoutAction;
   readonly births: readonly BirthPlacement[];
@@ -94,7 +106,10 @@ export class LayoutPrefix {
   private readonly blocks = new Map<string, ForestEdge<string, BlockPlacement | null>>();
   // Run → immutable flow, flow → run or own block terminal; block terminals end ancestry.
   private readonly inline = new Map<string, ForestEdge<string, FlowPlacement | null>>();
-  private readonly actions = new Map<string, Set<string>>();
+  private readonly actions = new Map<
+    string,
+    { readonly ordinal: number; readonly bits: Uint32Array }
+  >();
   private current: LayoutAction | null = null;
   private nextOrdinal = 0;
   private rootId: NodeId | null = null;
@@ -196,20 +211,21 @@ export class LayoutPrefix {
   beginAction(input: LayoutActionInput): void {
     if (this.current && this.nextOrdinal !== this.current.effects.length)
       throw new Error('Previous action prefix is incomplete');
-    const action = structuredClone(input.action);
+    const action = copyLayoutAction(input.action);
     if (this.current && compareActions(this.current, action) >= 0)
       throw new Error('Actions must enter in semantic order');
     const key = actionKey(action.id);
     if (this.actions.has(key)) throw new Error('Duplicate action prefix');
-    const past = new Set<string>();
+    const ordinal = this.actions.size;
+    const past = new Uint32Array(Math.ceil(ordinal / 32));
     for (const dependency of action.dependencies) {
       const dependencyKey = actionKey(dependency);
       const ancestors = this.actions.get(dependencyKey);
       if (!ancestors) throw new Error('Missing action dependency');
-      past.add(dependencyKey);
-      for (const ancestor of ancestors) past.add(ancestor);
+      past[ancestors.ordinal >>> 5] |= 1 << (ancestors.ordinal & 31);
+      for (let word = 0; word < ancestors.bits.length; word++) past[word] |= ancestors.bits[word];
     }
-    this.actions.set(key, past);
+    this.actions.set(key, { ordinal, bits: past });
     this.current = action;
     this.nextOrdinal = 0;
     this.allocate(
@@ -281,6 +297,11 @@ export class LayoutPrefix {
         break;
     }
     return { blocks, flows };
+  }
+  private observes(observer: LayoutAction['id'], prior: LayoutAction['id']): boolean {
+    const ordinal = this.actions.get(actionKey(prior))?.ordinal;
+    const bits = this.actions.get(actionKey(observer))!.bits;
+    return ordinal !== undefined && (bits[ordinal >>> 5] & (1 << (ordinal & 31))) !== 0;
   }
   private node(id: NodeId): NodeAllocation {
     const node = this.nodes.get(resourceKey(id));
@@ -412,7 +433,7 @@ export class LayoutPrefix {
           if (
             previous.order &&
             actionKey(previous.order.action.id) !== actionKey(action.id) &&
-            !this.actions.get(actionKey(action.id))!.has(actionKey(previous.order.action.id))
+            !this.observes(action.id, previous.order.action.id)
           )
             throw new Error('Predecessor is not causally available');
         }

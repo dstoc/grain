@@ -249,3 +249,30 @@ it('preserves first-cell diagnostics for overlapping native identities', () => {
     ),
   );
 });
+
+it('replays only the layout contract while insulating retained results from caller mutation', () => {
+  const f = fixture('abc');
+  const entry = f.author('A1', (f) => [f.split('P', 'S', 'P0')]);
+  const source = {
+    ...f.envelope('A1'),
+    get nativeInsertUpdates(): never {
+      throw new Error('Ownership read transport bytes');
+    },
+    get nativeManifest(): never {
+      throw new Error('Ownership read native manifest');
+    },
+  };
+  const result = reduceOwnership({
+    genesis: f.genesis,
+    actions: [{ action: source, births: entry.births }],
+    snapshots: f.homes.map((home) => f.peers.get('A')!.snapshot(home.cell.tape)),
+    isActive: () => true,
+  });
+  const before = result.assignments;
+  expect(result.assignments).toEqual(f.reduce('A').assignments);
+  (source.allocations as unknown[]).length = 0;
+  (source.effects as unknown[]).length = 0;
+  Object.assign(source.id, { sequence: 999n });
+  expect(result.assignments).toEqual(before);
+  expect(f.text(result, 'fS')).toBe('bc');
+});

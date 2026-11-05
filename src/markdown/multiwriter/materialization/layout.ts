@@ -25,7 +25,7 @@ import type {
   BoundaryIndex,
   InlineSlotResolution,
 } from '../layout/layout.js';
-import { allowsRawChild } from '../layout/layout.js';
+import { allowsRawChild, copyLayoutAction } from '../layout/layout.js';
 import { PersistentMap } from './map.js';
 import type { ActionId } from '../contracts.js';
 interface SequenceLink {
@@ -206,7 +206,7 @@ export class MaterializedLayout {
   beginAction(input: LayoutActionInput, observes?: (id: ActionId) => boolean): void {
     if (this.current && this.nextOrdinal !== this.current.effects.length)
       throw new Error('Previous action prefix is incomplete');
-    const action = structuredClone(input.action);
+    const action = copyLayoutAction(input.action);
     if (this.current && compareActions(this.current, action) >= 0)
       throw new Error('Actions must enter in semantic order');
     const key = actionKey(action.id);
