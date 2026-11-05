@@ -383,6 +383,7 @@ test('readiness eviction rebuilds retained pending/forked facts without a canoni
         stagedCertificates: 0,
         records: 0,
         ready: 0,
+        dependencySources: 0,
         dirtyFacts: 4,
       });
       expect(events).not.toHaveBeenCalled();

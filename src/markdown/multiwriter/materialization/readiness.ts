@@ -102,6 +102,7 @@ export class IndexedActionStore extends ActionStore {
   private readonly changed = new Set<string>();
   private certificateIndex?: MapRoot<Certificate>;
   private staged?: Certificate;
+  private rebuildReaders = false;
   private readonly genesisResources = new Map(
     this.options.genesisAllocations.map((a) => [a.id.ordinal, a]),
   );
@@ -321,6 +322,13 @@ export class IndexedActionStore extends ActionStore {
   }
   private *calculateReady(version: number): Work<ReadyState> {
     yield* this.decodePending();
+    if (this.rebuildReaders) {
+      for (const fact of this.retainedFacts()) {
+        yield;
+        this.invalidate(fact);
+      }
+      this.rebuildReaders = false;
+    }
     const affected = new Set<string>();
     const stack = [...this.changed];
     while (stack.length) {
@@ -498,7 +506,8 @@ export class IndexedActionStore extends ActionStore {
     this.states.clear();
     this.ready.clear();
     this.certified.clear();
-    for (const fact of this.retainedFacts()) this.invalidate(fact);
+    for (const fact of this.retainedFacts()) this.changed.add(actionKey(fact.id));
+    this.rebuildReaders = true;
   }
   /** Counts of direct cache entries, not transitive heap or canonical byte sizes. */
   cacheDiagnostics() {

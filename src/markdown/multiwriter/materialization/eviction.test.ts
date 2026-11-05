@@ -61,7 +61,7 @@ test('publication eviction releases readiness and author preimages while preserv
         encodedBytes: 0,
         preimageNativeBytes: 0,
       },
-      readiness: { certificates: 0, stagedCertificates: 0, records: 0, ready: 0 },
+      readiness: { certificates: 0, stagedCertificates: 0, records: 0, ready: 0, dependencySources: 0 },
     });
     expect(document.publication.status().publication).toBe(before);
     expect(document.publication.status().canAuthor).toBe(true);
