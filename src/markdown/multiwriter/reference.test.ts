@@ -179,6 +179,7 @@ test('readonly fixture observations retain detached immutable data and fresh raw
     const before = await port.observe();
     const raw = await port.isolationState();
     expect(Object.isFrozen(before)).toBe(true);
+    if (!before.raw) throw new Error('Expected full reference observation');
     expect(Object.isFrozen(before.raw.projection.root)).toBe(true);
     expect(() => (before.held as string[]).push('fake')).toThrow();
     const detached = structuredClone(before);
