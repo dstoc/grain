@@ -25,6 +25,7 @@ import { MaterializedLayout } from './layout.js';
 import { MaterializedCells } from './cells.js';
 import { OwnershipResources } from './resources.js';
 import { NativeReadIntervals } from './intervals.js';
+import { OwnershipCoverage } from './coverage.js';
 export interface OwnershipCheckpoint {
   readonly count: number;
   readonly index: MaterializedCells;
@@ -40,6 +41,7 @@ export interface OwnershipCheckpoint {
   readonly nativeReaders: PersistentMap<number>;
   /** Retained marker intervals read by split adjacency, with their first action. */
   readonly nativeIntervals: PersistentMap<NativeReadIntervals>;
+  readonly coverage: OwnershipCoverage;
 }
 /** Match full replay's home-install/native-cell order independently of the edit
  * order of the persistent assignment map. Refinement can insert cells between
@@ -77,6 +79,7 @@ export function replayOwnershipSuffix(
   save: (checkpoint: OwnershipCheckpoint) => void,
   nativeIndex: MaterializedCells,
   resources: OwnershipResources,
+  work: { coverageFlowsTraversed: number; coverageCellsVisited: number },
 ) {
   const genesis = input.genesis;
   const actions = [
@@ -97,11 +100,28 @@ export function replayOwnershipSuffix(
   const flowIntentions = resume?.flowIntentions.fork() ?? new PersistentMap<EffectOrder>();
   const installedTapes = resume?.installedTapes.fork() ?? new PersistentMap<true>();
   const homeIndex = resources.homeDomain;
+  const coverage = resume?.coverage.fork() ?? new OwnershipCoverage();
+  function component(flow: FlowId): FlowId {
+    let placement = layout.flowPlacement(flow);
+    while (placement.parent.type === 'flow')
+      placement = layout.flowPlacement(layout.runLayout(placement.parent.slot.run).flow);
+    return placement.flow;
+  }
+  function dirtyRun(run: RunId): void {
+    coverage.invalidate(component(layout.runLayout(run).flow));
+  }
   function install(batch: LayoutGenesis, effects: readonly SemanticEffect[]): void {
+    for (const allocation of batch.allocations) {
+      if (allocation.type === 'flow') coverage.invalidate(component(allocation.id));
+      else if (allocation.type === 'run') dirtyRun(allocation.id);
+      else if (allocation.type === 'occurrence' && !('parent' in allocation.slot))
+        dirtyRun(allocation.slot.run);
+    }
     const transfers = effects.filter((effect) => effect.type === 'TransferRange');
     // Retained occurrence locations are ghost traversal paths, even when inactive.
     // Installing an address does not assign cells or assert a flow containment edge.
     for (const transfer of transfers) {
+      dirtyRun(transfer.destination.run);
       layout.resolveInlineSlot(transfer.destination, index);
       const occurrence = layout.occurrence(transfer.occurrence);
       const run = layout.runLayout(transfer.run);
@@ -140,25 +160,22 @@ export function replayOwnershipSuffix(
     );
   }
   function assertCoverage(): void {
-    const visited = new Set<string>();
-    for (const placement of layout.flowPlacements) {
-      if (placement.parent.type !== 'block') continue;
-      for (const assignment of rawCells(placement.flow)) {
-        const key = cellKey(assignment.cell);
-        if (visited.has(key)) throw new Error('Cell emitted more than once');
-        visited.add(key);
-      }
-    }
-    if (visited.size !== owners.size) throw new Error('Owned cell is unreachable in raw traversal');
-    for (const home of homes) {
-      if (!installedTapes.has(resourceKey(home.cell.tape))) continue;
-      for (const cell of index.range(home.cell)) {
-        if (!homeIndex.isReserved(cell.range)) continue;
-        const owner = owners.get(cellKey(cell.range));
-        if (!owner || assignmentKey(owner) !== assignmentKey(home))
-          throw new Error('Reserved home cell lost its root assignment');
-      }
-    }
+    coverage.check(
+      owners.size,
+      (flow) => {
+        if (layout.flowPlacement(flow).parent.type !== 'block') return undefined;
+        return rawCells(flow).map((assignment) => {
+          work.coverageCellsVisited++;
+          if (
+            homeIndex.isReserved(assignment.cell) &&
+            assignmentKey(assignment) !== assignmentKey(homeIndex.binding(assignment.cell.tape))
+          )
+            throw new Error('Reserved home cell lost its root assignment');
+          return cellKey(assignment.cell);
+        });
+      },
+      () => work.coverageFlowsTraversed++,
+    );
   }
   function assign(
     ranges: readonly RangeRef[],
@@ -175,10 +192,13 @@ export function replayOwnershipSuffix(
     for (const range of ranges)
       for (const cell of index.range(range)) {
         const key = cellKey(cell.range);
-        if (!owners.has(key)) throw new Error('Structural range uses an unavailable tape');
+        const before = owners.get(key);
+        if (!before) throw new Error('Structural range uses an unavailable tape');
         if (!skeleton.has(key)) throw new Error('Assignment outside retained run skeleton');
         if (selected.has(key)) throw new Error('Repeated cell in structural assignment');
         selected.add(key);
+        dirtyRun(before.run);
+        dirtyRun(run);
         owners.set(key, { cell: cell.range, run, occurrence });
       }
   }
@@ -200,6 +220,7 @@ export function replayOwnershipSuffix(
     installedTapes: installedTapes.fork(),
     nativeReaders: nativeReaders.fork(),
     nativeIntervals: nativeIntervals.fork(),
+    coverage: coverage.fork(),
   });
   for (const entry of actions.slice(count)) {
     layout.beginAction(entry, (prior) => activity.observes(entry.action.id, prior));
@@ -292,7 +313,15 @@ export function replayOwnershipSuffix(
         splits = [...splits, { effect, order }];
       }
       const eligible = effect.type !== 'Interpret' || !!input.interpretationEligible?.(order);
+      const changedFlow =
+        active && effect.type === 'JoinFlow'
+          ? effect.source
+          : active && effect.type === 'MoveBlock'
+            ? effect.standaloneFlow
+            : null;
+      if (changedFlow) coverage.invalidate(component(changedFlow));
       const result = layout.step(ordinal, active, eligible);
+      if (changedFlow) coverage.invalidate(component(changedFlow));
       if (
         active &&
         eligible &&
@@ -323,6 +352,9 @@ export function replayOwnershipSuffix(
       )
         assertCoverage();
     }
+    // Retained inline occurrences/attachments can enter even when their effect
+    // is inactive. Certify those dirty paths before saving the completed prefix.
+    assertCoverage();
     count++;
     if (count % 128 === 0) save(checkpoint());
   }
