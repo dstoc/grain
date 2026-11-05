@@ -44,6 +44,8 @@ Public snapshots and validator arguments remain detached from retained facts.
 `store.readinessDiagnostics()` reports changed facts, evaluated entries,
 dependency and closure edges, author checks and full snapshot builds. Unchanged
 facts reuse the existing exact-version snapshot memo; public reads still clone it.
+Author-check counts cover indexed readiness evaluation, excluding `checkLocal()`
+certification. Full snapshot builds exclude clones served by the memo.
 A causal suffix append evaluates one new entry; an exact duplicate evaluates none.
 This does not eliminate full closure construction for a new author check, full
 snapshot export or full semantic projection. Those costs remain acceptance gaps.
@@ -68,7 +70,9 @@ coupled layout/ownership checkpoints.
 
 `activityDiagnostics()` reports payload comparisons, replayed actions, frontier
 entries, checkpoint restores, cold replays and the latest committed suffix.
-Retained checkpoint/action counts describe cache structure, not heap bytes.
+Counters include attempted candidate work. `coldReplays` counts nonempty replays
+from genesis, including after eviction. Retained checkpoint/action counts describe
+cache structure, not heap bytes.
 Payload-prefix comparison and public activity arrays still enumerate the ready
 sequence. A new control updates the older target's activity, while the full
 ownership replay remains responsible for its structural effect.

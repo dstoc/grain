@@ -88,8 +88,10 @@ test('late arrivals and withdrawals restore an exact compatible activity checkpo
   equal(publish(cache, withdrawn), withdrawn, false);
   expect(cache.diagnostics().lastReplayFrom).toBe(128);
   equal(old, actions, false);
+  const coldBeforeEviction = cache.diagnostics().coldReplays;
   cache.evict();
   equal(publish(cache, withdrawn), withdrawn, false);
+  expect(cache.diagnostics().coldReplays).toBe(coldBeforeEviction + 1);
   expect(cache.diagnostics().lastReplayFrom).toBe(0);
 });
 test('late controls update their old targets without mutating prior snapshots; redo retains ordinals', () => {

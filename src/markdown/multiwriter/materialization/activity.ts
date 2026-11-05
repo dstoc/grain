@@ -164,8 +164,9 @@ export class MaterializedActivity {
     else if (checkpoints.length) {
       state = checkpoints.at(-1)!.state;
       this.counts.checkpointRestores++;
-    } else this.counts.coldReplays++;
+    }
     const from = state.count;
+    if (from === 0 && actions.length) this.counts.coldReplays++;
     for (let index = from; index < actions.length; index++) {
       state = yield* this.advance(state, actions[index]);
       this.counts.actionsReplayed++;
