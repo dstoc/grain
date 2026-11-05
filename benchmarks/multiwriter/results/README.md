@@ -78,3 +78,42 @@ all raw samples and fixture hashes. The schema-2 checkpoint includes its initial
 document, unlike the separate schema-3 genesis/actionDoc fields. The individual
 byte fields are not equivalent storage categories. No cache-only heap, production
 history, 10k trace or structural-performance conclusion is drawn from this control.
+
+## Readiness/activity stage, 2026-11-05
+
+Engine source: `4185a744d842809d9f892e347a67764e5a11da88`, including accepted
+MW-10. Measurement/harness commit: `de58236023c8564b9b00612ac6e93cc3efd9403a`.
+Yjs 13.6.33, Node 26.13.0, Linux/AMD Ryzen 9 5900X. All correctness workers from
+this run had exited before measurement. Raw fixtures and per-process samples are
+attached to grain/94 as `incremental-stage-measurements`; the reports below are
+committed without replacing earlier results.
+
+Each cell is the median of three per-process p50/p95 values in milliseconds.
+Each fresh process ran 24 literal actions, with four warm-ups. Pair order
+alternated. Replay used identical original carriers and genesis; commands used
+the same unmanaged `LocalEditor.edit()` script. Comparisons ran outside timing.
+
+| Paragraphs | Workload                | Full reference `415363a` p50/p95 | Current opt-in p50/p95 |
+| ---------- | ----------------------- | -------------------------------- | ---------------------- |
+| 10         | Receipt and publication | 20.819 / 27.349                  | 18.265 / 21.640        |
+| 10         | Unmanaged command       | 33.209 / 43.841                  | 22.056 / 27.417        |
+| 150        | Receipt and publication | 582.629 / 625.907                | 559.299 / 585.653      |
+| 150        | Unmanaged command       | 1,055.394 / 1,099.635            | 532.750 / 580.450      |
+
+The separate schema-2 post-M5 semantic command control at `c3a8812e` measured
+0.504 / 1.328 ms versus 542.117 / 573.863 ms for the current reader. It has different
+capabilities and storage categories. These cumulative baseline comparisons do not
+isolate the timing effect of the new readiness/activity caches.
+
+The reports separate canonical carrier bytes, envelope bytes, embedded native
+bytes, genesis bytes and native-cache exports. Embedded native bytes are a subset
+of envelopes. `processHeapDelta` is a whole-replica heapUsed delta after GC; it is
+not cache-only heap, external memory, RSS or peak candidate overhead. Journals,
+managed session navigation and consolidation latency are unmeasured here. Their
+serialized correctness-trace sizes are in the separate history-maintenance artifact.
+
+These are short unmanaged literal observations, not core-only or browser latency.
+Full projection still runs per changed publication. Whole-command scale gates,
+long tapes/wide lists/fragmentation, mixed uninterrupted 10,000-action traces,
+strict one-way catch-up and complete cache/history/storage accounting remain
+required. No complete MW-13 performance pass follows from these results.
