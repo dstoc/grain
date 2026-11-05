@@ -8,12 +8,30 @@ import type {
   NodeId,
   ProjectionAddress,
   RangeRef,
+  RunId,
 } from '../contracts.js';
 import { resourceKey } from '../layout/index.js';
 import { resolveAddress } from '../projection/addresses.js';
 import { projectedNode, viewNodes } from './selection.js';
 import type { NativeView } from '../ingest/publication.js';
 import type { HistoryPublication } from './selection.js';
+import type { OwnershipResult } from '../ownership/ownership.js';
+
+/** A classification reads one immutable ownership publication. Resolve a run
+ * once rather than exporting every retained run for each captured cell.
+ */
+function runFlows(ownership: OwnershipResult): (run: RunId) => FlowId {
+  const flows = new Map<string, FlowId>();
+  return (run) => {
+    const key = resourceKey(run);
+    let flow = flows.get(key);
+    if (!flow) {
+      flow = ownership.runLayout(run).flow;
+      flows.set(key, flow);
+    }
+    return flow;
+  };
+}
 
 export interface Footprint {
   readonly action: ActionId;
@@ -29,6 +47,7 @@ export function captureFootprint(
 ): Footprint {
   const sourceParents: NodeId[] = [],
     endpoints: NodeId[] = [];
+  const runFlow = runFlows(before.value.ownership);
   const known = (node: NodeId) =>
     before.value.ownership.nodeAllocations.some((n) => resourceKey(n.id) === resourceKey(node));
   const ranges = (values: readonly RangeRef[]) => {
@@ -47,10 +66,7 @@ export function captureFootprint(
         const cellStart = native.marker(cell.cell.start).index,
           cellEnd = native.marker(cell.cell.end).index;
         if (Math.max(start, cellStart) >= Math.min(end, cellEnd)) continue;
-        const run = before.value.ownership.runLayouts.find(
-          (r) => resourceKey(r.run) === resourceKey(cell.run),
-        );
-        if (run) endpoints.push(before.value.ownership.flowBlock(run.flow));
+        endpoints.push(before.value.ownership.flowBlock(runFlow(cell.run)));
       }
     }
   };
@@ -115,6 +131,7 @@ export function classifyFootprints(
 ): ScopeClassification {
   if (scope.type !== 'node') return 'unresolved';
   const ownership = p.value.ownership;
+  const runFlow = runFlows(ownership);
   const projected = projectedNode(p.value.view.root, scope.representative);
   if (!projected) return 'unresolved';
   const roots = new Set(
@@ -176,12 +193,7 @@ export function classifyFootprints(
       return;
     }
     for (const cell of cells) {
-      const run = ownership.runLayouts.find((r) => resourceKey(r.run) === resourceKey(cell.run));
-      if (!run) {
-        unresolved = true;
-        continue;
-      }
-      flow(run.flow);
+      flow(runFlow(cell.run));
     }
   };
   const text = (value: NativeTextRange) => {

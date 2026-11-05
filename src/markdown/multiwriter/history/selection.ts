@@ -136,9 +136,7 @@ function resolvePoint(
   let lineage = saved.address.slot.run;
   if (part.type === 'text') {
     const assignment = p.value.ownership.owner({ tape: bound.tape, native: bound.native });
-    const run = p.value.ownership.runLayouts.find(
-      (r) => resourceKey(r.run) === resourceKey(assignment.run),
-    )!;
+    const run = p.value.ownership.runLayout(assignment.run);
     owner = p.value.ownership.flowBlock(run.flow);
     lineage = assignment.run;
   } else {
