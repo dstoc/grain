@@ -94,6 +94,7 @@ export class CommandCompiler {
   private ordinal = 0;
   private readonly intents: readonly CommandIntent[];
   private memo?: { key: string; value: ReturnType<typeof projectMarkdown> };
+  private ownershipMemo?: { key: string; value: OwnershipResult };
   private readonly ids = new Map<Handle, NodeId>();
   private readonly focusMappings = new Map<
     Handle,
@@ -145,8 +146,10 @@ export class CommandCompiler {
           : tapes.map((tape) => native.snapshot(tape)),
       );
     }
-    if (initial) this.memo = { key: '0:0:0', value: initial };
-    else void this.tree;
+    if (initial) {
+      this.memo = { key: '0:0:0', value: initial };
+      this.ownershipMemo = { key: '0:0:0', value: initial.ownership };
+    } else void this.tree;
     if (!initial)
       for (const [handle, view] of draft.origins) {
         this.ids.set(handle, view.origin.representative);
@@ -196,7 +199,14 @@ export class CommandCompiler {
     return value;
   }
   private ownership(): OwnershipResult {
-    return this.state().ownership;
+    // Exact deletion changes visibility, not native cells or raw ownership. A
+    // replacement's insertion can read the same raw state after its deletion.
+    // Native operations and every other allocation/effect retain full fallback.
+    const key = `${this.allocations.filter((a) => a.type !== 'deletion').length}:${this.effects.filter((e) => e.type !== 'InsertText' && e.type !== 'DeleteText').length}:${this.native.operations.length}`;
+    if (this.ownershipMemo?.key === key) return this.ownershipMemo.value;
+    const value = this.state().ownership;
+    this.ownershipMemo = { key, value };
+    return value;
   }
   private id(handle: Handle): NodeId {
     const id = this.ids.get(handle) ?? this.draft.origins.get(handle)?.origin.representative;

@@ -6,15 +6,16 @@ import { CellIndex, sameId } from './cells.js';
 
 export class TextRefinementError extends Error {}
 
-/** Marker refinement and insertion cannot change raw placement or the retained
- * run skeleton. A certified author past already owns every tape as a private home.
- * Check its affected native tapes and the two author-bracket rule directly.
+/** Marker refinement, exact-text deletion and insertion cannot change raw
+ * placement or the retained run skeleton. A certified author past already owns
+ * every tape as a private home. Native range references are checked by ingest;
+ * check affected native tapes and the two author-bracket rule here.
  * Structural allocations/effects still require coupled ownership replay.
  */
 export function isTextRefinement(action: ActionEnvelope): boolean {
   return (
-    action.allocations.every((a) => a.type === 'marker') &&
-    action.effects.every((e) => e.type === 'InsertText')
+    action.allocations.every((a) => a.type === 'marker' || a.type === 'deletion') &&
+    action.effects.every((e) => e.type === 'InsertText' || e.type === 'DeleteText')
   );
 }
 export function validateTextRefinement(
@@ -23,7 +24,9 @@ export function validateTextRefinement(
 ): void {
   if (!context.indexed || !isTextRefinement(action))
     throw new Error('Text refinement requires a certified author past');
-  const newMarkers = new Set(action.allocations.map((a) => resourceKey(a.id)));
+  const newMarkers = new Set(
+    action.allocations.filter((a) => a.type === 'marker').map((a) => resourceKey(a.id)),
+  );
   const touched = new Map(
     action.nativeManifest.map((birth) => [resourceKey(birth.tape), birth.tape]),
   );

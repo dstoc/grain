@@ -268,10 +268,8 @@ export class MaterializedOwnership {
       return undefined;
     const touched = stagedTapes ?? changedNativeTapes(this.native, native);
     if (!touched) return undefined;
-    if (
-      action.allocations.length &&
-      touched.some((tape) => prior.nativeReaders.has(resourceKey(tape)))
-    )
+    const hasMarkers = action.allocations.some((allocation) => allocation.type === 'marker');
+    if (hasMarkers && touched.some((tape) => prior.nativeReaders.has(resourceKey(tape))))
       return undefined;
     const generation = ++this.generation;
     const snapshots = touched.map((tape) => native.snapshot(tape));
@@ -284,7 +282,7 @@ export class MaterializedOwnership {
     const snapshotCache = this.snapshots.fork();
     for (const snapshot of snapshots) snapshotCache.set(resourceKey(snapshot.tape), snapshot);
     const markers = this.markers.fork();
-    if (action.allocations.length) {
+    if (hasMarkers) {
       for (const snapshot of snapshots)
         markers.set(resourceKey(snapshot.tape), markerSignature(snapshot));
       this.counts.nativeMarkerRefinements++;
@@ -327,7 +325,7 @@ export class MaterializedOwnership {
         this.snapshots = snapshotCache;
         this.native = native;
         this.order = [...this.order, payload];
-        if (action.allocations.length)
+        if (hasMarkers)
           this.checkpoints = this.checkpoints.map((checkpoint) =>
             refineCheckpoint(checkpoint, snapshots, index),
           );
