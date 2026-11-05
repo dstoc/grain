@@ -122,6 +122,22 @@ export class PersistentMap<T> implements Iterable<[string, T]> {
     copy.serial = this.serial;
     return copy;
   }
+  *changes(
+    before: PersistentMap<T>,
+    visit: () => void = () => {},
+  ): Generator<{
+    readonly key: string;
+    readonly before?: T;
+    readonly after?: T;
+  }> {
+    for (const change of differences(
+      before.data,
+      this.data,
+      (a, b) => a.rank === b.rank && Object.is(a.value, b.value),
+      visit,
+    ))
+      yield { key: change.key, before: change.before?.value, after: change.after?.value };
+  }
   *keys(): Generator<string> {
     for (const [, key] of orderedEntries(this.order)) yield key;
   }
@@ -131,4 +147,56 @@ export class PersistentMap<T> implements Iterable<[string, T]> {
   *[Symbol.iterator](): Generator<[string, T]> {
     for (const key of this.keys()) yield [key, this.get(key)!];
   }
+}
+
+/** Split only comparison paths. Untouched subtrees keep their identities even
+ * when an insertion/deletion rotated the other version's AVL root.
+ */
+function split<T>(
+  root: MapRoot<T> | undefined,
+  key: string,
+  visit: () => void,
+): {
+  readonly left?: MapRoot<T>;
+  readonly value?: T;
+  readonly right?: MapRoot<T>;
+} {
+  if (!root) return {};
+  visit();
+  if (key === root.key) return { left: root.left, value: root.value, right: root.right };
+  if (key < root.key) {
+    const parts = split(root.left, key, visit);
+    return {
+      left: parts.left,
+      value: parts.value,
+      right: parts.right === root.left ? root : node(root.key, root.value, parts.right, root.right),
+    };
+  }
+  const parts = split(root.right, key, visit);
+  return {
+    left: parts.left === root.right ? root : node(root.key, root.value, root.left, parts.left),
+    value: parts.value,
+    right: parts.right,
+  };
+}
+function* differences<T>(
+  before: MapRoot<T> | undefined,
+  after: MapRoot<T> | undefined,
+  equal: (a: T, b: T) => boolean,
+  visit: () => void,
+): Generator<{ readonly key: string; readonly before?: T; readonly after?: T }> {
+  visit();
+  if (before === after) return;
+  if (!after) {
+    for (const [key, value] of orderedEntries(before)) {
+      visit();
+      yield { key, before: value };
+    }
+    return;
+  }
+  const parts = split(before, after.key, visit);
+  yield* differences(parts.left, after.left, equal, visit);
+  if (parts.value === undefined || !equal(parts.value, after.value))
+    yield { key: after.key, before: parts.value, after: after.value };
+  yield* differences(parts.right, after.right, equal, visit);
 }

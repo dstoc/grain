@@ -36,3 +36,36 @@ test('persistent insertion order and deletion match Map while old roots retain t
   ]);
   for (const { map, entries } of held) expect([...map]).toEqual(entries);
 });
+
+test('persistent differences skip shared paths across rotations, replacements and removals', () => {
+  const before = new PersistentMap<number>();
+  for (let i = 0; i < 5000; i++) before.set(String(i * 2).padStart(6, '0'), i);
+  for (const number of [1, 3, 125, 4999, 9999, 10001]) {
+    const next = before.fork(),
+      key = String(number).padStart(6, '0');
+    next.set(key, -number);
+    let visits = 0;
+    expect([...next.changes(before, () => visits++)]).toEqual([
+      { key, before: undefined, after: -number },
+    ]);
+    expect(visits).toBeLessThan(150);
+    expect(before.has(key)).toBe(false);
+  }
+  const next = before.fork();
+  const expected = [];
+  for (let i = 0; i < 5000; i += 7) {
+    const key = String(i * 2).padStart(6, '0');
+    if (i % 2) {
+      next.set(key, -i);
+      expected.push({ key, before: i, after: -i });
+    } else {
+      next.delete(key);
+      expected.push({ key, before: i, after: undefined });
+    }
+  }
+  expect([...next.changes(before)]).toEqual(expected);
+  expect([...before.changes(next)]).toEqual(
+    expected.map((change) => ({ key: change.key, before: change.after, after: change.before })),
+  );
+  expect([...before.changes(before)]).toEqual([]);
+});

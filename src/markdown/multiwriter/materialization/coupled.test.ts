@@ -114,7 +114,7 @@ test('text-only controls preserve coupled roots and checkpoints through eviction
   }
 }, 120000);
 
-for (const size of [10, 150, 1000])
+for (const size of [10, 150, 1000, 5000])
   test(`warm literal work reads only its tape and never full-projects ${size} paragraphs`, () => {
     const p = open(Array.from({ length: size }, () => 'abc').join('\n\n'));
     try {
