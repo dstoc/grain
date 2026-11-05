@@ -1,4 +1,4 @@
-import type { ActionEnvelope } from '../contracts.js';
+import type { ActionEnvelope, ActionId } from '../contracts.js';
 import type { AuthorValidationContext } from '../ingest/validator.js';
 import { resourceKey } from '../text/identity.js';
 import { IngestDataError, IngestCapacityError } from '../ingest/work.js';
@@ -17,6 +17,32 @@ export function isTextRefinement(action: ActionEnvelope): boolean {
     action.allocations.every((a) => a.type === 'marker' || a.type === 'deletion') &&
     action.effects.every((e) => e.type === 'InsertText' || e.type === 'DeleteText')
   );
+}
+/** An already-authorized owner control of text-only actions changes visibility,
+ * never raw placement/ownership. Group ownership and control-chain checks remain
+ * the ingest activity validator's responsibility.
+ */
+export function textControlTargets(
+  action: ActionEnvelope,
+  lookup: (id: ActionId) => ActionEnvelope | undefined,
+): readonly ActionEnvelope[] | undefined {
+  const effect = action.effects[0];
+  if (
+    action.effects.length !== 1 ||
+    effect?.type !== 'SetGroupActive' ||
+    action.allocations.length ||
+    action.nativeManifest.length ||
+    action.nativeInsertUpdates.length ||
+    !effect.actions.length
+  )
+    return undefined;
+  const targets: ActionEnvelope[] = [];
+  for (const id of effect.actions) {
+    const target = lookup(id);
+    if (!target || !isTextRefinement(target)) return undefined;
+    targets.push(target);
+  }
+  return targets;
 }
 export function validateTextRefinement(
   action: ActionEnvelope,

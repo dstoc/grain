@@ -4,9 +4,11 @@ import { resourceKey } from '../layout/index.js';
 import { createOwnershipAuthorValidator, reduceOwnership } from '../ownership/index.js';
 import {
   isTextRefinement,
+  textControlTargets,
   validateTextRefinement,
   TextRefinementError,
 } from '../ownership/text-validation.js';
+import { actionKey } from '../actions/references.js';
 import type { IngestValidatorOptions } from '../ingest/validator.js';
 import { finish, IngestCapacityError, IngestDataError } from '../ingest/work.js';
 import { reduceActivity } from '../visibility/index.js';
@@ -36,6 +38,16 @@ export function createProjectionAuthorValidator(options: {
         if (!(error instanceof TextRefinementError)) throw error;
         return 'reference';
       }
+    }
+    if (context.indexed && action.effects[0]?.type === 'SetGroupActive') {
+      const past = new Map(
+        context.dependencies.map((dependency) => [actionKey(dependency.id), dependency]),
+      );
+      if (
+        textControlTargets(action, (id) => past.get(actionKey(id))) &&
+        options.births(action).length === 0
+      )
+        return null;
     }
     const actions = [...context.dependencies, action];
     // Resolve host-supplied birth bindings before data-rejection catches. Host

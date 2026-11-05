@@ -258,6 +258,7 @@ export class MaterializedProjection {
     projectionRecordsReplaced: 0,
     textTapesRebuilt: 0,
     stagedTextProjections: 0,
+    localTextControls: 0,
   };
   fullProjectionCount(): number {
     return this.counts.fullProjections;
@@ -280,7 +281,17 @@ export class MaterializedProjection {
     let state: State, commitStructure: () => void;
     if (suffix && before) {
       yield;
-      state = this.append(before, actions.at(-1)!, suffix.value, suffix.touched, native, activity);
+      state = this.append(
+        before,
+        actions.at(-1)!,
+        suffix.value,
+        suffix.touched,
+        native,
+        activity,
+        suffix.changes,
+        suffix.control,
+      );
+      if (suffix.control) this.counts.localTextControls++;
       commitStructure = suffix.commit;
       this.counts.localTextProjections++;
     } else {
@@ -347,6 +358,8 @@ export class MaterializedProjection {
     touched: readonly TapeId[],
     native: NativeView,
     groupActivity: Activity,
+    changes: readonly ActionEnvelope[] = [action],
+    control = false,
   ): State {
     const text = before.text.fork(),
       deletions = before.deletions.fork(),
@@ -356,12 +369,21 @@ export class MaterializedProjection {
     const affected = new Set<string>();
     const nativeTapes = new Set(touched.map(resourceKey));
     const semanticTapes = new Map(touched.map((tape) => [resourceKey(tape), tape]));
-    for (const effect of action.effects)
-      if (effect.type === 'DeleteText')
-        for (const range of effect.observed) {
-          semanticTapes.set(resourceKey(range.tape), range.tape);
-          for (const node of ownership.inlineOwner(range)) affected.add(resourceKey(node));
-        }
+    for (const changed of changes) {
+      for (const effect of changed.effects)
+        if (effect.type === 'DeleteText')
+          for (const range of effect.observed) {
+            semanticTapes.set(resourceKey(range.tape), range.tape);
+            for (const node of ownership.inlineOwner(range)) affected.add(resourceKey(node));
+          }
+      if (control)
+        for (const birth of changed.nativeManifest)
+          if (birth.type === 'text') {
+            semanticTapes.set(resourceKey(birth.tape), birth.tape);
+            for (const node of ownership.inlineOwner({ tape: birth.tape, ...birth.native }))
+              affected.add(resourceKey(node));
+          }
+    }
     const hasMarkers = action.allocations.some((allocation) => allocation.type === 'marker');
     for (const [id, tape] of semanticTapes) {
       if (hasMarkers && nativeTapes.has(id))
@@ -386,29 +408,35 @@ export class MaterializedProjection {
           for (const node of ownership.inlineOwner({ tape, ...birth.native }))
             affected.add(resourceKey(node));
         }
-      const newDeletes = action.effects.flatMap((effect) =>
-        effect.type === 'DeleteText'
-          ? effect.observed.filter((range) => resourceKey(range.tape) === id)
-          : [],
+      const newDeletes = changes.flatMap((changed) =>
+        changed.effects.flatMap((effect) =>
+          effect.type === 'DeleteText'
+            ? effect.observed.filter((range) => resourceKey(range.tape) === id)
+            : [],
+        ),
       );
       const covers = (range: NativeTextRange, entry: TextVisibility) =>
         range.client === entry.token.native.client &&
         range.clock <= entry.token.native.clock &&
         entry.token.native.clock < range.clock + range.length;
-      const activeDeletes = newDeletes.length
-        ? (deletions.get(id) ?? []).filter(
-            (deletion) =>
-              groupActivity.isEffectActive(deletion) &&
-              before.value.interpretations.effectEligible(deletion),
-          )
-        : [];
+      const activeDeletes =
+        newDeletes.length || control
+          ? (deletions.get(id) ?? []).filter(
+              (deletion) =>
+                groupActivity.isEffectActive(deletion) &&
+                before.value.interpretations.effectEligible(deletion),
+            )
+          : [];
       for (const [key, entry] of old) {
-        if (!newDeletes.some((range) => covers(range, entry))) continue;
+        if (!control && !newDeletes.some((range) => covers(range, entry))) continue;
         const tags = new Map<string, DeletionId>();
         for (const deletion of activeDeletes)
           if (deletion.ranges.some((range) => covers(range, entry)))
             tags.set(resourceKey(deletion.tag), deletion.tag);
-        const insertionActive = entry.insertionActive;
+        const insertionActive =
+          control && entry.token.birth !== null
+            ? groupActivity.isActive(entry.token.birth)
+            : entry.insertionActive;
         if (
           entry.insertionActive === insertionActive &&
           entry.tags.length === tags.size &&
