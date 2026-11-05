@@ -150,6 +150,17 @@ export class MaterializedActivity {
       retainedActions: this.state.count,
     };
   }
+  /** Private command preparations share the committed prefix, but own all later
+   * candidates, cancellation generations and work counters.
+   */
+  fork(): MaterializedActivity {
+    const copy = new MaterializedActivity();
+    copy.state = this.state;
+    copy.order = this.order;
+    copy.source = this.source;
+    copy.checkpoints = this.checkpoints;
+    return copy;
+  }
   *prepare(actions: ActionSequence, variants: PayloadIndex): Work<PreparedActivity> {
     const generation = ++this.generation;
     const source = readySource(actions),

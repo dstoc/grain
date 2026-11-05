@@ -15,7 +15,6 @@ import {
   reconstructBirths,
   reconstructProvenance,
 } from '../reference/provenance.js';
-import { reduceActivity } from '../visibility/index.js';
 import type { CommandOwnership } from '../authoring/document.js';
 import type { ActionEnvelope } from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
@@ -60,6 +59,10 @@ export function openMaterializedDocument(
     effectsReplayed: 0,
     nativeTapeReads: 0,
     coldReplays: 0,
+    payloadsCompared: 0,
+    interpretationSelections: 0,
+    activityActionsReplayed: 0,
+    activityPayloadsCompared: 0,
   };
   let preparedProjection: PreparedProjection | undefined;
   let prepared: PreparedActivity | undefined;
@@ -116,6 +119,7 @@ export function openMaterializedDocument(
       if (status.stale || !status.canAuthor) return undefined;
       const branch = projection.commandOwnership();
       if (!branch) return undefined;
+      const commandActivity = activity.fork();
       const ready = store.readReady(),
         version = store.factsVersion;
       // Compiler queries can replace the same unpublished action repeatedly.
@@ -126,9 +130,12 @@ export function openMaterializedDocument(
         const actions = [...readySequence(ready), action],
           key = actionKey(action.id),
           bytes = encodeEnvelope(action);
+        registerReadyAppend(actions, readySequence(ready), action);
         const variants = { get: (id: string) => (id === key ? bytes : ready.variants.get(id)) };
-        const before = branch.diagnostics();
+        const before = branch.diagnostics(),
+          beforeActivity = commandActivity.diagnostics();
         try {
+          const prepared = finish(commandActivity.prepare(actions, variants));
           return finish(
             branch.prepare(
               {
@@ -139,13 +146,15 @@ export function openMaterializedDocument(
                 birthContent: [],
                 native,
               },
-              reduceActivity(actions),
+              prepared.value,
               variants,
               touched,
+              actions,
             ),
           ).value.ownership;
         } finally {
           branch.cancel();
+          commandActivity.cancel();
           const after = branch.diagnostics();
           commandWork.queries++;
           for (const field of [
@@ -153,8 +162,15 @@ export function openMaterializedDocument(
             'effectsReplayed',
             'nativeTapeReads',
             'coldReplays',
+            'payloadsCompared',
+            'interpretationSelections',
           ] as const)
             commandWork[field] += after[field] - before[field];
+          const afterActivity = commandActivity.diagnostics();
+          commandWork.activityActionsReplayed +=
+            afterActivity.actionsReplayed - beforeActivity.actionsReplayed;
+          commandWork.activityPayloadsCompared +=
+            afterActivity.payloadsCompared - beforeActivity.payloadsCompared;
         }
       };
     },
@@ -210,6 +226,7 @@ export function openMaterializedDocument(
                 },
                 prepared.value,
                 variants,
+                sequence,
               );
         return value ? { heads: [action.id], native, value } : undefined;
       } finally {
