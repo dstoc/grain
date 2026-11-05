@@ -2,6 +2,7 @@ import type { DeletionId } from '../contracts.js';
 import { resourceKey } from '../visibility/identity.js';
 import type { Activity } from '../visibility/activity.js';
 import type { TextToken } from '../visibility/visibility.js';
+import type { OrderedDeletionTag } from '../visibility/visibility.js';
 
 interface Interval {
   readonly start: number;
@@ -68,7 +69,7 @@ export class ExactTextDeletions {
       this.tapes.set(tape, roots);
     }
   }
-  tags(token: Pick<TextToken, 'tape' | 'native'>): readonly DeletionId[] {
+  matches(token: Pick<TextToken, 'tape' | 'native'>): readonly OrderedDeletionTag[] {
     this.work.exactDeletionQueries++;
     const found: Interval[] = [],
       clock = token.native.clock;
@@ -81,6 +82,6 @@ export class ExactTextDeletions {
       visit(root.right);
     };
     visit(this.tapes.get(resourceKey(token.tape))?.get(token.native.client));
-    return found.sort((a, b) => a.order - b.order).map((entry) => entry.tag);
+    return found.map(({ tag, order }) => ({ tag, order }));
   }
 }

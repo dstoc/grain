@@ -38,7 +38,7 @@ function indexedVisibility(work: TextDeletionWork): typeof reduceVisibility {
   return (activity, layout, tokens, birthEnabled = () => true) => {
     const index = new ExactTextDeletions(activity, work);
     return reduceVisibilityWithTextTags(activity, layout, tokens, birthEnabled, (token) =>
-      index.tags(token),
+      index.matches(token),
     );
   };
 }
