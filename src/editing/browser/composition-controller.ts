@@ -1,58 +1,61 @@
-import type { CanonicalDocument } from '../../markdown/canonical/document.js';
-import type { CanonicalNode } from '../../markdown/canonical/node-projection.js';
-import type { CanonicalWriter } from '../../markdown/canonical/writer.js';
-import type { NodeId } from '../../markdown/semantic/types.js';
-import {
-  createCanonicalTextAnchor,
-  resolveCanonicalTextAnchor,
-} from '../../markdown/canonical-selection.js';
-import type { CanonicalTextAnchor } from '../../markdown/canonical-selection.js';
-import { CanonicalNode as CanonicalNodeProjection } from '../../markdown/canonical/node-projection.js';
-import type { Bookmark } from '../../markdown/canonical/action-types.js';
 import type { FocusRestoreGuard, MarkdownInline } from '../../markdown/inline-render.js';
 import type { MarkdownRenderer } from '../../markdown/block-render.js';
-import type { SelectionController } from './selection-controller.js';
-import type { BrowserSessionRunner } from './session-runner.js';
 
-interface CompositionDraft {
-  readonly inline: MarkdownInline;
-  readonly node: CanonicalNode;
-  readonly content: string;
+interface CompositionNode {
+  readonly connected: boolean;
+  readonly content?: string;
   readonly version: number;
+}
+type ResolvedAnchor = { readonly nodeId: string; readonly offset: number };
+
+interface CompositionDraft<Node extends CompositionNode, Anchor> {
+  readonly inline: MarkdownInline;
+  readonly node: Node;
+  readonly content: string;
+  readonly version: unknown;
   readonly selection: { readonly anchor: number; readonly focus: number };
-  readonly selectionAnchor: CanonicalTextAnchor;
-  readonly selectionFocus: CanonicalTextAnchor;
-  readonly blockSelection?: readonly NodeId[];
+  readonly selectionAnchor: Anchor;
+  readonly selectionFocus: Anchor;
+  readonly blockSelection?: readonly string[];
   readonly generation: number;
   readonly shouldRestoreFocus?: FocusRestoreGuard;
   invalidate: () => void;
 }
 
-interface PendingRecovery {
-  readonly session: CompositionDraft;
+interface PendingRecovery<Node extends CompositionNode, Anchor> {
+  readonly session: CompositionDraft<Node, Anchor>;
   readonly source: MarkdownInline;
   readonly inlines: Set<MarkdownInline>;
   cancelled: boolean;
 }
 
-interface CompositionEnvironment {
-  document(): CanonicalDocument | undefined;
-  writer(): CanonicalWriter | undefined;
-  sessionId(): string;
+interface CompositionEnvironment<Node extends CompositionNode, Anchor> {
+  node(inline: MarkdownInline): Node | undefined;
+  id(node: Node): string;
+  revision(node: Node): unknown;
+  lookup(id: string): Node | undefined;
+  capture(node: Node, offset: number, affinity: 'left' | 'right', inline: MarkdownInline): Anchor;
+  resolve(anchor: Anchor): ResolvedAnchor;
+  generation(): number;
+  isCurrent(generation: number): boolean;
+  restore(
+    anchor: Anchor,
+    focus: Anchor,
+    context: MarkdownInline['hostContext'],
+    guard?: FocusRestoreGuard,
+  ): Promise<unknown>;
   renderer(): MarkdownRenderer | undefined;
   updateComplete(): Promise<unknown>;
   isConnected(): boolean;
   focusRestoreGuard(inline: MarkdownInline): FocusRestoreGuard | undefined;
-  readonly session: BrowserSessionRunner;
-  readonly selection: SelectionController;
-  blockSelection(inline: MarkdownInline): readonly CanonicalNode[];
+  blockSelection(inline: MarkdownInline): readonly Node[];
   replaceBlocks(
-    selection: readonly CanonicalNode[],
+    selection: readonly Node[],
     text: string,
     hostContext?: MarkdownInline['hostContext'],
   ): void;
   runTextInput(
-    node: CanonicalNode,
+    node: Node,
     from: number,
     to: number,
     insert: string,
@@ -62,45 +65,43 @@ interface CompositionEnvironment {
 }
 
 /** Owns native composition invalidation, recovery, and its one queued-input handoff. */
-export class CompositionController {
-  private composition?: CompositionDraft;
-  private readonly pendingRecoveries = new Set<PendingRecovery>();
+export class CompositionController<Node extends CompositionNode, Anchor> {
+  private composition?: CompositionDraft<Node, Anchor>;
+  private readonly pendingRecoveries = new Set<PendingRecovery<Node, Anchor>>();
 
-  constructor(private readonly environment: CompositionEnvironment) {}
+  constructor(private readonly environment: CompositionEnvironment<Node, Anchor>) {}
 
   start(inline: MarkdownInline): void {
-    const node = inline.nodeView;
+    const node = this.environment.node(inline);
     const selection = inline.getTextSelection();
-    const document = this.environment.document();
-    if (
-      !(node instanceof CanonicalNodeProjection) ||
-      !selection ||
-      !document ||
-      inline.textContent !== node.content
-    ) {
+    if (!node || !selection || inline.textContent !== node.content) {
       return;
     }
-    const blockSelection = this.environment.blockSelection(inline).map((item) => item.sharedId);
-    const selectionAnchor = createCanonicalTextAnchor(document, {
-      nodeId: node.sharedId,
-      offset: selection.anchor,
-      affinity: selection.anchor <= selection.focus ? 'left' : 'right',
-    });
-    const selectionFocus = createCanonicalTextAnchor(document, {
-      nodeId: node.sharedId,
-      offset: selection.focus,
-      affinity: selection.focus >= selection.anchor ? 'right' : 'left',
-    });
+    const blockSelection = this.environment
+      .blockSelection(inline)
+      .map((item) => this.environment.id(item));
+    const selectionAnchor = this.environment.capture(
+      node,
+      selection.anchor,
+      selection.anchor <= selection.focus ? 'left' : 'right',
+      inline,
+    );
+    const selectionFocus = this.environment.capture(
+      node,
+      selection.focus,
+      selection.focus >= selection.anchor ? 'right' : 'left',
+      inline,
+    );
     const shouldRestoreFocus = this.environment.focusRestoreGuard(inline);
-    const session: CompositionDraft = {
+    const session: CompositionDraft<Node, Anchor> = {
       inline,
       node,
       content: node.content ?? '',
-      version: node.version,
+      version: this.environment.revision(node),
       selection,
       selectionAnchor,
       selectionFocus,
-      generation: this.environment.session.generation,
+      generation: this.environment.generation(),
       ...(shouldRestoreFocus ? { shouldRestoreFocus } : {}),
       ...(blockSelection.length ? { blockSelection } : {}),
       invalidate: () => this.invalidate(session),
@@ -141,10 +142,9 @@ export class CompositionController {
     }
     const nativeText = inline.textContent ?? '';
     if (session.blockSelection?.length) {
-      const document = this.environment.document()!;
       const selected = session.blockSelection
-        .map((id) => document.node(id))
-        .filter((node) => node.connected);
+        .map((id) => this.environment.lookup(id))
+        .filter((node): node is Node => !!node?.connected);
       if (!selected.length || selected.length !== session.blockSelection.length) {
         this.recoverAndReplay(session, inline, session.selection);
         return;
@@ -163,7 +163,7 @@ export class CompositionController {
           this.environment.replaceBlocks(selected, data, recovery.source.hostContext);
           recovery.source.hostContext?.clearSelection();
           const replayed = await this.replayQueuedInputs(
-            session.blockSelection?.[0] ?? session.node.sharedId,
+            session.blockSelection?.[0] ?? this.environment.id(session.node),
             recovery,
             recovery.source.hostContext,
             true,
@@ -179,7 +179,7 @@ export class CompositionController {
     if (
       !replacement ||
       !session.node.connected ||
-      session.node.version !== session.version ||
+      this.environment.revision(session.node) !== session.version ||
       session.node.content !== session.content
     ) {
       this.recoverAndReplay(session, inline, session.selection);
@@ -197,7 +197,7 @@ export class CompositionController {
             return;
           }
           const replayed = await this.replayQueuedInputs(
-            session.node.sharedId,
+            this.environment.id(session.node),
             recovery,
             recovery.source.hostContext,
           );
@@ -213,6 +213,13 @@ export class CompositionController {
           this.finishRecovery(recovery, false);
           return;
         }
+        if (
+          !session.node.connected ||
+          this.environment.revision(session.node) !== session.version
+        ) {
+          this.finishRecovery(recovery, false);
+          return;
+        }
         this.environment.runTextInput(
           session.node,
           from,
@@ -221,7 +228,7 @@ export class CompositionController {
           true,
           recovery.source.hostContext,
         );
-        const replayed = await this.replayQueuedInputs(session.node.sharedId, recovery);
+        const replayed = await this.replayQueuedInputs(this.environment.id(session.node), recovery);
         this.finishRecovery(recovery, !replayed);
       })
       .catch(() => this.finishRecovery(recovery, false));
@@ -239,7 +246,7 @@ export class CompositionController {
     }
   }
 
-  private invalidate(session: CompositionDraft): void {
+  private invalidate(session: CompositionDraft<Node, Anchor>): void {
     if (this.composition !== session) return;
     this.composition = undefined;
     session.inline.removeEventListener('composition-invalidated', session.invalidate);
@@ -252,25 +259,27 @@ export class CompositionController {
     }
   }
 
-  private async recoverInvalidatedComposition(recovery: PendingRecovery): Promise<void> {
+  private async recoverInvalidatedComposition(
+    recovery: PendingRecovery<Node, Anchor>,
+  ): Promise<void> {
     const session = recovery.session;
-    const document = this.environment.document();
-    if (!document || !this.isRecoveryCurrent(recovery)) {
+    if (!this.isRecoveryCurrent(recovery)) {
       this.finishRecovery(recovery, false);
       return;
     }
-    let anchor: Bookmark;
-    let focus: Bookmark;
+    let anchor: ResolvedAnchor;
+    let focus: ResolvedAnchor;
     try {
-      anchor = resolveCanonicalTextAnchor(document, session.selectionAnchor);
-      focus = resolveCanonicalTextAnchor(document, session.selectionFocus);
+      anchor = this.environment.resolve(session.selectionAnchor);
+      focus = this.environment.resolve(session.selectionFocus);
     } catch {
       const current = await this.recoverProjection(recovery, session.selection);
       this.finishRecovery(recovery, current);
       return;
     }
     const sameInline =
-      anchor.nodeId === session.node.sharedId && focus.nodeId === session.node.sharedId;
+      anchor.nodeId === this.environment.id(session.node) &&
+      focus.nodeId === this.environment.id(session.node);
     const selection = sameInline
       ? { anchor: anchor.offset, focus: focus.offset }
       : session.selection;
@@ -283,38 +292,31 @@ export class CompositionController {
       this.finishRecovery(recovery, true);
       return;
     }
-    await this.environment.selection.restoreAnchors(
+    await this.environment.restore(
       session.selectionAnchor,
       session.selectionFocus,
-      false,
-      false,
-      undefined,
-      false,
+      recovery.source.hostContext,
       session.shouldRestoreFocus,
     );
     if (!this.isRecoveryCurrent(recovery) || !this.mayRestoreFocus(session)) {
       this.finishRecovery(recovery, false);
       return;
     }
-    const replayed = await this.replayQueuedInputs(session.node.sharedId, recovery);
+    const replayed = await this.replayQueuedInputs(this.environment.id(session.node), recovery);
     this.finishRecovery(recovery, !replayed);
   }
 
   private async replayQueuedInputs(
-    nodeId: NodeId,
-    recovery: PendingRecovery,
+    nodeId: string,
+    recovery: PendingRecovery<Node, Anchor>,
     hostContext?: MarkdownInline['hostContext'],
     focusAtEnd = false,
   ): Promise<boolean> {
     const renderer = this.environment.renderer();
-    const document = this.environment.document();
-    const writer = this.environment.writer();
-    const sessionId = this.environment.sessionId();
     if (
       !renderer ||
-      !document ||
       !this.isRecoveryCurrent(recovery) ||
-      !this.environment.session.isCurrent(recovery.session.generation, document, writer, sessionId)
+      !this.environment.isCurrent(recovery.session.generation)
     ) {
       return false;
     }
@@ -326,7 +328,7 @@ export class CompositionController {
     await renderer.updateComplete;
     if (
       !this.isRecoveryCurrent(recovery) ||
-      !this.environment.session.isCurrent(recovery.session.generation, document, writer, sessionId)
+      !this.environment.isCurrent(recovery.session.generation)
     ) {
       return false;
     }
@@ -348,8 +350,7 @@ export class CompositionController {
         ? recovered
         : undefined;
     const isCurrent = () =>
-      this.isRecoveryCurrent(recovery) &&
-      this.environment.session.isCurrent(recovery.session.generation, document, writer, sessionId);
+      this.isRecoveryCurrent(recovery) && this.environment.isCurrent(recovery.session.generation);
     if (pending.length && replayTarget) {
       if (focusAtEnd) {
         await replayTarget.updateComplete;
@@ -366,7 +367,7 @@ export class CompositionController {
   }
 
   private recoverAndReplay(
-    session: CompositionDraft,
+    session: CompositionDraft<Node, Anchor>,
     source: MarkdownInline,
     selection: { readonly anchor: number; readonly focus: number },
   ): void {
@@ -376,8 +377,11 @@ export class CompositionController {
       .catch(() => this.finishRecovery(recovery, false));
   }
 
-  private beginRecovery(session: CompositionDraft, source: MarkdownInline): PendingRecovery {
-    const recovery: PendingRecovery = {
+  private beginRecovery(
+    session: CompositionDraft<Node, Anchor>,
+    source: MarkdownInline,
+  ): PendingRecovery<Node, Anchor> {
+    const recovery: PendingRecovery<Node, Anchor> = {
       session,
       source,
       inlines: new Set([source]),
@@ -388,9 +392,15 @@ export class CompositionController {
   }
 
   private async recoverProjection(
-    recovery: PendingRecovery,
+    recovery: PendingRecovery<Node, Anchor>,
     selection: { readonly anchor: number; readonly focus: number },
   ): Promise<boolean> {
+    if (!recovery.source.isConnected || !recovery.source.nodeView?.connected) {
+      // The native branch has gone with its block. Restore its stable selection
+      // in the live tree rather than remounting and focusing a detached block.
+      await this.environment.updateComplete();
+      return this.isRecoveryCurrent(recovery);
+    }
     const recoveredInline = await recovery.source.recoverComposition(
       selection,
       false,
@@ -400,23 +410,26 @@ export class CompositionController {
     return this.isRecoveryCurrent(recovery);
   }
 
-  private trackRecoveryInline(recovery: PendingRecovery, inline: MarkdownInline): void {
+  private trackRecoveryInline(
+    recovery: PendingRecovery<Node, Anchor>,
+    inline: MarkdownInline,
+  ): void {
     recovery.inlines.add(inline);
     if (recovery.cancelled) inline.discardRecoveryEvents();
   }
 
-  private isRecoveryCurrent(recovery: PendingRecovery): boolean {
+  private isRecoveryCurrent(recovery: PendingRecovery<Node, Anchor>): boolean {
     if (!recovery.cancelled && this.isCurrent(recovery.session)) return true;
     this.discardRecovery(recovery);
     return false;
   }
 
-  private discardRecovery(recovery: PendingRecovery): void {
+  private discardRecovery(recovery: PendingRecovery<Node, Anchor>): void {
     recovery.cancelled = true;
     for (const inline of recovery.inlines) inline.discardRecoveryEvents();
   }
 
-  private finishRecovery(recovery: PendingRecovery, replayEvents: boolean): void {
+  private finishRecovery(recovery: PendingRecovery<Node, Anchor>, replayEvents: boolean): void {
     if (
       replayEvents &&
       this.isRecoveryCurrent(recovery) &&
@@ -433,7 +446,7 @@ export class CompositionController {
   }
 
   private findInline(
-    nodeId: NodeId,
+    nodeId: string,
     hostContext?: MarkdownInline['hostContext'],
   ): MarkdownInline | undefined {
     const renderer = this.environment.renderer();
@@ -441,20 +454,20 @@ export class CompositionController {
     if (!hostContext) {
       return [...(root?.querySelectorAll<MarkdownInline>('md-inline') ?? [])].find(
         (candidate) =>
-          candidate.nodeView instanceof CanonicalNodeProjection &&
-          candidate.nodeView.sharedId === nodeId,
+          !!this.environment.node(candidate) &&
+          this.environment.id(this.environment.node(candidate)!) === nodeId,
       );
     }
     if (!root) return;
-    const pending: Node[] = [...root.childNodes].reverse();
+    const pending: globalThis.Node[] = [...root.childNodes].reverse();
     while (pending.length) {
       const current = pending.pop()!;
       if (current instanceof HTMLElement && current.localName === 'md-inline') {
         const candidate = current as MarkdownInline;
         if (
           candidate.hostContext === hostContext &&
-          candidate.nodeView instanceof CanonicalNodeProjection &&
-          candidate.nodeView.sharedId === nodeId
+          !!this.environment.node(candidate) &&
+          this.environment.id(this.environment.node(candidate)!) === nodeId
         ) {
           return candidate;
         }
@@ -466,20 +479,11 @@ export class CompositionController {
     }
   }
 
-  private isCurrent(session: CompositionDraft): boolean {
-    const document = this.environment.document();
-    return (
-      this.environment.isConnected() &&
-      this.environment.session.isCurrent(
-        session.generation,
-        document,
-        this.environment.writer(),
-        this.environment.sessionId(),
-      )
-    );
+  private isCurrent(session: CompositionDraft<Node, Anchor>): boolean {
+    return this.environment.isConnected() && this.environment.isCurrent(session.generation);
   }
 
-  private mayRestoreFocus(session: CompositionDraft): boolean {
+  private mayRestoreFocus(session: CompositionDraft<Node, Anchor>): boolean {
     return !session.shouldRestoreFocus || session.shouldRestoreFocus();
   }
 }

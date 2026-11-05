@@ -15,6 +15,7 @@ function decoratorPreset(options: Record<string, unknown>) {
 }
 
 export default defineConfig({
+  build: { rolldownOptions: { input: { harness: 'index.html', multiwriter: 'multiwriter.html' } } },
   fmt: {
     singleQuote: true,
     ignorePatterns: ['coverage/**', 'dist/**', 'node_modules/**', 'pkmapp/**'],

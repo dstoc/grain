@@ -294,7 +294,8 @@ it('inventories every baseline suite and requires an explicit disposition before
       .filter(
         (path) =>
           !path.startsWith('src/markdown/multiwriter/') ||
-          path.startsWith('src/markdown/multiwriter/providers/'),
+          path.startsWith('src/markdown/multiwriter/providers/') ||
+          path.startsWith('src/markdown/multiwriter/replica/'),
       )
       .sort(),
   ).toEqual([...inventory].sort());

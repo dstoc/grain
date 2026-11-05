@@ -9,7 +9,11 @@ import { CanonicalNode } from '../markdown/canonical/node-projection.js';
 import type { CanonicalDocument } from '../markdown/canonical/document.js';
 import '../markdown/block-render.js';
 import type { NodeId } from '../markdown/semantic/types.js';
-import { createCanonicalTextAnchor } from '../markdown/canonical-selection.js';
+import {
+  type CanonicalTextAnchor,
+  createCanonicalTextAnchor,
+  resolveCanonicalTextAnchor,
+} from '../markdown/canonical-selection.js';
 import {
   readClipboardPayload,
   serializeBlockSelection,
@@ -62,27 +66,49 @@ export class CanonicalEditor extends LitElement {
 
   private unsubscribeProjection?: () => void;
   private readonly sessionRunner = new BrowserSessionRunner();
-  private readonly selectionController = new SelectionController(
+  private readonly selectionController = new SelectionController<
+    CanonicalNode,
+    CanonicalTextAnchor
+  >(
     {
-      document: () => this.document,
+      document: () =>
+        this.document && {
+          root: this.document.root,
+          node: (id: string) => this.document!.node(id),
+          id: (node: CanonicalNode) => node.sharedId,
+          isNode: (node): node is CanonicalNode => node instanceof CanonicalNode,
+          capture: (point) => createCanonicalTextAnchor(this.document!, point),
+          resolve: (anchor) => resolveCanonicalTextAnchor(this.document!, anchor),
+        },
       renderer: () => this.renderer,
       isConnected: () => this.isConnected,
       requestUpdate: () => this.requestUpdate(),
       updateComplete: () => this.updateComplete,
     },
-    this.sessionRunner,
+    {
+      generation: () => this.sessionRunner.generation,
+      hasTypingGroup: () => this.sessionRunner.hasTypingGroup,
+      isCurrentGeneration: (generation) => this.sessionRunner.isCurrentGeneration(generation),
+      sealTypingGroup: () => this.sessionRunner.sealTypingGroup(),
+    },
   );
   private readonly compositionController = new CompositionController({
-    document: () => this.document,
-    writer: () => this.writer,
-    sessionId: () => this.sessionId,
+    node: (inline) => this.activeInline(inline),
+    id: (node: CanonicalNode) => node.sharedId,
+    revision: (node) => node.version,
+    lookup: (id) => this.document?.node(id),
+    capture: (node, offset, affinity) =>
+      createCanonicalTextAnchor(this.document!, { nodeId: node.sharedId, offset, affinity }),
+    resolve: (anchor) => resolveCanonicalTextAnchor(this.document!, anchor),
+    generation: () => this.sessionRunner.generation,
+    isCurrent: (generation) => this.sessionRunner.isCurrent(generation),
+    restore: (anchor, focus, context, guard) =>
+      this.selectionController.restoreAnchors(anchor, focus, false, false, context, false, guard),
     renderer: () => this.renderer,
     updateComplete: () => this.updateComplete,
     isConnected: () => this.isConnected,
     focusRestoreGuard: (inline) =>
       this.acceptedUpdateRelay ? this.focusRestoreGuard(inline) : undefined,
-    session: this.sessionRunner,
-    selection: this.selectionController,
     blockSelection: (inline) => {
       const selectedIds = new Set(
         [...(inline.hostContext?.selection ?? [])]

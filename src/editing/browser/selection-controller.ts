@@ -1,12 +1,3 @@
-import type { CanonicalDocument } from '../../markdown/canonical/document.js';
-import type { CanonicalNode } from '../../markdown/canonical/node-projection.js';
-import type { Bookmark } from '../../markdown/canonical/action-types.js';
-import { CanonicalNode as CanonicalNodeProjection } from '../../markdown/canonical/node-projection.js';
-import {
-  createCanonicalTextAnchor,
-  resolveCanonicalTextAnchor,
-} from '../../markdown/canonical-selection.js';
-import type { CanonicalTextAnchor } from '../../markdown/canonical-selection.js';
 import type { FocusRestoreGuard, MarkdownInline } from '../../markdown/inline-render.js';
 import type { MarkdownRenderer } from '../../markdown/block-render.js';
 import type { HostContext } from '../../markdown/host-context.js';
@@ -17,7 +8,8 @@ import {
 } from '../../markdown/node-view.js';
 import type { EditSelection } from '../../markdown/semantic/selection.js';
 import type { NodeId } from '../../markdown/semantic/types.js';
-import { BrowserSessionRunner } from './session-runner.js';
+
+import { invalidateNodeView } from '../../markdown/host-context.js';
 import { getContainingTransclusion, getRenderedTransclusion } from '../../markdown/transclusion.js';
 
 interface NativeSelectionSnapshot {
@@ -26,8 +18,33 @@ interface NativeSelectionSnapshot {
   readonly focus: number;
 }
 
-interface BrowserSelectionHost {
-  document(): CanonicalDocument | undefined;
+interface SelectionNode<Node extends ReadonlyMarkdownNodeView> extends ReadonlyMarkdownNodeView {
+  readonly children: readonly Node[];
+  readonly parent?: Node;
+  readonly previousSibling?: Node;
+  readonly nextSibling?: Node;
+}
+export interface SelectionDocument<Node, Anchor> {
+  readonly root: Node;
+  node(id: string): Node;
+  id(node: Node): string;
+  isNode(node: ReadonlyMarkdownNodeView | undefined): node is Node & ReadonlyMarkdownNodeView;
+  capture(point: Bookmark, context?: HostContext): Anchor;
+  resolve(anchor: Anchor): Bookmark;
+}
+interface Bookmark {
+  readonly nodeId: string;
+  readonly offset: number;
+  readonly affinity: 'left' | 'right';
+}
+interface SelectionSession {
+  generation(): number;
+  hasTypingGroup(): boolean;
+  isCurrentGeneration(generation: number): boolean;
+  sealTypingGroup(): void;
+}
+interface BrowserSelectionHost<Node, Anchor> {
+  document(): SelectionDocument<Node, Anchor> | undefined;
   renderer(): MarkdownRenderer | undefined;
   isConnected(): boolean;
   requestUpdate(): void;
@@ -39,10 +56,16 @@ interface RenderedMarkdownBlock extends HTMLElement {
   readonly updateComplete: Promise<unknown>;
 }
 
-/** Owns selection capture, canonical anchors, recovery, and block selection. */
-export class SelectionController {
-  private anchor?: CanonicalTextAnchor;
-  private focus?: CanonicalTextAnchor;
+/** Owns selection capture, adapter anchors, recovery, and block selection. */
+export class SelectionController<ModelNode extends SelectionNode<ModelNode>, Anchor> {
+  private isNode(node: ReadonlyMarkdownNodeView | undefined): node is ModelNode {
+    return this.host.document()?.isNode(node) ?? false;
+  }
+  private id(node: ModelNode): string {
+    return this.host.document()!.id(node);
+  }
+  private anchor?: Anchor;
+  private focus?: Anchor;
   private lastNativeSelection?: NativeSelectionSnapshot;
   private expectedInputSelection?: { readonly nodeId: NodeId; readonly offset: number };
   private restoring = false;
@@ -50,15 +73,15 @@ export class SelectionController {
   private selectionChangeRoot?: ShadowRoot;
 
   constructor(
-    private readonly host: BrowserSelectionHost,
-    private readonly session: BrowserSessionRunner,
+    private readonly host: BrowserSelectionHost<ModelNode, Anchor>,
+    private readonly session: SelectionSession,
   ) {}
 
-  get selectionAnchor(): CanonicalTextAnchor | undefined {
+  get selectionAnchor(): Anchor | undefined {
     return this.anchor;
   }
 
-  get selectionFocus(): CanonicalTextAnchor | undefined {
+  get selectionFocus(): Anchor | undefined {
     return this.focus;
   }
 
@@ -88,10 +111,8 @@ export class SelectionController {
     this.expectedInputSelection = { nodeId, offset };
   }
 
-  visibleInlineNodes(root = this.host.document()?.root): CanonicalNode[] {
-    return this.visibleInlineNodeViews(root).filter(
-      (node) => node instanceof CanonicalNodeProjection,
-    ) as CanonicalNode[];
+  visibleInlineNodes(root = this.host.document()?.root): ModelNode[] {
+    return this.visibleInlineNodeViews(root).filter((node) => this.isNode(node)) as ModelNode[];
   }
 
   visibleInlineNodeViews(root?: ReadonlyMarkdownNodeView): InlineMarkdownNodeView[] {
@@ -111,31 +132,27 @@ export class SelectionController {
     return result;
   }
 
-  currentBlockSelection(context = this.host.renderer()?.hostContext): CanonicalNode[] {
+  currentBlockSelection(context = this.host.renderer()?.hostContext): ModelNode[] {
     const selection = context?.selection ?? [];
     const selected = new Set<NodeId>();
     for (const node of selection) {
-      if (node instanceof CanonicalNodeProjection) selected.add(node.sharedId);
+      if (this.isNode(node)) selected.add(this.id(node));
     }
-    const root =
-      context?.root instanceof CanonicalNodeProjection
-        ? (context.root as CanonicalNode)
-        : undefined;
-    return this.visibleInlineNodes(root).filter((node) => selected.has(node.sharedId));
+    const root = this.isNode(context?.root) ? (context.root as ModelNode) : undefined;
+    return this.visibleInlineNodes(root).filter((node) => selected.has(this.id(node)));
   }
 
   expandBlockSelection(
-    selected: readonly CanonicalNode[],
+    selected: readonly ModelNode[],
     context = this.host.renderer()?.hostContext,
-  ): CanonicalNode[] {
+  ): ModelNode[] {
     if (!context || !selected.length) return [...selected];
-    const root =
-      context.root instanceof CanonicalNodeProjection
-        ? (context.root as CanonicalNode)
-        : this.host.document()?.root;
+    const root = this.isNode(context.root)
+      ? (context.root as ModelNode)
+      : this.host.document()?.root;
     if (!root) return [...selected];
 
-    const selectedIds = new Set(selected.map((node) => node.sharedId));
+    const selectedIds = new Set(selected.map((node) => this.id(node)));
     const visited = new Set<NodeId>();
     const additions = new Set<NodeId>();
     let seeds = [
@@ -147,22 +164,22 @@ export class SelectionController {
     ];
 
     while (!additions.size && seeds.length) {
-      const next: CanonicalNode[] = [];
+      const next: ModelNode[] = [];
       for (const node of seeds) {
         const parent = node.parent;
-        if (!parent || parent.sharedId === root.parent?.sharedId) continue;
-        if (visited.has(parent.sharedId)) continue;
-        visited.add(parent.sharedId);
+        if (!parent || parent === root.parent) continue;
+        if (visited.has(this.id(parent))) continue;
+        visited.add(this.id(parent));
         next.push(parent);
         for (const candidate of this.visibleInlineNodes(parent)) {
-          if (!selectedIds.has(candidate.sharedId)) additions.add(candidate.sharedId);
+          if (!selectedIds.has(this.id(candidate))) additions.add(this.id(candidate));
         }
       }
       seeds = next;
     }
 
     return this.visibleInlineNodes(root).filter(
-      (node) => selectedIds.has(node.sharedId) || additions.has(node.sharedId),
+      (node) => selectedIds.has(this.id(node)) || additions.has(this.id(node)),
     );
   }
 
@@ -170,22 +187,21 @@ export class SelectionController {
     if (this.restoring || !this.host.document()) return;
     const { inline } = this.host.renderer()?.getInlineSelection() ?? {};
     const node = inline?.nodeView;
-    const canonicalNode =
-      node instanceof CanonicalNodeProjection ? (node as CanonicalNode) : undefined;
+    const modelNode = this.isNode(node) ? (node as ModelNode) : undefined;
     const selection = inline?.getTextSelection();
     const document = this.host.document();
-    if (!document || !inline || !canonicalNode || !selection || !canonicalNode.connected) {
+    if (!document || !inline || !modelNode || !selection || !modelNode.connected) {
       return;
     }
     const snapshot = {
-      nodeId: canonicalNode.sharedId,
+      nodeId: this.id(modelNode),
       anchor: selection.anchor,
       focus: selection.focus,
     };
     const previous = this.lastNativeSelection;
     if (
       sealChangedGroup &&
-      this.session.hasTypingGroup &&
+      this.session.hasTypingGroup() &&
       previous &&
       (previous.nodeId !== snapshot.nodeId ||
         previous.anchor !== snapshot.anchor ||
@@ -202,19 +218,32 @@ export class SelectionController {
       this.selectionChangeRoot?.addEventListener('selectionchange', this.onSelectionChange);
     }
     try {
-      this.anchor = createCanonicalTextAnchor(document, {
-        nodeId: canonicalNode.sharedId,
-        offset: selection.anchor,
-        affinity: selection.anchor <= selection.focus ? 'left' : 'right',
-      });
-      this.focus = createCanonicalTextAnchor(document, {
-        nodeId: canonicalNode.sharedId,
-        offset: selection.focus,
-        affinity: selection.focus >= selection.anchor ? 'right' : 'left',
-      });
+      this.anchor = document.capture(
+        {
+          nodeId: this.id(modelNode),
+          offset: selection.anchor,
+          affinity: selection.anchor <= selection.focus ? 'left' : 'right',
+        },
+        inline.hostContext,
+      );
+      this.focus = document.capture(
+        {
+          nodeId: this.id(modelNode),
+          offset: selection.focus,
+          affinity: selection.focus >= selection.anchor ? 'right' : 'left',
+        },
+        inline.hostContext,
+      );
     } catch {
       // A native selection can briefly point into a render recovery projection.
     }
+  }
+
+  /** Update saved model anchors without changing native focus or selection. */
+  rememberAnchors(anchor: Anchor, focus: Anchor): void {
+    this.anchor = anchor;
+    this.focus = focus;
+    this.expectedInputSelection = undefined;
   }
 
   async restoreSavedSelection(
@@ -228,8 +257,8 @@ export class SelectionController {
   }
 
   async restoreAnchors(
-    anchor: CanonicalTextAnchor,
-    focus: CanonicalTextAnchor,
+    anchor: Anchor,
+    focus: Anchor,
     restoreAsBlockSelection = false,
     preserveBlockSelection = false,
     hostContext?: HostContext,
@@ -241,7 +270,7 @@ export class SelectionController {
     const renderer = hostContext
       ? (this.rendererForContext(hostContext) ?? rootRenderer)
       : rootRenderer;
-    const generation = this.session.generation;
+    const generation = this.session.generation();
     if (
       !document ||
       !renderer ||
@@ -253,8 +282,8 @@ export class SelectionController {
     let start: Bookmark;
     let end: Bookmark;
     try {
-      start = resolveCanonicalTextAnchor(document, anchor);
-      end = resolveCanonicalTextAnchor(document, focus);
+      start = document.resolve(anchor);
+      end = document.resolve(focus);
     } catch {
       return;
     }
@@ -262,11 +291,10 @@ export class SelectionController {
     if (!target.connected) return;
     const context = hostContext ?? renderer.hostContext;
     if (!preserveBlockSelection && (start.nodeId !== end.nodeId || restoreAsBlockSelection)) {
-      const visibleRoot =
-        context.root instanceof CanonicalNodeProjection ? context.root : undefined;
+      const visibleRoot = this.isNode(context.root) ? context.root : undefined;
       const visible = this.visibleInlineNodes(visibleRoot);
-      const startIndex = visible.findIndex((node) => node.sharedId === start.nodeId);
-      const endIndex = visible.findIndex((node) => node.sharedId === end.nodeId);
+      const startIndex = visible.findIndex((node) => this.id(node) === start.nodeId);
+      const endIndex = visible.findIndex((node) => this.id(node) === end.nodeId);
       if (startIndex >= 0 && endIndex >= 0) {
         const low = Math.min(startIndex, endIndex);
         const high = Math.max(startIndex, endIndex);
@@ -328,15 +356,15 @@ export class SelectionController {
         if (!this.session.isCurrentGeneration(generation)) return;
         inline.setSelectionOffsets(start.offset, end.offset);
         this.lastNativeSelection = {
-          nodeId: target.sharedId,
+          nodeId: this.id(target),
           anchor: start.offset,
           focus: end.offset,
         };
-        if (this.expectedInputSelection?.nodeId === target.sharedId) {
-          this.expectedInputSelection = { nodeId: target.sharedId, offset: end.offset };
+        if (this.expectedInputSelection?.nodeId === this.id(target)) {
+          this.expectedInputSelection = { nodeId: this.id(target), offset: end.offset };
         }
-        this.anchor = createCanonicalTextAnchor(document, start);
-        this.focus = createCanonicalTextAnchor(document, end);
+        this.anchor = document.capture(start, context);
+        this.focus = document.capture(end, context);
         if (shouldRestoreFocus) this.clearFocusHintSoon(context, target);
       } finally {
         this.restoring = false;
@@ -364,7 +392,7 @@ export class SelectionController {
       const inlineFor = (node: InlineMarkdownNodeView) =>
         renderedInlines.find((candidate) => candidate.nodeView === node);
       const isTarget = (node: InlineMarkdownNodeView) =>
-        node instanceof CanonicalNodeProjection && node.sharedId === target.sharedId;
+        this.isNode(node) && this.id(node) === this.id(target);
       let focusNode = target;
       let focusOffset = end.offset;
       let inline = inlineFor(asInlineMarkdownNodeView(focusNode));
@@ -372,7 +400,7 @@ export class SelectionController {
       if (!inline) {
         focusParentHostNeighbor = true;
         const endpoint = [start, end].find((bookmark) => {
-          if (bookmark.nodeId === target.sharedId) return false;
+          if (bookmark.nodeId === this.id(target)) return false;
           return inlineFor(asInlineMarkdownNodeView(document.node(bookmark.nodeId)));
         });
         if (endpoint) {
@@ -385,14 +413,14 @@ export class SelectionController {
             .filter(
               (candidate) =>
                 candidate.inline &&
-                candidate.node instanceof CanonicalNodeProjection &&
-                candidate.node.sharedId !== target.sharedId,
+                this.isNode(candidate.node) &&
+                this.id(candidate.node) !== this.id(target),
             )
             .sort(
               (left, right) =>
                 Math.abs(left.index - targetIndex) - Math.abs(right.index - targetIndex),
             )[0];
-          if (!fallback?.inline || !(fallback.node instanceof CanonicalNodeProjection)) return;
+          if (!fallback?.inline || !this.isNode(fallback.node)) return;
           focusNode = fallback.node;
           focusOffset = fallback.index < targetIndex ? (focusNode.content ?? '').length : 0;
         }
@@ -423,16 +451,16 @@ export class SelectionController {
         focusParentHostNeighbor ? focusOffset : end.offset,
       );
       this.lastNativeSelection = {
-        nodeId: focusNode.sharedId,
+        nodeId: this.id(focusNode),
         anchor: focusParentHostNeighbor ? focusOffset : start.offset,
         focus: focusParentHostNeighbor ? focusOffset : end.offset,
       };
       const expectedOffset = focusParentHostNeighbor ? focusOffset : end.offset;
-      if (this.expectedInputSelection?.nodeId === focusNode.sharedId) {
-        this.expectedInputSelection = { nodeId: focusNode.sharedId, offset: expectedOffset };
+      if (this.expectedInputSelection?.nodeId === this.id(focusNode)) {
+        this.expectedInputSelection = { nodeId: this.id(focusNode), offset: expectedOffset };
       }
-      this.anchor = createCanonicalTextAnchor(document, start);
-      this.focus = createCanonicalTextAnchor(document, end);
+      this.anchor = document.capture(start, context);
+      this.focus = document.capture(end, context);
       if (shouldRestoreFocus) this.clearFocusHintSoon(context, focusNode);
     } finally {
       this.restoring = false;
@@ -441,7 +469,7 @@ export class SelectionController {
 
   private async awaitRenderedInline(
     renderer: MarkdownRenderer,
-    target: CanonicalNode,
+    target: ModelNode,
     generation: number,
     shouldRestoreFocus?: FocusRestoreGuard,
   ): Promise<MarkdownInline | undefined> {
@@ -488,7 +516,7 @@ export class SelectionController {
     const document = this.host.document();
     if (!document || !bookmark) return;
     try {
-      const anchor = createCanonicalTextAnchor(document, bookmark);
+      const anchor = document.capture(bookmark, hostContext);
       await this.restoreAnchors(
         anchor,
         anchor,
@@ -503,7 +531,7 @@ export class SelectionController {
     }
   }
 
-  private clearFocusHintSoon(context: HostContext, node: CanonicalNode): void {
+  private clearFocusHintSoon(context: HostContext, node: ModelNode): void {
     window.setTimeout(() => {
       if (context.focusNode !== node) return;
       context.focusNode = undefined;
@@ -549,26 +577,26 @@ export class SelectionController {
   }
 
   blockSelectionBefore(
-    selection: readonly CanonicalNode[],
+    selection: readonly ModelNode[],
     hostContext = this.host.renderer()?.hostContext,
   ): EditSelection | undefined {
     if (!selection.length) return undefined;
     const first = selection[0]!;
     const last = selection.at(-1)!;
     const reverse =
-      hostContext?.selectionAnchor instanceof CanonicalNodeProjection &&
-      hostContext.selectionAnchor.sharedId === last.sharedId;
+      this.isNode(hostContext?.selectionAnchor) &&
+      this.id(hostContext.selectionAnchor) === this.id(last);
     const anchorNode = reverse ? last : first;
     const focusNode = reverse ? first : last;
     return {
-      nodeIds: selection.map((node) => node.sharedId),
+      nodeIds: selection.map((node) => this.id(node)),
       anchor: {
-        nodeId: anchorNode.sharedId,
+        nodeId: this.id(anchorNode),
         offset: reverse ? (anchorNode.content ?? '').length : 0,
         affinity: reverse ? 'right' : 'left',
       },
       focus: {
-        nodeId: focusNode.sharedId,
+        nodeId: this.id(focusNode),
         offset: reverse ? 0 : (focusNode.content ?? '').length,
         affinity: reverse ? 'left' : 'right',
       },
@@ -604,7 +632,7 @@ export class SelectionController {
       : inline.moveCaret(event.shiftKey ? 'extend' : 'move', direction, granularity);
     if (result === true) {
       if (!event.shiftKey) context.clearSelection();
-      if (node instanceof CanonicalNodeProjection) this.captureSelection();
+      if (this.isNode(node)) this.captureSelection();
       return;
     }
     const rootRenderer = this.rendererForContext(context) ?? this.host.renderer();
@@ -700,14 +728,14 @@ export class SelectionController {
     ].find((element) => element.nodeView === candidate);
     if (!targetInline) return false;
     const offset = direction === 'backward' ? candidate.content.length : 0;
-    let anchor: CanonicalTextAnchor | undefined;
+    let anchor: Anchor | undefined;
 
-    if (candidate instanceof CanonicalNodeProjection) {
+    if (this.isNode(candidate)) {
       const document = this.host.document();
       if (!document || !candidate.connected) return false;
       try {
-        anchor = createCanonicalTextAnchor(document, {
-          nodeId: candidate.sharedId,
+        anchor = document.capture({
+          nodeId: this.id(candidate),
           offset,
           affinity: direction === 'backward' ? 'left' : 'right',
         });
@@ -787,16 +815,16 @@ export class SelectionController {
   }
 
   setBlockSelection(
-    nodes: readonly CanonicalNode[],
-    anchor?: CanonicalNode,
-    focus?: CanonicalNode,
+    nodes: readonly ModelNode[],
+    anchor?: ModelNode,
+    focus?: ModelNode,
     context = this.host.renderer()?.hostContext,
   ): void {
     if (!context) return;
     context.clearSelection();
     for (const node of nodes) {
       context.selection.add(asInlineMarkdownNodeView(node));
-      node.renderSignal.value++;
+      invalidateNodeView(asInlineMarkdownNodeView(node));
     }
     context.selectionAnchor = anchor ? asInlineMarkdownNodeView(anchor) : undefined;
     context.selectionFocus = focus ? asInlineMarkdownNodeView(focus) : undefined;
@@ -825,14 +853,13 @@ export class SelectionController {
   private onSelectionChange = (): void => {
     const { inline } = this.host.renderer()?.getInlineSelection() ?? {};
     const node = inline?.nodeView;
-    const canonicalNode =
-      node instanceof CanonicalNodeProjection ? (node as CanonicalNode) : undefined;
+    const modelNode = this.isNode(node) ? (node as ModelNode) : undefined;
     const selection = inline?.getTextSelection();
     const expected = this.expectedInputSelection;
     if (
-      canonicalNode &&
+      modelNode &&
       selection &&
-      expected?.nodeId === canonicalNode.sharedId &&
+      expected?.nodeId === this.id(modelNode) &&
       selection.anchor === expected.offset &&
       selection.focus === expected.offset
     ) {
