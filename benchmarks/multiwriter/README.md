@@ -1,8 +1,11 @@
 # Multiwriter materialization measurements
 
-This runner compares the opt-in native/readiness/activity materializer with the
+This runner compares the opt-in materializer with the
 full reference implementation at `415363a4e85549a33eee3010d69e55ce6161002d`.
-It does not establish full MW-13 acceptance.
+It does not establish full MW-13 acceptance. The current implementation also
+caches coupled replay and projects a narrow literal append locally; see the
+[implementation boundaries](../../docs/mw13-materialization-status.md). Historical
+reports retain the scope and source of their original stage.
 
 Use the runner's installed dependencies (`npm install`) and Node with
 `module.registerHooks` support. Yjs must be exactly 13.6.33. Verify exact fixture comparisons with

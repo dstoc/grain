@@ -1,7 +1,10 @@
 import type { ActionEnvelope } from '../contracts.js';
 import type { AuthorValidationContext } from '../ingest/validator.js';
 import { resourceKey } from '../text/identity.js';
+import { IngestDataError, IngestCapacityError } from '../ingest/work.js';
 import { CellIndex, sameId } from './cells.js';
+
+export class TextRefinementError extends Error {}
 
 /** Marker refinement and insertion cannot change raw placement or the retained
  * run skeleton. A certified author past already owns every tape as a private home.
@@ -27,9 +30,16 @@ export function validateTextRefinement(
   for (const [key, tape] of touched) {
     const allocation = context.indexed.past.allocation(tape);
     if (allocation?.type !== 'tape')
-      throw new Error('Text refinement requires an existing private tape');
+      throw new TextRefinementError('Text refinement requires an existing private tape');
     const snapshot = context.native.snapshot(tape);
-    const index = new CellIndex([snapshot]);
+    let index: CellIndex;
+    try {
+      index = new CellIndex([snapshot]);
+    } catch (error) {
+      if (error instanceof IngestDataError || error instanceof IngestCapacityError) throw error;
+      if (!(error instanceof Error)) throw error;
+      throw new TextRefinementError(error.message);
+    }
     const cells = index.tape(tape);
     if (
       !sameId(cells[0].range.start, allocation.start) ||
@@ -37,7 +47,9 @@ export function validateTextRefinement(
       cells[0].fragments.length ||
       cells.at(-1)!.fragments.length
     )
-      throw new Error('Reserved home cells must remain text-free; bracket edge typing');
+      throw new TextRefinementError(
+        'Reserved home cells must remain text-free; bracket edge typing',
+      );
     const markers = snapshot.parts.filter((part) => part.type === 'marker');
     const prior = markers.filter((part) => !newMarkers.has(resourceKey(part.marker)));
     const inserted = action.nativeManifest.flatMap((birth) =>
@@ -56,13 +68,13 @@ export function validateTextRefinement(
         continue;
       const before = prior.findLast((marker) => marker.index < part.index);
       const after = prior.find((marker) => marker.index > part.index);
-      if (!before || !after) throw new Error('Text outside home sentinels');
+      if (!before || !after) throw new TextRefinementError('Text outside home sentinels');
       if (!sameId(before.marker, allocation.start) && !sameId(after.marker, allocation.end))
         continue;
       const left = markers.findLast((marker) => marker.index < part.index)!;
       const right = markers.find((marker) => marker.index > part.index)!;
       if (!newMarkers.has(resourceKey(left.marker)) || !newMarkers.has(resourceKey(right.marker)))
-        throw new Error('Edge typing needs two interior author-allocated brackets');
+        throw new TextRefinementError('Edge typing needs two interior author-allocated brackets');
     }
   }
 }
