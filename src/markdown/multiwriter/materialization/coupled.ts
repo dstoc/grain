@@ -7,7 +7,7 @@ import type { TapeSnapshot } from '../text/types.js';
 import type { TapeId, MarkerId } from '../contracts.js';
 import { compareActions } from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
-import { changedNativeTapes } from './native.js';
+import { changedNativeTapes, hasIndexedNative } from './native.js';
 import type { ProjectionInput } from '../projection/project.js';
 import type { Activity } from '../visibility/activity.js';
 import { selectInterpretations } from '../projection/interpretation.js';
@@ -31,6 +31,33 @@ function markerSignature(snapshot: TapeSnapshot): string {
       part.type === 'marker' ? [JSON.stringify([resourceKey(part.marker), part.native])] : [],
     )
     .join('|');
+}
+/** Marker-stable text updates need only tape identity for resource checks. Keep
+ * a detached full export available for a later structural/snapshot consumer.
+ * This helper owns no preparation or previous publication context.
+ */
+function deferredSnapshot(
+  native: NativeView,
+  tape: TapeId,
+  work: Pick<CoupledWork, 'deferredTapeReads'>,
+): TapeSnapshot {
+  let snapshot: TapeSnapshot | undefined;
+  const read = () => {
+    if (!snapshot) {
+      snapshot = native.snapshot(tape);
+      work.deferredTapeReads++;
+    }
+    return snapshot;
+  };
+  return {
+    tape,
+    get length() {
+      return read().length;
+    },
+    get parts() {
+      return read().parts;
+    },
+  };
 }
 /** A reusable prefix permits subdivision only: retained marker identities, native
  * identities and their order must survive. Withdrawal/rebuilds fail closed. */
@@ -119,6 +146,7 @@ export interface CoupledWork extends ResourceWork {
   readyIndexNodesVisited: number;
   interpretationSelections: number;
   nativeTapeReads: number;
+  deferredTapeReads: number;
   cellTapesIndexed: number;
   coverageFlowsTraversed: number;
   coverageCellsVisited: number;
@@ -164,6 +192,7 @@ export class MaterializedOwnership {
     readyIndexNodesVisited: 0,
     interpretationSelections: 0,
     nativeTapeReads: 0,
+    deferredTapeReads: 0,
     cellTapesIndexed: 0,
     coverageFlowsTraversed: 0,
     coverageCellsVisited: 0,
@@ -292,8 +321,8 @@ export class MaterializedOwnership {
     }
     const coldSnapshots = continuous ? undefined : [...snapshotCache.values()];
     const index = continuous
-      ? this.state!.index.refine(updated)
-      : new MaterializedCells(coldSnapshots!);
+      ? this.state!.index.refine(updated, input.native)
+      : new MaterializedCells(coldSnapshots!, undefined, input.native);
     this.counts.cellTapesIndexed += continuous ? updated.length : coldSnapshots!.length;
     const changed = updated.filter((snapshot) => {
       const signature = this.markers.get(resourceKey(snapshot.tape));
@@ -469,16 +498,21 @@ export class MaterializedOwnership {
     )
       return undefined;
     const generation = ++this.generation;
-    const snapshots = touched.map((tape) => native.snapshot(tape));
-    const index = prior.index.refine(snapshots);
+    const localCells = !hasMarkers && hasIndexedNative(native);
+    const snapshots = touched.map((tape) =>
+      localCells ? deferredSnapshot(native, tape, this.counts) : native.snapshot(tape),
+    );
+    const index = localCells
+      ? prior.index.withNative(native, touched)
+      : prior.index.refine(snapshots, native);
     const retained = resources.retained.append(
       [{ action, births: [] }],
       snapshots,
       index,
       this.counts,
     );
-    this.counts.nativeTapeReads += snapshots.length;
-    this.counts.cellTapesIndexed += snapshots.length;
+    this.counts.nativeTapeReads += localCells ? 0 : snapshots.length;
+    this.counts.cellTapesIndexed += localCells ? 0 : snapshots.length;
     const { owners, coverage } = hasMarkers ? refineCheckpoint(prior, snapshots, index) : prior;
     const snapshotCache = this.snapshots.fork();
     for (const snapshot of snapshots) snapshotCache.set(resourceKey(snapshot.tape), snapshot);

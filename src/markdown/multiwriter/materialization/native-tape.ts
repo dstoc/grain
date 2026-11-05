@@ -1,4 +1,4 @@
-import type { MarkerId, NativeId, TapeId } from '../contracts.js';
+import type { MarkerId, NativeId, RangeRef, TapeId } from '../contracts.js';
 import type { TapePart, TapeSnapshot } from '../text/types.js';
 import {
   assertNative,
@@ -16,12 +16,16 @@ interface Root {
   readonly right?: Root;
   readonly height: number;
   readonly length: number;
+  readonly firstMarker?: MarkerId;
+  readonly lastMarker?: MarkerId;
 }
 export interface NativeTapeWork {
   nativeIndexNodesCopied: number;
   nativePositionNodesVisited: number;
   rangeIndexNodesVisited: number;
   rangePartsVisited: number;
+  snapshotsExported: number;
+  snapshotPartsExported: number;
 }
 const length = (root: Root | undefined) => root?.length ?? 0;
 const height = (root: Root | undefined) => root?.height ?? 0;
@@ -72,6 +76,9 @@ export class NativeTapeIndex {
         right,
         height: 1 + Math.max(height(left), height(right)),
         length: length(left) + size(part) + length(right),
+        firstMarker:
+          left?.firstMarker ?? (part.type === 'marker' ? part.marker : right?.firstMarker),
+        lastMarker: right?.lastMarker ?? (part.type === 'marker' ? part.marker : left?.lastMarker),
       };
     this.work.nativeIndexNodesCopied++;
     this.nodes = set(this.nodes, key, root);
@@ -211,7 +218,7 @@ export class NativeTapeIndex {
     }
     return copy;
   }
-  private partAt(id: NativeId): Root {
+  private partAt(id: NativeId, textBoundary = true): Root {
     assertNative(id);
     const key = nativeKey(id);
     let cursor = this.nodes,
@@ -228,7 +235,7 @@ export class NativeTapeIndex {
       id.clock >= found.part.native.clock + size(found.part)
     )
       throw new NativeValidationError('Unknown native ID');
-    if (found.part.type === 'text')
+    if (textBoundary && found.part.type === 'text')
       assertTextBoundary(found.part.text, id.clock - found.part.native.clock);
     return found;
   }
@@ -250,6 +257,31 @@ export class NativeTapeIndex {
   locate(id: NativeId): number {
     const root = this.partAt(id);
     return this.position(root) + id.clock - root.part.native.clock;
+  }
+  cell(tape: TapeId, id: NativeId): RangeRef {
+    // Ownership addresses scalar UTF-16 identities, including the second unit
+    // of a surrogate pair. Mutation/range boundaries still use partAt's check.
+    const part = this.partAt(id, false);
+    if (part.part.type !== 'text') throw new NativeValidationError('Text range includes a marker');
+    const at = this.position(part);
+    let root = this.root,
+      base = 0,
+      start: MarkerId | undefined,
+      end: MarkerId | undefined;
+    while (root) {
+      this.work.nativePositionNodesVisited++;
+      const index = base + length(root.left);
+      if (index <= at) {
+        start = root.part.type === 'marker' ? root.part.marker : (root.left?.lastMarker ?? start);
+        base = index + size(root.part);
+        root = root.right;
+      } else {
+        end = root.part.type === 'marker' ? root.part.marker : (root.right?.firstMarker ?? end);
+        root = root.left;
+      }
+    }
+    if (!start || !end) throw new NativeValidationError('Text outside permanent tape endpoints');
+    return { tape, start, end };
   }
   marker(id: MarkerId) {
     const key = get(this.markers, resourceKey(id)),
@@ -292,10 +324,13 @@ export class NativeTapeIndex {
     }
   }
   snapshot(tape: TapeId): TapeSnapshot {
+    const parts = [...this.range(0, Infinity, false)];
+    this.work.snapshotsExported++;
+    this.work.snapshotPartsExported += parts.length;
     return structuredClone({
       tape,
       length: length(this.root),
-      parts: [...this.range(0, Infinity, false)],
+      parts,
     });
   }
 }

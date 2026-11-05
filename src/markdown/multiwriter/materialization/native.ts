@@ -1,5 +1,5 @@
 import * as Y from 'yjs';
-import type { MarkerId, NativeTextRange, RangeRef, TapeId } from '../contracts.js';
+import type { MarkerId, NativeId, NativeTextRange, RangeRef, TapeId } from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
 import type { Work } from '../ingest/work.js';
 import { NativeTapeCache } from '../text/cache.js';
@@ -21,6 +21,23 @@ interface BodyLink {
   readonly tapes: readonly TapeId[];
 }
 const nativeRoots = new WeakMap<NativeView, BodyLink | undefined>();
+const nativeIndexes = new WeakMap<NativeView, MapRoot<NativeTapeIndex> | undefined>();
+/** Private certified read seam. Arbitrary/staged native facades retain the full
+ * snapshot path; a numeric offset alone cannot establish native cell membership.
+ */
+export function hasIndexedNative(native: NativeView): boolean {
+  return nativeIndexes.has(native);
+}
+export function indexedNativeCell(
+  native: NativeView,
+  tape: TapeId,
+  id: NativeId,
+): RangeRef | undefined {
+  if (!nativeIndexes.has(native)) return undefined;
+  const index = get(nativeIndexes.get(native), resourceKey(tape));
+  if (!index) throw new NativeValidationError('Unknown native tape');
+  return index.cell(tape, id);
+}
 /** Changes between two views of the same monotonically integrated private cache.
  * A rebuilt/evicted native branch has no reusable prefix and returns undefined.
  */
@@ -48,6 +65,8 @@ export interface NativeWork {
   rangePartsVisited: number;
   nativeIndexNodesCopied: number;
   nativePositionNodesVisited: number;
+  snapshotsExported: number;
+  snapshotPartsExported: number;
 }
 
 /** A read view owns immutable tape roots, never a facade bound to a mutable Y.Doc. */
@@ -140,6 +159,7 @@ function readView(
     },
   };
   nativeRoots.set(view, bodies);
+  nativeIndexes.set(view, tapes);
   registerNativePlanSource(view, {
     native: view,
     get tapes() {
@@ -172,6 +192,8 @@ export class MaterializedNative {
     rangePartsVisited: 0,
     nativeIndexNodesCopied: 0,
     nativePositionNodesVisited: 0,
+    snapshotsExported: 0,
+    snapshotPartsExported: 0,
   };
   constructor(decodeOperations: number) {
     this.cache = new NativeTapeCache(decodeOperations);
