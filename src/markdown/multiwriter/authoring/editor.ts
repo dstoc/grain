@@ -480,7 +480,13 @@ export class LocalEditor {
         effects: structuredClone(envelope.effects),
       };
       let focus: TextPoint | undefined;
-      if (outcome.focus) {
+      if (outcome.focus && register && stagedAfter) {
+        // The exact author result was captured before append. Re-lowering its
+        // numeric offset after a reentrant receive can shift the caret or split
+        // a surrogate pair. Return the captured native neighbor instead.
+        const { address, native, side } = stagedAfter.focus;
+        focus = structuredClone({ address, native, side });
+      } else if (outcome.focus) {
         const target = compiler.focusTarget(
           outcome.focus.nodeId,
           outcome.focus.offset,
