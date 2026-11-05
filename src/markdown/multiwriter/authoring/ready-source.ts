@@ -8,6 +8,8 @@ export interface ReadySource {
   readonly maxLamport: bigint;
   sequence(actor: ActorId): bigint;
   has(actionKey: string): boolean;
+  /** Borrowed exact payload, for private derived readers only. */
+  get(actionKey: string): ActionEnvelope | undefined;
   additions(before: ReadySource):
     | {
         readonly actions: readonly ActionEnvelope[];
@@ -15,10 +17,10 @@ export interface ReadySource {
       }
     | undefined;
 }
-const sources = new WeakMap<readonly ActionEnvelope[], ReadySource>();
-export function registerReadySource(actions: readonly ActionEnvelope[], source: ReadySource): void {
+const sources = new WeakMap<object, ReadySource>();
+export function registerReadySource(actions: object, source: ReadySource): void {
   sources.set(actions, source);
 }
-export function readySource(actions: readonly ActionEnvelope[]): ReadySource | undefined {
+export function readySource(actions: object): ReadySource | undefined {
   return sources.get(actions);
 }

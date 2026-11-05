@@ -131,10 +131,15 @@ function project(input: ProjectionInput, groupActivity: Activity, structure?: Pr
   const birthContent = new Map(
     input.birthContent.map((entry) => [resourceKey(entry.node), entry.intervals]),
   );
+  // Full reconstruction owns fresh detached collections for this invocation.
+  // Reusing them within the pass does not reuse an incremental checkpoint.
+  const nodeAllocations = ownership.nodeAllocations,
+    runLayouts = ownership.runLayouts,
+    destinationRequirements = ownership.destinationRequirements;
   if (
     birthContent.size !== input.birthContent.length ||
-    birthContent.size !== ownership.nodeAllocations.length ||
-    ownership.nodeAllocations.some((node) => !birthContent.has(resourceKey(node.id)))
+    birthContent.size !== nodeAllocations.length ||
+    nodeAllocations.some((node) => !birthContent.has(resourceKey(node.id)))
   )
     throw new ProjectionError('Birth-causal coverage must include every retained node');
   for (const entry of input.birthContent)
@@ -194,17 +199,23 @@ function project(input: ProjectionInput, groupActivity: Activity, structure?: Pr
     throw new ProjectionError('Native snapshot is missing retained markers');
   if (tokens.length !== births.size)
     throw new ProjectionError('Native snapshot is missing insertion-manifest text');
-  const flowByRun = new Map(ownership.runLayouts.map((run) => [resourceKey(run.run), run.flow]));
+  const flowByRun = new Map(runLayouts.map((run) => [resourceKey(run.run), run.flow]));
+  const requirementsByNode = new Map<string, { action: ActionEnvelope['id']; ordinal: number }[]>();
+  for (const { nodes, order } of destinationRequirements)
+    for (const key of new Set(nodes.map(resourceKey))) {
+      const requirements = requirementsByNode.get(key) ?? [];
+      requirements.push({ action: order.action.id, ordinal: order.ordinal });
+      requirementsByNode.set(key, requirements);
+    }
+  const allocationByFlow = new Map<string, (typeof nodeAllocations)[number]>();
+  for (const node of nodeAllocations)
+    if (node.flow && !allocationByFlow.has(resourceKey(node.flow)))
+      allocationByFlow.set(resourceKey(node.flow), node);
   const visibilityLayout: VisibilityLayout = {
-    nodes: ownership.nodeAllocations,
+    nodes: nodeAllocations,
     parent: (node) => ownership.blockPlacement(node)?.slot.parent ?? null,
     owner: (token) => ownership.flowBlock(flowByRun.get(resourceKey(ownership.owner(token).run))!),
-    requirements: (node) =>
-      ownership.destinationRequirements
-        .filter((requirement) =>
-          requirement.nodes.some((id) => resourceKey(id) === resourceKey(node)),
-        )
-        .map(({ order }) => ({ action: order.action.id, ordinal: order.ordinal })),
+    requirements: (node) => requirementsByNode.get(resourceKey(node)) ?? [],
     contains: (range, token) => ownership.contains(range, token),
     containsBirthContent: (node, token) =>
       birthContent.get(resourceKey(node))!.some((range) => ownership.contains(range, token)),
@@ -239,12 +250,8 @@ function project(input: ProjectionInput, groupActivity: Activity, structure?: Pr
   for (const entry of activity.effects) {
     if (entry.effect.type !== 'SplitFlow') continue;
     const split = entry.effect;
-    const run = ownership.runLayouts.find(
-      (run) => resourceKey(run.run) === resourceKey(split.cut.run),
-    )!;
-    const source = ownership.nodeAllocations.find(
-      (node) => node.flow && resourceKey(node.flow) === resourceKey(run.flow),
-    )!;
+    const flow = flowByRun.get(resourceKey(split.cut.run))!;
+    const source = allocationByFlow.get(resourceKey(flow))!;
     if (
       activity.effects.some(
         (deletion) =>
@@ -286,11 +293,11 @@ function project(input: ProjectionInput, groupActivity: Activity, structure?: Pr
   const available = new Set(
     visibility.nodes.filter((entry) => entry.available).map((entry) => resourceKey(entry.node)),
   );
-  const nodes = new Map(ownership.nodeAllocations.map((node) => [resourceKey(node.id), node]));
-  const rootAllocation = ownership.nodeAllocations.find((node) => node.role === 'root');
+  const nodes = new Map(nodeAllocations.map((node) => [resourceKey(node.id), node]));
+  const rootAllocation = nodeAllocations.find((node) => node.role === 'root');
   if (!rootAllocation) throw new ProjectionError('Missing document root');
   // Ownership is complete and immutable during projection. Read detached collections once.
-  const runById = new Map(ownership.runLayouts.map((run) => [resourceKey(run.run), run]));
+  const runById = new Map(runLayouts.map((run) => [resourceKey(run.run), run]));
   const flowById = new Map(ownership.flowPlacements.map((flow) => [resourceKey(flow.flow), flow]));
   const snapshotByTape = new Map(
     snapshots.map((snapshot) => [resourceKey(snapshot.tape), snapshot]),

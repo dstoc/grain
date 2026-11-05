@@ -1,4 +1,7 @@
 import type { ActionEnvelope, ActionId } from '../contracts.js';
+import { compareActions } from '../contracts.js';
+import { readySource } from '../authoring/ready-source.js';
+import type { ReadySource } from '../authoring/ready-source.js';
 import { compareBytes } from '../actions/cbor.js';
 import { actionKey } from '../actions/references.js';
 import { ActivityValidationError } from '../visibility/activity.js';
@@ -48,6 +51,7 @@ export interface ActivityWork {
   frontierEntries: number;
   checkpointRestores: number;
   coldReplays: number;
+  readyIndexNodesVisited: number;
   lastReplayFrom: number;
   lastReplayLength: number;
 }
@@ -125,7 +129,8 @@ function activity(state: State): Activity {
  */
 export class MaterializedActivity {
   private state = empty;
-  private order: readonly Payload[] = [];
+  private order?: MapRoot<Payload>;
+  private source?: ReadySource;
   private checkpoints: readonly Checkpoint[] = [];
   private generation = 0;
   private readonly counts: ActivityWork = {
@@ -134,6 +139,7 @@ export class MaterializedActivity {
     frontierEntries: 0,
     checkpointRestores: 0,
     coldReplays: 0,
+    readyIndexNodesVisited: 0,
     lastReplayFrom: 0,
     lastReplayLength: 0,
   };
@@ -141,29 +147,41 @@ export class MaterializedActivity {
     return {
       ...this.counts,
       retainedCheckpoints: this.checkpoints.length,
-      retainedActions: this.order.length,
+      retainedActions: this.state.count,
     };
   }
   *prepare(actions: ActionSequence, variants: PayloadIndex): Work<PreparedActivity> {
     const generation = ++this.generation;
-    let frontier = Math.min(actions.length, this.order.length);
-    const order: Payload[] = [];
-    for (let index = 0; index < actions.length; index++) {
+    const source = readySource(actions),
+      additions = source && this.source && source.additions(this.source);
+    this.counts.readyIndexNodesVisited += additions?.nodesVisited ?? 0;
+    // Ready roots certify the exact same retained payload objects, not just IDs
+    // or counts. Earlier semantic additions still require the full comparison.
+    const append =
+      additions &&
+      actions.length === this.state.count + additions.actions.length &&
+      (!additions.actions.length ||
+        !this.state.last ||
+        compareActions(this.state.last.action, additions.actions[0]) < 0);
+    let frontier = Math.min(actions.length, this.state.count);
+    let order = append ? this.order : undefined;
+    for (let index = append ? this.state.count : 0; index < actions.length; index++) {
       yield;
       const key = actionKey(actions.at(index)!.id),
         bytes = variants.get(key);
       if (!bytes) throw new Error('Activity cache requires exact ready payloads');
-      const prior = this.order[index];
+      const prior = persistent.get(this.order, String(index));
       this.counts.payloadsCompared++;
-      if (prior?.key === key && compareBytes(prior.bytes, bytes) === 0) order.push(prior);
+      if (prior?.key === key && compareBytes(prior.bytes, bytes) === 0)
+        order = persistent.set(order, String(index), prior);
       else {
         frontier = Math.min(frontier, index);
-        order.push({ key, bytes: bytes.slice() });
+        order = persistent.set(order, String(index), { key, bytes: bytes.slice() });
       }
     }
     let state = empty;
     let checkpoints = this.checkpoints.filter((checkpoint) => checkpoint.count <= frontier);
-    if (frontier === this.order.length) state = this.state;
+    if (frontier === this.state.count) state = this.state;
     else if (checkpoints.length) {
       state = checkpoints.at(-1)!.state;
       this.counts.checkpointRestores++;
@@ -186,6 +204,7 @@ export class MaterializedActivity {
         committed = true;
         this.state = state;
         this.order = order;
+        this.source = source;
         this.checkpoints = checkpoints;
         this.counts.lastReplayFrom = from;
         this.counts.lastReplayLength = actions.length - from;
@@ -308,7 +327,8 @@ export class MaterializedActivity {
   evict(): void {
     this.cancel();
     this.state = empty;
-    this.order = [];
+    this.order = undefined;
+    this.source = undefined;
     this.checkpoints = [];
   }
 }

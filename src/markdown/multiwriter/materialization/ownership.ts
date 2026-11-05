@@ -24,6 +24,7 @@ import { PersistentMap } from './map.js';
 import { MaterializedLayout } from './layout.js';
 import { MaterializedCells } from './cells.js';
 import { OwnershipResources } from './resources.js';
+import { NativeReadIntervals } from './intervals.js';
 export interface OwnershipCheckpoint {
   readonly count: number;
   readonly index: MaterializedCells;
@@ -38,9 +39,7 @@ export interface OwnershipCheckpoint {
   /** First active split whose result depends on each native tape's cell topology. */
   readonly nativeReaders: PersistentMap<number>;
   /** Retained marker intervals read by split adjacency, with their first action. */
-  readonly nativeIntervals: PersistentMap<
-    readonly { readonly range: RangeRef; readonly count: number }[]
-  >;
+  readonly nativeIntervals: PersistentMap<NativeReadIntervals>;
 }
 /** Match full replay's home-install/native-cell order independently of the edit
  * order of the persistent assignment map. Refinement can insert cells between
@@ -88,8 +87,7 @@ export function replayOwnershipSuffix(
   const index = nativeIndex;
   const nativeReaders = resume?.nativeReaders.fork() ?? new PersistentMap<number>();
   const nativeIntervals =
-    resume?.nativeIntervals.fork() ??
-    new PersistentMap<readonly { readonly range: RangeRef; readonly count: number }[]>();
+    resume?.nativeIntervals.fork() ?? new PersistentMap<NativeReadIntervals>();
   const layout = resume ? resume.layout.fork() : new MaterializedLayout(genesis);
   const owners = resume?.owners.fork() ?? new PersistentMap<CellAssignment>();
   const roots = resume?.roots.fork() ?? new PersistentMap<readonly RunOrigin[]>();
@@ -227,19 +225,11 @@ export function replayOwnershipSuffix(
         const reader = index.observing((range) => {
           const key = resourceKey(range.tape);
           if (!nativeReaders.has(key)) nativeReaders.set(key, count);
-          const previous = nativeIntervals.get(key) ?? [];
-          const start = index.position(range.tape, range.start),
-            end = index.position(range.tape, range.end);
-          // An earlier read covering this interval already owns its replay
-          // frontier. Do not retain a chain of duplicate observations.
-          if (
-            !previous.some(
-              (read) =>
-                index.position(range.tape, read.range.start) <= start &&
-                index.position(range.tape, read.range.end) >= end,
-            )
-          )
-            nativeIntervals.set(key, [...previous, { range, count }]);
+          const previous = nativeIntervals.get(key) ?? NativeReadIntervals.empty();
+          nativeIntervals.set(
+            key,
+            previous.add(range, count, (marker) => index.position(range.tape, marker)),
+          );
         });
         layout.resolveInlineSlot(effect.cut, reader);
         for (const range of effect.basis.ranges) layout.occurrence(range.occurrence);

@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { A, B, C, action, resource } from '../actions/test-fixtures.js';
 import type { ActionEnvelope } from '../contracts.js';
 import { compareActions } from '../contracts.js';
@@ -9,6 +9,8 @@ import type { Activity } from '../visibility/activity.js';
 import { finish } from '../ingest/work.js';
 import { MaterializedActivity } from './activity.js';
 import { SeededRandom } from '../../../../test/multiwriter/network.js';
+import { registerReadySource } from '../authoring/ready-source.js';
+import { MaterializedReadyIndex, registerReadyAppend } from './ready-index.js';
 
 const payloads = (actions: readonly ActionEnvelope[]) =>
   new Map(actions.map((a) => [actionKey(a.id), encodeEnvelope(a)]));
@@ -251,4 +253,100 @@ test('checkpoint retention is bounded and an invalidated prefix older than the c
   expect(cache.diagnostics().lastReplayFrom).toBe(0);
   expect(cache.diagnostics().coldReplays).toBe(before + 1);
   expect(cache.diagnostics().retainedCheckpoints).toBe(8);
+});
+
+test('exact ready membership skips retained payloads in publication and unpublished staging', () => {
+  const cache = new MaterializedActivity(),
+    actions = chain(1000);
+  const source = new MaterializedReadyIndex({}).refine(
+    new Map(actions.map((action) => [actionKey(action.id), action])),
+    1000n,
+  );
+  registerReadySource(actions, source);
+  finish(cache.prepare(actions, payloads(actions))).commit();
+  const old = publishIndexed(cache, actions, source);
+  const next = action(A, 1001n, [actions.at(-1)!]),
+    all = [...actions, next];
+  const current = source.refine(new Map([[actionKey(next.id), next]]), next.lamport);
+  registerReadySource(all, current);
+  const at = vi.spyOn(all, 'at').mockImplementation((index) => {
+    if (index !== actions.length) throw new Error('Enumerated retained actions');
+    return next;
+  });
+  const bytes = payloads(all),
+    get = vi.spyOn(bytes, 'get').mockImplementation((key) => {
+      if (key !== actionKey(next.id)) throw new Error('Compared a retained payload');
+      return encodeEnvelope(next);
+    });
+  const before = cache.diagnostics();
+  try {
+    const stage = { length: all.length, at: all.at.bind(all) };
+    registerReadyAppend(stage, actions, next);
+    equal(finish(cache.prepare(stage, bytes)).value, all, false);
+    cache.cancel();
+    const prepared = finish(cache.prepare(all, bytes));
+    prepared.commit();
+    equal(prepared.value, all, false);
+    expect(cache.diagnostics().payloadsCompared - before.payloadsCompared).toBe(2);
+    expect(cache.diagnostics().readyIndexNodesVisited - before.readyIndexNodesVisited).toBeLessThan(
+      200,
+    );
+    equal(old, actions, false);
+  } finally {
+    at.mockRestore();
+    get.mockRestore();
+  }
+});
+
+function publishIndexed(
+  cache: MaterializedActivity,
+  actions: readonly ActionEnvelope[],
+  source: MaterializedReadyIndex,
+) {
+  registerReadySource(actions, source);
+  const candidate = finish(cache.prepare(actions, payloads(actions)));
+  candidate.commit();
+  return candidate.value;
+}
+
+test('indexed earlier arrivals, replacements and unrelated sources retain exact prefix fallback', () => {
+  for (const scenario of ['earlier', 'replace', 'withdraw', 'unrelated'] as const) {
+    const cache = new MaterializedActivity(),
+      actions = chain(260),
+      owner = {};
+    const source = new MaterializedReadyIndex(owner).refine(
+      new Map(actions.map((a) => [actionKey(a.id), a])),
+      260n,
+    );
+    const old = publishIndexed(cache, actions, source);
+    let changed: readonly ActionEnvelope[], current: MaterializedReadyIndex;
+    if (scenario === 'earlier') {
+      const late = action(B, 1n, [actions[127]]);
+      changed = [...actions, late].sort(compareActions);
+      current = source.refine(new Map([[actionKey(late.id), late]]), 260n);
+    } else if (scenario === 'replace') {
+      changed = actions.map((a, i) =>
+        i === 127 ? { ...a, documentId: 'different exact payload' } : a,
+      );
+      current = source.refine(new Map([[actionKey(changed[127].id), changed[127]]]), 260n);
+    } else if (scenario === 'withdraw') {
+      changed = actions.slice(0, 127);
+      current = source.refine(
+        new Map(actions.slice(127).map((a) => [actionKey(a.id), undefined])),
+        127n,
+      );
+    } else {
+      changed = actions;
+      current = new MaterializedReadyIndex({}).refine(
+        new Map(actions.map((a) => [actionKey(a.id), a])),
+        260n,
+      );
+    }
+    const before = cache.diagnostics();
+    equal(publishIndexed(cache, changed, current), changed, false);
+    expect(cache.diagnostics().payloadsCompared - before.payloadsCompared).toBe(changed.length);
+    equal(old, actions, false);
+    if (scenario === 'earlier') expect(cache.diagnostics().lastReplayFrom).toBe(128);
+    if (scenario === 'replace') expect(cache.diagnostics().lastReplayFrom).toBe(0);
+  }
 });
