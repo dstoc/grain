@@ -27,9 +27,21 @@ import { selectInterpretations } from '../projection/interpretation.js';
 import type { PresentedProperties } from '../projection/interpretation.js';
 import { isPropertyRefinement } from './properties.js';
 import { finish } from '../ingest/work.js';
-import { indexedVisibility } from './text-deletions.js';
+import { ExactTextDeletions } from './text-deletions.js';
+import type { TextDeletionWork } from './text-deletions.js';
+import { reduceVisibilityWithTextTags } from '../visibility/visibility.js';
+import type { reduceVisibility } from '../visibility/visibility.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
+/** No query or activity callback escapes into a publication/checkpoint. */
+function indexedVisibility(work: TextDeletionWork): typeof reduceVisibility {
+  return (activity, layout, tokens, birthEnabled = () => true) => {
+    const index = new ExactTextDeletions(activity, work);
+    return reduceVisibilityWithTextTags(activity, layout, tokens, birthEnabled, (token) =>
+      index.tags(token),
+    );
+  };
+}
 interface NodeRecord {
   readonly node: ViewNode;
   readonly parent?: string;
