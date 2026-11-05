@@ -209,3 +209,47 @@ test('published handle lookup is direct after literal and structural changes', (
     p.close();
   }
 });
+
+test('bracketed edge typing refines cells and historical checkpoints without full projection', () => {
+  const p = open('<!-- -->\n\ntail'),
+    oracle = createMaterializationOracle();
+  try {
+    const before = p.document.publication.status().publication!;
+    const tail = before.value.view.root.children[1];
+    const oldAssignments = before.value.ownership.assignments;
+    const oldRaw = before.value.ownership.raw(before.value.ownership.runLayouts[0].flow);
+    const oldNative = before.native.encodeState();
+    const full = vi.spyOn(projector, 'projectWithActivity');
+    const edits: ReturnType<typeof type>[] = [];
+    try {
+      for (let i = 0; i < 132; i++)
+        edits.push(type(p, BigInt(i + 1), 'x', p.nodes()[0].content.length));
+      expect(edits.some((edit) => edit.envelope.allocations.some((a) => a.type === 'marker'))).toBe(
+        true,
+      );
+      expect(full).not.toHaveBeenCalled();
+    } finally {
+      full.mockRestore();
+    }
+    expect(diagnostics(p).ownership.nativeMarkerRefinements).toBeGreaterThan(0);
+    expect(p.document.publication.status().publication!.value.view.root.children[1]).toBe(tail);
+    expect(before.value.ownership.assignments).toEqual(oldAssignments);
+    expect(before.value.ownership.raw(before.value.ownership.runLayouts[0].flow)).toEqual(oldRaw);
+    expect(compareBytes(before.native.encodeState(), oldNative)).toBe(0);
+    oracle.check(p.document, p.genesis);
+    const undo = control(p, edits[129], false);
+    expect(diagnostics(p).ownership.lastReplayFrom).toBe(128);
+    oracle.check(p.document, p.genesis);
+    control(p, edits[129], true, undo);
+    oracle.check(p.document, p.genesis);
+    const cold = commandReplica(p.genesis, p.document.store.encodeUpdate(), 'materialized');
+    try {
+      expect(cold.observe()).toEqual(p.observe());
+    } finally {
+      cold.close();
+    }
+  } finally {
+    oracle.destroy();
+    p.close();
+  }
+}, 120000);

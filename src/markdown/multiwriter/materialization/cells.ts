@@ -23,7 +23,8 @@ export class MaterializedCells {
     for (const snapshot of snapshots) {
       this.tapes.set(resourceKey(snapshot.tape), new CellIndex([snapshot]));
       for (const part of snapshot.parts)
-        if (part.type === 'marker') this.markers.set(resourceKey(part.marker), snapshot.tape);
+        if (part.type === 'marker' && !this.markers.has(resourceKey(part.marker)))
+          this.markers.set(resourceKey(part.marker), snapshot.tape);
     }
   }
   private index(tape: TapeId): CellIndex {

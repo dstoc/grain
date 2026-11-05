@@ -36,6 +36,28 @@ export interface OwnershipCheckpoint {
   readonly flowIntentions: PersistentMap<EffectOrder>;
   readonly installedTapes: PersistentMap<true>;
 }
+/** Match full replay's home-install/native-cell order independently of the edit
+ * order of the persistent assignment map. Refinement can insert cells between
+ * retained keys; changing a map key must not reorder the public raw result.
+ */
+export function orderedOwners(
+  index: MaterializedCells,
+  owners: PersistentMap<CellAssignment>,
+  homes: readonly HomeBinding[],
+) {
+  return {
+    get: (key: string) => owners.get(key),
+    *values(): Generator<CellAssignment, undefined, unknown> {
+      for (const home of homes)
+        for (const cell of index.range(home.cell)) {
+          const owner = owners.get(cellKey(cell.range));
+          if (!owner) throw new Error('Native cell lacks a refined assignment');
+          yield owner;
+        }
+      return undefined;
+    },
+  };
+}
 function actionKey(input: LayoutActionInput): string {
   return JSON.stringify([input.action.id.actor, input.action.id.sequence.toString()]);
 }
@@ -454,7 +476,7 @@ export function replayOwnershipSuffix(
     value: new OwnershipResult(
       layout,
       index,
-      owners,
+      orderedOwners(index, owners, homes),
       roots,
       attachments,
       cohorts,
