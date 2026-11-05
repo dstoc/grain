@@ -54,6 +54,8 @@ function refineCheckpoint(
 ): OwnershipCheckpoint {
   if (!snapshots.length) return prior;
   const owners = prior.owners.fork();
+  const coverage = prior.coverage.fork();
+  const replacements = new Map<string, readonly string[]>();
   for (const snapshot of snapshots) {
     if (!prior.installedTapes.has(resourceKey(snapshot.tape))) continue;
     for (const cell of prior.index.tape(snapshot.tape)) {
@@ -64,9 +66,14 @@ function refineCheckpoint(
       if (refined.length === 1 && cellKey(refined[0].range) === key) continue;
       owners.delete(key);
       for (const next of refined) owners.set(cellKey(next.range), { ...owner, cell: next.range });
+      replacements.set(
+        key,
+        refined.map((cell) => cellKey(cell.range)),
+      );
     }
   }
-  return { ...prior, index, owners };
+  coverage.refine(replacements);
+  return { ...prior, index, owners, coverage };
 }
 interface Payload {
   readonly key: string;
@@ -87,6 +94,8 @@ export interface CoupledWork extends ResourceWork {
   readyIndexNodesVisited: number;
   nativeTapeReads: number;
   cellTapesIndexed: number;
+  coverageFlowsTraversed: number;
+  coverageCellsVisited: number;
   lastReplayFrom: number;
   lastReplayLength: number;
 }
@@ -129,6 +138,8 @@ export class MaterializedOwnership {
     readyIndexNodesVisited: 0,
     nativeTapeReads: 0,
     cellTapesIndexed: 0,
+    coverageFlowsTraversed: 0,
+    coverageCellsVisited: 0,
     lastReplayFrom: 0,
     lastReplayLength: 0,
   };
@@ -306,6 +317,7 @@ export class MaterializedOwnership {
       (checkpoint) => checkpoints.push(checkpoint),
       index,
       retained,
+      this.counts,
     );
     this.counts.actionsReplayed += input.actions.length - from;
     this.counts.effectsReplayed += input.actions
@@ -419,7 +431,7 @@ export class MaterializedOwnership {
     );
     this.counts.nativeTapeReads += snapshots.length;
     this.counts.cellTapesIndexed += snapshots.length;
-    const { owners } = hasMarkers ? refineCheckpoint(prior, snapshots, index) : prior;
+    const { owners, coverage } = hasMarkers ? refineCheckpoint(prior, snapshots, index) : prior;
     const snapshotCache = this.snapshots.fork();
     for (const snapshot of snapshots) snapshotCache.set(resourceKey(snapshot.tape), snapshot);
     const markers = this.markers.fork();
@@ -432,7 +444,14 @@ export class MaterializedOwnership {
     layout.beginAction({ action, births: [] }, (id) => activity.observes(action.id, id));
     for (let ordinal = 0; ordinal < action.effects.length; ordinal++)
       layout.step(ordinal, activity.isEffectActive({ action: action.id, ordinal }));
-    const state: OwnershipCheckpoint = { ...prior, count: actions.length, layout, index, owners };
+    const state: OwnershipCheckpoint = {
+      ...prior,
+      count: actions.length,
+      layout,
+      index,
+      owners,
+      coverage,
+    };
     const value = new OwnershipResult(
       layout,
       index,
