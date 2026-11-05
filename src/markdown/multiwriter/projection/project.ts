@@ -12,6 +12,8 @@ import type {
 import type { BirthPlacement, LayoutGenesis } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
 import { reduceOwnership } from '../ownership/index.js';
+import type { OwnershipResult } from '../ownership/index.js';
+import type { TapeSnapshot } from '../text/types.js';
 import type { NativeView } from '../ingest/publication.js';
 import { NativeValidationError } from '../text/identity.js';
 import { reduceActivity, reduceVisibility } from '../visibility/index.js';
@@ -58,15 +60,23 @@ export function projectMarkdown(input: ProjectionInput) {
 /** Internal seam for a reader that already reduced activity at this exact ready set.
  * The reference entry above always performs its own independent full reduction.
  */
-export function projectWithActivity(input: ProjectionInput, groupActivity: Activity) {
+export interface PreparedStructure {
+  readonly ownership: OwnershipResult;
+  readonly snapshots: readonly TapeSnapshot[];
+}
+export function projectWithActivity(
+  input: ProjectionInput,
+  groupActivity: Activity,
+  structure?: PreparedStructure,
+) {
   try {
-    return project(input, groupActivity);
+    return project(input, groupActivity, structure);
   } catch (error) {
     if (error instanceof NativeValidationError) throw new ProjectionError(error.message);
     throw error;
   }
 }
-function project(input: ProjectionInput, groupActivity: Activity) {
+function project(input: ProjectionInput, groupActivity: Activity, structure?: PreparedStructure) {
   const interpretations = selectInterpretations(groupActivity, input.initialProperties);
   const effectActive = (ref: Parameters<typeof groupActivity.isEffectActive>[0]) =>
     groupActivity.isEffectActive(ref) && interpretations.effectEligible(ref);
@@ -101,18 +111,22 @@ function project(input: ProjectionInput, groupActivity: Activity) {
     for (const effect of action.effects)
       if (effect.type === 'Interpret') validatePacket(effect.packet, allocations, read);
   }
-  const snapshots = allocations
-    .filter((allocation) => allocation.type === 'tape')
-    .map((tape) => input.native.snapshot(tape.id));
-  const ownership = reduceOwnership({
-    genesis: input.genesis,
-    actions: input.actions,
-    snapshots,
-    isActive: (order) =>
-      activity.isEffectActive({ action: order.action.id, ordinal: order.ordinal }),
-    interpretationEligible: (order) =>
-      interpretations.eligible({ action: order.action.id, ordinal: order.ordinal }),
-  });
+  const snapshots =
+    structure?.snapshots ??
+    allocations
+      .filter((allocation) => allocation.type === 'tape')
+      .map((tape) => input.native.snapshot(tape.id));
+  const ownership =
+    structure?.ownership ??
+    reduceOwnership({
+      genesis: input.genesis,
+      actions: input.actions,
+      snapshots,
+      isActive: (order) =>
+        activity.isEffectActive({ action: order.action.id, ordinal: order.ordinal }),
+      interpretationEligible: (order) =>
+        interpretations.eligible({ action: order.action.id, ordinal: order.ordinal }),
+    });
   const birthContent = new Map(
     input.birthContent.map((entry) => [resourceKey(entry.node), entry.intervals]),
   );

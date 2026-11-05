@@ -1,5 +1,7 @@
 import type { ActionEnvelope } from '../contracts.js';
-import type { ActionStore, ActionStoreSnapshot } from '../actions/store.js';
+import type { ActionStore } from '../actions/store.js';
+import { IndexedActionStore } from './readiness.js';
+import type { ReadyActionView } from './readiness.js';
 import { actionKey } from '../actions/references.js';
 import { compareBytes } from '../actions/cbor.js';
 import type { NativeView, ProjectionStatus, PublishedProjection } from '../ingest/publication.js';
@@ -22,7 +24,7 @@ export interface MaterializationWork {
  */
 export class MaterializedPublication<T> {
   private published?: PublishedProjection<T>;
-  private snapshot?: ActionStoreSnapshot;
+  private snapshot?: ReadyActionView;
   private publishedVersion = -1;
   private generation = 0;
   private active?: Work<PublishedProjection<T>>;
@@ -48,8 +50,12 @@ export class MaterializedPublication<T> {
       variants: ReadonlyMap<string, Uint8Array>,
     ) => Work<T>,
     private decodeOperations = DEFAULT_INGEST_LIMITS.decodeOperations as number,
-    private readonly retainReady: (actions: readonly ActionEnvelope[]) => void = () => {},
+    private readonly retainReady: (
+      actions: readonly ActionEnvelope[],
+      variants: ReadonlyMap<string, Uint8Array>,
+    ) => void = () => {},
     private readonly reduction: {
+      readonly fullProjectionCount?: () => number;
       readonly commit?: () => void;
       readonly cancel?: () => void;
       readonly evict?: () => void;
@@ -63,9 +69,9 @@ export class MaterializedPublication<T> {
     // Pending independent branches and duplicate receipts need not suspend authoring.
     // Do not replace an in-flight store calculation from a status read.
     if (this.published && this.publishedVersion !== this.store.factsVersion && !this.refreshing) {
-      const snapshot = this.store.snapshot();
+      const snapshot = this.readReady();
       if (this.sameReady(snapshot)) {
-        this.retainReady(snapshot.ready);
+        this.retainReady(snapshot.ready, snapshot.variants);
         this.snapshot = snapshot;
         this.publishedVersion = this.store.factsVersion;
       }
@@ -108,7 +114,7 @@ export class MaterializedPublication<T> {
   }
   private *build(version: number, generation: number): Work<PublishedProjection<T>> {
     this.refreshing = true;
-    let state = this.store.compute(0);
+    let state = this.computeReady(0);
     let committed = false;
     try {
       while (state.state === 'deferred') {
@@ -118,12 +124,8 @@ export class MaterializedPublication<T> {
       const snapshot = state.value;
       if (!snapshot.integrity)
         throw new IngestDataError('carrier', 'integrity', 'Canonical store integrity failed');
-      this.retainReady(snapshot.ready);
-      const variants = new Map(
-        snapshot.actions
-          .filter((a) => a.readiness.state === 'ready')
-          .map((a) => [actionKey(a.id), a.variants[0]]),
-      );
+      this.retainReady(snapshot.ready, snapshot.variants);
+      const variants = snapshot.variants;
       if (this.sameReady(snapshot) && this.published) {
         this.snapshot = snapshot;
         this.publishedVersion = version;
@@ -151,8 +153,10 @@ export class MaterializedPublication<T> {
         this.integrated.set(key, variants.get(key)!);
       }
       const native = Object.freeze(this.native.view());
-      this.counts.fullProjections++;
-      const value = yield* this.reduce(structuredClone(snapshot.ready), native, variants);
+      const fullBefore = this.reduction.fullProjectionCount?.();
+      const value = yield* this.reduce(snapshot.ready, native, variants);
+      this.counts.fullProjections +=
+        fullBefore === undefined ? 1 : this.reduction.fullProjectionCount!() - fullBefore;
       if (this.closed || version !== this.store.factsVersion || generation !== this.generation)
         throw new Error('Ingest publication invalidated by changed facts');
       const heads = Object.freeze(snapshot.heads.map((id) => Object.freeze(structuredClone(id))));
@@ -169,24 +173,47 @@ export class MaterializedPublication<T> {
       this.refreshing = false;
     }
   }
-  private sameReady(snapshot: ActionStoreSnapshot): boolean {
+  private readReady(): ReadyActionView {
+    if (this.store instanceof IndexedActionStore) return this.store.readReady();
+    return this.referenceView(this.store.snapshot());
+  }
+  private computeReady(operations: number): Computation<ReadyActionView> {
+    if (this.store instanceof IndexedActionStore) return this.store.computeReady(operations);
+    const map = (state: ReturnType<ActionStore['compute']>): Computation<ReadyActionView> =>
+      state.state === 'complete'
+        ? { state: 'complete', value: this.referenceView(state.value) }
+        : {
+            state: 'deferred',
+            continuation: {
+              cancel: () => state.continuation.cancel(),
+              resume: (budget) => map(state.continuation.resume(budget)),
+            },
+          };
+    return map(this.store.compute(operations));
+  }
+  private referenceView(snapshot: ReturnType<ActionStore['snapshot']>): ReadyActionView {
+    return {
+      ready: snapshot.ready,
+      heads: snapshot.heads,
+      integrity: snapshot.integrity,
+      variants: new Map(
+        snapshot.actions
+          .filter((a) => a.readiness.state === 'ready')
+          .map((a) => [actionKey(a.id), a.variants[0]]),
+      ),
+    };
+  }
+  private sameReady(snapshot: ReadyActionView): boolean {
     if (
       !snapshot.integrity ||
       !this.snapshot ||
       this.snapshot.ready.length !== snapshot.ready.length
     )
       return false;
-    const variants = new Map(
-      snapshot.actions
-        .filter((a) => a.readiness.state === 'ready')
-        .map((a) => [actionKey(a.id), a.variants[0]]),
-    );
-    return this.snapshot.actions
-      .filter((a) => a.readiness.state === 'ready')
-      .every((a) => {
-        const bytes = variants.get(actionKey(a.id));
-        return bytes !== undefined && compareBytes(a.variants[0], bytes) === 0;
-      });
+    return [...this.snapshot.variants].every(([key, bytes]) => {
+      const next = snapshot.variants.get(key);
+      return next !== undefined && (next === bytes || compareBytes(next, bytes) === 0);
+    });
   }
   private *apply(key: string, body: NativeBody): Work<void> {
     const native = this.native!;

@@ -29,8 +29,8 @@ for (const size of [10, 150]) {
       });
       expect(result.status).toBe('applied');
       expect(adopt).not.toHaveBeenCalled();
-      // The single call is the explicitly retained publication fallback, outside command preparation.
-      expect(projector).toHaveBeenCalledTimes(1);
+      expect(projector).not.toHaveBeenCalled();
+      expect(publication.diagnostics().fullProjections).toBe(before.fullProjections);
       expect(publication.diagnostics().tapesIndexed - before.tapesIndexed).toBe(1);
       const oracle = commandReplica(p.genesis, p.document.store.encodeUpdate());
       try {

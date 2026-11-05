@@ -11,7 +11,11 @@ import type {
 } from '../actions/store.js';
 import { encodeEnvelope } from '../actions/codec.js';
 import { compareBytes } from '../actions/cbor.js';
-import { actionKey, validReferencesSteps } from '../actions/references.js';
+import {
+  actionKey,
+  validReferencesSteps,
+  validCertifiedReferencesSteps,
+} from '../actions/references.js';
 import { NativeTapeCache } from '../text/cache.js';
 import type { NativeBody } from '../text/types.js';
 import { NativeValidationError, resourceKey } from '../text/identity.js';
@@ -50,23 +54,33 @@ export type IngestValidator = ActionStoreOptions['validate'] & {
   encodeNativeState(): Uint8Array;
   /** Withdraw a formerly certified branch when a late fork removes it from readiness. */
   retainReady(actions: readonly ActionEnvelope[]): void;
+  /** Exact borrowed payload index from the optimized readiness reader. */
+  retainReadyFacts(variants: ReadonlyMap<string, Uint8Array>): void;
 };
 export function createIngestValidator(options: IngestValidatorOptions): IngestValidator {
   const genesis = structuredClone(options.genesis);
   let decodeOperations = options.decodeOperations ?? DEFAULT_INGEST_LIMITS.decodeOperations;
   assertLimit(decodeOperations);
   let cache: NativeTapeCache | undefined;
-  let certified: Uint8Array[] = [];
+  interface BranchFact {
+    readonly key: string;
+    readonly bytes: Uint8Array;
+    readonly previous?: BranchFact;
+  }
+  let certified: BranchFact | undefined;
+  let branchIdentity: object | undefined;
   let busy = false;
   interface Certificate {
     readonly bytes: Uint8Array;
     readonly dependencies: readonly Certificate[];
+    readonly indexedDependencies?: readonly object[];
   }
   const certificates = new Map<string, Certificate>();
   function discard() {
     cache?.destroy();
     cache = undefined;
-    certified = [];
+    certified = undefined;
+    branchIdentity = undefined;
   }
   function* validate(action: ActionEnvelope, context: ActionValidationContext): Work<Reason> {
     if (busy) throw new Error('Ingest validator already computing');
@@ -79,18 +93,13 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
           (effect) => effect.type !== 'InsertText' && effect.type !== 'SetGroupActive',
         );
       if (structural && !options.validateAuthor) throw new MissingAuthorValidatorError();
-      if (!(yield* validReferencesSteps(action, context.dependencies, genesis.allocations)))
+      const indexed = context.indexed;
+      if (
+        !(yield* indexed
+          ? validCertifiedReferencesSteps(action, indexed.past)
+          : validReferencesSteps(action, context.dependencies, genesis.allocations))
+      )
         return 'reference';
-      const bytes: Uint8Array[] = [];
-      const dependencyFacts = new Map<string, Certificate>();
-      for (const dependency of context.dependencies) {
-        yield;
-        const encoded = encodeEnvelope(dependency);
-        const certificate = certificates.get(actionKey(dependency.id));
-        const matching = certificate && compareBytes(certificate.bytes, encoded) === 0;
-        if (matching) dependencyFacts.set(actionKey(dependency.id), certificate);
-        bytes.push(matching ? certificate.bytes : encoded);
-      }
       const control = action.effects.some((effect) => effect.type === 'SetGroupActive');
       if (control) {
         try {
@@ -99,6 +108,8 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
           if (!(error instanceof ActivityValidationError)) throw error;
           return 'reference';
         }
+      } else if (indexed) {
+        if (indexed.past.groupSealed(action.groupId)) return 'reference';
       } else
         for (const dependency of context.dependencies) {
           yield;
@@ -113,57 +124,91 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
         }
       const ownBytes = encodeEnvelope(action);
       const certificate = certificates.get(actionKey(action.id));
-      // Direct certificate identities encode the full transitive dependency facts without
-      // retaining another copy of every ancestor body for every action.
-      const dependencyCertificates = action.dependencies.map((id) =>
-        dependencyFacts.get(actionKey(id)),
-      );
+      let dependencyCertificates: readonly (Certificate | undefined)[] = [];
+      let bytes: Uint8Array[] | undefined;
+      if (!indexed) {
+        bytes = [];
+        const dependencyFacts = new Map<string, Certificate>();
+        for (const dependency of context.dependencies) {
+          yield;
+          const encoded = encodeEnvelope(dependency),
+            prior = certificates.get(actionKey(dependency.id));
+          const matching = prior && compareBytes(prior.bytes, encoded) === 0;
+          if (matching) dependencyFacts.set(actionKey(dependency.id), prior);
+          bytes.push(matching ? prior.bytes : encoded);
+        }
+        dependencyCertificates = action.dependencies.map((id) =>
+          dependencyFacts.get(actionKey(id)),
+        );
+      }
       if (
         certificate &&
         compareBytes(certificate.bytes, ownBytes) === 0 &&
-        dependencyCertificates.length === certificate.dependencies.length &&
-        dependencyCertificates.every(
-          (value, index) => value !== undefined && value === certificate.dependencies[index],
-        )
+        (indexed
+          ? certificate.indexedDependencies?.length === indexed.dependencies.length &&
+            indexed.dependencies.every(
+              (value, index) => value === certificate.indexedDependencies![index],
+            )
+          : dependencyCertificates.length === certificate.dependencies.length &&
+            dependencyCertificates.every(
+              (value, index) => value !== undefined && value === certificate.dependencies[index],
+            ))
       ) {
         success = true;
         return null;
       }
-      if (
-        !cache ||
-        bytes.length !== certified.length ||
-        bytes.some((value, index) => compareBytes(value, certified[index]) !== 0)
-      ) {
+      let reuse = !!cache && !!indexed && branchIdentity === indexed.past.identity;
+      if (!indexed && cache) {
+        const retained: Uint8Array[] = [];
+        for (let fact = certified; fact; fact = fact.previous) retained.push(fact.bytes);
+        retained.reverse();
+        reuse =
+          bytes!.length === retained.length &&
+          bytes!.every((value, index) => compareBytes(value, retained[index]) === 0);
+      }
+      if (!reuse) {
         discard();
         cache = new NativeTapeCache(decodeOperations);
-        // Genesis is trusted host configuration: its failure must fail opening, never quarantine a peer.
+        // Genesis is trusted host configuration; failures must propagate.
         yield* cache.applySteps('genesis', genesis);
-        for (let index = 0; index < context.dependencies.length; index++) {
+        for (const dependency of context.dependencies) {
           yield;
-          yield* cache.applySteps(`dependency:${index}`, context.dependencies[index]);
+          const key = actionKey(dependency.id);
+          yield* cache.applySteps(key, dependency);
+          certified = { key, bytes: encodeEnvelope(dependency), previous: certified };
         }
       }
-      const native = cache;
+      const native = cache!;
       try {
-        yield* native.applySteps(`candidate:${bytes.length}`, action);
+        yield* native.applySteps(`candidate:${actionKey(action.id)}`, action);
         yield* checkNativeReferences(action, native);
       } catch (error) {
         if (!(error instanceof IngestDataError) || error.stage !== 'native') throw error;
         return 'native-body';
       }
-      if (!(yield* checkAllocations(action, context.dependencies, genesis.allocations)))
-        return 'reference';
+      if (!(yield* checkAllocations(action, context, genesis.allocations))) return 'reference';
       if (options.validateAuthor) {
-        const result = options.validateAuthor(action, { ...context, native: nativeView(native) });
+        const result = options.validateAuthor(action, {
+          get dependencies() {
+            return context.dependencies;
+          },
+          indexed: context.indexed,
+          native: nativeView(native),
+        });
         const reason = typeof result === 'object' && result !== null ? yield* result : result;
         if (reason) return reason;
       }
-      if (dependencyCertificates.every((value): value is Certificate => value !== undefined))
+      if (
+        indexed ||
+        dependencyCertificates.every((value): value is Certificate => value !== undefined)
+      )
         certificates.set(actionKey(action.id), {
           bytes: ownBytes,
-          dependencies: dependencyCertificates,
+          dependencies: dependencyCertificates as readonly Certificate[],
+          ...(indexed ? { indexedDependencies: indexed.dependencies } : {}),
         });
-      certified = [...bytes, ownBytes];
+      certified = { key: actionKey(action.id), bytes: ownBytes, previous: certified };
+      branchIdentity = indexed?.resultIdentity;
       success = true;
       return null;
     } finally {
@@ -171,13 +216,23 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
       busy = false;
     }
   }
+  function retainReadyFacts(ready: ReadonlyMap<string, Uint8Array>): void {
+    if (busy) throw new Error('Cancel ingest computation before withdrawing its native branch');
+    for (let fact = certified; fact; fact = fact.previous) {
+      const bytes = ready.get(fact.key);
+      if (!bytes || compareBytes(fact.bytes, bytes) !== 0) {
+        discard();
+        break;
+      }
+    }
+  }
   return Object.assign(validate, {
     encodeNativeState: () => cache?.encodeState() ?? Uint8Array.of(0, 0),
+    retainReadyFacts,
     retainReady: (actions: readonly ActionEnvelope[]) => {
-      if (busy) throw new Error('Cancel ingest computation before withdrawing its native branch');
-      const ready = actions.map(encodeEnvelope);
-      if (certified.some((bytes) => !ready.some((value) => compareBytes(bytes, value) === 0)))
-        discard();
+      retainReadyFacts(
+        new Map(actions.map((action) => [actionKey(action.id), encodeEnvelope(action)])),
+      );
     },
     setDecodeLimit: (operations: number) => {
       if (busy) throw new Error('Cancel ingest computation before changing native decode capacity');
@@ -232,31 +287,31 @@ function* checkNativeReferences(action: ActionEnvelope, cache: NativeTapeCache):
 
 function* checkAllocations(
   action: ActionEnvelope,
-  dependencies: readonly ActionEnvelope[],
+  context: ActionValidationContext,
   genesis: readonly Allocation[],
 ): Work<boolean> {
   const allocations = new Map<string, Allocation>();
-  for (const list of [
-    genesis,
-    ...dependencies.map((entry) => entry.allocations),
-    action.allocations,
-  ])
+  for (const list of context.indexed
+    ? [action.allocations]
+    : [genesis, ...context.dependencies.map((entry) => entry.allocations), action.allocations])
     for (const allocation of list) {
       yield;
       allocations.set(resourceKey(allocation.id), allocation);
     }
+  const get = (id: Allocation['id']) =>
+    allocations.get(resourceKey(id)) ?? context.indexed?.past.allocation(id);
   for (const allocation of action.allocations) {
     yield;
     if (allocation.type === 'node') {
       if (allocation.role === 'root') return false;
       if ((allocation.role === 'inline') !== (allocation.flow !== null)) return false;
       if (allocation.flow) {
-        const flow = allocations.get(resourceKey(allocation.flow));
+        const flow = get(allocation.flow);
         if (flow?.type !== 'flow' || resourceKey(flow.home) !== resourceKey(allocation.id))
           return false;
       }
     } else if (allocation.type === 'flow') {
-      const node = allocations.get(resourceKey(allocation.home));
+      const node = get(allocation.home);
       if (
         node?.type !== 'node' ||
         node.role !== 'inline' ||
@@ -267,7 +322,7 @@ function* checkAllocations(
     } else if (allocation.type === 'occurrence') {
       const predecessor = allocation.slot.predecessor;
       if (predecessor) {
-        const previous = allocations.get(resourceKey(predecessor));
+        const previous = get(predecessor);
         if (
           previous?.type !== 'occurrence' ||
           slotSequence(previous.slot) !== slotSequence(allocation.slot)
@@ -280,9 +335,7 @@ function* checkAllocations(
           const key = resourceKey(cursor.id);
           if (seen.has(key)) return false;
           seen.add(key);
-          cursor = cursor.slot.predecessor
-            ? allocations.get(resourceKey(cursor.slot.predecessor))
-            : undefined;
+          cursor = cursor.slot.predecessor ? get(cursor.slot.predecessor) : undefined;
         }
       }
     }

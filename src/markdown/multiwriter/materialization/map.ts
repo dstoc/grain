@@ -49,3 +49,51 @@ export function set<T>(root: MapRoot<T> | undefined, key: string, value: T): Map
   }
   return result;
 }
+
+function* orderedEntries<T>(root: MapRoot<T> | undefined): Generator<readonly [string, T]> {
+  if (!root) return;
+  yield* orderedEntries(root.left);
+  yield [root.key, root.value];
+  yield* orderedEntries(root.right);
+}
+/** Insertion-ordered persistent roots with an action-local mutable wrapper.
+ * Forking shares both roots; replacing a value preserves its original iteration rank.
+ */
+export class PersistentMap<T> implements Iterable<[string, T]> {
+  private data?: MapRoot<T>;
+  private order?: MapRoot<string>;
+  private count = 0;
+  get size(): number {
+    return this.count;
+  }
+  get(key: string): T | undefined {
+    return get(this.data, key);
+  }
+  has(key: string): boolean {
+    return this.get(key) !== undefined;
+  }
+  set(key: string, value: T): this {
+    if (!this.has(key)) {
+      this.order = set(this.order, String(this.count).padStart(16, '0'), key);
+      this.count++;
+    }
+    this.data = set(this.data, key, value);
+    return this;
+  }
+  fork(): PersistentMap<T> {
+    const copy = new PersistentMap<T>();
+    copy.data = this.data;
+    copy.order = this.order;
+    copy.count = this.count;
+    return copy;
+  }
+  *keys(): Generator<string> {
+    for (const [, key] of orderedEntries(this.order)) yield key;
+  }
+  *values(): Generator<T> {
+    for (const key of this.keys()) yield this.get(key)!;
+  }
+  *[Symbol.iterator](): Generator<[string, T]> {
+    for (const key of this.keys()) yield [key, this.get(key)!];
+  }
+}

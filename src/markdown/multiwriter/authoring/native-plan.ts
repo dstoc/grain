@@ -11,6 +11,20 @@ import type { NativeView } from '../ingest/publication.js';
 import { resourceKey } from '../layout/index.js';
 import type { LocatedText, NativeInsertion, TapePart, TapeSnapshot } from '../text/types.js';
 
+export interface NativePlanSource {
+  readonly native: NativeView;
+  readonly tapes: readonly TapeId[];
+  readonly clients: Pick<ReadonlySet<number>, 'has'>;
+}
+const sources = new WeakMap<NativeView, NativePlanSource>();
+/** Internal immutable resource view; tape enumeration stays lazy until a structural query. */
+export function registerNativePlanSource(view: NativeView, source: NativePlanSource): void {
+  sources.set(view, source);
+}
+export function nativePlanSource(view: NativeView): NativePlanSource | undefined {
+  return sources.get(view);
+}
+
 /** Action-local native coordinate simulation. No Yjs clocks are consumed by planning. */
 export class NativePlan implements NativeView {
   readonly operations: NativeInsertion[] = [];
@@ -20,15 +34,7 @@ export class NativePlan implements NativeView {
   private readonly client: number;
   private clock = 0;
   private readonly source?: { native: NativeView; tapes: readonly TapeId[] };
-  constructor(
-    input:
-      | readonly TapeSnapshot[]
-      | {
-          native: NativeView;
-          tapes: readonly TapeId[];
-          clients: ReadonlySet<number>;
-        },
-  ) {
+  constructor(input: readonly TapeSnapshot[] | NativePlanSource) {
     const lazy = 'native' in input ? input : undefined;
     const snapshots = 'native' in input ? [] : input;
     this.source = lazy;

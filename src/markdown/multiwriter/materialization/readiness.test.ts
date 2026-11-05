@@ -130,8 +130,8 @@ test('an ordinary suffix evaluates only its new entry; duplicates evaluate no en
     expect(indexed.readinessDiagnostics().entriesEvaluated).toBe(after.entriesEvaluated);
     indexed.snapshot();
     expect(indexed.readinessDiagnostics().entriesEvaluated).toBe(after.entriesEvaluated);
-    // The explicit remaining full-closure cost is observable rather than hidden.
-    expect(after.closureEdges - before.closureEdges).toBe(150);
+    expect(after.closureEdges - before.closureEdges).toBe(0);
+    expect(after.frontierEntries - before.frontierEntries).toBe(0);
   } finally {
     indexed.destroy();
   }
@@ -232,6 +232,104 @@ test('validator failure and cancelled certification remain retryable with detach
     exported.ready[0].nativeInsertUpdates.forEach((bytes) => bytes.fill(0));
     (exported.ready[0] as { documentId: string }).documentId = 'export mutation';
     expect(store.snapshot().ready[0].documentId).toBe('D');
+  } finally {
+    store.destroy();
+  }
+});
+
+test('internal reads retain immutable payload identities while every public export is detached', () => {
+  const p = pair();
+  try {
+    const a = action(),
+      b = action(A, 2n, [a]);
+    p.indexed.append(a);
+    const first = p.indexed.readReady();
+    const before = p.indexed.readinessDiagnostics();
+    expect(p.indexed.readReady()).toBe(first);
+    p.indexed.append(b);
+    const second = p.indexed.readReady();
+    expect(second.ready[0]).toBe(first.ready[0]);
+    expect(second.variants.get(`${A}:1`)).toBe(first.variants.get(`${A}:1`));
+    expect(p.indexed.readinessDiagnostics().fullSnapshotBuilds).toBe(before.fullSnapshotBuilds);
+    const exported = p.indexed.snapshot();
+    (exported.ready[0] as { documentId: string }).documentId = 'corruption';
+    exported.actions[0].variants[0].fill(0);
+    expect(p.indexed.readReady()).toBe(second);
+    expect(second.ready[0].documentId).toBe('D');
+    p.indexed.append({ ...a, lamport: 12n });
+    expect(p.indexed.readReady().ready).toHaveLength(0);
+    expect(first.ready).toEqual([a]);
+    expect(second.ready).toEqual([a, b]);
+    p.reference.applyUpdate(p.indexed.encodeUpdate());
+    p.equal();
+  } finally {
+    p.close();
+  }
+});
+
+test('local certificates are reused only for exact bytes and exact dependency certificates', () => {
+  const validate = vi.fn(() => null);
+  const indexed = new IndexedActionStore({ ...options, validate });
+  try {
+    const a = action();
+    expect(indexed.checkLocal(a)).toBeNull();
+    indexed.append(a);
+    indexed.readReady();
+    expect(validate).toHaveBeenCalledTimes(1);
+    expect(indexed.readinessDiagnostics().localCertificatesReused).toBe(1);
+    const b = action(A, 2n, [a]);
+    expect(indexed.checkLocal(b)).toBeNull();
+    const other = { ...b, groupId: { ...b.groupId, sequence: 3n } };
+    indexed.append(other);
+    indexed.readReady();
+    expect(validate).toHaveBeenCalledTimes(3);
+    expect(indexed.readinessDiagnostics().localCertificatesReused).toBe(1);
+    const c = action(A, 3n, [other]);
+    expect(indexed.checkLocal(c)).toBeNull();
+    indexed.append({ ...a, lamport: 4n });
+    indexed.append(c);
+    expect(indexed.readReady().ready).toHaveLength(0);
+  } finally {
+    indexed.destroy();
+  }
+});
+
+test('indexed causal resources exclude concurrent births and expose no retained mutable data', () => {
+  const resource = (actor: typeof A, ordinal: number) => ({
+    kind: 'deletion' as const,
+    birth: { type: 'action' as const, action: { actor, sequence: 1n } },
+    ordinal,
+  });
+  const a = { ...action(A), allocations: [{ type: 'deletion' as const, id: resource(A, 0) }] };
+  const b = { ...action(B), allocations: [{ type: 'deletion' as const, id: resource(B, 0) }] };
+  const validate: ActionStoreOptions['validate'] = (_action, context) => {
+    if (_action.id.sequence !== 2n) return null;
+    expect(context.indexed).toBeDefined();
+    const past = context.indexed!.past;
+    expect(past.contains(a.id)).toBe(true);
+    expect(past.contains(b.id)).toBe(false);
+    expect(past.allocation(resource(B, 0))).toBeUndefined();
+    const allocation = past.allocation(resource(A, 0))!;
+    (allocation.id as { ordinal: number }).ordinal = 100;
+    expect(past.allocation(resource(A, 0))!.id.ordinal).toBe(0);
+    expect(Object.keys(past.identity)).toEqual([]);
+    expect(Object.isFrozen(context.indexed!.dependencies[0])).toBe(true);
+    expect(Object.keys(context.indexed!.dependencies[0])).toEqual([]);
+    return null;
+  };
+  const store = new IndexedActionStore({ ...options, validate });
+  try {
+    store.append(a);
+    store.append(b);
+    store.readReady();
+    const valid = {
+      ...action(A, 2n, [a]),
+      effects: [{ type: 'DeleteText' as const, tag: resource(A, 0), observed: [] }],
+    };
+    expect(store.checkLocal(valid)).toBeNull();
+    const invalid = { ...valid, effects: [{ ...valid.effects[0], tag: resource(B, 0) }] };
+    expect(store.checkLocal(invalid)).toBe('reference');
+    expect(store.readinessDiagnostics().closureEdges).toBe(0);
   } finally {
     store.destroy();
   }

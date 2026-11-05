@@ -318,10 +318,9 @@ test('semantic failure and cancellation do not commit a prepared activity suffix
   try {
     const before = target.document.publication.status().publication!;
     applied(
-      source.editor.edit({ local: 'source', group: 1n }, insertText, {
+      source.editor.edit({ local: 'source', group: 1n }, insertParagraph, {
         nodeId: source.handle(source.nodes()[0]),
         from: 1,
-        text: 'X',
       }),
     );
     target.document.store.applyUpdate(source.document.store.encodeUpdate());
@@ -365,3 +364,33 @@ test('semantic failure and cancellation do not commit a prepared activity suffix
     target.close();
   }
 });
+
+for (const size of [10, 150])
+  test(`ordinary commands avoid diagnostic exports and ancestor enumeration in ${size} paragraphs`, () => {
+    const p = open(commandGenesis(Array.from({ length: size }, () => 'abc').join('\n\n')));
+    try {
+      const store = p.document.store;
+      if (!('readinessDiagnostics' in store)) throw new Error('Expected indexed readiness');
+      const diagnostics = store.readinessDiagnostics;
+      const before = diagnostics.call(store);
+      const snapshot = vi.spyOn(store, 'snapshot').mockImplementation(() => {
+        throw new Error('Ordinary command exported full snapshot');
+      });
+      for (let i = 0; i < 4; i++)
+        applied(
+          p.editor.edit({ local: 'cost', group: BigInt(i + 1) }, insertText, {
+            nodeId: p.handle(p.nodes()[0]),
+            from: 1,
+            text: 'X',
+          }),
+        );
+      const after = diagnostics.call(store);
+      expect(after.fullSnapshotBuilds).toBe(before.fullSnapshotBuilds);
+      expect(after.closureEdges).toBe(before.closureEdges);
+      expect(after.localCertificatesReused - before.localCertificatesReused).toBe(4);
+      snapshot.mockRestore();
+      equalReference(p);
+    } finally {
+      p.close();
+    }
+  }, 60000);

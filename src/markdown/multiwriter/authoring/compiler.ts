@@ -38,7 +38,7 @@ import { reconstructProvenance } from '../reference/provenance.js';
 import { projectMarkdown, projectionDocument } from '../projection/project.js';
 import type { SourceFragment } from '../projection/parser-plan.js';
 import type { ViewNode } from '../projection/types.js';
-import { NativePlan } from './native-plan.js';
+import { NativePlan, nativePlanSource } from './native-plan.js';
 import type { CommandIntent, MultiwriterCommandDraft } from './draft.js';
 
 function slice(pieces: readonly SourceFragment[], from: number, to: number): SourceFragment[] {
@@ -125,32 +125,37 @@ export class CommandCompiler {
   ) {
     this.root = root;
     this.intents = draft.compilerIntents();
-    const tapes = [...genesis.layout.allocations, ...ready.flatMap((a) => a.allocations)]
-      .filter((a) => a.type === 'tape')
-      .map((t) => t.id);
-    this.native = new NativePlan(
-      initial
-        ? {
-            native,
-            tapes,
-            clients: new Set(
-              [...genesis.body.nativeManifest, ...ready.flatMap((a) => a.nativeManifest)].map(
-                (entry) => entry.native.client,
+    const source = initial && nativePlanSource(native);
+    if (source) this.native = new NativePlan(source);
+    else {
+      const tapes = [...genesis.layout.allocations, ...ready.flatMap((a) => a.allocations)]
+        .filter((a) => a.type === 'tape')
+        .map((t) => t.id);
+      this.native = new NativePlan(
+        initial
+          ? {
+              native,
+              tapes,
+              clients: new Set(
+                [...genesis.body.nativeManifest, ...ready.flatMap((a) => a.nativeManifest)].map(
+                  (entry) => entry.native.client,
+                ),
               ),
-            ),
-          }
-        : tapes.map((tape) => native.snapshot(tape)),
-    );
+            }
+          : tapes.map((tape) => native.snapshot(tape)),
+      );
+    }
     if (initial) this.memo = { key: '0:0:0', value: initial };
     else void this.tree;
-    for (const [handle, view] of draft.origins) {
-      this.ids.set(handle, view.origin.representative);
-      if (!initial)
-        this.text.set(
-          handle,
-          view.fragments.filter((p) => p.visible).map((p) => ({ text: p.text, range: p.range })),
-        );
-    }
+    if (!initial)
+      for (const [handle, view] of draft.origins) {
+        this.ids.set(handle, view.origin.representative);
+        if (!initial)
+          this.text.set(
+            handle,
+            view.fragments.filter((p) => p.visible).map((p) => ({ text: p.text, range: p.range })),
+          );
+      }
     for (const intent of this.intents) {
       if (intent.type === 'create') this.specs.set(intent.id, intent.spec);
       if (intent.type === 'place' && !this.firstPlaces.has(intent.id))
@@ -194,8 +199,11 @@ export class CommandCompiler {
     return this.state().ownership;
   }
   private id(handle: Handle): NodeId {
-    const id = this.ids.get(handle);
-    if (id) return id;
+    const id = this.ids.get(handle) ?? this.draft.origins.get(handle)?.origin.representative;
+    if (id) {
+      this.ids.set(handle, id);
+      return id;
+    }
     if (this.splitNodes.has(handle)) throw new Error('Split destination is not yet constructed');
     const spec = this.specs.get(handle),
       place = this.firstPlaces.get(handle);
@@ -583,7 +591,7 @@ export class CommandCompiler {
   private move(id: Handle, parent: Handle, before: Handle | null) {
     const first = !this.seenPlacements.has(id);
     this.seenPlacements.add(id);
-    if (!this.ids.has(id)) {
+    if (!this.ids.has(id) && !this.draft.origins.has(id)) {
       if (!this.splitNodes.has(id)) this.id(id);
       return;
     }
@@ -1199,7 +1207,10 @@ export class CommandCompiler {
   }
   focusTarget(handle: Handle, offset: number, affinity: TextAffinity) {
     return (
-      this.focusMappings.get(handle)?.(offset, affinity) ?? { node: this.ids.get(handle), offset }
+      this.focusMappings.get(handle)?.(offset, affinity) ?? {
+        node: this.ids.get(handle) ?? this.draft.origins.get(handle)?.origin.representative,
+        offset,
+      }
     );
   }
 }

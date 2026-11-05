@@ -15,6 +15,8 @@ import type { CreateNodeSpec, NodeId, TextAffinity, TextEdit } from '../../seman
 import { assertTextEdit, assertTextPoint } from '../../semantic/types.js';
 import type { NativeTextRange } from '../contracts.js';
 import type { ViewNode } from '../projection/types.js';
+import { commandViewIndex } from './view-index.js';
+import type { OriginMap, CommandViewIndex } from './view-index.js';
 import { projectionDocument } from '../projection/project.js';
 
 export type CommandIntent =
@@ -76,12 +78,12 @@ function slicePieces(pieces: readonly OriginPiece[], from: number, to: number): 
 /** Isolated semantic records plus native ranges/immutable buffers. Never normalizes shared facts. */
 export class MultiwriterCommandDraft implements CommandDraft {
   readonly intents: CommandIntent[] = [];
-  readonly origins = new Map<NodeId, ViewNode>();
+  readonly origins: OriginMap;
   readonly pieces = new Map<NodeId, readonly OriginPiece[]>();
   private tree_?: ConstructionTree;
-  private readonly parents = new Map<NodeId, NodeId>();
-  private readonly siblings = new Map<NodeId, { previous?: NodeId; next?: NodeId }>();
-  private readonly handles = new WeakMap<ViewNode, NodeId>();
+  private readonly parents: CommandViewIndex['parents'];
+  private readonly siblings: CommandViewIndex['siblings'];
+  private readonly handles: { get(view: ViewNode): NodeId | undefined };
   private readonly contents = new Map<NodeId, string>();
   private readonly views = new Map<NodeId, DraftNode>();
   readonly rootId: NodeId;
@@ -196,21 +198,11 @@ export class MultiwriterCommandDraft implements CommandDraft {
     private readonly root: ViewNode,
     overlay = false,
   ) {
-    let ordinal = 0;
-    const visit = (view: ViewNode, parent?: NodeId) => {
-      const id = `construction:${ordinal++}`;
-      this.origins.set(id, view);
-      this.handles.set(view, id);
-      if (parent) this.parents.set(id, parent);
-      view.children.forEach((child) => visit(child, id));
-      view.children.forEach((child, i) =>
-        this.siblings.set(this.handles.get(child)!, {
-          previous: view.children[i - 1] && this.handles.get(view.children[i - 1]),
-          next: view.children[i + 1] && this.handles.get(view.children[i + 1]),
-        }),
-      );
-    };
-    visit(root);
+    const index = commandViewIndex(root);
+    this.origins = index.origins;
+    this.parents = index.parents;
+    this.siblings = index.siblings;
+    this.handles = { get: (view) => index.handle(view) };
     this.rootId = 'construction:0';
     if (!overlay) {
       void this.tree;

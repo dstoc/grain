@@ -50,11 +50,11 @@ export interface DestinationRequirement {
  */
 export class OwnershipResult {
   constructor(
-    private readonly layout: LayoutPrefix,
-    private readonly index: CellIndex,
-    private readonly owners: ReadonlyMap<string, CellAssignment>,
-    private readonly roots: ReadonlyMap<string, readonly RunOrigin[]>,
-    private readonly attachments: ReadonlyMap<string, RunAttachment>,
+    private readonly layout: Pick<LayoutPrefix, keyof LayoutPrefix>,
+    private readonly index: Pick<CellIndex, keyof CellIndex>,
+    private readonly owners: Pick<ReadonlyMap<string, CellAssignment>, 'get' | 'values'>,
+    private readonly roots: Pick<ReadonlyMap<string, readonly RunOrigin[]>, 'get'>,
+    private readonly attachments: Pick<ReadonlyMap<string, RunAttachment>, 'get'>,
     private readonly cohorts: readonly OccurrenceBucket[],
     private readonly requirements: readonly DestinationRequirement[],
     private readonly homes: readonly HomeBinding[],
@@ -64,6 +64,9 @@ export class OwnershipResult {
   }
   get assignments(): readonly CellAssignment[] {
     return structuredClone([...this.owners.values()]);
+  }
+  runLayout(run: RunId) {
+    return structuredClone(this.layout.runLayout(run));
   }
   get runLayouts() {
     return structuredClone(this.layout.runLayouts);

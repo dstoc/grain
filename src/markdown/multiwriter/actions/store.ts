@@ -7,11 +7,14 @@ import type { ActionEnvelope, ActionId, ActionReadiness, Allocation } from '../c
 import { compareBytes } from './cbor.js';
 import { decodeEnvelopeSteps, encodeEnvelope, EnvelopeDecodeError } from './codec.js';
 import { actionKey, validReferencesSteps } from './references.js';
+import type { IndexedValidation } from './validation.js';
 
 export type QuarantineReason = Extract<ActionReadiness, { state: 'quarantined' }>['reason'];
 export interface ActionValidationContext {
   /** Full ready dependency closure, in semantic order. Never the later merged projection. */
   readonly dependencies: readonly ActionEnvelope[];
+  /** Private indexed reader seam. Other stores supply the detached array above. */
+  readonly indexed?: IndexedValidation;
 }
 export interface ActionStoreOptions {
   readonly documentId: string;

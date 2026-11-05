@@ -57,8 +57,9 @@ export class NativeFixture {
         cells: [...'abcdef'].map((text, index) => ({ id: `P${index}`, text })),
       },
     ],
+    private readonly nativeDecodeOperations?: number,
   ) {
-    this.target = new NativeTapeCache();
+    this.target = new NativeTapeCache(nativeDecodeOperations);
     const previous = new Map<string, OccurrenceId>();
     for (const block of seed) {
       const predecessor = block.parent ? (previous.get(block.parent) ?? null) : null;
@@ -81,9 +82,10 @@ export class NativeFixture {
         if (text.length !== 1) throw new Error('Fixture cell must have one native text range');
         this.aliases.set(cell.id, text[0].range);
       }
-    const clients = Array.from({ length: 3 }, () => new NativeTapeCache()).sort(
-      (a, b) => a.clientId - b.clientId,
-    );
+    const clients = Array.from(
+      { length: 3 },
+      () => new NativeTapeCache(nativeDecodeOperations),
+    ).sort((a, b) => a.clientId - b.clientId);
     for (const [i, name] of ['A', 'B', 'C'].entries()) {
       const cache = clients[i];
       cache.apply('G', prepared.body);
@@ -537,7 +539,7 @@ export class NativeFixture {
   }
   fresh(peer: string, order: readonly string[]): void {
     this.peers.get(peer)!.destroy();
-    const cache = new NativeTapeCache();
+    const cache = new NativeTapeCache(this.nativeDecodeOperations);
     cache.apply('G', this.bodies.get('G')!);
     for (const name of order) cache.apply(name, this.bodies.get(name)!);
     this.peers.set(peer, cache);

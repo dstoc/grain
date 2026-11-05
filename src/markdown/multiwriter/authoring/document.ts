@@ -9,6 +9,8 @@ import type { projectMarkdown } from '../projection/project.js';
  */
 export interface AuthoringDocument {
   readonly commandMode?: 'overlay';
+  /** Trusted reader seam; callers must not mutate retained action facts. */
+  readonly readyActions?: () => readonly ActionEnvelope[];
   readonly store: Pick<ActionStore, 'snapshot' | 'append' | 'encodeUpdate' | 'factsVersion'>;
   readonly publication: {
     status(): ProjectionStatus<ReturnType<typeof projectMarkdown>>;

@@ -11,7 +11,11 @@ export interface SplitBirth {
   readonly effect: Split;
   readonly order: EffectOrder;
 }
-export function cutPosition(effect: Split, index: CellIndex, homes?: HomeIndex): number {
+export function cutPosition(
+  effect: Split,
+  index: Pick<CellIndex, keyof CellIndex>,
+  homes?: HomeIndex,
+): number {
   if (!effect.basis.ranges.length) {
     if (!homes) throw new Error('Empty split requires its retained home domain');
     const home = homes.home(effect.cut.run);
@@ -36,8 +40,8 @@ export function cutPosition(effect: Split, index: CellIndex, homes?: HomeIndex):
 }
 export function splitBuckets(
   births: readonly SplitBirth[],
-  layout: LayoutPrefix,
-  index: CellIndex,
+  layout: Pick<LayoutPrefix, keyof LayoutPrefix>,
+  index: Pick<CellIndex, keyof CellIndex>,
   homes?: HomeIndex,
 ): readonly OccurrenceBucket[] {
   const groups = new Map<string, SplitBirth[]>();
