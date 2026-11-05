@@ -179,7 +179,7 @@ function split<T>(
     right: parts.right,
   };
 }
-function* differences<T>(
+export function* differences<T>(
   before: MapRoot<T> | undefined,
   after: MapRoot<T> | undefined,
   equal: (a: T, b: T) => boolean,

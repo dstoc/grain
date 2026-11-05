@@ -296,7 +296,12 @@ test('warm readiness updates only changed payload/head metadata while retaining 
     expect(current.variantEntriesUpdated - counts.variantEntriesUpdated).toBe(1);
     expect(current.headCandidatesEvaluated - counts.headCandidatesEvaluated).toBe(2);
     expect(current.headDependencyEdges - counts.headDependencyEdges).toBeLessThan(5);
-    expect(current.orderedReadyActionsVisited - counts.orderedReadyActionsVisited).toBe(1001);
+    expect(current.orderedReadyActionsVisited - counts.orderedReadyActionsVisited).toBe(0);
+    expect(after.ready).toHaveLength(1001);
+    expect(
+      p.indexed.readinessDiagnostics().orderedReadyActionsVisited -
+        current.orderedReadyActionsVisited,
+    ).toBe(1001);
     expect(after.heads).toEqual([next.id]);
     expect(before.heads).toEqual([actions.at(-1)!.id]);
     expect(before.variants.get(actionKey(next.id))).toBeUndefined();

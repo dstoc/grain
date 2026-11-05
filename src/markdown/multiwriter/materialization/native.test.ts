@@ -6,6 +6,9 @@ import { finish } from '../ingest/work.js';
 import { compareBytes } from '../actions/cbor.js';
 import { get, set } from './map.js';
 import type { MapRoot } from './map.js';
+import { resource } from '../actions/test-fixtures.js';
+import type { NativeInsertion } from '../text/types.js';
+import type { RangeRef } from '../contracts.js';
 
 const seed = [
   { id: 'root', parent: null, role: 'root' as const },
@@ -22,6 +25,62 @@ const seed = [
     ],
   },
 ];
+
+for (const size of [64, 4096])
+  test(`native range reads seek directly into a fragmented tape (${size})`, () => {
+    const cache = new NativeTapeCache(10_000_000),
+      materialized = new MaterializedNative(10_000_000);
+    const tape = resource('tape', 0),
+      start = resource('marker', 0),
+      end = resource('marker', 1);
+    const operations: NativeInsertion[] = [{ type: 'createTape', tape, start, end }],
+      ranges: RangeRef[] = [];
+    let before = start,
+      offset = 1;
+    for (let i = 0; i < size; i++) {
+      const marker = resource('marker', i + 2);
+      operations.push({ type: 'text', tape, index: offset, text: 'a😀' });
+      offset += 3;
+      operations.push({ type: 'marker', tape, index: offset++, marker, affinity: 'right' });
+      ranges.push({ tape, start: before, end: marker });
+      before = marker;
+    }
+    try {
+      const prepared = cache.prepare('G', operations);
+      prepared.commit();
+      finish(materialized.apply('G', prepared.body));
+      const held = materialized.view();
+      for (const index of [0, 1, Math.floor(size / 2), size - 1]) {
+        const before = { ...materialized.work },
+          actual = held.range(ranges[index]);
+        expect(actual).toEqual(cache.range(ranges[index]));
+        expect(materialized.work.rangePartsVisited - before.rangePartsVisited).toBe(1);
+        const seeks = materialized.work.rangeIndexNodesVisited - before.rangeIndexNodesVisited;
+        expect(seeks).toBeGreaterThan(0);
+        expect(seeks).toBeLessThan(16);
+        (actual[0].range as { clock: number }).clock = -1;
+        expect(held.range(ranges[index])).toEqual(cache.range(ranges[index]));
+      }
+      expect(held.range({ tape, start: ranges.at(-1)!.end, end })).toEqual([]);
+      expect(() => held.range({ ...ranges[0], end: ranges[0].start })).toThrow(/Invalid open/);
+      const first = held.range(ranges[0]);
+      const edited = cache.prepare('edit', [{ type: 'text', tape, index: 2, text: 'x' }]);
+      edited.commit();
+      finish(materialized.apply('edit', edited.body));
+      expect(materialized.view().range(ranges[0])).toEqual(cache.range(ranges[0]));
+      expect(
+        materialized
+          .view()
+          .range(ranges[0])
+          .map((part) => part.text)
+          .join(''),
+      ).toBe('ax😀');
+      expect(held.range(ranges[0])).toEqual(first);
+    } finally {
+      cache.destroy();
+      materialized.destroy();
+    }
+  }, 60000);
 test('persistent roots retain old values through sorted and reverse key updates', () => {
   let root: MapRoot<number> | undefined;
   for (let i = 0; i < 5000; i++) root = set(root, String(i).padStart(5, '0'), i);

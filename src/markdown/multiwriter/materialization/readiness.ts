@@ -19,6 +19,8 @@ import { registerReadySource } from '../authoring/ready-source.js';
 import { MaterializedReadyIndex } from './ready-index.js';
 import type { ActionEnvelope, ActionId, ActionReadiness, Allocation } from '../contracts.js';
 import { compareActions } from '../contracts.js';
+import type { RetainedPayloadIndex } from '../ingest/validator.js';
+import type { ReadySequence } from '../authoring/ready-source.js';
 import type { Work } from '../ingest/work.js';
 
 interface Certificate {
@@ -81,9 +83,24 @@ const quarantine = (reason: QuarantineReason): ActionReadiness => ({
  */
 export interface ReadyActionView {
   readonly ready: readonly ActionEnvelope[];
+  readonly ordered?: ReadySequence;
   readonly heads: readonly ActionId[];
   readonly integrity: boolean;
-  readonly variants: Pick<ReadonlyMap<string, Uint8Array>, 'get'>;
+  readonly variants: RetainedPayloadIndex;
+}
+export const readySequence = (view: ReadyActionView): ReadySequence => view.ordered ?? view.ready;
+/** A diagnostic array is built only on explicit access. Escaping closures retain
+ * this immutable index and counters, never the store or a preparation context. */
+function readyArray(index: MaterializedReadyIndex, counts: ReadinessWork) {
+  let array: readonly ActionEnvelope[] | undefined;
+  return () => {
+    if (!array) {
+      array = [...index];
+      counts.orderedReadyActionsVisited += array.length;
+      registerReadySource(array, index);
+    }
+    return array;
+  };
 }
 interface ReadyState extends ReadyActionView {
   readonly records?: MapRoot<StoredAction>;
@@ -100,8 +117,25 @@ function mapComputation<A, B>(state: Computation<A>, map: (value: A) => B): Comp
   };
 }
 /** Escaping readers capture only the immutable payload root, not a calculation. */
-function payloadView(root: MapRoot<Uint8Array> | undefined) {
-  return { get: (key: string) => persistent.get(root, key) };
+const payloadRoots = new WeakMap<object, MapRoot<Uint8Array> | undefined>();
+function payloadView(root: MapRoot<Uint8Array> | undefined): RetainedPayloadIndex {
+  const view: RetainedPayloadIndex = {
+    get: (key) => persistent.get(root, key),
+    changes(before, visit) {
+      if (!payloadRoots.has(before)) return undefined;
+      return (function* () {
+        for (const change of persistent.differences(
+          payloadRoots.get(before),
+          root,
+          (a, b) => a === b || compareBytes(a, b) === 0,
+          visit,
+        ))
+          yield change.key;
+      })();
+    },
+  };
+  payloadRoots.set(view, root);
+  return view;
 }
 
 export class IndexedActionStore extends ActionStore {
@@ -485,8 +519,6 @@ export class IndexedActionStore extends ActionStore {
         readiness: this.states.get(key)!,
       });
     }
-    const ready = [...this.ready.values()].sort(compareActions);
-    this.counts.orderedReadyActionsVisited += ready.length;
     let variants = this.variants;
     const heads = this.heads.fork(),
       headCandidates = new Map<string, ActionId>();
@@ -527,9 +559,22 @@ export class IndexedActionStore extends ActionStore {
       else heads.delete(key);
     }
     const status = this.factStatus();
+    const changes = new Map<string, ActionEnvelope | undefined>();
+    if (status.integrity)
+      for (const key of affected) {
+        yield;
+        changes.set(key, this.ready.get(key));
+      }
+    const readyIndex = status.integrity
+      ? yield* this.readyIndex.refineSteps(changes)
+      : new MaterializedReadyIndex(this.readyOwner);
+    const readArray = readyArray(readyIndex, this.counts);
     const value: ReadyState = {
       records: this.records,
-      ready: status.integrity ? ready : [],
+      get ready() {
+        return readArray();
+      },
+      ordered: readyIndex,
       heads: status.integrity
         ? [...heads.values()].sort((a, b) =>
             compareActions(this.ready.get(actionKey(a))!, this.ready.get(actionKey(b))!),
@@ -539,16 +584,6 @@ export class IndexedActionStore extends ActionStore {
       integrity: status.integrity,
       diagnostics: status.diagnostics.slice(),
     };
-    const changes = new Map<string, ActionEnvelope | undefined>();
-    if (status.integrity)
-      for (const key of affected) {
-        yield;
-        changes.set(key, this.ready.get(key));
-      }
-    const readyIndex = status.integrity
-      ? yield* this.readyIndex.refineSteps(changes, ready.at(-1)?.lamport ?? 0n)
-      : new MaterializedReadyIndex(this.readyOwner);
-    registerReadySource(value.ready, readyIndex);
     this.readyIndex = readyIndex;
     this.variants = status.integrity ? variants : undefined;
     this.heads = status.integrity ? heads : new persistent.PersistentMap();

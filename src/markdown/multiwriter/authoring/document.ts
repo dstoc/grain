@@ -1,3 +1,4 @@
+import type { ReadySequence } from './ready-source.js';
 import type { ActionStore } from '../actions/store.js';
 import type { ActionEnvelope } from '../contracts.js';
 import type { NativeView, ProjectionStatus, PublishedProjection } from '../ingest/publication.js';
@@ -19,7 +20,7 @@ export type CommandOwnership = (
 export interface AuthoringDocument {
   readonly commandMode?: 'overlay';
   /** Trusted reader seam; callers must not mutate retained action facts. */
-  readonly readyActions?: () => readonly ActionEnvelope[];
+  readonly readyActions?: () => ReadySequence;
   createCommandOwnership?(): CommandOwnership | undefined;
   readonly store: Pick<ActionStore, 'snapshot' | 'append' | 'encodeUpdate' | 'factsVersion'>;
   readonly publication: {

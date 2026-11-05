@@ -49,6 +49,8 @@ export interface NativeWork {
   tapesIndexed: number;
   partsIndexed: number;
   markerBindingsIndexed: number;
+  rangeIndexNodesVisited: number;
+  rangePartsVisited: number;
 }
 const compareNative = (a: NativeId, b: NativeId) => a.client - b.client || a.clock - b.clock;
 
@@ -59,6 +61,7 @@ function readView(
   bodies: BodyLink | undefined,
   tapeIds: PersistentMap<TapeId>,
   clients: MapRoot<true> | undefined,
+  work: NativeWork,
 ): NativeView {
   const tapeIndex = (id: TapeId) => {
     const tape = get(tapes, resourceKey(id));
@@ -112,21 +115,31 @@ function readView(
         start.index >= end.index
       )
         throw new NativeValidationError('Invalid open native range');
-      return tapeIndex(ref.tape).snapshot.parts.flatMap((part) =>
-        part.type === 'text' && part.index > start.index && part.index < end.index
-          ? [
-              {
-                index: part.index,
-                text: part.text,
-                range: {
-                  tape: structuredClone(ref.tape),
-                  ...part.native,
-                  length: part.text.length,
-                },
-              },
-            ]
-          : [],
-      );
+      const parts = tapeIndex(ref.tape).snapshot.parts,
+        result: LocatedText[] = [];
+      let low = 0,
+        high = parts.length;
+      while (low < high) {
+        work.rangeIndexNodesVisited++;
+        const mid = (low + high) >>> 1;
+        if (parts[mid].index <= start.index) low = mid + 1;
+        else high = mid;
+      }
+      for (let i = low; i < parts.length && parts[i].index < end.index; i++) {
+        work.rangePartsVisited++;
+        const part = parts[i];
+        if (part.type === 'text')
+          result.push({
+            index: part.index,
+            text: part.text,
+            range: {
+              tape: structuredClone(ref.tape),
+              ...part.native,
+              length: part.text.length,
+            },
+          });
+      }
+      return result;
     },
     lookup(range: NativeTextRange): readonly LocatedText[] {
       assertNative(range, range.length);
@@ -191,12 +204,21 @@ export class MaterializedNative {
     tapesIndexed: 0,
     partsIndexed: 0,
     markerBindingsIndexed: 0,
+    rangeIndexNodesVisited: 0,
+    rangePartsVisited: 0,
   };
   constructor(decodeOperations: number) {
     this.cache = new NativeTapeCache(decodeOperations);
   }
   view(): NativeView {
-    return readView(this.tapes, this.markerTapes, this.bodies, this.tapeIds, this.clients);
+    return readView(
+      this.tapes,
+      this.markerTapes,
+      this.bodies,
+      this.tapeIds,
+      this.clients,
+      this.work,
+    );
   }
   *apply(key: string, input: NativeBody): Work<void> {
     if (this.damaged) throw new Error('Cancelled native indexing requires a fresh materializer');

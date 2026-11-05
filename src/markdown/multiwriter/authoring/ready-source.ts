@@ -1,5 +1,11 @@
 import type { ActionEnvelope, ActorId } from '../contracts.js';
 
+/** Private ordered reads; full array exports remain an explicit diagnostic cost. */
+export interface ReadySequence extends Iterable<ActionEnvelope> {
+  readonly length: number;
+  at(index: number): ActionEnvelope | undefined;
+}
+
 /** Borrowed immutable readiness metadata for private native writers/readers.
  * Missing metadata or a withdrawal requires the existing full-inventory path.
  * A source must not retain an earlier ready array or preparation context.

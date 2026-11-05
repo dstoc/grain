@@ -40,12 +40,17 @@ for (const depth of [10, 150, 1000])
       const before = p.editor.writerDiagnostics(),
         native = publication(p).diagnostics(),
         activity = materializer(p).activityDiagnostics(),
-        ownership = materializer(p).ownershipDiagnostics();
+        ownership = materializer(p).ownershipDiagnostics(),
+        author = materializer(p).cacheDiagnostics().author,
+        readiness = store(p).readinessDiagnostics();
       const edit = type(p, depth + 1, '!');
       const after = p.editor.writerDiagnostics(),
         next = publication(p).diagnostics();
       expect(after.readyActionsScanned).toBe(before.readyActionsScanned);
       expect(after.frontierActionsScanned).toBe(0);
+      expect(store(p).readinessDiagnostics().orderedReadyActionsVisited).toBe(
+        readiness.orderedReadyActionsVisited,
+      );
       expect(after.readyIndexNodesVisited - before.readyIndexNodesVisited).toBeLessThan(200);
       expect(next.nativeMembershipScanned).toBe(native.nativeMembershipScanned);
       expect(next.nativeReadyActionsVisited - native.nativeReadyActionsVisited).toBe(1);
@@ -55,6 +60,11 @@ for (const depth of [10, 150, 1000])
       ).toBe(1);
       expect(materializer(p).ownershipDiagnostics().payloadsCompared).toBe(
         ownership.payloadsCompared,
+      );
+      const authorAfter = materializer(p).cacheDiagnostics().author;
+      expect(authorAfter.retainedFactsCompared - author.retainedFactsCompared).toBe(1);
+      expect(authorAfter.retainedIndexNodesVisited - author.retainedIndexNodesVisited).toBeLessThan(
+        200,
       );
       expect(edit.envelope.id.sequence).toBe(BigInt(depth + 1));
       expect(edit.envelope.lamport).toBe(BigInt(depth + 1));
