@@ -52,6 +52,10 @@ export interface ReadinessWork {
   fullSnapshotBuilds: number;
   frontierEntries: number;
   localCertificatesReused: number;
+  variantEntriesUpdated: number;
+  headCandidatesEvaluated: number;
+  headDependencyEdges: number;
+  orderedReadyActionsVisited: number;
 }
 const compareIds = (a: ActionId, b: ActionId): number =>
   a.actor < b.actor
@@ -79,7 +83,7 @@ export interface ReadyActionView {
   readonly ready: readonly ActionEnvelope[];
   readonly heads: readonly ActionId[];
   readonly integrity: boolean;
-  readonly variants: ReadonlyMap<string, Uint8Array>;
+  readonly variants: Pick<ReadonlyMap<string, Uint8Array>, 'get'>;
 }
 interface ReadyState extends ReadyActionView {
   readonly records?: MapRoot<StoredAction>;
@@ -95,12 +99,18 @@ function mapComputation<A, B>(state: Computation<A>, map: (value: A) => B): Comp
     },
   };
 }
+/** Escaping readers capture only the immutable payload root, not a calculation. */
+function payloadView(root: MapRoot<Uint8Array> | undefined) {
+  return { get: (key: string) => persistent.get(root, key) };
+}
 
 export class IndexedActionStore extends ActionStore {
   private memo?: { readonly version: number; readonly value: ReadyState };
   private running?: Work<ReadyState>;
   private generation = 0;
   private records?: MapRoot<StoredAction>;
+  private variants?: MapRoot<Uint8Array>;
+  private heads = new persistent.PersistentMap<ActionId>();
   private readonly changed = new Set<string>();
   private certificateIndex?: MapRoot<Certificate>;
   private staged?: Certificate;
@@ -123,6 +133,10 @@ export class IndexedActionStore extends ActionStore {
     fullSnapshotBuilds: 0,
     frontierEntries: 0,
     localCertificatesReused: 0,
+    variantEntriesUpdated: 0,
+    headCandidatesEvaluated: 0,
+    headDependencyEdges: 0,
+    orderedReadyActionsVisited: 0,
   };
   readinessDiagnostics(): Readonly<ReadinessWork> {
     return { ...this.counts };
@@ -472,22 +486,56 @@ export class IndexedActionStore extends ActionStore {
       });
     }
     const ready = [...this.ready.values()].sort(compareActions);
-    const heads = new Map(ready.map((action) => [actionKey(action.id), action.id]));
-    const variants = new Map<string, Uint8Array>();
-    for (const action of ready) {
+    this.counts.orderedReadyActionsVisited += ready.length;
+    let variants = this.variants;
+    const heads = this.heads.fork(),
+      headCandidates = new Map<string, ActionId>();
+    for (const key of affected) {
       yield;
-      variants.set(actionKey(action.id), this.fact(actionKey(action.id))!.variants[0].bytes);
-      for (const id of action.dependencies) {
-        yield;
-        heads.delete(actionKey(id));
+      const previous = this.readyIndex.get(key),
+        action = this.ready.get(key);
+      variants = action
+        ? persistent.set(variants, key, this.fact(key)!.variants[0].bytes)
+        : persistent.remove(variants, key);
+      this.counts.variantEntriesUpdated++;
+      for (const entry of [previous, action]) {
+        if (!entry) continue;
+        headCandidates.set(actionKey(entry.id), entry.id);
+        for (const id of entry.dependencies) {
+          yield;
+          this.counts.headDependencyEdges++;
+          headCandidates.set(actionKey(id), id);
+        }
       }
+    }
+    for (const [key, id] of headCandidates) {
+      yield;
+      this.counts.headCandidatesEvaluated++;
+      let depended = false;
+      if (this.ready.has(key))
+        for (const reader of this.readers.get(key) ?? []) {
+          yield;
+          this.counts.headDependencyEdges++;
+          // Reverse edges retain old variants conservatively. Only a current ready
+          // payload's actual dependencies can suppress this head.
+          if (this.ready.get(reader)?.dependencies.some((id) => actionKey(id) === key)) {
+            depended = true;
+            break;
+          }
+        }
+      if (this.ready.has(key) && !depended) heads.set(key, id);
+      else heads.delete(key);
     }
     const status = this.factStatus();
     const value: ReadyState = {
       records: this.records,
       ready: status.integrity ? ready : [],
-      heads: status.integrity ? [...heads.values()] : [],
-      variants: status.integrity ? variants : new Map(),
+      heads: status.integrity
+        ? [...heads.values()].sort((a, b) =>
+            compareActions(this.ready.get(actionKey(a))!, this.ready.get(actionKey(b))!),
+          )
+        : [],
+      variants: payloadView(status.integrity ? variants : undefined),
       integrity: status.integrity,
       diagnostics: status.diagnostics.slice(),
     };
@@ -502,6 +550,8 @@ export class IndexedActionStore extends ActionStore {
       : new MaterializedReadyIndex(this.readyOwner);
     registerReadySource(value.ready, readyIndex);
     this.readyIndex = readyIndex;
+    this.variants = status.integrity ? variants : undefined;
+    this.heads = status.integrity ? heads : new persistent.PersistentMap();
     // Cancellation retains the entire dirty closure until the coherent read exists.
     this.changed.clear();
     this.memo = { version, value };
@@ -514,6 +564,8 @@ export class IndexedActionStore extends ActionStore {
     this.cancelRead();
     this.memo = undefined;
     this.records = undefined;
+    this.variants = undefined;
+    this.heads = new persistent.PersistentMap();
     this.readyIndex = new MaterializedReadyIndex(this.readyOwner);
     this.certificateIndex = undefined;
     this.staged = undefined;
@@ -540,6 +592,8 @@ export class IndexedActionStore extends ActionStore {
     this.cancelRead();
     this.memo = undefined;
     this.records = undefined;
+    this.variants = undefined;
+    this.heads = new persistent.PersistentMap();
     this.readyIndex = new MaterializedReadyIndex(this.readyOwner);
     this.certificateIndex = undefined;
     this.staged = undefined;
