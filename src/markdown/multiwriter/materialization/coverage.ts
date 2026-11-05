@@ -6,7 +6,7 @@ import { PersistentMap } from './map.js';
  * Fork before invalidation or subdivision; old publications keep their own roots.
  */
 export class OwnershipCoverage {
-  private flows = new PersistentMap<ReadonlySet<string>>();
+  private flows = new PersistentMap<PersistentMap<true>>();
   private cells = new PersistentMap<string>();
   private dirty = new Map<string, FlowId>();
   fork(): OwnershipCoverage {
@@ -23,17 +23,17 @@ export class OwnershipCoverage {
    * not import membership from the latest replay or retain a native read facade.
    */
   refine(replacements: ReadonlyMap<string, readonly string[]>): void {
-    const changed = new Map<string, Set<string>>();
+    const changed = new Map<string, PersistentMap<true>>();
     for (const [before, after] of replacements) {
       const flow = this.cells.get(before);
       if (flow === undefined) throw new Error('Refined cell lacks a coverage certificate');
       let keys = changed.get(flow);
-      if (!keys) changed.set(flow, (keys = new Set(this.flows.get(flow)!)));
+      if (!keys) changed.set(flow, (keys = this.flows.get(flow)!.fork()));
       keys.delete(before);
       this.cells.delete(before);
       for (const key of after) {
         if (this.cells.has(key)) throw new Error('Cell emitted more than once');
-        keys.add(key);
+        keys.set(key, true);
         this.cells.set(key, flow);
       }
     }
@@ -47,17 +47,17 @@ export class OwnershipCoverage {
     // Remove all prior memberships before checking any changed root: a join,
     // split or transfer can move a cell between two invalidated components.
     for (const key of this.dirty.keys()) {
-      for (const cell of this.flows.get(key) ?? []) this.cells.delete(cell);
+      for (const cell of this.flows.get(key)?.keys() ?? []) this.cells.delete(cell);
       this.flows.delete(key);
     }
     for (const [key, flow] of this.dirty) {
       const entries = read(flow);
       if (!entries) continue; // This previously standalone flow is now attached.
       visit();
-      const keys = new Set<string>();
+      const keys = new PersistentMap<true>();
       for (const cell of entries) {
         if (this.cells.has(cell)) throw new Error('Cell emitted more than once');
-        keys.add(cell);
+        keys.set(cell, true);
         this.cells.set(cell, key);
       }
       this.flows.set(key, keys);
