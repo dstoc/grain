@@ -106,6 +106,9 @@ export class LayoutPrefix {
   get root(): NodeId {
     return this.rootId!;
   }
+  nodeAllocation(id: NodeId): NodeAllocation {
+    return this.node(id);
+  }
   get nodeAllocations(): readonly NodeAllocation[] {
     return [...this.nodes.values()];
   }

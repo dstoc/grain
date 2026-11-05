@@ -9,6 +9,7 @@ import { compareBytes } from '../actions/cbor.js';
 import * as projector from '../projection/project.js';
 import { MaterializedPublication } from './publication.js';
 import { nativePlanSource, registerNativePlanSource } from '../authoring/native-plan.js';
+import { OwnershipResult } from '../ownership/ownership.js';
 import { NativeTapeCache } from '../text/cache.js';
 
 const open = (text = 'abc\n\ntail') => {
@@ -136,6 +137,16 @@ for (const size of [10, 150, 1000])
       });
       const snapshots = vi.spyOn(NativeTapeCache.prototype, 'snapshotSteps');
       const full = vi.spyOn(projector, 'projectWithActivity');
+      const homes = vi
+        .spyOn(OwnershipResult.prototype, 'homeBindings', 'get')
+        .mockImplementation(() => {
+          throw new Error('Literal input exported all homes');
+        });
+      const allocations = vi
+        .spyOn(OwnershipResult.prototype, 'nodeAllocations', 'get')
+        .mockImplementation(() => {
+          throw new Error('Literal input exported all nodes');
+        });
       const before = diagnostics(p);
       try {
         type(p, 2n, '😀');
@@ -150,6 +161,8 @@ for (const size of [10, 150, 1000])
       } finally {
         snapshots.mockRestore();
         full.mockRestore();
+        homes.mockRestore();
+        allocations.mockRestore();
       }
     } finally {
       p.close();

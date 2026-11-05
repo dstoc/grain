@@ -399,11 +399,9 @@ export class LocalEditor {
           outcome.focus.offset,
           outcome.focus.affinity,
         );
-        const find = (n: ViewNode): ViewNode | undefined =>
-          target.node && resourceKey(n.origin.representative) === resourceKey(target.node)
-            ? n
-            : n.children.map(find).find(Boolean);
-        const node = find(publication.value.view.root);
+        const index = commandViewIndex(publication.value.view.root);
+        const targetHandle = target.node && index.handleOrigin(target.node);
+        const node = targetHandle ? index.origins.get(targetHandle) : undefined;
         if (!node) return undefined;
         const hostId =
           selectionBefore?.focus.host.representative ??
