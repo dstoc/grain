@@ -35,6 +35,8 @@ export interface OwnershipCheckpoint {
   readonly candidates: readonly { readonly order: EffectOrder; readonly effect: SemanticEffect }[];
   readonly flowIntentions: PersistentMap<EffectOrder>;
   readonly installedTapes: PersistentMap<true>;
+  /** First active split whose result depends on each native tape's cell topology. */
+  readonly nativeReaders: PersistentMap<number>;
 }
 /** Match full replay's home-install/native-cell order independently of the edit
  * order of the persistent assignment map. Refinement can insert cells between
@@ -70,6 +72,7 @@ export function replayOwnershipSuffix(
   activity: Activity,
   resume: OwnershipCheckpoint | undefined,
   save: (checkpoint: OwnershipCheckpoint) => void,
+  nativeIndex?: MaterializedCells,
 ) {
   const genesis = input.genesis;
   const actions = [
@@ -93,7 +96,8 @@ export function replayOwnershipSuffix(
     if (JSON.stringify(supplied) !== JSON.stringify(keys(homes)))
       throw new Error('Home endpoints or binding differ from retained births');
   }
-  const index = new MaterializedCells(input.snapshots);
+  const index = nativeIndex ?? new MaterializedCells(input.snapshots);
+  const nativeReaders = resume?.nativeReaders.fork() ?? new PersistentMap<number>();
   const layout = resume ? resume.layout.fork() : new MaterializedLayout(genesis);
   const owners = resume?.owners.fork() ?? new PersistentMap<CellAssignment>();
   const roots = resume?.roots.fork() ?? new PersistentMap<readonly RunOrigin[]>();
@@ -226,8 +230,8 @@ export function replayOwnershipSuffix(
       }
     }
   }
-  function rawCells(flow: FlowId) {
-    return traverse(flow, layout, index, owners, roots, attachments).flatMap((entry) =>
+  function rawCells(flow: FlowId, cells = index) {
+    return traverse(flow, layout, cells, owners, roots, attachments).flatMap((entry) =>
       entry.type === 'cell' ? [entry.assignment] : [],
     );
   }
@@ -290,6 +294,7 @@ export function replayOwnershipSuffix(
     candidates,
     flowIntentions: flowIntentions.fork(),
     installedTapes: installedTapes.fork(),
+    nativeReaders: nativeReaders.fork(),
   });
   for (const entry of actions.slice(count)) {
     layout.beginAction(entry, (prior) => activity.observes(entry.action.id, prior));
@@ -309,10 +314,17 @@ export function replayOwnershipSuffix(
         for (const range of effect.ranges) index.range(range);
         assign(effect.ranges, effect.run, effect.occurrence);
       } else if (active && effect.type === 'SplitFlow') {
-        layout.resolveInlineSlot(effect.cut, index);
+        // Fixed range assignments, joins and placements commute with subdivision.
+        // Splits additionally inspect current component adjacency, including tapes
+        // reached through retained transfers/joins beyond the authored basis.
+        const reader = index.observing((tape) => {
+          const key = resourceKey(tape);
+          if (!nativeReaders.has(key)) nativeReaders.set(key, count);
+        });
+        layout.resolveInlineSlot(effect.cut, reader);
         for (const range of effect.basis.ranges) layout.occurrence(range.occurrence);
-        const basis = effect.basis.ranges.flatMap((range) => index.range(range.range));
-        const cut = cutPosition(effect, index, homeIndex);
+        const basis = effect.basis.ranges.flatMap((range) => reader.range(range.range));
+        const cut = cutPosition(effect, reader, homeIndex);
         if (basis.length) {
           const left = effect.retainedSide === 'left';
           const reference = basis[left ? Math.max(0, cut - 1) : Math.min(cut, basis.length - 1)];
@@ -324,7 +336,7 @@ export function replayOwnershipSuffix(
             (placement) =>
               placement.parent.type === 'block' && sameId(placement.parent.node, block),
           )!.flow;
-          const current = rawCells(flow).filter(
+          const current = rawCells(flow, reader).filter(
             (assignment) => !homeIndex.isReserved(assignment.cell),
           );
           const positions = new Map(

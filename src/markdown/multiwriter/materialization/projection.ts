@@ -27,6 +27,7 @@ interface State {
   readonly value: Projection;
   readonly nodes: PersistentMap<NodeRecord>;
   readonly text: PersistentMap<readonly TextVisibility[]>;
+  readonly tapeNodes: PersistentMap<readonly string[]>;
   readonly tapes: readonly TapeId[];
   readonly canAppendText: boolean;
   readonly commandIndex: CommandViewIndex;
@@ -44,9 +45,17 @@ function freeze<T>(value: T): T {
 }
 function index(value: Projection, input: ProjectionInput): State {
   const nodes = new PersistentMap<NodeRecord>(),
-    text = new PersistentMap<readonly TextVisibility[]>();
+    text = new PersistentMap<readonly TextVisibility[]>(),
+    tapeNodes = new PersistentMap<readonly string[]>();
   const visit = (node: ViewNode, depth: number, parent?: string) => {
     nodes.set(key(node), { node, depth, parent });
+    // Ghost traversal slots still contribute addresses after their cells transfer.
+    // Index projected readers, not just final cell owners or private-home blocks.
+    const tapes = new Set([
+      ...node.boundaries.map((boundary) => resourceKey(boundary.address.origin.tape)),
+      ...node.fragments.map((fragment) => resourceKey(fragment.address.origin.tape)),
+    ]);
+    for (const tape of tapes) tapeNodes.set(tape, [...(tapeNodes.get(tape) ?? []), key(node)]);
     for (const child of node.children) visit(child, depth + 1, key(node));
   };
   visit(value.view.root, 0);
@@ -67,6 +76,7 @@ function index(value: Projection, input: ProjectionInput): State {
     value,
     nodes,
     text,
+    tapeNodes,
     commandIndex,
     commandOrigins,
     tapes: [
@@ -300,11 +310,8 @@ export class MaterializedProjection {
       changed = new Map<string, ViewNode>();
     const affected = new Set<string>();
     for (const tape of touched) {
-      if (action.allocations.length) {
-        const home = ownership.homeForTape(tape);
-        if (!home) throw new Error('Marker refinement requires an existing home');
-        affected.add(resourceKey(ownership.flowBlock(ownership.runLayout(home.run).flow)));
-      }
+      if (action.allocations.length)
+        for (const id of before.tapeNodes.get(resourceKey(tape)) ?? []) affected.add(id);
       const id = resourceKey(tape),
         old = new Map((text.get(id) ?? []).map((entry) => [tokenKey(entry.token.native), entry]));
       for (const birth of action.nativeManifest)
