@@ -1,5 +1,5 @@
 import * as Y from 'yjs';
-import type { MarkerId, NativeId, NativeTextRange, RangeRef, TapeId } from '../contracts.js';
+import type { MarkerId, NativeTextRange, RangeRef, TapeId } from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
 import type { Work } from '../ingest/work.js';
 import { NativeTapeCache } from '../text/cache.js';
@@ -9,17 +9,12 @@ import {
   NativeValidationError,
   resourceKey,
 } from '../text/identity.js';
-import type { LocatedText, NativeBody, TapePart, TapeSnapshot } from '../text/types.js';
+import type { LocatedText, NativeBody, TapePart } from '../text/types.js';
 import { registerNativePlanSource } from '../authoring/native-plan.js';
 import { PersistentMap } from './map.js';
 import { get, set } from './map.js';
 import type { MapRoot } from './map.js';
-
-interface TapeIndex {
-  readonly snapshot: TapeSnapshot;
-  readonly native: readonly TapePart[];
-  readonly markers: ReadonlyMap<string, Extract<TapePart, { type: 'marker' }>>;
-}
+import { NativeTapeIndex } from './native-tape.js';
 interface BodyLink {
   readonly previous?: BodyLink;
   readonly updates: readonly Uint8Array[];
@@ -51,46 +46,26 @@ export interface NativeWork {
   markerBindingsIndexed: number;
   rangeIndexNodesVisited: number;
   rangePartsVisited: number;
+  nativeIndexNodesCopied: number;
+  nativePositionNodesVisited: number;
 }
-const compareNative = (a: NativeId, b: NativeId) => a.client - b.client || a.clock - b.clock;
 
 /** A read view owns immutable tape roots, never a facade bound to a mutable Y.Doc. */
 function readView(
-  tapes: MapRoot<TapeIndex> | undefined,
+  tapes: MapRoot<NativeTapeIndex> | undefined,
   markerTapes: MapRoot<TapeId> | undefined,
   bodies: BodyLink | undefined,
   tapeIds: PersistentMap<TapeId>,
   clients: MapRoot<true> | undefined,
-  work: NativeWork,
 ): NativeView {
   const tapeIndex = (id: TapeId) => {
     const tape = get(tapes, resourceKey(id));
     if (!tape) throw new NativeValidationError('Unknown native tape');
     return tape;
   };
-  function partAt(tape: TapeIndex, id: NativeId): TapePart {
-    assertNative(id);
-    const parts = tape.native;
-    let low = 0,
-      high = parts.length;
-    while (low < high) {
-      const mid = (low + high) >>> 1;
-      if (compareNative(parts[mid].native, id) <= 0) low = mid + 1;
-      else high = mid;
-    }
-    const part = parts[low - 1];
-    if (
-      !part ||
-      part.native.client !== id.client ||
-      id.clock >= part.native.clock + (part.type === 'text' ? part.text.length : 1)
-    )
-      throw new NativeValidationError('Unknown native ID');
-    if (part.type === 'text') assertTextBoundary(part.text, id.clock - part.native.clock);
-    return part;
-  }
   function marker(id: MarkerId) {
     const tape = get(markerTapes, resourceKey(id));
-    const part = tape && tapeIndex(tape).markers.get(resourceKey(id));
+    const part = tape && tapeIndex(tape).marker(id);
     if (!tape || !part) throw new NativeValidationError('Unknown permanent marker');
     return structuredClone({
       tape,
@@ -100,11 +75,10 @@ function readView(
     });
   }
   const view: NativeView = {
-    snapshot: (id) => structuredClone(tapeIndex(id).snapshot),
+    snapshot: (id) => tapeIndex(id).snapshot(id),
     marker,
     locate(tape, id) {
-      const part = partAt(tapeIndex(tape), id);
-      return part.index + id.clock - part.native.clock;
+      return tapeIndex(tape).locate(id);
     },
     range(ref: RangeRef): readonly LocatedText[] {
       const start = marker(ref.start),
@@ -115,19 +89,8 @@ function readView(
         start.index >= end.index
       )
         throw new NativeValidationError('Invalid open native range');
-      const parts = tapeIndex(ref.tape).snapshot.parts,
-        result: LocatedText[] = [];
-      let low = 0,
-        high = parts.length;
-      while (low < high) {
-        work.rangeIndexNodesVisited++;
-        const mid = (low + high) >>> 1;
-        if (parts[mid].index <= start.index) low = mid + 1;
-        else high = mid;
-      }
-      for (let i = low; i < parts.length && parts[i].index < end.index; i++) {
-        work.rangePartsVisited++;
-        const part = parts[i];
+      const result: LocatedText[] = [];
+      for (const part of tapeIndex(ref.tape).range(start.index + 1, end.index)) {
         if (part.type === 'text')
           result.push({
             index: part.index,
@@ -148,7 +111,7 @@ function readView(
       let clock = range.clock;
       const end = clock + range.length;
       while (clock < end) {
-        const part = partAt(tape, { client: range.client, clock });
+        const part = tape.lookup({ client: range.client, clock });
         if (part.type !== 'text') throw new NativeValidationError('Text range includes a marker');
         const from = clock - part.native.clock;
         const length = Math.min(end - clock, part.text.length - from);
@@ -189,11 +152,12 @@ function readView(
 
 /** Monotone private native integration with tape-local copy-on-write read roots.
  * A publication may keep any previous view during preparation, cancellation or withdrawal.
- * Whole touched tapes are indexed for now; this does not claim interval-local text work.
+ * Native insertion changes copy interval paths; complete tape snapshots remain
+ * explicit detached reads used by callers that have not yet adopted local cells.
  */
 export class MaterializedNative {
   private cache: NativeTapeCache;
-  private tapes?: MapRoot<TapeIndex>;
+  private tapes?: MapRoot<NativeTapeIndex>;
   private markerTapes?: MapRoot<TapeId>;
   private bodies?: BodyLink;
   private clients?: MapRoot<true>;
@@ -206,19 +170,14 @@ export class MaterializedNative {
     markerBindingsIndexed: 0,
     rangeIndexNodesVisited: 0,
     rangePartsVisited: 0,
+    nativeIndexNodesCopied: 0,
+    nativePositionNodesVisited: 0,
   };
   constructor(decodeOperations: number) {
     this.cache = new NativeTapeCache(decodeOperations);
   }
   view(): NativeView {
-    return readView(
-      this.tapes,
-      this.markerTapes,
-      this.bodies,
-      this.tapeIds,
-      this.clients,
-      this.work,
-    );
+    return readView(this.tapes, this.markerTapes, this.bodies, this.tapeIds, this.clients);
   }
   *apply(key: string, input: NativeBody): Work<void> {
     if (this.damaged) throw new Error('Cancelled native indexing requires a fresh materializer');
@@ -241,21 +200,22 @@ export class MaterializedNative {
         if (entry.type === 'tape') touched.set(resourceKey(entry.id), entry.id);
       let tapes = this.tapes,
         markers = this.markerTapes;
-      for (const [name, id] of touched) {
-        const snapshot = yield* this.cache.snapshotSteps(id);
-        const index: TapeIndex = {
-          snapshot,
-          native: [...snapshot.parts].sort((a, b) => compareNative(a.native, b.native)),
-          markers: new Map(
-            snapshot.parts.flatMap((part) =>
-              part.type === 'marker' ? [[resourceKey(part.marker), part] as const] : [],
-            ),
-          ),
-        };
+      const changed = new Map<string, TapePart[]>();
+      for (const { tape, part } of yield* this.cache.affectedPartsSteps(body.nativeManifest)) {
+        const key = resourceKey(tape),
+          parts = changed.get(key) ?? [];
+        parts.push(part);
+        changed.set(key, parts);
+      }
+      for (const name of touched.keys()) {
+        yield;
+        const parts = (changed.get(name) ?? []).sort((a, b) => a.index - b.index),
+          previous = get(tapes, name),
+          index = previous ? previous.refine(parts) : new NativeTapeIndex(parts, this.work);
         tapes = set(tapes, name, index);
 
         this.work.tapesIndexed++;
-        this.work.partsIndexed += snapshot.parts.length;
+        this.work.partsIndexed += parts.length;
       }
       // Permanent marker-to-tape bindings never change after allocation. The tape
       // root above carries current positions; update only newly allocated bindings.
