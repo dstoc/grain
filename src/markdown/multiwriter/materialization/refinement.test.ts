@@ -116,7 +116,7 @@ test('marker-only refinement updates addresses while preserving text and old pub
     const body = { ...envelope, ...prepared.body };
     document.certifyLocal(body);
     const reads = vi.fn(writer.snapshot.bind(writer));
-    const staged = document.stageLocalText(body, { ...nativeView(writer), snapshot: reads });
+    const staged = document.stageLocalAction(body, { ...nativeView(writer), snapshot: reads });
     expect(staged?.value.view.root.children[0].boundaries.length).toBe(
       inline.boundaries.length + 2,
     );

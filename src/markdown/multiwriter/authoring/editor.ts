@@ -384,6 +384,7 @@ export class LocalEditor {
           p.value.view.root,
           p.native,
           this.document.commandMode === 'overlay' ? p.value : undefined,
+          this.document.createCommandOwnership?.(),
         );
         c.run();
         return c;
@@ -477,7 +478,7 @@ export class LocalEditor {
         if (register) {
           const native = nativeView(this.native);
           const staged =
-            this.document.stageLocalText?.(envelope, native) ??
+            this.document.stageLocalAction?.(envelope, native) ??
             (() => {
               const actions = [...ready, envelope];
               return {

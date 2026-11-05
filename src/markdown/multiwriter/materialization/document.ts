@@ -9,7 +9,13 @@ import { MaterializedActivity } from './activity.js';
 import { MaterializedProjection } from './projection.js';
 import type { PreparedActivity } from './activity.js';
 import type { PreparedProjection } from './projection.js';
-import { ProvenanceError, reconstructBirths } from '../reference/provenance.js';
+import {
+  ProvenanceError,
+  reconstructBirths,
+  reconstructProvenance,
+} from '../reference/provenance.js';
+import { reduceActivity } from '../visibility/index.js';
+import type { CommandOwnership } from '../authoring/document.js';
 import type { ActionEnvelope } from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
 import { MaterializedPublication } from './publication.js';
@@ -47,6 +53,13 @@ export function openMaterializedDocument(
   });
   const activity = new MaterializedActivity();
   const projection = new MaterializedProjection();
+  const commandWork = {
+    queries: 0,
+    actionsReplayed: 0,
+    effectsReplayed: 0,
+    nativeTapeReads: 0,
+    coldReplays: 0,
+  };
   let preparedProjection: PreparedProjection | undefined;
   let prepared: PreparedActivity | undefined;
   const publication = new MaterializedPublication(
@@ -96,6 +109,54 @@ export function openMaterializedDocument(
     activityDiagnostics: () => activity.diagnostics(),
     ownershipDiagnostics: () => projection.diagnostics().ownership,
     projectionDiagnostics: () => projection.diagnostics(),
+    commandOwnershipDiagnostics: () => ({ ...commandWork }),
+    createCommandOwnership(): CommandOwnership | undefined {
+      const status = publication.status();
+      if (status.stale || !status.canAuthor) return undefined;
+      const branch = projection.commandOwnership();
+      if (!branch) return undefined;
+      const ready = store.readReady(),
+        version = store.factsVersion;
+      // Compiler queries can replace the same unpublished action repeatedly.
+      // Always replay from the committed prefix; never commit a partial action.
+      return (action, native, touched) => {
+        if (store.factsVersion !== version)
+          throw new Error('Command ownership invalidated by changed facts');
+        const actions = [...ready.ready, action],
+          key = actionKey(action.id),
+          bytes = encodeEnvelope(action);
+        const variants = { get: (id: string) => (id === key ? bytes : ready.variants.get(id)) };
+        const before = branch.diagnostics();
+        try {
+          return finish(
+            branch.prepare(
+              {
+                genesis: genesis.layout,
+                genesisManifest: genesis.body.nativeManifest,
+                initialProperties: genesis.initialProperties,
+                actions: actions.map((action) => ({ action, births: reconstructBirths(action) })),
+                birthContent: [],
+                native,
+              },
+              reduceActivity(actions),
+              variants,
+              touched,
+            ),
+          ).value.ownership;
+        } finally {
+          branch.cancel();
+          const after = branch.diagnostics();
+          commandWork.queries++;
+          for (const field of [
+            'actionsReplayed',
+            'effectsReplayed',
+            'nativeTapeReads',
+            'coldReplays',
+          ] as const)
+            commandWork[field] += after[field] - before[field];
+        }
+      };
+    },
     cacheDiagnostics: () => ({
       readiness: store.cacheDiagnostics(),
       author: validate.cacheDiagnostics(),
@@ -108,8 +169,7 @@ export function openMaterializedDocument(
       store.setDecodeLimits({});
       validate.setDecodeLimit(operations);
     },
-    stageLocalText(action: ActionEnvelope, native: NativeView) {
-      if (!projection.canStageText(action)) return undefined;
+    stageLocalAction(action: ActionEnvelope, native: NativeView) {
       const status = publication.status();
       if (status.stale || !status.canAuthor) return undefined;
       const ready = store.readReady();
@@ -126,7 +186,19 @@ export function openMaterializedDocument(
       const variants = { get: (id: string) => (id === key ? bytes : ready.variants.get(id)) };
       try {
         const prepared = finish(activity.prepare(sequence, variants));
-        const value = projection.stageText(sequence, native, prepared.value, variants);
+        const value = projection.canStageText(action)
+          ? projection.stageText(sequence, native, prepared.value, variants)
+          : projection.stageStructure(
+              {
+                genesis: genesis.layout,
+                genesisManifest: genesis.body.nativeManifest,
+                initialProperties: genesis.initialProperties,
+                ...reconstructProvenance(genesis.layout, [...ready.ready, action]),
+                native,
+              },
+              prepared.value,
+              variants,
+            );
         return value ? { heads: [action.id], native, value } : undefined;
       } finally {
         activity.cancel();

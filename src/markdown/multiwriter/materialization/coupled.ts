@@ -121,7 +121,28 @@ export class MaterializedOwnership {
   diagnostics() {
     return { ...this.counts, retainedCheckpoints: this.checkpoints.length };
   }
-  *prepare(input: ProjectionInput, activity: Activity, variants: PayloadIndex) {
+  /** An unpublished command branch owns its generation and counters. It shares
+   * immutable roots, never the reader's mutable candidate or commit lifecycle.
+   */
+  fork(): MaterializedOwnership | undefined {
+    if (!this.state || !this.resources || !this.native) return undefined;
+    const copy = new MaterializedOwnership();
+    copy.state = this.state;
+    copy.resources = this.resources;
+    copy.native = this.native;
+    copy.order = this.order;
+    copy.checkpoints = this.checkpoints;
+    copy.markers = this.markers;
+    copy.snapshots = this.snapshots;
+    return copy;
+  }
+  *prepare(
+    input: ProjectionInput,
+    activity: Activity,
+    variants: PayloadIndex,
+    /** Exact changes in a private author draft based on this committed prefix. */
+    stagedTapes?: readonly TapeId[],
+  ) {
     const generation = ++this.generation;
     const interpretations = selectInterpretations(activity, input.initialProperties);
     let frontier = Math.min(this.order.length, input.actions.length);
@@ -148,7 +169,7 @@ export class MaterializedOwnership {
         order.push({ key, bytes, decisions });
       }
     }
-    const touched = this.native && changedNativeTapes(this.native, input.native);
+    const touched = stagedTapes ?? (this.native && changedNativeTapes(this.native, input.native));
     const continuous = touched !== undefined && this.state !== undefined;
     const snapshotCache = continuous ? this.snapshots.fork() : new PersistentMap<TapeSnapshot>();
     const markers = continuous ? this.markers.fork() : new PersistentMap<string>();

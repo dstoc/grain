@@ -22,6 +22,7 @@ import type { CommandViewIndex } from '../authoring/view-index.js';
 import { PersistentMap } from './map.js';
 import { MaterializedOwnership } from './coupled.js';
 import { isTextRefinement } from '../ownership/text-validation.js';
+import { finish } from '../ingest/work.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
 interface NodeRecord {
@@ -293,12 +294,18 @@ export class MaterializedProjection {
     textTapesRebuilt: 0,
     stagedTextProjections: 0,
     localTextControls: 0,
+    stagedStructuralProjections: 0,
+    stagedStructureActionsReplayed: 0,
+    stagedStructureTapesRead: 0,
   };
   fullProjectionCount(): number {
     return this.counts.fullProjections;
   }
   diagnostics() {
     return { ...this.counts, ownership: this.ownership.diagnostics() };
+  }
+  commandOwnership() {
+    return this.ownership.fork();
   }
   *prepare(
     genesis: ReferenceGenesis,
@@ -383,6 +390,35 @@ export class MaterializedProjection {
       return state.value;
     } finally {
       this.ownership.cancel();
+    }
+  }
+  /** Complete pre-append selection projection over an isolated structural
+   * branch. The full projector still validates and normalizes the author result.
+   * It consumes suffix-replayed raw structure rather than reconstructing it.
+   */
+  stageStructure(
+    input: ProjectionInput,
+    activity: Activity,
+    variants: PayloadIndex,
+  ): Projection | undefined {
+    const branch = this.ownership.fork();
+    if (!branch) return undefined;
+    const action = input.actions.at(-1)!.action;
+    const touched = [
+      ...new Map(
+        action.nativeManifest.map((entry) => [resourceKey(entry.tape), entry.tape]),
+      ).values(),
+    ];
+    try {
+      const structure = finish(branch.prepare(input, activity, variants, touched));
+      const value = projectWithActivity(input, activity, structure.value);
+      this.counts.stagedStructuralProjections++;
+      return value;
+    } finally {
+      const work = branch.diagnostics();
+      this.counts.stagedStructureActionsReplayed += work.actionsReplayed;
+      this.counts.stagedStructureTapesRead += work.nativeTapeReads;
+      branch.cancel();
     }
   }
   private append(
