@@ -1,7 +1,7 @@
 import * as Y from 'yjs';
 import { expect, test, vi } from 'vitest';
 import { ActionStore } from '../actions/store.js';
-import type { ActionStoreOptions } from '../actions/store.js';
+import type { ActionStoreOptions, ActionValidationContext } from '../actions/store.js';
 import type { ActionEnvelope } from '../contracts.js';
 import { A, B, C, action } from '../actions/test-fixtures.js';
 import { encodeEnvelope } from '../actions/codec.js';
@@ -333,4 +333,29 @@ test('indexed causal resources exclude concurrent births and expose no retained 
   } finally {
     store.destroy();
   }
+});
+
+test('a lazy compatibility closure remains exact after withdrawal and destruction', () => {
+  const a = action(),
+    b = action(A, 2n, [a]);
+  let captured: ActionValidationContext | undefined;
+  const store = new IndexedActionStore({
+    ...options,
+    validate: (candidate, context) => {
+      if (candidate.id.sequence === 2n) captured = context;
+      return null;
+    },
+  });
+  store.append(a);
+  store.append(b);
+  store.readReady();
+  expect(captured).toBeDefined();
+  expect(store.readinessDiagnostics().closureEdges).toBe(0);
+  store.append({ ...a, lamport: 20n });
+  expect(store.readReady().ready).toHaveLength(0);
+  store.destroy();
+  expect(captured!.indexed!.past.contains(a.id)).toBe(true);
+  expect(captured!.dependencies).toEqual([a]);
+  (captured!.dependencies[0] as { documentId: string }).documentId = 'caller-owned';
+  expect(a.documentId).toBe('D');
 });
