@@ -117,3 +117,40 @@ Full projection still runs per changed publication. Whole-command scale gates,
 long tapes/wide lists/fragmentation, mixed uninterrupted 10,000-action traces,
 strict one-way catch-up and complete cache/history/storage accounting remain
 required. No complete MW-13 performance pass follows from these results.
+
+## Coupled replay and local projection stage
+
+Engine/harness source `88cf771117e5efebf1fa7e76e0cd6372ae847f60` adds coupled
+checkpoints, local literal projection and private managed literal selection
+staging. All correctness workers from this run had stopped before these timings.
+Original 10/150 fixtures were copied unchanged and hash-checked. Every row uses
+three alternating fresh-process pairs and reports the median process p50/p95 in
+milliseconds. Raw samples and exact binary fixtures accompany the issue artifact.
+
+| Paragraphs | Workload                  | Reference p50/p95   | Materialized p50/p95 |
+| ---------- | ------------------------- | ------------------- | -------------------- |
+| 10         | carrier apply/publication | 20.160 / 30.924     | 1.678 / 2.243        |
+| 10         | unmanaged command         | 30.284 / 40.006     | 2.463 / 3.694        |
+| 150        | carrier apply/publication | 559.336 / 583.819   | 1.581 / 1.794        |
+| 150        | unmanaged command         | 994.381 / 1046.627  | 2.333 / 2.651        |
+| 150        | managed command           | 1328.248 / 1523.919 | 3.504 / 5.082        |
+
+Unmanaged reference is pinned `415363a`. Managed reference uses this checkout's
+accepted MW-10 code. Managed workers supply real selections and perform one real
+Undo and Redo per process; materialized medians are 410.004/402.584 ms. These are
+single navigation samples per process, not per-action p95s. Serialized navigation
+metadata is about 209 KB; it is not heap. The separate schema-2 post-M5 pairing
+reports 0.466/0.885 ms versus materialized 2.395/3.393 ms.
+
+Reports: [10](coupled-stage-10.json), [150](coupled-stage-150.json),
+[managed 150](coupled-managed-150.json), [post-M5](coupled-post-m5-150.json).
+Canonical, embedded native, genesis and controlled-GC whole-replica heap categories
+remain distinct. These workers have no storage journal. Actual MW-18 retention
+and serialized storage controls are separate verification workloads.
+
+This is a short literal improvement, not full MW-13 acceptance. Marker refinement,
+general visibility/structural changes, non-literal history and whole touched-tape
+work still have full fallbacks. Whole-scale/fragmentation timings, uninterrupted
+mixed 10,000-action, strict one-way/catch-up timing, full managed MW-18 performance
+and separately attributed cache heap remain incomplete. No original reports or
+fixture bytes were rewritten.
