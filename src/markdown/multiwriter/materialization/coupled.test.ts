@@ -2,6 +2,8 @@ import { expect, test, vi } from 'vitest';
 import { commandGenesis, commandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import { createMaterializationOracle } from '../../../../test/multiwriter/materialization-oracle.js';
 import { control } from '../../../../test/multiwriter/commands/control.js';
+import { insertParagraph } from '../../../editing/commands/insert-paragraph.js';
+import * as layout from '../layout/index.js';
 import { insertText } from '../../../editing/commands/insert-text.js';
 import { compareBytes } from '../actions/cbor.js';
 import * as projector from '../projection/project.js';
@@ -133,3 +135,44 @@ for (const size of [10, 150, 1000])
       p.close();
     }
   }, 120000);
+
+test('published handle lookup is direct after literal and structural changes', () => {
+  const p = open('abc\n\ntail');
+  try {
+    const check = () => {
+      const tail = p.nodes().at(-1)!;
+      const lookup = vi.spyOn(layout, 'resourceKey');
+      try {
+        const handle = p.editor.handle(tail.origin.representative);
+        expect(lookup).toHaveBeenCalledTimes(1);
+        return handle;
+      } finally {
+        lookup.mockRestore();
+      }
+    };
+    expect(check()).toBe('construction:2');
+    type(p, 1n);
+    expect(check()).toBe('construction:2');
+    expect(
+      p.editor.edit({ local: 'split', group: 1n }, insertParagraph, {
+        nodeId: p.handle(p.nodes()[0]),
+        from: 1,
+      }).status,
+    ).toBe('applied');
+    const handle = check();
+    expect(handle).toBe('construction:3');
+    expect(
+      p.editor.edit({ local: 'tail', group: 1n }, insertText, {
+        nodeId: handle,
+        from: 2,
+        text: '!',
+      }).status,
+    ).toBe('applied');
+    expect(p.nodes().at(-1)!.content).toBe('ta!il');
+    expect(() =>
+      p.editor.handle({ ...p.nodes()[0].origin.representative, ordinal: 999999 }),
+    ).toThrow('Node is not in the current projection');
+  } finally {
+    p.close();
+  }
+});

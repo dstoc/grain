@@ -13,16 +13,16 @@ Yjs remains pinned to 13.6.33. No browser cutover or canonical pruning is includ
 
 ## Current behavior
 
-| Boundary             | Reused work                                                                                                  | Remaining cost or fallback                                                                                                                                                         |
-| -------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Readiness            | Reverse dependencies, immutable certificates, actor causal frontiers and resource queries                    | Ordered ready/head/variant arrays are still rebuilt. Public `snapshot()`/`compute()` exports deliberately clone detached diagnostics.                                              |
-| Author certification | Exact causal native branch; touched-tape text/refinement checks; exact local certificate reused after append | Structural and control validation still materialize full causal arrays. A different author branch can reconstruct native state.                                                    |
-| Native publication   | New bodies integrate once; old views retain immutable roots                                                  | The affected tape is still indexed as a whole. Long tapes require interval work.                                                                                                   |
-| Activity             | Persistent roots and deterministic suffix replay                                                             | Exact prefix comparison and compatibility-array construction still visit retained payloads.                                                                                        |
-| Coupled replay       | Persistent placement forests, ownership maps, attachments, cohorts and structural intentions                 | Existing-tape marker changes conservatively replay from genesis. The general preparation path still enumerates native snapshots/resources.                                         |
-| Text projection      | Affected tape/flow and ancestor path; unchanged nodes and addresses retain identity                          | Deletions, inactive births, scaffolds and structural/interpretation changes use full projection. The touched tape/flow is still scanned.                                           |
-| Command preparation  | Publication-local handle indexes, lazy text pieces and native-resource access                                | Structural compiler queries still use the full projector. `LocalEditor.handle()` still scans preorder; ready metadata and writer synchronization still enumerate retained actions. |
-| Managed history      | Existing MW-10 semantics and exact pre-append selection capture                                              | Selection staging still constructs a full author projection. Unmanaged literal timings do not measure this cost.                                                                   |
+| Boundary             | Reused work                                                                                                  | Remaining cost or fallback                                                                                                                 |
+| -------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Readiness            | Reverse dependencies, immutable certificates, actor causal frontiers and resource queries                    | Ordered ready/head/variant arrays are still rebuilt. Public `snapshot()`/`compute()` exports deliberately clone detached diagnostics.      |
+| Author certification | Exact causal native branch; touched-tape text/refinement checks; exact local certificate reused after append | Structural and control validation still materialize full causal arrays. A different author branch can reconstruct native state.            |
+| Native publication   | New bodies integrate once; old views retain immutable roots                                                  | The affected tape is still indexed as a whole. Long tapes require interval work.                                                           |
+| Activity             | Persistent roots and deterministic suffix replay                                                             | Exact prefix comparison and compatibility-array construction still visit retained payloads.                                                |
+| Coupled replay       | Persistent placement forests, ownership maps, attachments, cohorts and structural intentions                 | Existing-tape marker changes conservatively replay from genesis. The general preparation path still enumerates native snapshots/resources. |
+| Text projection      | Affected tape/flow and ancestor path; unchanged nodes and addresses retain identity                          | Deletions, inactive births, scaffolds and structural/interpretation changes use full projection. The touched tape/flow is still scanned.   |
+| Command preparation  | Publication-local handle indexes, lazy text pieces and native-resource access                                | Structural compiler queries still use the full projector. Ready metadata and writer synchronization still enumerate retained actions.      |
+| Managed history      | Existing MW-10 semantics and exact pre-append selection capture                                              | Selection staging still constructs a full author projection. Unmanaged literal timings do not measure this cost.                           |
 
 The independent reference entry still performs full readiness, native, activity,
 ownership, visibility and semantic replay. It does not call the optimized
@@ -77,7 +77,7 @@ Complete the following before accepting MW-13:
    general suffix preparation path.
 2. Extend affected-container projection through deletion, dormant births,
    interpretation selection, lifting, wrapper grouping and ordered numbering.
-3. Finish lazy writer metadata, direct handle lookup, action-local structural
+3. Finish lazy writer metadata, action-local structural
    compilation and exact managed-history staging without full replay.
 4. Replace whole touched-tape work with affected native interval indexes.
 5. Verify cancellation/capacity/withdrawal at the new boundaries against the full
