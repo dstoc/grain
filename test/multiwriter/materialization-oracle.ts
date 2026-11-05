@@ -20,7 +20,11 @@ export function createMaterializationOracle() {
       oracle = openReferenceDocument(genesis);
       oracles.set(document, oracle);
     }
-    oracle.store.applyUpdate(bytes);
+    // Preserve the original carrier identities, including pending outer structs.
+    // The oracle already holds earlier prefixes; avoid rescanning their transport
+    // bytes. Exact complete carrier equality below verifies this optimization.
+    oracle.store.applyUpdate(document.store.encodeUpdate(oracle.store.encodeStateVector()));
+    expect(compareBytes(oracle.store.encodeUpdate(), bytes)).toBe(0);
     let result = oracle.publication.refresh();
     while (result.state === 'deferred')
       result = result.continuation.resume(Number.MAX_SAFE_INTEGER);

@@ -1,4 +1,6 @@
 import * as Y from 'yjs';
+// @ts-expect-error Node APIs are supplied by Vitest; Grain has no @types/node dependency.
+import { Buffer } from 'node:buffer';
 import { actorId, SYNC_DIRECTIONS } from '../../../src/markdown/multiwriter/contracts.js';
 import type {
   ActionEnvelope,
@@ -100,9 +102,17 @@ export function referenceFactory(
           throw new Error('Conflicting reference session alias');
         actorAliases.set(actor, value);
       }
+      // Symbolic aliases only: readiness/native/projection still use each actual
+      // document's independent decoders and validators. The complete bytes key
+      // distinguishes forks, malformed variants and envelope extras exactly.
+      const decodedAliases = new Map<string, ActionEnvelope>();
       function decodeReference(bytes: Uint8Array) {
+        const key = Buffer.from(bytes).toString('base64');
+        const previous = decodedAliases.get(key);
+        if (previous) return previous;
         const action = decodeEnvelope(bytes);
         register(action.id.actor, action.groupId.session.local);
+        decodedAliases.set(key, action);
         return action;
       }
 
