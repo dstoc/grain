@@ -28,6 +28,7 @@ import { projectMarkdown } from '../projection/project.js';
 import { nativeView } from '../ingest/publication.js';
 import type { StableSelection } from '../history/selection.js';
 export type { StableSelection } from '../history/selection.js';
+import { commandViewIndex } from './view-index.js';
 import { MultiwriterCommandDraft } from './draft.js';
 import { CommandCompiler, ConversionDeclined } from './compiler.js';
 
@@ -262,14 +263,7 @@ export class LocalEditor {
   handle(node: NodeId): Handle {
     const p = this.document.publication.status().publication;
     if (!p) throw new Error('Document has no publication');
-    let ordinal = 0,
-      found: Handle | undefined;
-    const visit = (n: ViewNode) => {
-      const handle = `construction:${ordinal++}`;
-      if (resourceKey(n.origin.representative) === resourceKey(node)) found = handle;
-      for (const child of n.children) visit(child);
-    };
-    visit(p.value.view.root);
+    const found = commandViewIndex(p.value.view.root).handleOrigin(node);
     if (!found) throw new Error('Node is not in the current projection');
     return found;
   }

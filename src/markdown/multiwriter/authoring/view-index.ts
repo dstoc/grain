@@ -1,3 +1,4 @@
+import type { NodeId as OriginId } from '../contracts.js';
 import type { ViewNode } from '../projection/types.js';
 import { resourceKey } from '../layout/index.js';
 import type { NodeId } from '../../semantic/types.js';
@@ -11,6 +12,7 @@ export interface CommandViewIndex {
   readonly parents: ReadonlyMap<NodeId, NodeId>;
   readonly siblings: ReadonlyMap<NodeId, { readonly previous?: NodeId; readonly next?: NodeId }>;
   handle(view: ViewNode): NodeId | undefined;
+  handleOrigin(id: OriginId): NodeId | undefined;
 }
 const indexes = new WeakMap<ViewNode, CommandViewIndex>();
 /** Publication-local handles preserve the existing preorder contract. Structural
@@ -50,6 +52,7 @@ export function commandViewIndex(root: ViewNode): CommandViewIndex {
     parents,
     siblings,
     handle: (view: ViewNode) => byOrigin.get(resourceKey(view.origin.representative)),
+    handleOrigin: (id: OriginId) => byOrigin.get(resourceKey(id)),
   };
   indexes.set(root, index);
   return index;
