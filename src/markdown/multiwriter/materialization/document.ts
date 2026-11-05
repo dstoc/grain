@@ -6,6 +6,7 @@ import { encodeEnvelope } from '../actions/codec.js';
 import { finish, assertLimit } from '../ingest/work.js';
 import { createProjectionAuthorValidator } from '../projection/index.js';
 import { MaterializedActivity } from './activity.js';
+import { registerReadyAppend } from './ready-index.js';
 import { MaterializedProjection } from './projection.js';
 import type { PreparedActivity } from './activity.js';
 import type { PreparedProjection } from './projection.js';
@@ -183,6 +184,7 @@ export function openMaterializedDocument(
           return at === ready.ready.length ? action : ready.ready[at];
         },
       };
+      registerReadyAppend(sequence, ready.ready, action);
       const variants = { get: (id: string) => (id === key ? bytes : ready.variants.get(id)) };
       try {
         const prepared = finish(activity.prepare(sequence, variants));

@@ -2,6 +2,7 @@ import { expect, test } from 'vitest';
 import { commandGenesis, commandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import type { CommandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import { insertText } from '../../../editing/commands/insert-text.js';
+import { insertParagraph } from '../../../editing/commands/insert-paragraph.js';
 import { createMaterializationOracle } from '../../../../test/multiwriter/materialization-oracle.js';
 import { MaterializedPublication } from './publication.js';
 import { IndexedActionStore } from './readiness.js';
@@ -27,13 +28,19 @@ function store(p: CommandReplica) {
   if (!(p.document.store instanceof IndexedActionStore)) throw new Error();
   return p.document.store;
 }
+function materializer(p: CommandReplica) {
+  if (!('activityDiagnostics' in p.document)) throw new Error();
+  return p.document;
+}
 for (const depth of [10, 150, 1000])
   test(`ordinary input synchronizes changed ready paths after ${depth} retained actions`, () => {
     const p = open();
     try {
       for (let i = 1; i <= depth; i++) type(p, i);
       const before = p.editor.writerDiagnostics(),
-        native = publication(p).diagnostics();
+        native = publication(p).diagnostics(),
+        activity = materializer(p).activityDiagnostics(),
+        ownership = materializer(p).ownershipDiagnostics();
       const edit = type(p, depth + 1, '!');
       const after = p.editor.writerDiagnostics(),
         next = publication(p).diagnostics();
@@ -43,6 +50,12 @@ for (const depth of [10, 150, 1000])
       expect(next.nativeMembershipScanned).toBe(native.nativeMembershipScanned);
       expect(next.nativeReadyActionsVisited - native.nativeReadyActionsVisited).toBe(1);
       expect(next.readyIndexNodesVisited - native.readyIndexNodesVisited).toBeLessThan(200);
+      expect(
+        materializer(p).activityDiagnostics().payloadsCompared - activity.payloadsCompared,
+      ).toBe(1);
+      expect(materializer(p).ownershipDiagnostics().payloadsCompared).toBe(
+        ownership.payloadsCompared,
+      );
       expect(edit.envelope.id.sequence).toBe(BigInt(depth + 1));
       expect(edit.envelope.lamport).toBe(BigInt(depth + 1));
       expect(p.nodes()[0].content).toBe(`a!${'x'.repeat(depth)}bc`);
@@ -56,6 +69,56 @@ for (const depth of [10, 150, 1000])
       p.close();
     }
   }, 120000);
+
+test('managed staging and owner controls reuse exact payload roots before structural replay and eviction', () => {
+  const p = open(),
+    oracle = createMaterializationOracle();
+  try {
+    for (let i = 1; i <= 150; i++) type(p, i);
+    const history = p.editor.session('metadata-history'),
+      nodeId = p.handle(p.nodes()[0]);
+    const before = materializer(p).activityDiagnostics(),
+      ownership = materializer(p).ownershipDiagnostics();
+    const edit = history.edit(
+      insertText,
+      { nodeId, from: 1, text: '😀' },
+      {
+        typing: false,
+        selectionBefore: {
+          anchor: { nodeId, offset: 1, affinity: 'right' },
+          focus: { nodeId, offset: 1, affinity: 'right' },
+        },
+      },
+    );
+    expect(edit.status).toBe('applied');
+    expect(materializer(p).activityDiagnostics().payloadsCompared - before.payloadsCompared).toBe(
+      2,
+    );
+    expect(materializer(p).ownershipDiagnostics().payloadsCompared).toBe(
+      ownership.payloadsCompared,
+    );
+    const after = materializer(p).activityDiagnostics();
+    expect(history.undo().state).toBe('applied');
+    oracle.check(p.document, p.genesis);
+    expect(history.redo().state).toBe('applied');
+    expect(materializer(p).activityDiagnostics().payloadsCompared - after.payloadsCompared).toBe(2);
+    expect(materializer(p).ownershipDiagnostics().payloadsCompared).toBe(
+      ownership.payloadsCompared,
+    );
+    oracle.check(p.document, p.genesis);
+    expect(history.edit(insertParagraph, { nodeId, from: 3 }).status).toBe('applied');
+    oracle.check(p.document, p.genesis);
+    publication(p).evict();
+    p.editor.refresh();
+    expect(history.undo().state).toBe('applied');
+    oracle.check(p.document, p.genesis);
+    expect(history.redo().state).toBe('applied');
+    oracle.check(p.document, p.genesis);
+  } finally {
+    oracle.destroy();
+    p.close();
+  }
+}, 60000);
 
 test('withdrawn remote bodies rebuild a warm writer before independent continued input', () => {
   const p = open(),

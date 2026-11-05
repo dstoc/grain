@@ -398,7 +398,7 @@ export class MaterializedProjection {
         ...reconstructProvenance(genesis.layout, actions),
         native,
       };
-      const prepared = yield* this.ownership.prepare(input, activity, variants);
+      const prepared = yield* this.ownership.prepare(input, activity, variants, undefined, actions);
       yield;
       const value = projectWithActivity(input, activity, prepared.value);
       state = index(value, input);

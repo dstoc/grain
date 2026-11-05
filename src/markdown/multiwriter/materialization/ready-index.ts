@@ -2,9 +2,41 @@ import type { ActionEnvelope, ActorId } from '../contracts.js';
 import { compareActions } from '../contracts.js';
 import { actionKey } from '../actions/references.js';
 import type { ReadySource } from '../authoring/ready-source.js';
+import { readySource, registerReadySource } from '../authoring/ready-source.js';
 import { PersistentMap } from './map.js';
 import { finish } from '../ingest/work.js';
 import type { Work } from '../ingest/work.js';
+
+/** Attach exact base membership to an unpublished one-action command sequence.
+ * The wrapper owns no ready array or preparation context and is never canonical
+ * readiness evidence. Its consumer still validates/reduces the staged action.
+ */
+export function registerReadyAppend(
+  sequence: object,
+  base: readonly ActionEnvelope[],
+  action: ActionEnvelope,
+): void {
+  const source = readySource(base),
+    key = actionKey(action.id);
+  if (!source || source.has(key)) return;
+  registerReadySource(sequence, {
+    maxLamport: action.lamport > source.maxLamport ? action.lamport : source.maxLamport,
+    has: (id) => id === key || source.has(id),
+    get: (id) => (id === key ? action : source.get(id)),
+    sequence: (actor) =>
+      actor === action.id.actor && action.id.sequence > source.sequence(actor)
+        ? action.id.sequence
+        : source.sequence(actor),
+    additions(before) {
+      const additions = source.additions(before);
+      if (!additions) return undefined;
+      return {
+        actions: [...additions.actions, action].sort(compareActions),
+        nodesVisited: additions.nodesVisited,
+      };
+    },
+  });
+}
 
 /** Exact immutable ready membership. Updating a root never links earlier wrapper
  * objects/ready arrays; readers compare shared map paths, not a delta history.
@@ -65,6 +97,9 @@ export class MaterializedReadyIndex implements ReadySource {
   }
   has(key: string): boolean {
     return this.actions.has(key);
+  }
+  get(key: string): ActionEnvelope | undefined {
+    return this.actions.get(key);
   }
   additions(before: ReadySource) {
     if (before === this) return { actions: [], nodesVisited: 0 };
