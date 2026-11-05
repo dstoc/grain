@@ -30,10 +30,10 @@ export class MaterializedHomes {
       next.tapes.set(tape, home);
       dirty.set(tape, home.cell.tape);
     }
-    for (const [key, tape] of dirty) {
+    for (const key of dirty.keys()) {
       if (!next.tapes.has(key)) throw new Error('Native tape lacks a private home binding');
-      const cells = index.tape(tape),
-        edges = [cells[0], cells.at(-1)!];
+      const home = next.tapes.get(key)!,
+        edges = [index.adjacent(home.cell.start, 'right'), index.adjacent(home.cell.end, 'left')];
       if (edges.some((cell) => cell.fragments.length))
         throw new Error('Reserved home cells must remain text-free; bracket edge typing');
       next.edges.set(

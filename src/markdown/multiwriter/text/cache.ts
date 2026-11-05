@@ -268,6 +268,48 @@ export class NativeTapeCache {
     return structuredClone({ tape, length: index, parts });
   }
 
+  /** Final integrated items intersecting the admitted insertions. An item can
+   * include retained text after Yjs merges adjacent structs. Insertion-only
+   * callers can splice these items into their own immutable indexes; splitting
+   * an old item around a new insertion is implied by that splice.
+   */
+  *affectedPartsSteps(manifest: NativeBody['nativeManifest']): Work<
+    readonly {
+      readonly tape: TapeId;
+      readonly part: TapePart;
+    }[]
+  > {
+    this.#open();
+    const parts = new Map<string, { readonly tape: TapeId; readonly part: TapePart }>();
+    for (const entry of manifest) {
+      let clock = entry.native.clock;
+      const end = clock + (entry.type === 'text' ? entry.native.length : 1);
+      while (clock < end) {
+        yield;
+        const item = Y.getItem(this.#doc.store, Y.createID(entry.native.client, clock));
+        if (item.parent !== this.#text(entry.tape))
+          throw new NativeValidationError('Native ID belongs to another tape');
+        const key = `${item.id.client}:${item.id.clock}`;
+        if (!parts.has(key)) {
+          const native = { client: item.id.client, clock: item.id.clock },
+            index = yield* this.locateSteps(entry.tape, native);
+          let part: TapePart;
+          if (item.content instanceof Y.ContentString)
+            part = { type: 'text', index, native, text: item.content.str };
+          else {
+            const marker = this.#markers.get(
+              ((item.content as Y.ContentEmbed).embed as { grainMarker: string }).grainMarker,
+            )!;
+            part = { type: 'marker', index, native, marker: marker.id, affinity: marker.affinity };
+          }
+          parts.set(key, { tape: entry.tape, part });
+        }
+        clock = item.id.clock + item.length;
+      }
+    }
+    return structuredClone([...parts.values()]);
+  }
+
   /** Permanent open interval. Interior markers refine cells but are not returned as text. */
   range(ref: RangeRef): readonly LocatedText[] {
     const start = this.marker(ref.start);

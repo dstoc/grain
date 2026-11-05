@@ -24,6 +24,7 @@ import { PersistentMap } from './map.js';
 import { MaterializedOwnership } from './coupled.js';
 import { isTextRefinement } from '../ownership/text-validation.js';
 import { selectInterpretations } from '../projection/interpretation.js';
+import type { PresentedProperties } from '../projection/interpretation.js';
 import { isPropertyRefinement } from './properties.js';
 import { finish } from '../ingest/work.js';
 
@@ -53,6 +54,8 @@ interface State {
   readonly stableVisibility: boolean;
   readonly commandIndex: CommandViewIndex;
   readonly commandOrigins: PersistentMap<ViewNode>;
+  readonly propertyBase: Projection['interpretations'];
+  readonly properties: PersistentMap<PresentedProperties>;
 }
 const key = (node: ViewNode) => resourceKey(node.origin.representative);
 const tokenKey = (range: { readonly client: number; readonly clock: number }) =>
@@ -93,6 +96,18 @@ function projectedActivity(
     observes: groupActivity.observes,
     concurrent: groupActivity.concurrent,
     isEffectActive: effectActive,
+  };
+}
+/** The fallback is the last full selection, never the previous overlay facade.
+ * Keeping these readers outside append avoids retaining earlier publications.
+ */
+function propertyOverlay(
+  base: Projection['interpretations'],
+  properties: State['properties'],
+): Projection['interpretations'] {
+  return {
+    ...base,
+    properties: (node) => ({ ...(properties.get(resourceKey(node)) ?? base.properties(node)) }),
   };
 }
 function textVisibility(
@@ -158,6 +173,8 @@ function index(value: Projection, input: ProjectionInput): State {
     tapeNodes,
     commandIndex,
     commandOrigins,
+    propertyBase: value.interpretations,
+    properties: new PersistentMap<PresentedProperties>(),
     tapes: [
       ...input.genesis.allocations,
       ...input.actions.flatMap(({ action }) => action.allocations),
@@ -203,8 +220,15 @@ function projectInline(
     fragments: TextFragment[] = [];
   const tapes = new Map<string, ReturnType<NativeView['snapshot']>>();
   const addresses = new Map(before.boundaries.map((b) => [addressKey(b.address), b.address]));
-  for (const fragment of before.fragments)
-    addresses.set(addressKey(fragment.address), fragment.address);
+  const retainedFragments = new Map<string, TextFragment>(),
+    seen = new WeakSet<object>();
+  for (const fragment of before.fragments) {
+    if (!seen.has(fragment.address)) {
+      addresses.set(addressKey(fragment.address), fragment.address);
+      seen.add(fragment.address);
+    }
+    retainedFragments.set(tokenKey(fragment.range), fragment);
+  }
   const address = (value: ReturnType<typeof textOrigin>) =>
     addresses.get(addressKey(value)) ?? freeze(value);
   for (const entry of ownership.raw(flow)) {
@@ -228,7 +252,19 @@ function projectInline(
       boundaries.push(
         Object.freeze({ offset: content.length, address: address(textOrigin(entry.slot, origin)) }),
       );
-    } else if (entry.type === 'cell')
+    } else if (entry.type === 'cell') {
+      const origin = entry.assignment.cell;
+      const location = address(
+        textOrigin(
+          {
+            run: entry.assignment.run,
+            boundary: origin.start,
+            side: 'right',
+            predecessor: null,
+          },
+          origin,
+        ),
+      );
       for (const fragment of entry.fragments) {
         let start = 0;
         while (start < fragment.text.length) {
@@ -250,29 +286,25 @@ function projectInline(
             clock: fragment.range.clock + start,
             length: end - start,
           };
-          const text = native
-            .lookup(range)
-            .map((part) => part.text)
-            .join('');
-          const origin = entry.assignment.cell;
-          const location = address(
-            textOrigin(
-              {
-                run: entry.assignment.run,
-                boundary: origin.start,
-                side: 'right',
-                predecessor: null,
-              },
-              origin,
-            ),
-          );
+          // Raw fragments already come from the exact immutable native view.
+          // Rereading each retained substring repeats native lookup and copying.
+          const text = fragment.text.slice(start, end),
+            prior = retainedFragments.get(tokenKey(range));
           fragments.push(
-            freeze({ text, range, address: location, visible: shown && !mask, masked: mask }),
+            prior &&
+              prior.range.length === range.length &&
+              prior.text === text &&
+              prior.address === location &&
+              prior.visible === (shown && !mask) &&
+              prior.masked === mask
+              ? prior
+              : freeze({ text, range, address: location, visible: shown && !mask, masked: mask }),
           );
           if (shown && !mask) content += text;
           start = end;
         }
       }
+    }
   }
   return Object.freeze({
     ...before,
@@ -368,6 +400,7 @@ export class MaterializedProjection {
             properties.value,
             activity,
             genesis.initialProperties,
+            properties.control,
           )
         : undefined;
     let state: State, commitStructure: () => void;
@@ -468,6 +501,7 @@ export class MaterializedProjection {
         prepared.value,
         activity,
         initial,
+        false,
       );
       if (state) this.counts.stagedPropertyProjections++;
       return state?.value;
@@ -481,9 +515,22 @@ export class MaterializedProjection {
     ownership: OwnershipResult,
     activity: Activity,
     initial: ProjectionInput['initialProperties'],
+    control: boolean,
   ): State | undefined {
     const changed = new Map<string, ViewNode>();
-    const interpretations = selectInterpretations(activity, initial);
+    const propertyBase = control ? selectInterpretations(activity, initial) : before.propertyBase,
+      properties = control ? new PersistentMap<PresentedProperties>() : before.properties.fork();
+    if (!control)
+      for (const action of changes)
+        for (const effect of action.effects) {
+          if (effect.type !== 'SetProperties') return undefined;
+          const id = resourceKey(effect.node);
+          properties.set(id, {
+            ...(properties.get(id) ?? propertyBase.properties(effect.node)),
+            ...effect.values,
+          });
+        }
+    const interpretations = control ? propertyBase : propertyOverlay(propertyBase, properties);
     for (const action of changes)
       for (const effect of action.effects) {
         if (effect.type !== 'SetProperties') return undefined;
@@ -512,7 +559,7 @@ export class MaterializedProjection {
       activity: projectedActivity(activity, interpretations),
       interpretations,
     };
-    return { ...before, value, nodes, commandOrigins, commandIndex };
+    return { ...before, value, nodes, commandOrigins, commandIndex, propertyBase, properties };
   }
   /** Complete pre-append selection projection over an isolated structural
    * branch. The full projector still validates and normalizes the author result.
@@ -522,6 +569,7 @@ export class MaterializedProjection {
     input: ProjectionInput,
     activity: Activity,
     variants: PayloadIndex,
+    sequence?: ActionSequence,
   ): Projection | undefined {
     const branch = this.ownership.fork();
     if (!branch) return undefined;
@@ -532,7 +580,7 @@ export class MaterializedProjection {
       ).values(),
     ];
     try {
-      const structure = finish(branch.prepare(input, activity, variants, touched));
+      const structure = finish(branch.prepare(input, activity, variants, touched, sequence));
       const value = projectWithActivity(input, activity, structure.value);
       this.counts.stagedStructuralProjections++;
       return value;

@@ -5,11 +5,13 @@ import { PersistentMap, get, set } from './map.js';
 import type { MapRoot } from './map.js';
 import type { TapeSnapshot } from '../text/types.js';
 import type { TapeId, MarkerId } from '../contracts.js';
+import { compareActions } from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
-import { changedNativeTapes } from './native.js';
+import { changedNativeTapes, hasIndexedNative } from './native.js';
 import type { ProjectionInput } from '../projection/project.js';
 import type { Activity } from '../visibility/activity.js';
 import { selectInterpretations } from '../projection/interpretation.js';
+import type { Interpretations } from '../projection/interpretation.js';
 import { actionKey } from '../actions/references.js';
 import { compareBytes } from '../actions/cbor.js';
 import { resourceKey } from '../layout/index.js';
@@ -29,6 +31,33 @@ function markerSignature(snapshot: TapeSnapshot): string {
       part.type === 'marker' ? [JSON.stringify([resourceKey(part.marker), part.native])] : [],
     )
     .join('|');
+}
+/** Marker-stable text updates need only tape identity for resource checks. Keep
+ * a detached full export available for a later structural/snapshot consumer.
+ * This helper owns no preparation or previous publication context.
+ */
+function deferredSnapshot(
+  native: NativeView,
+  tape: TapeId,
+  work: Pick<CoupledWork, 'deferredTapeReads'>,
+): TapeSnapshot {
+  let snapshot: TapeSnapshot | undefined;
+  const read = () => {
+    if (!snapshot) {
+      snapshot = native.snapshot(tape);
+      work.deferredTapeReads++;
+    }
+    return snapshot;
+  };
+  return {
+    tape,
+    get length() {
+      return read().length;
+    },
+    get parts() {
+      return read().parts;
+    },
+  };
 }
 /** A reusable prefix permits subdivision only: retained marker identities, native
  * identities and their order must survive. Withdrawal/rebuilds fail closed. */
@@ -80,6 +109,29 @@ interface Payload {
   readonly bytes: Uint8Array;
   readonly decisions: string;
 }
+function decisionKey(
+  activity: Activity,
+  selection: Pick<Interpretations, 'eligible' | 'effectEligible'>,
+  ref: Parameters<Activity['isEffectActive']>[0],
+): string {
+  return `${Number(activity.isEffectActive(ref))}${Number(selection.effectEligible(ref))}${Number(selection.eligible(ref))}`;
+}
+/** A suffix without controls or packets cannot change retained eligibility.
+ * Read its exact per-effect certificate instead of retaining another selector.
+ */
+function retainedSelection(
+  order: MapRoot<Payload> | undefined,
+  positions: MapRoot<number> | undefined,
+): Pick<Interpretations, 'eligible' | 'effectEligible'> {
+  const decisions = (ref: Parameters<Activity['isEffectActive']>[0]) => {
+    const at = get(positions, actionKey(ref.action));
+    return at === undefined ? undefined : get(order, String(at))!.decisions;
+  };
+  return {
+    effectEligible: (ref) => decisions(ref)?.[ref.ordinal * 3 + 1] !== '0',
+    eligible: (ref) => decisions(ref)?.[ref.ordinal * 3 + 2] === '1',
+  };
+}
 export interface CoupledWork extends ResourceWork {
   actionsReplayed: number;
   effectsReplayed: number;
@@ -92,7 +144,9 @@ export interface CoupledWork extends ResourceWork {
   nativeIntervalNodesVisited: number;
   payloadsCompared: number;
   readyIndexNodesVisited: number;
+  interpretationSelections: number;
   nativeTapeReads: number;
+  deferredTapeReads: number;
   cellTapesIndexed: number;
   coverageFlowsTraversed: number;
   coverageCellsVisited: number;
@@ -136,7 +190,9 @@ export class MaterializedOwnership {
     nativeIntervalNodesVisited: 0,
     payloadsCompared: 0,
     readyIndexNodesVisited: 0,
+    interpretationSelections: 0,
     nativeTapeReads: 0,
+    deferredTapeReads: 0,
     cellTapesIndexed: 0,
     coverageFlowsTraversed: 0,
     coverageCellsVisited: 0,
@@ -195,12 +251,33 @@ export class MaterializedOwnership {
   ) {
     const generation = ++this.generation,
       count = this.state?.count ?? 0;
-    const interpretations = selectInterpretations(activity, input.initialProperties);
+    const source = sequence && readySource(sequence),
+      additions = source && this.source && source.additions(this.source);
+    this.counts.readyIndexNodesVisited += additions?.nodesVisited ?? 0;
+    // Exact ready roots prove retained payload identity. Only a semantic suffix
+    // without packet selection or activity controls preserves prior decisions.
+    // Native topology compatibility is checked separately below.
+    const append =
+      additions &&
+      this.state &&
+      input.actions.length === count + additions.actions.length &&
+      (!count ||
+        !additions.actions.length ||
+        compareActions(sequence!.at(count - 1)!, additions.actions[0]) < 0) &&
+      additions.actions.every((action) =>
+        action.effects.every(
+          (effect) => effect.type !== 'Interpret' && effect.type !== 'SetGroupActive',
+        ),
+      );
+    const interpretations = append
+      ? retainedSelection(this.order, this.positions)
+      : selectInterpretations(activity, input.initialProperties);
+    if (!append) this.counts.interpretationSelections++;
     let frontier = Math.min(count, input.actions.length);
-    let order: MapRoot<Payload> | undefined;
-    let positions: MapRoot<number> | undefined;
+    let order: MapRoot<Payload> | undefined = append ? this.order : undefined;
+    let positions: MapRoot<number> | undefined = append ? this.positions : undefined;
     let retainedPrefix = input.actions.length >= count;
-    for (let i = 0; i < input.actions.length; i++) {
+    for (let i = append ? count : 0; i < input.actions.length; i++) {
       yield;
       const action = input.actions[i].action,
         key = actionKey(action.id),
@@ -209,7 +286,7 @@ export class MaterializedOwnership {
       const decisions = action.effects
         .map((_, ordinal) => {
           const ref = { action: action.id, ordinal };
-          return `${Number(activity.isEffectActive(ref) && interpretations.effectEligible(ref))}${Number(interpretations.eligible(ref))}`;
+          return decisionKey(activity, interpretations, ref);
         })
         .join('');
       const previous = get(this.order, String(i));
@@ -244,8 +321,8 @@ export class MaterializedOwnership {
     }
     const coldSnapshots = continuous ? undefined : [...snapshotCache.values()];
     const index = continuous
-      ? this.state!.index.refine(updated)
-      : new MaterializedCells(coldSnapshots!);
+      ? this.state!.index.refine(updated, input.native)
+      : new MaterializedCells(coldSnapshots!, undefined, input.native);
     this.counts.cellTapesIndexed += continuous ? updated.length : coldSnapshots!.length;
     const changed = updated.filter((snapshot) => {
       const signature = this.markers.get(resourceKey(snapshot.tape));
@@ -340,7 +417,7 @@ export class MaterializedOwnership {
         };
         this.native = input.native;
         this.order = order;
-        this.source = sequence && readySource(sequence);
+        this.source = source;
         this.positions = positions;
         this.markers = markers;
         this.snapshots = snapshotCache;
@@ -421,16 +498,21 @@ export class MaterializedOwnership {
     )
       return undefined;
     const generation = ++this.generation;
-    const snapshots = touched.map((tape) => native.snapshot(tape));
-    const index = prior.index.refine(snapshots);
+    const localCells = !hasMarkers && hasIndexedNative(native);
+    const snapshots = touched.map((tape) =>
+      localCells ? deferredSnapshot(native, tape, this.counts) : native.snapshot(tape),
+    );
+    const index = localCells
+      ? prior.index.withNative(native, touched)
+      : prior.index.refine(snapshots, native);
     const retained = resources.retained.append(
       [{ action, births: [] }],
       snapshots,
       index,
       this.counts,
     );
-    this.counts.nativeTapeReads += snapshots.length;
-    this.counts.cellTapesIndexed += snapshots.length;
+    this.counts.nativeTapeReads += localCells ? 0 : snapshots.length;
+    this.counts.cellTapesIndexed += localCells ? 0 : snapshots.length;
     const { owners, coverage } = hasMarkers ? refineCheckpoint(prior, snapshots, index) : prior;
     const snapshotCache = this.snapshots.fork();
     for (const snapshot of snapshots) snapshotCache.set(resourceKey(snapshot.tape), snapshot);
@@ -463,7 +545,7 @@ export class MaterializedOwnership {
       resources.homes,
     );
     const decisions = action.effects
-      .map((_, ordinal) => `${Number(activity.isEffectActive({ action: action.id, ordinal }))}0`)
+      .map((_, ordinal) => `${Number(activity.isEffectActive({ action: action.id, ordinal }))}10`)
       .join('');
     const payload: Payload = {
       key: actionKey(action.id),
@@ -496,7 +578,7 @@ export class MaterializedOwnership {
             const decisions = target.effects
               .map(
                 (_, ordinal) =>
-                  `${Number(activity.isEffectActive({ action: target.id, ordinal }))}0`,
+                  `${Number(activity.isEffectActive({ action: target.id, ordinal }))}10`,
               )
               .join('');
             if (decisions !== prior.decisions)

@@ -7,6 +7,7 @@ import { insertParagraph } from '../../../editing/commands/insert-paragraph.js';
 import { deleteBlocks } from '../../../editing/commands/delete-blocks.js';
 import { action, resource } from '../actions/test-fixtures.js';
 import * as projector from '../projection/project.js';
+import * as interpretation from '../projection/interpretation.js';
 import { isPropertyRefinement, propertyControlTargets } from './properties.js';
 import { MaterializedPublication } from './publication.js';
 import { compareBytes } from '../actions/cbor.js';
@@ -19,6 +20,46 @@ function counts(p: ReturnType<typeof open>) {
   return p.document.projectionDiagnostics();
 }
 afterEach(() => vi.restoreAllMocks());
+
+test('repeated task and code-info appends do not reselect retained interpretation history', () => {
+  const p = open('- [ ] task\n\n```js\ncode\n```\n\ntail'),
+    oracle = createMaterializationOracle();
+  try {
+    const history = p.editor.session('properties'),
+      item = p.view().root.children[0].children[0],
+      itemId = p.handle(item),
+      codeId = p.handle(p.nodes()[1]);
+    const held = p.document.publication.status().publication!;
+    const select = vi.spyOn(interpretation, 'selectInterpretations');
+    for (let i = 0; i < 150; i++) {
+      expect(history.edit(cycleTaskState, { nodeId: itemId }).status).toBe('applied');
+      expect(
+        history.edit((ctx) => {
+          ctx.draft.setInfo(codeId, i % 2 ? null : 'ts');
+          return { status: 'handled' };
+        }, undefined).status,
+      ).toBe('applied');
+    }
+    expect(select).not.toHaveBeenCalled();
+    expect(held.value.interpretations.properties(item.origin.representative).checked).toBe(false);
+    expect(held.value.view.root.children[1].info).toBe('js');
+    select.mockRestore();
+    oracle.check(p.document, p.genesis);
+    expect(history.undo().state).toBe('applied');
+    oracle.check(p.document, p.genesis);
+    expect(history.redo().state).toBe('applied');
+    oracle.check(p.document, p.genesis);
+    const cold = commandReplica(p.genesis, p.document.store.encodeUpdate());
+    try {
+      expect(cold.observe()).toEqual(p.observe());
+    } finally {
+      cold.close();
+    }
+  } finally {
+    oracle.destroy();
+    p.close();
+  }
+}, 120000);
 
 for (const size of [10, 150])
   test(`task state and owner controls replace only the affected ancestor path (${size})`, () => {
