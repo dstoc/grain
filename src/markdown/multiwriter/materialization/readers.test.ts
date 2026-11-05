@@ -523,8 +523,10 @@ test('marker births outside transferred split-read intervals keep the committed 
     oracle.check(p.document, p.genesis);
     coldEqual(p);
     const invalidations = diagnostics(p).ownership.nativeReaderInvalidations;
+    const visits = diagnostics(p).ownership.nativeIntervalNodesVisited;
     addMarker(p, tapeText(p, 'd'));
     expect(diagnostics(p).ownership.nativeReaderInvalidations).toBe(invalidations + 1);
+    expect(diagnostics(p).ownership.nativeIntervalNodesVisited).toBeGreaterThan(visits);
     expect(p.nodes().map((n) => n.content)).toEqual(['abef', 'Xc', 'dYZ', 'tail']);
     oracle.check(p.document, p.genesis);
     coldEqual(p);

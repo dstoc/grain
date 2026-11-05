@@ -79,6 +79,7 @@ export interface CoupledWork extends ResourceWork {
   nativeMarkerRefinements: number;
   nativeReaderInvalidations: number;
   nativeIntervalSkips: number;
+  nativeIntervalNodesVisited: number;
   nativeTapeReads: number;
   cellTapesIndexed: number;
   lastReplayFrom: number;
@@ -116,6 +117,7 @@ export class MaterializedOwnership {
     nativeMarkerRefinements: 0,
     nativeReaderInvalidations: 0,
     nativeIntervalSkips: 0,
+    nativeIntervalNodesVisited: 0,
     nativeTapeReads: 0,
     cellTapesIndexed: 0,
     lastReplayFrom: 0,
@@ -134,13 +136,14 @@ export class MaterializedOwnership {
     if (first === undefined || !markers.length) return undefined;
     const reads = this.state?.nativeIntervals.get(key);
     if (!reads) return first;
-    const positions = markers.map((marker) => native.marker(marker).index);
     let frontier: number | undefined;
-    for (const read of reads) {
-      const start = native.marker(read.range.start).index,
-        end = native.marker(read.range.end).index;
-      if (positions.some((position) => start < position && position < end))
-        frontier = Math.min(frontier ?? read.count, read.count);
+    for (const marker of markers) {
+      const count = reads.first(
+        native.marker(marker).index,
+        (marker) => native.marker(marker).index,
+        () => this.counts.nativeIntervalNodesVisited++,
+      );
+      if (count !== undefined) frontier = Math.min(frontier ?? count, count);
     }
     if (frontier === undefined) this.counts.nativeIntervalSkips++;
     return frontier;
