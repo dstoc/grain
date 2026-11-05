@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -119,4 +119,102 @@ test('managed runner help and argument errors keep stdout machine-readable', () 
   assert.equal(invalid.status, 2);
   assert.equal(invalid.stdout, '');
   assert.match(invalid.stderr, /--runs must be a positive safe integer/);
+});
+
+test('paired runners reuse an exact retained fixture and reject a changed schedule', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'grain-mw13-reuse-'));
+  try {
+    const source = join(directory, 'source');
+    mkdirSync(source);
+    const fixture = join(source, 'fixture-2.bin');
+    const capture = worker([
+      '--mode',
+      'capture',
+      '--size',
+      '2',
+      '--steps',
+      '2',
+      '--fixture',
+      fixture,
+    ]);
+    const original = readFileSync(fixture);
+    writeFileSync(join(source, 'fixture-2.json'), JSON.stringify(capture));
+    writeFileSync(
+      join(source, 'report.json'),
+      JSON.stringify({
+        complete: true,
+        steps: 2,
+        baseline: '415363a4e85549a33eee3010d69e55ce6161002d',
+        candidate: 'test-capture',
+      }),
+    );
+    const output = join(directory, 'unmanaged');
+    execFileSync(
+      process.execPath,
+      [
+        'benchmarks/multiwriter/run.mjs',
+        '--fixtures',
+        source,
+        '--output',
+        output,
+        '--size',
+        '2',
+        '--runs',
+        '1',
+      ],
+      { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    const report = JSON.parse(readFileSync(join(output, 'report.json')));
+    assert.equal(report.complete, true);
+    assert.equal(report.samples.length, 4);
+    assert.equal(report.sourceFixtureReport.candidate, 'test-capture');
+    assert(
+      report.samples.every((sample) => sample.verified && sample.fixtureSha256 === capture.sha256),
+    );
+    assert(readFileSync(join(output, 'fixture-2.bin')).equals(original));
+    assert(readFileSync(fixture).equals(original));
+    const invalid = spawnSync(
+      process.execPath,
+      [
+        'benchmarks/multiwriter/run.mjs',
+        '--fixtures',
+        source,
+        '--output',
+        join(directory, 'invalid'),
+        '--size',
+        '2',
+        '--steps',
+        '3',
+      ],
+      { cwd: root, encoding: 'utf8' },
+    );
+    assert.equal(invalid.status, 2);
+    assert.match(invalid.stderr, /--steps differs from the retained fixture schedule/);
+    const managed = join(directory, 'managed');
+    execFileSync(
+      process.execPath,
+      [
+        'benchmarks/multiwriter/managed.mjs',
+        '--fixture',
+        fixture,
+        '--output',
+        managed,
+        '--runs',
+        '1',
+      ],
+      { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    const managedReport = JSON.parse(readFileSync(join(managed, 'report.json')));
+    assert.equal(managedReport.complete, true);
+    assert.equal(managedReport.warmup, 1);
+    assert.equal(managedReport.samples.length, 2);
+    assert(
+      managedReport.samples.every(
+        (sample) =>
+          sample.historyMode === 'managed' && sample.navigation.undoRestoration === 'exact',
+      ),
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

@@ -1,7 +1,9 @@
 import { IndexedActionStore } from './readiness.js';
 import type { ReferenceGenesis } from '../reference/document.js';
 import { createIngestValidator } from '../ingest/validator.js';
-import { assertLimit } from '../ingest/work.js';
+import { actionKey } from '../actions/references.js';
+import { encodeEnvelope } from '../actions/codec.js';
+import { finish, assertLimit } from '../ingest/work.js';
 import { createProjectionAuthorValidator } from '../projection/index.js';
 import { MaterializedActivity } from './activity.js';
 import { MaterializedProjection } from './projection.js';
@@ -9,6 +11,7 @@ import type { PreparedActivity } from './activity.js';
 import type { PreparedProjection } from './projection.js';
 import { ProvenanceError, reconstructBirths } from '../reference/provenance.js';
 import type { ActionEnvelope } from '../contracts.js';
+import type { NativeView } from '../ingest/publication.js';
 import { MaterializedPublication } from './publication.js';
 
 /** Opt-in native materialization stage. The full reference document remains independent.
@@ -96,6 +99,30 @@ export function openMaterializedDocument(
       publication.setDecodeLimit(operations);
       store.setDecodeLimits({});
       validate.setDecodeLimit(operations);
+    },
+    stageLocalText(action: ActionEnvelope, native: NativeView) {
+      if (!projection.canStageText(action)) return undefined;
+      const status = publication.status();
+      if (status.stale || !status.canAuthor) return undefined;
+      const ready = store.readReady();
+      const length = ready.ready.length + 1,
+        key = actionKey(action.id),
+        bytes = encodeEnvelope(action);
+      const sequence = {
+        length,
+        at: (index: number) => {
+          const at = index < 0 ? length + index : index;
+          return at === ready.ready.length ? action : ready.ready[at];
+        },
+      };
+      const variants = { get: (id: string) => (id === key ? bytes : ready.variants.get(id)) };
+      try {
+        const prepared = finish(activity.prepare(sequence, variants));
+        const value = projection.stageText(sequence, native, prepared.value, variants);
+        return value ? { heads: [action.id], native, value } : undefined;
+      } finally {
+        activity.cancel();
+      }
     },
     certifyLocal(action: ActionEnvelope): void {
       const reason = store.checkLocal(action);

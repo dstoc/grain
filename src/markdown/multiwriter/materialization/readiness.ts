@@ -298,20 +298,21 @@ export class IndexedActionStore extends ActionStore {
         dependencies: Object.freeze(dependencies.map((certificate) => certificate.token)),
       },
     };
-    const closure = () => this.closure(action.dependencies);
+    const closure = () => this.closure(dependencies);
     return { certificate, context };
   }
-  private *closure(dependencies: readonly ActionId[]): Work<readonly ActionEnvelope[]> {
+  private *closure(dependencies: readonly Certificate[]): Work<readonly ActionEnvelope[]> {
     const closure = new Map<string, ActionEnvelope>();
     const ancestors = [...dependencies];
     while (ancestors.length) {
       yield;
       this.counts.closureEdges++;
-      const key = actionKey(ancestors.pop()!);
+      const certificate = ancestors.pop()!,
+        ancestor = certificate.variant.envelope!;
+      const key = actionKey(ancestor.id);
       if (closure.has(key)) continue;
-      const ancestor = this.ready.get(key)!;
       closure.set(key, ancestor);
-      ancestors.push(...ancestor.dependencies);
+      ancestors.push(...certificate.dependencies);
     }
     return [...closure.values()].sort(compareActions);
   }

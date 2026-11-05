@@ -8,6 +8,7 @@ import { insertText } from '../../../editing/commands/insert-text.js';
 import { compareBytes } from '../actions/cbor.js';
 import * as projector from '../projection/project.js';
 import { MaterializedPublication } from './publication.js';
+import { nativePlanSource, registerNativePlanSource } from '../authoring/native-plan.js';
 import { NativeTapeCache } from '../text/cache.js';
 
 const open = (text = 'abc\n\ntail') => {
@@ -117,13 +118,32 @@ for (const size of [10, 150, 1000])
     const p = open(Array.from({ length: size }, () => 'abc').join('\n\n'));
     try {
       type(p, 1n);
+      const view = p.document.publication.status().publication!.native;
+      const source = nativePlanSource(view)!;
+      const plannedReads = new Set<string>();
+      registerNativePlanSource(view, {
+        clients: source.clients,
+        get tapes() {
+          throw new Error('Literal command enumerated native tapes');
+        },
+        native: {
+          ...source.native,
+          snapshot(tape) {
+            plannedReads.add(layout.resourceKey(tape));
+            return source.native.snapshot(tape);
+          },
+        },
+      });
       const snapshots = vi.spyOn(NativeTapeCache.prototype, 'snapshotSteps');
       const full = vi.spyOn(projector, 'projectWithActivity');
       const before = diagnostics(p);
       try {
         type(p, 2n, '😀');
         expect(full).not.toHaveBeenCalled();
-        const tapes = new Set(snapshots.mock.calls.map(([tape]) => JSON.stringify(tape)));
+        const tapes = new Set([
+          ...plannedReads,
+          ...snapshots.mock.calls.map(([tape]) => layout.resourceKey(tape)),
+        ]);
         expect(tapes.size).toBe(1);
         expect(diagnostics(p).projectionRecordsReplaced - before.projectionRecordsReplaced).toBe(2);
         expect(diagnostics(p).textTapesRebuilt - before.textTapesRebuilt).toBe(1);
