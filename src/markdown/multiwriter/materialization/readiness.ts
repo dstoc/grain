@@ -1,4 +1,4 @@
-import { ActionStore } from '../actions/store.js';
+import { ReferenceActionStore } from '../reference/store.js';
 import type {
   ActionFact,
   ActionStoreSnapshot,
@@ -20,7 +20,7 @@ export interface ReadinessWork {
   dependencyEdges: number;
   closureEdges: number;
   authorChecks: number;
-  snapshotExports: number;
+  fullSnapshotBuilds: number;
 }
 const compareIds = (a: ActionId, b: ActionId): number =>
   a.actor < b.actor
@@ -41,7 +41,7 @@ const quarantine = (reason: QuarantineReason): ActionReadiness => ({
  * The reference ActionStore.calculate remains a separate full-scan oracle.
  * Detached snapshot exports and new-author closure checks remain explicit full-array costs.
  */
-export class IndexedActionStore extends ActionStore {
+export class IndexedActionStore extends ReferenceActionStore {
   private readonly changed = new Set<string>();
   private readonly known = new Map<string, ActionFact>();
   private readonly readers = new Map<string, Set<string>>();
@@ -54,7 +54,7 @@ export class IndexedActionStore extends ActionStore {
     dependencyEdges: 0,
     closureEdges: 0,
     authorChecks: 0,
-    snapshotExports: 0,
+    fullSnapshotBuilds: 0,
   };
   readinessDiagnostics(): Readonly<ReadinessWork> {
     return { ...this.counts };
@@ -211,7 +211,7 @@ export class IndexedActionStore extends ActionStore {
         heads.delete(actionKey(id));
       }
     const status = this.factStatus();
-    this.counts.snapshotExports++;
+    this.counts.fullSnapshotBuilds++;
     return structuredClone({
       actions: [...this.known.values()]
         .sort((a, b) => compareIds(a.id, b.id))

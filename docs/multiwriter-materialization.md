@@ -42,7 +42,8 @@ no partial ready result escapes. Changing decoder limits cancels suspended work.
 Public snapshots and validator arguments remain detached from retained facts.
 
 `store.readinessDiagnostics()` reports changed facts, evaluated entries,
-dependency and closure edges, author checks and detached snapshot exports.
+dependency and closure edges, author checks and full snapshot builds. Unchanged
+facts reuse the existing exact-version snapshot memo; public reads still clone it.
 A causal suffix append evaluates one new entry; an exact duplicate evaluates none.
 This does not eliminate full closure construction for a new author check, full
 snapshot export or full semantic projection. Those costs remain acceptance gaps.
