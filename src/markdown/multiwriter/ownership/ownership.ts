@@ -297,9 +297,19 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
     throw new Error('Native snapshots must cover exactly the ready markers');
 
   const homeIndex = new HomeIndex(homes, index);
+  // These maps are rebuilt from this replay's own input, never imported from an
+  // incremental checkpoint. Keep home ranks to preserve the reference's raw order.
+  const homesByRun = new Map(homes.map((home) => [resourceKey(home.run), home]));
+  const homesByTape = new Map(
+    homes.map((home, rank) => [resourceKey(home.cell.tape), { home, rank }]),
+  );
+  const runById = new Map<string, Extract<(typeof allAllocations)[number], { type: 'run' }>>();
+  for (const allocation of allAllocations)
+    if (allocation.type === 'run' && !runById.has(resourceKey(allocation.id)))
+      runById.set(resourceKey(allocation.id), allocation);
   for (const allocation of allAllocations) {
     if (allocation.type !== 'run') continue;
-    const home = homes.find((home) => sameId(home.run, allocation.id));
+    const home = homesByRun.get(resourceKey(allocation.id));
     const captures = home ? allocation.skeleton.slice(0, -1) : allocation.skeleton;
     const seen = new Set<string>();
     for (const range of allocation.skeleton)
@@ -332,10 +342,8 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
         for (const range of effect.ranges) homeIndex.assertCapture(range);
     }
   function layoutRun(run: RunId) {
-    const allocation = allAllocations.find(
-      (entry) => entry.type === 'run' && sameId(entry.id, run),
-    );
-    if (!allocation || allocation.type !== 'run') throw new Error('Missing retained run');
+    const allocation = runById.get(resourceKey(run));
+    if (!allocation) throw new Error('Missing retained run');
     return allocation;
   }
   function install(batch: LayoutGenesis, effects: readonly SemanticEffect[]): void {
@@ -361,9 +369,16 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
         destination: transfer.destination,
       });
     }
-    for (const home of homes.filter((home) =>
-      batch.allocations.some((entry) => entry.type === 'tape' && sameId(entry.id, home.cell.tape)),
-    )) {
+    const batchTapes = new Set(
+      batch.allocations.flatMap((entry) => (entry.type === 'tape' ? [resourceKey(entry.id)] : [])),
+    );
+    const batchHomes = [...batchTapes]
+      .flatMap((key) => {
+        const home = homesByTape.get(key);
+        return home ? [home] : [];
+      })
+      .sort((a, b) => a.rank - b.rank);
+    for (const { home } of batchHomes) {
       const tapeKey = resourceKey(home.cell.tape);
       if (installedTapes.has(tapeKey)) throw new Error('Duplicate tape birth');
       installedTapes.add(tapeKey);
