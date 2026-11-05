@@ -1,6 +1,6 @@
 import { OwnershipResult } from '../ownership/ownership.js';
+import type { TapeId } from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
-import type { ActionEnvelope } from '../contracts.js';
 import { changedNativeTapes } from './native.js';
 import type { ProjectionInput } from '../projection/project.js';
 import type { Activity } from '../visibility/activity.js';
@@ -9,6 +9,7 @@ import { actionKey } from '../actions/references.js';
 import { compareBytes } from '../actions/cbor.js';
 import { resourceKey } from '../layout/index.js';
 import type { OwnershipCheckpoint } from './ownership.js';
+import type { ActionSequence, PayloadIndex } from './activity.js';
 import { replayOwnershipSuffix } from './ownership.js';
 
 interface Payload {
@@ -52,7 +53,7 @@ export class MaterializedOwnership {
   diagnostics() {
     return { ...this.counts, retainedCheckpoints: this.checkpoints.length };
   }
-  *prepare(input: ProjectionInput, activity: Activity, variants: ReadonlyMap<string, Uint8Array>) {
+  *prepare(input: ProjectionInput, activity: Activity, variants: PayloadIndex) {
     const generation = ++this.generation;
     const interpretations = selectInterpretations(activity, input.initialProperties);
     let frontier = Math.min(this.order.length, input.actions.length);
@@ -151,10 +152,11 @@ export class MaterializedOwnership {
     };
   }
   prepareText(
-    actions: readonly ActionEnvelope[],
+    actions: ActionSequence,
     native: NativeView,
     activity: Activity,
-    variants: ReadonlyMap<string, Uint8Array>,
+    variants: PayloadIndex,
+    stagedTapes?: readonly TapeId[],
   ) {
     const action = actions.at(-1),
       prior = this.state,
@@ -170,11 +172,12 @@ export class MaterializedOwnership {
       action.nativeManifest.some((birth) => birth.type !== 'text') ||
       this.order.some(
         (payload, i) =>
-          payload.key !== actionKey(actions[i].id) || variants.get(payload.key) !== payload.bytes,
+          payload.key !== actionKey(actions.at(i)!.id) ||
+          variants.get(payload.key) !== payload.bytes,
       )
     )
       return undefined;
-    const touched = changedNativeTapes(this.native, native);
+    const touched = stagedTapes ?? changedNativeTapes(this.native, native);
     if (!touched) return undefined;
     const generation = ++this.generation;
     const index = prior.index.refine(touched.map((tape) => native.snapshot(tape)));

@@ -1,6 +1,6 @@
 import type { ActionStore } from '../actions/store.js';
 import type { ActionEnvelope } from '../contracts.js';
-import type { ProjectionStatus, PublishedProjection } from '../ingest/publication.js';
+import type { NativeView, ProjectionStatus, PublishedProjection } from '../ingest/publication.js';
 import type { Computation } from '../ingest/work.js';
 import type { projectMarkdown } from '../projection/project.js';
 
@@ -18,5 +18,10 @@ export interface AuthoringDocument {
       operations?: number,
     ): Computation<PublishedProjection<ReturnType<typeof projectMarkdown>>>;
   };
+  /** Optional derived author-result preparation; never appends or commits canonical state. */
+  stageLocalText?(
+    action: ActionEnvelope,
+    native: NativeView,
+  ): PublishedProjection<ReturnType<typeof projectMarkdown>> | undefined;
   certifyLocal(action: ActionEnvelope): void;
 }

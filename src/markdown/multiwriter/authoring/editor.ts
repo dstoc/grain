@@ -436,19 +436,23 @@ export class LocalEditor {
       let footprintForHistory;
       try {
         if (register) {
-          const actions = [...ready, envelope],
-            native = nativeView(this.native);
-          const staged = {
-            heads: [envelope.id],
-            native,
-            value: projectMarkdown({
-              genesis: this.genesis.layout,
-              genesisManifest: this.genesis.body.nativeManifest,
-              initialProperties: this.genesis.initialProperties,
-              ...reconstructProvenance(this.genesis.layout, actions),
-              native,
-            }),
-          };
+          const native = nativeView(this.native);
+          const staged =
+            this.document.stageLocalText?.(envelope, native) ??
+            (() => {
+              const actions = [...ready, envelope];
+              return {
+                heads: [envelope.id],
+                native,
+                value: projectMarkdown({
+                  genesis: this.genesis.layout,
+                  genesisManifest: this.genesis.body.nativeManifest,
+                  initialProperties: this.genesis.initialProperties,
+                  ...reconstructProvenance(this.genesis.layout, actions),
+                  native,
+                }),
+              };
+            })();
           footprintForHistory = captureFootprint(envelope, p, native);
           stagedAfter = after(staged);
           emptyAfter =

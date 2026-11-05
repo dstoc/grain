@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import {
   cpSync,
@@ -16,7 +17,7 @@ import { parseArgs } from 'node:util';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const manifest = JSON.parse(readFileSync(new URL('./manifest.json', import.meta.url), 'utf8'));
-const help = `Usage: node benchmarks/multiwriter/run.mjs --output <new-directory> [--size <nodes>] [--runs <count>] [--steps <count>]
+const help = `Usage: node benchmarks/multiwriter/run.mjs --output <new-directory> [--size <nodes>] [--runs <count>] [--steps <count>] [--fixtures <completed-run-directory>]
 
 Compare the pinned full-reference source with incremental native materialization
 in paired fresh processes. Default: 10/150/1000/5000 paragraphs, 24 literal edits,
@@ -28,11 +29,12 @@ Run on an otherwise idle host. Ctrl+C stops the run; partial output is incomplet
 Example: node benchmarks/multiwriter/run.mjs --output /tmp/mw13-measurement --size 150
 `;
 const git = (args, cwd = root) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
-let values;
+let values, sourceReport;
 try {
   ({ values } = parseArgs({
     options: {
       output: { type: 'string' },
+      fixtures: { type: 'string' },
       size: { type: 'string' },
       runs: { type: 'string' },
       steps: { type: 'string' },
@@ -50,12 +52,20 @@ try {
       (!/^[1-9][0-9]*$/.test(values[name]) || !Number.isSafeInteger(Number(values[name])))
     )
       throw new Error(`--${name} must be a positive safe integer`);
+  if (values.fixtures) {
+    sourceReport = JSON.parse(readFileSync(join(resolve(values.fixtures), 'report.json'), 'utf8'));
+    if (!sourceReport.complete) throw new Error('Input fixture run is incomplete');
+    if (sourceReport.baseline !== manifest.baseline)
+      throw new Error('Input fixture baseline differs from the pinned reference');
+    if (values.steps && Number(values.steps) !== sourceReport.steps)
+      throw new Error('--steps differs from the retained fixture schedule');
+  }
 } catch (error) {
   process.stderr.write(`${error.message}\n${help}`);
   process.exit(2);
 }
 const runs = Number(values.runs ?? manifest.runs),
-  steps = Number(values.steps ?? manifest.steps);
+  steps = Number(values.steps ?? sourceReport?.steps ?? manifest.steps);
 const warmup = Math.min(manifest.warmup, steps - 1);
 const sizes = values.size ? [Number(values.size)] : manifest.sizes;
 const output = resolve(values.output);
@@ -81,6 +91,9 @@ const metadata = {
     logicalCpus: cpus().length,
   },
   scope: manifest.scope,
+  sourceFixtureReport: sourceReport
+    ? { baseline: sourceReport.baseline, candidate: sourceReport.candidate }
+    : null,
   complete: false,
 };
 if (metadata.yjs !== manifest.yjs) throw new Error('Installed Yjs differs from the pinned version');
@@ -129,17 +142,35 @@ try {
   writeFileSync(join(output, 'report.json'), JSON.stringify(metadata, null, 2));
   for (const size of sizes) {
     const fixture = join(output, `fixture-${size}.bin`);
-    const capture = worker(baseline, [
-      '--mode',
-      'capture',
-      '--size',
-      String(size),
-      '--steps',
-      String(steps),
-      '--fixture',
-      fixture,
-    ]);
-    writeFileSync(join(output, `fixture-${size}.json`), JSON.stringify(capture, null, 2));
+    if (sourceReport) {
+      const source = join(resolve(values.fixtures), `fixture-${size}.bin`);
+      const description = join(resolve(values.fixtures), `fixture-${size}.json`);
+      const captured = JSON.parse(readFileSync(description, 'utf8'));
+      const bytes = readFileSync(source);
+      if (
+        captured.size !== size ||
+        captured.steps !== steps ||
+        captured.sha256 !== createHash('sha256').update(bytes).digest('hex')
+      )
+        throw new Error('Retained fixture identity or schedule differs');
+      cpSync(source, fixture, { errorOnExist: true, force: false });
+      cpSync(description, join(output, `fixture-${size}.json`), {
+        errorOnExist: true,
+        force: false,
+      });
+    } else {
+      const capture = worker(baseline, [
+        '--mode',
+        'capture',
+        '--size',
+        String(size),
+        '--steps',
+        String(steps),
+        '--fixture',
+        fixture,
+      ]);
+      writeFileSync(join(output, `fixture-${size}.json`), JSON.stringify(capture, null, 2));
+    }
     for (const mode of ['replay', 'command'])
       for (let pair = 0; pair < runs; pair++) {
         for (const implementation of pair % 2

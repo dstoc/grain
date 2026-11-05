@@ -2,6 +2,8 @@ import { expect, test, vi } from 'vitest';
 import { ConstructionTreeDraft } from '../../semantic/construction-tree.js';
 import { commandGenesis, commandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import { createMaterializationOracle } from '../../../../test/multiwriter/materialization-oracle.js';
+import * as projection from '../projection/project.js';
+import { compareBytes } from '../actions/cbor.js';
 import { insertText, RetainedEditError } from '../authoring/index.js';
 
 for (const phase of ['edit', 'control'] as const)
@@ -90,5 +92,99 @@ test('managed literal input with a selection keeps the command overlay through t
   } finally {
     adopt.mockRestore();
     peer.close();
+  }
+});
+
+test('managed literal staging avoids full projection and captures before a reentrant peer prepend', () => {
+  const genesis = commandGenesis('abcdef');
+  const a = commandReplica(genesis, undefined, 'materialized'),
+    b = commandReplica(genesis, undefined, 'materialized');
+  const h = a.editor.session('staged'),
+    nodeId = a.handle(a.nodes()[0]);
+  let injected = false;
+  const stop = a.document.store.onUpdate((bytes) => {
+    if (injected) return;
+    injected = true;
+    b.receive(bytes);
+    expect(
+      b.editor.edit({ local: 'peer', group: 1n }, insertText, {
+        nodeId: b.handle(b.nodes()[0]),
+        from: 0,
+        text: 'P',
+      }).status,
+    ).toBe('applied');
+    a.document.store.applyUpdate(b.document.store.encodeUpdate());
+  });
+  const full = vi.spyOn(projection, 'projectMarkdown');
+  try {
+    expect(
+      h.edit(
+        insertText,
+        { nodeId, from: 2, text: 'X' },
+        {
+          selectionBefore: {
+            anchor: { nodeId, offset: 2, affinity: 'right' },
+            focus: { nodeId, offset: 2, affinity: 'right' },
+          },
+        },
+      ).status,
+    ).toBe('applied');
+    expect(full).not.toHaveBeenCalled();
+    full.mockRestore();
+    stop();
+    expect(a.nodes()[0].content).toBe('PabXcdef');
+    const undo = h.undo();
+    expect(undo.state).toBe('applied');
+    if (undo.state === 'applied')
+      expect(undo.restoration).toMatchObject({
+        state: 'exact',
+        anchor: { offset: 3 },
+        focus: { offset: 3 },
+      });
+    const redo = h.redo();
+    expect(redo.state).toBe('applied');
+    if (redo.state === 'applied')
+      expect(redo.restoration).toMatchObject({
+        state: 'exact',
+        anchor: { offset: 4 },
+        focus: { offset: 4 },
+      });
+    expect(a.nodes()[0].content).toBe('PabXcdef');
+    const oracle = createMaterializationOracle();
+    try {
+      oracle.check(a.document, genesis);
+    } finally {
+      oracle.destroy();
+    }
+  } finally {
+    full.mockRestore();
+    stop();
+    a.close();
+    b.close();
+  }
+});
+
+test('rejected managed staging leaves publication, history and canonical facts unchanged', () => {
+  const p = commandReplica(commandGenesis('abcdef'), undefined, 'materialized'),
+    h = p.editor.session('rejection');
+  const before = p.document.publication.status().publication!,
+    bytes = p.document.store.encodeUpdate(),
+    nodeId = p.handle(p.nodes()[0]);
+  const reject = vi.spyOn(p.document, 'certifyLocal').mockImplementationOnce(() => {
+    throw new Error('candidate rejected');
+  });
+  try {
+    expect(() => h.edit(insertText, { nodeId, from: 2, text: 'X' })).toThrow('candidate rejected');
+    expect(p.document.publication.status().publication).toBe(before);
+    expect(compareBytes(p.document.store.encodeUpdate(), bytes)).toBe(0);
+    expect(h.status()).toMatchObject({ undo: 0, redo: 0 });
+    reject.mockRestore();
+    expect(h.edit(insertText, { nodeId, from: 2, text: 'Y' }).status).toBe('applied');
+    expect(p.nodes()[0].content).toBe('abYcdef');
+    expect(h.undo().state).toBe('applied');
+    expect(p.nodes()[0].content).toBe('abcdef');
+  } finally {
+    reject.mockRestore();
+    p.close();
   }
 });

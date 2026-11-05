@@ -36,6 +36,12 @@ interface Checkpoint {
   readonly count: number;
   readonly state: State;
 }
+/** Immutable indexed access also admits one action-local suffix without copying a full array. */
+export interface ActionSequence {
+  readonly length: number;
+  at(index: number): ActionEnvelope | undefined;
+}
+export type PayloadIndex = Pick<ReadonlyMap<string, Uint8Array>, 'get'>;
 export interface ActivityWork {
   payloadsCompared: number;
   actionsReplayed: number;
@@ -138,16 +144,13 @@ export class MaterializedActivity {
       retainedActions: this.order.length,
     };
   }
-  *prepare(
-    actions: readonly ActionEnvelope[],
-    variants: ReadonlyMap<string, Uint8Array>,
-  ): Work<PreparedActivity> {
+  *prepare(actions: ActionSequence, variants: PayloadIndex): Work<PreparedActivity> {
     const generation = ++this.generation;
     let frontier = Math.min(actions.length, this.order.length);
     const order: Payload[] = [];
     for (let index = 0; index < actions.length; index++) {
       yield;
-      const key = actionKey(actions[index].id),
+      const key = actionKey(actions.at(index)!.id),
         bytes = variants.get(key);
       if (!bytes) throw new Error('Activity cache requires exact ready payloads');
       const prior = this.order[index];
@@ -168,7 +171,7 @@ export class MaterializedActivity {
     const from = state.count;
     if (from === 0 && actions.length) this.counts.coldReplays++;
     for (let index = from; index < actions.length; index++) {
-      state = yield* this.advance(state, actions[index]);
+      state = yield* this.advance(state, actions.at(index)!);
       this.counts.actionsReplayed++;
       if (state.count % 128 === 0) checkpoints.push({ count: state.count, state });
     }

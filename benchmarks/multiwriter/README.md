@@ -114,8 +114,21 @@ The navigation samples are single operations per process, not per-action p95s.
 
 `localHistoryBytes` is serialized navigation metadata. `processHeapDelta` remains
 a controlled-GC whole-replica delta that includes history. Neither measures
-cache-only heap. Publication diagnostics do not count the additional full author
-projection used to stage managed selection. There is no attached storage journal
+cache-only heap. Publication full-projection counters exclude author selection staging. The
+`stagedTextProjections` counter identifies local literal staging; non-literal or
+visibility-changing staging still uses a full author projection. There is no attached storage journal
 or consolidation workload in this script. The real 501-group and MW-18 tests remain
 separate correctness/storage controls. These short managed literal measurements
 do not satisfy the mixed 10,000-action, directional catch-up or complete MW-13 gate.
+
+To reuse original carriers from a completed report without recapturing them:
+
+```sh
+node benchmarks/multiwriter/run.mjs --fixtures /tmp/prior-150 --output /tmp/mw13-reused-150 --size 150
+```
+
+The runner checks the pinned baseline, retained schedule and exact fixture hash,
+then copies the original binary and capture metadata unchanged. Both timed
+implementations replay that same input. The report records the earlier fixture
+source separately from the current candidate source. `--steps` cannot change the
+retained schedule.

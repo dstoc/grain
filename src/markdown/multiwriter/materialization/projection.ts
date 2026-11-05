@@ -1,5 +1,6 @@
 import type { ActionEnvelope, NativeTextRange, TapeId } from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
+import type { ActionSequence, PayloadIndex } from './activity.js';
 import type { Activity } from '../visibility/activity.js';
 import type { TextVisibility } from '../visibility/visibility.js';
 import type { ProjectionInput } from '../projection/project.js';
@@ -196,6 +197,7 @@ export class MaterializedProjection {
     localTextProjections: 0,
     projectionRecordsReplaced: 0,
     textTapesRebuilt: 0,
+    stagedTextProjections: 0,
   };
   fullProjectionCount(): number {
     return this.counts.fullProjections;
@@ -208,7 +210,7 @@ export class MaterializedProjection {
     actions: readonly ActionEnvelope[],
     native: NativeView,
     activity: Activity,
-    variants: ReadonlyMap<string, Uint8Array>,
+    variants: PayloadIndex,
   ) {
     const generation = ++this.generation,
       before = this.state;
@@ -247,6 +249,41 @@ export class MaterializedProjection {
         this.state = state;
       },
     };
+  }
+  canStageText(action: ActionEnvelope): boolean {
+    return (
+      this.state?.canAppendText === true &&
+      !action.allocations.length &&
+      action.effects.every((effect) => effect.type === 'InsertText') &&
+      action.nativeManifest.every((birth) => birth.type === 'text')
+    );
+  }
+  /** The writer supplies its exact pre-append native draft. Derive selection only;
+   * neither activity nor structural/projection roots are committed here.
+   */
+  stageText(
+    actions: ActionSequence,
+    native: NativeView,
+    activity: Activity,
+    variants: PayloadIndex,
+  ): Projection | undefined {
+    const before = this.state,
+      action = actions.at(-1)!;
+    if (!before || !this.canStageText(action)) return undefined;
+    const touched = [
+      ...new Map(
+        action.nativeManifest.map((birth) => [resourceKey(birth.tape), birth.tape]),
+      ).values(),
+    ];
+    const structure = this.ownership.prepareText(actions, native, activity, variants, touched);
+    if (!structure) return undefined;
+    try {
+      const state = this.append(before, action, structure.value, touched, native, activity);
+      this.counts.stagedTextProjections++;
+      return state.value;
+    } finally {
+      this.ownership.cancel();
+    }
   }
   private append(
     before: State,
