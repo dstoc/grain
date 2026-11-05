@@ -3,7 +3,9 @@ import { NativeFixture } from '../ownership/test-fixtures.js';
 import { nativeView } from '../ingest/publication.js';
 import { resource } from '../actions/test-fixtures.js';
 import * as layout from '../layout/index.js';
-import { NativePlan } from './native-plan.js';
+import { NativePlan, nativePlanSource } from './native-plan.js';
+import { MaterializedNative } from '../materialization/native.js';
+import { finish } from '../ingest/work.js';
 
 const seed = (size: number) => [
   { id: 'root', parent: null, role: 'root' as const },
@@ -117,6 +119,52 @@ test('planned insertions refresh marker positions only on their tape and preserv
         .join(''),
     ).toBe('😀');
   } finally {
+    f.destroy();
+  }
+});
+
+test('registered immutable plans query untouched tapes without snapshots and isolate later writes', () => {
+  const f = new NativeFixture(seed(2)),
+    reader = new MaterializedNative(100000);
+  try {
+    finish(reader.apply('G', f.bodies.get('G')!));
+    const held = reader.view(),
+      source = nativePlanSource(held)!,
+      plan = new NativePlan(source),
+      tape = f.id('t0', 'tape'),
+      other = f.id('t1', 'tape'),
+      end = f.id('P0:end', 'marker'),
+      otherEnd = f.id('P1:end', 'marker'),
+      text = f.aliases.get('text0')!,
+      range = f.ranges.get('text0')!,
+      cache = f.peers.get('A')!,
+      before = reader.work.snapshotsExported;
+    expect(plan.marker(end)).toEqual(cache.marker(end));
+    expect(plan.locate(tape, text)).toBe(cache.locate(tape, text));
+    expect(plan.lookup(text)).toEqual(cache.lookup(text));
+    expect(plan.range(range)).toEqual(cache.range(range));
+    expect(reader.work.snapshotsExported).toBe(before);
+    const oldMarker = plan.marker(end),
+      oldOther = plan.marker(otherEnd);
+    plan.add({ type: 'text', tape, index: 3, text: '😀' });
+    expect(reader.work.snapshotsExported).toBe(before + 1);
+    expect(plan.marker(end).index).toBe(oldMarker.index + 2);
+    expect(plan.marker(otherEnd)).toEqual(oldOther);
+    expect(held.marker(end)).toEqual(oldMarker);
+    const prepared = cache.prepare('later-source', [
+      { type: 'text', tape: other, index: 3, text: '!' },
+    ]);
+    prepared.commit();
+    finish(reader.apply('later-source', prepared.body));
+    expect(reader.view().marker(otherEnd).index).toBe(oldOther.index + 1);
+    expect(plan.marker(otherEnd)).toEqual(oldOther);
+    expect(plan.lookup(f.aliases.get('text1')!)).toEqual(held.lookup(f.aliases.get('text1')!));
+    const detached = plan.marker(otherEnd);
+    (detached.native as { clock: number }).clock = -1;
+    expect(plan.marker(otherEnd)).toEqual(oldOther);
+    expect(reader.work.snapshotsExported).toBe(before + 1);
+  } finally {
+    reader.destroy();
     f.destroy();
   }
 });
