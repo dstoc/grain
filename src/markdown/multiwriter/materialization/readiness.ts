@@ -19,6 +19,7 @@ import { registerReadySource } from '../authoring/ready-source.js';
 import { MaterializedReadyIndex } from './ready-index.js';
 import type { ActionEnvelope, ActionId, ActionReadiness, Allocation } from '../contracts.js';
 import { compareActions } from '../contracts.js';
+import type { RetainedPayloadIndex } from '../ingest/validator.js';
 import type { Work } from '../ingest/work.js';
 
 interface Certificate {
@@ -83,7 +84,7 @@ export interface ReadyActionView {
   readonly ready: readonly ActionEnvelope[];
   readonly heads: readonly ActionId[];
   readonly integrity: boolean;
-  readonly variants: Pick<ReadonlyMap<string, Uint8Array>, 'get'>;
+  readonly variants: RetainedPayloadIndex;
 }
 interface ReadyState extends ReadyActionView {
   readonly records?: MapRoot<StoredAction>;
@@ -100,8 +101,25 @@ function mapComputation<A, B>(state: Computation<A>, map: (value: A) => B): Comp
   };
 }
 /** Escaping readers capture only the immutable payload root, not a calculation. */
-function payloadView(root: MapRoot<Uint8Array> | undefined) {
-  return { get: (key: string) => persistent.get(root, key) };
+const payloadRoots = new WeakMap<object, MapRoot<Uint8Array> | undefined>();
+function payloadView(root: MapRoot<Uint8Array> | undefined): RetainedPayloadIndex {
+  const view: RetainedPayloadIndex = {
+    get: (key) => persistent.get(root, key),
+    changes(before, visit) {
+      if (!payloadRoots.has(before)) return undefined;
+      return (function* () {
+        for (const change of persistent.differences(
+          payloadRoots.get(before),
+          root,
+          (a, b) => a === b || compareBytes(a, b) === 0,
+          visit,
+        ))
+          yield change.key;
+      })();
+    },
+  };
+  payloadRoots.set(view, root);
+  return view;
 }
 
 export class IndexedActionStore extends ActionStore {

@@ -40,7 +40,8 @@ for (const depth of [10, 150, 1000])
       const before = p.editor.writerDiagnostics(),
         native = publication(p).diagnostics(),
         activity = materializer(p).activityDiagnostics(),
-        ownership = materializer(p).ownershipDiagnostics();
+        ownership = materializer(p).ownershipDiagnostics(),
+        author = materializer(p).cacheDiagnostics().author;
       const edit = type(p, depth + 1, '!');
       const after = p.editor.writerDiagnostics(),
         next = publication(p).diagnostics();
@@ -55,6 +56,11 @@ for (const depth of [10, 150, 1000])
       ).toBe(1);
       expect(materializer(p).ownershipDiagnostics().payloadsCompared).toBe(
         ownership.payloadsCompared,
+      );
+      const authorAfter = materializer(p).cacheDiagnostics().author;
+      expect(authorAfter.retainedFactsCompared - author.retainedFactsCompared).toBe(1);
+      expect(authorAfter.retainedIndexNodesVisited - author.retainedIndexNodesVisited).toBeLessThan(
+        200,
       );
       expect(edit.envelope.id.sequence).toBe(BigInt(depth + 1));
       expect(edit.envelope.lamport).toBe(BigInt(depth + 1));

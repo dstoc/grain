@@ -24,6 +24,13 @@ import { DEFAULT_INGEST_LIMITS, assertLimit, IngestDataError } from './work.js';
 import type { Work } from './work.js';
 
 type Reason = QuarantineReason | null;
+/** Trusted immutable ready payloads. An optional exact difference reader can
+ * avoid scanning a retained native branch. Ordinary maps retain the full check.
+ */
+export interface RetainedPayloadIndex {
+  get(key: string): Uint8Array | undefined;
+  changes?(before: RetainedPayloadIndex, visit: () => void): Iterable<string> | undefined;
+}
 export class MissingAuthorValidatorError extends Error {
   constructor() {
     super('MW-04/MW-06 author-view validator required for structural allocations/effects');
@@ -60,6 +67,8 @@ export type IngestValidator = ActionStoreOptions['validate'] & {
     readonly preimages: number;
     readonly encodedBytes: number;
     readonly preimageNativeBytes: number;
+    readonly retainedFactsCompared: number;
+    readonly retainedIndexNodesVisited: number;
   };
   setDecodeLimit(operations: number): void;
   /** Detached native diagnostics, including the retained certification branch. */
@@ -67,19 +76,18 @@ export type IngestValidator = ActionStoreOptions['validate'] & {
   /** Withdraw a formerly certified branch when a late fork removes it from readiness. */
   retainReady(actions: readonly ActionEnvelope[]): void;
   /** Exact borrowed payload index from the optimized readiness reader. */
-  retainReadyFacts(variants: Pick<ReadonlyMap<string, Uint8Array>, 'get'>): void;
+  retainReadyFacts(variants: RetainedPayloadIndex): void;
 };
 export function createIngestValidator(options: IngestValidatorOptions): IngestValidator {
   const genesis = structuredClone(options.genesis);
   let decodeOperations = options.decodeOperations ?? DEFAULT_INGEST_LIMITS.decodeOperations;
   assertLimit(decodeOperations);
   let cache: NativeTapeCache | undefined;
-  interface BranchFact {
-    readonly key: string;
-    readonly bytes: Uint8Array;
-    readonly previous?: BranchFact;
-  }
-  let certified: BranchFact | undefined;
+  const branchFacts = new Map<string, Uint8Array>();
+  const addedFacts = new Set<string>();
+  let retainedView: RetainedPayloadIndex | undefined;
+  let retainedFactsCompared = 0,
+    retainedIndexNodesVisited = 0;
   let branchIdentity: object | undefined;
   let busy = false;
   interface Certificate {
@@ -92,7 +100,9 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
   function discard() {
     cache?.destroy();
     cache = undefined;
-    certified = undefined;
+    branchFacts.clear();
+    addedFacts.clear();
+    retainedView = undefined;
     branchIdentity = undefined;
   }
   function* validate(action: ActionEnvelope, context: ActionValidationContext): Work<Reason> {
@@ -175,9 +185,7 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
       }
       let reuse = !!cache && !!indexed && branchIdentity === indexed.past.identity;
       if (!indexed && cache) {
-        const retained: Uint8Array[] = [];
-        for (let fact = certified; fact; fact = fact.previous) retained.push(fact.bytes);
-        retained.reverse();
+        const retained = [...branchFacts.values()];
         reuse =
           bytes!.length === retained.length &&
           bytes!.every((value, index) => compareBytes(value, retained[index]) === 0);
@@ -191,7 +199,8 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
           yield;
           const key = actionKey(dependency.id);
           yield* cache.applySteps(key, dependency);
-          certified = { key, bytes: encodeEnvelope(dependency), previous: certified };
+          branchFacts.set(key, encodeEnvelope(dependency));
+          addedFacts.add(key);
         }
       }
       const native = cache!;
@@ -224,7 +233,9 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
           dependencies: dependencyCertificates as readonly Certificate[],
           ...(indexed ? { indexedDependencies: indexed.dependencies } : {}),
         });
-      certified = { key: actionKey(action.id), bytes: ownBytes, previous: certified };
+      const key = actionKey(action.id);
+      branchFacts.set(key, ownBytes);
+      addedFacts.add(key);
       branchIdentity = indexed?.resultIdentity;
       success = true;
       return null;
@@ -233,15 +244,25 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
       busy = false;
     }
   }
-  function retainReadyFacts(ready: Pick<ReadonlyMap<string, Uint8Array>, 'get'>): void {
+  function retainReadyFacts(ready: RetainedPayloadIndex): void {
     if (busy) throw new Error('Cancel ingest computation before withdrawing its native branch');
-    for (let fact = certified; fact; fact = fact.previous) {
-      const bytes = ready.get(fact.key);
-      if (!bytes || compareBytes(fact.bytes, bytes) !== 0) {
+    const changed =
+      retainedView && ready.changes?.(retainedView, () => retainedIndexNodesVisited++);
+    // A newly certified action need not be ready yet (for example after a failed
+    // append). Check it even when the ready index is identical to the prior root.
+    const keys = changed ? new Set([...changed, ...addedFacts]) : branchFacts.keys();
+    for (const key of keys) {
+      const fact = branchFacts.get(key);
+      if (!fact) continue;
+      retainedFactsCompared++;
+      const bytes = ready.get(key);
+      if (!bytes || compareBytes(fact, bytes) !== 0) {
         discard();
-        break;
+        return;
       }
     }
+    retainedView = ready;
+    addedFacts.clear();
   }
   return Object.assign(validate, {
     evict: () => {
@@ -267,6 +288,8 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
           ),
         0,
       ),
+      retainedFactsCompared,
+      retainedIndexNodesVisited,
     }),
     encodeNativeState: () => cache?.encodeState() ?? Uint8Array.of(0, 0),
     retainReadyFacts,
