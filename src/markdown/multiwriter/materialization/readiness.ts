@@ -15,6 +15,8 @@ import type {
 } from '../actions/store.js';
 import { actionKey, validCertifiedReferencesSteps } from '../actions/references.js';
 import { groupKey } from '../visibility/identity.js';
+import { registerReadySource } from '../authoring/ready-source.js';
+import { MaterializedReadyIndex } from './ready-index.js';
 import type { ActionEnvelope, ActionId, ActionReadiness, Allocation } from '../contracts.js';
 import { compareActions } from '../contracts.js';
 import type { Work } from '../ingest/work.js';
@@ -103,6 +105,8 @@ export class IndexedActionStore extends ActionStore {
   private certificateIndex?: MapRoot<Certificate>;
   private staged?: Certificate;
   private rebuildReaders = false;
+  private readonly readyOwner = {};
+  private readyIndex = new MaterializedReadyIndex(this.readyOwner);
   private readonly genesisResources = new Map(
     this.options.genesisAllocations.map((a) => [a.id.ordinal, a]),
   );
@@ -487,6 +491,17 @@ export class IndexedActionStore extends ActionStore {
       integrity: status.integrity,
       diagnostics: status.diagnostics.slice(),
     };
+    const changes = new Map<string, ActionEnvelope | undefined>();
+    if (status.integrity)
+      for (const key of affected) {
+        yield;
+        changes.set(key, this.ready.get(key));
+      }
+    const readyIndex = status.integrity
+      ? yield* this.readyIndex.refineSteps(changes, ready.at(-1)?.lamport ?? 0n)
+      : new MaterializedReadyIndex(this.readyOwner);
+    registerReadySource(value.ready, readyIndex);
+    this.readyIndex = readyIndex;
     // Cancellation retains the entire dirty closure until the coherent read exists.
     this.changed.clear();
     this.memo = { version, value };
@@ -499,6 +514,7 @@ export class IndexedActionStore extends ActionStore {
     this.cancelRead();
     this.memo = undefined;
     this.records = undefined;
+    this.readyIndex = new MaterializedReadyIndex(this.readyOwner);
     this.certificateIndex = undefined;
     this.staged = undefined;
     this.changed.clear();
@@ -524,6 +540,7 @@ export class IndexedActionStore extends ActionStore {
     this.cancelRead();
     this.memo = undefined;
     this.records = undefined;
+    this.readyIndex = new MaterializedReadyIndex(this.readyOwner);
     this.certificateIndex = undefined;
     this.staged = undefined;
     super.destroy();

@@ -9,6 +9,8 @@ import { DEFAULT_INGEST_LIMITS, IngestDataError, assertLimit, compute } from '..
 import type { Computation, Work } from '../ingest/work.js';
 import type { NativeBody } from '../text/types.js';
 import { MaterializedNative } from './native.js';
+import { readySource } from '../authoring/ready-source.js';
+import type { ReadySource } from '../authoring/ready-source.js';
 
 export interface MaterializationWork {
   nativeBodiesIntegrated: number;
@@ -18,6 +20,9 @@ export interface MaterializationWork {
   fullProjections: number;
   unchangedRefreshes: number;
   discardedNativeCandidates: number;
+  nativeMembershipScanned: number;
+  nativeReadyActionsVisited: number;
+  readyIndexNodesVisited: number;
 }
 /** Incremental native stage. Readiness and semantic reduction still use the full oracle.
  * These fallbacks are explicit in diagnostics; this is not the completed MW-13 fast path.
@@ -30,6 +35,7 @@ export class MaterializedPublication<T> {
   private active?: Work<PublishedProjection<T>>;
   private native?: MaterializedNative;
   private integrated = new Map<string, Uint8Array>();
+  private nativeSource?: ReadySource;
   private closed = false;
   private refreshing = false;
   private readonly counts: MaterializationWork = {
@@ -40,6 +46,9 @@ export class MaterializedPublication<T> {
     fullProjections: 0,
     unchangedRefreshes: 0,
     discardedNativeCandidates: 0,
+    nativeMembershipScanned: 0,
+    nativeReadyActionsVisited: 0,
+    readyIndexNodesVisited: 0,
   };
   constructor(
     private readonly store: ActionStore,
@@ -132,8 +141,17 @@ export class MaterializedPublication<T> {
         this.counts.unchangedRefreshes++;
         return this.published;
       }
+      const source = readySource(snapshot.ready);
+      const delta = source && this.nativeSource ? source.additions(this.nativeSource) : undefined;
+      if (delta) this.counts.readyIndexNodesVisited += delta.nodesVisited;
+      // Native integration can advance before a suspended publication is cancelled.
+      // Only a completely integrated set gets an index token. Partial integration
+      // must use the full membership check on its next attempt.
+      this.nativeSource = undefined;
       if (
+        !delta &&
         [...this.integrated].some(([key, bytes]) => {
+          this.counts.nativeMembershipScanned++;
           const next = variants.get(key);
           return !next || compareBytes(next, bytes) !== 0;
         })
@@ -145,13 +163,15 @@ export class MaterializedPublication<T> {
         this.native = new MaterializedNative(this.decodeOperations);
         yield* this.apply('genesis', this.genesis);
       }
-      for (const action of snapshot.ready) {
+      for (const action of delta?.actions ?? snapshot.ready) {
         yield;
+        this.counts.nativeReadyActionsVisited++;
         const key = actionKey(action.id);
         if (this.integrated.has(key)) continue;
         yield* this.apply(key, action);
         this.integrated.set(key, variants.get(key)!);
       }
+      this.nativeSource = source;
       const native = Object.freeze(this.native.view());
       const fullBefore = this.reduction.fullProjectionCount?.();
       const value = yield* this.reduce(snapshot.ready, native, variants);
@@ -210,6 +230,15 @@ export class MaterializedPublication<T> {
       this.snapshot.ready.length !== snapshot.ready.length
     )
       return false;
+    const source = readySource(snapshot.ready),
+      before = readySource(this.snapshot.ready);
+    if (source && before) {
+      const delta = source.additions(before);
+      if (delta) {
+        this.counts.readyIndexNodesVisited += delta.nodesVisited;
+        return delta.actions.length === 0;
+      }
+    }
     return [...this.snapshot.variants].every(([key, bytes]) => {
       const next = snapshot.variants.get(key);
       return next !== undefined && (next === bytes || compareBytes(next, bytes) === 0);
@@ -242,6 +271,7 @@ export class MaterializedPublication<T> {
     this.native?.destroy();
     this.native = undefined;
     this.integrated.clear();
+    this.nativeSource = undefined;
   }
   destroy(): void {
     this.cancel();

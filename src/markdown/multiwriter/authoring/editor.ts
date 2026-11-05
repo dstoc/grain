@@ -29,6 +29,8 @@ import { nativeView } from '../ingest/publication.js';
 import type { StableSelection } from '../history/selection.js';
 export type { StableSelection } from '../history/selection.js';
 import { commandViewIndex } from './view-index.js';
+import { readySource } from './ready-source.js';
+import type { ReadySource } from './ready-source.js';
 import { MultiwriterCommandDraft } from './draft.js';
 import { CommandCompiler, ConversionDeclined } from './compiler.js';
 
@@ -80,6 +82,18 @@ export class LocalEditor {
   private editing = false;
   private closed = false;
   private applied = new Set<string>();
+  private synced?: ReadySource;
+  private readonly ahead = new Set<string>();
+  private readonly writerWork = {
+    readyActionsScanned: 0,
+    readyIndexNodesVisited: 0,
+    nativeBodiesApplied: 0,
+    nativeRebuilds: 0,
+    frontierActionsScanned: 0,
+  };
+  writerDiagnostics() {
+    return { ...this.writerWork };
+  }
   private readonly sessions = new Map<string, HistorySession>();
   private readonly unmanaged = new Set<string>();
   /** A live session's identity cannot also be used by the low-level writer. */
@@ -151,11 +165,21 @@ export class LocalEditor {
     const p = this.current(),
       ready = this.document.readyActions?.() ?? this.document.store.snapshot().ready;
     this.sync(ready);
-    const previousSequence = ready
-      .filter((a) => a.id.actor === this.actor)
-      .reduce((n, a) => (a.id.sequence > n ? a.id.sequence : n), this.sequence);
+    const source = readySource(ready);
+    const knownSequence =
+      source?.sequence(this.actor) ??
+      ready.reduce((n, a) => {
+        this.writerWork.frontierActionsScanned++;
+        return a.id.actor === this.actor && a.id.sequence > n ? a.id.sequence : n;
+      }, 0n);
+    const previousSequence = knownSequence > this.sequence ? knownSequence : this.sequence;
     const id = { actor: this.actor, sequence: previousSequence + 1n };
-    const lamport = ready.reduce((max, a) => (a.lamport > max ? a.lamport : max), 0n) + 1n;
+    const lamport =
+      (source?.maxLamport ??
+        ready.reduce((max, a) => {
+          this.writerWork.frontierActionsScanned++;
+          return a.lamport > max ? a.lamport : max;
+        }, 0n)) + 1n;
     assertCounter(id.sequence);
     assertCounter(lamport);
     const dependencies = [...p.heads];
@@ -184,6 +208,7 @@ export class LocalEditor {
     const retain = () => {
       prepared?.commit();
       this.applied.add(`${envelope.id.actor}:${envelope.id.sequence}`);
+      this.ahead.add(`${envelope.id.actor}:${envelope.id.sequence}`);
       this.sequence = envelope.id.sequence;
       register();
     };
@@ -268,20 +293,36 @@ export class LocalEditor {
     return found;
   }
   private sync(ready: readonly ActionEnvelope[]) {
-    const keys = new Set(ready.map((a) => `${a.id.actor}:${a.id.sequence}`));
-    if ([...this.applied].some((k) => !keys.has(k))) {
-      this.native.destroy();
-      this.native = new NativeTapeCache(this.nativeDecodeOperations);
-      this.native.apply('genesis', this.genesis.body);
-      this.applied.clear();
+    const source = readySource(ready);
+    const delta =
+      source && this.synced && [...this.ahead].every((key) => source.has(key))
+        ? source.additions(this.synced)
+        : undefined;
+    this.synced = undefined;
+    if (delta) this.writerWork.readyIndexNodesVisited += delta.nodesVisited;
+    else {
+      const keys = new Set(ready.map((a) => `${a.id.actor}:${a.id.sequence}`));
+      this.writerWork.readyActionsScanned += ready.length;
+      if ([...this.applied].some((k) => !keys.has(k))) {
+        this.native.destroy();
+        this.native = new NativeTapeCache(this.nativeDecodeOperations);
+        this.native.apply('genesis', this.genesis.body);
+        this.applied.clear();
+        this.writerWork.nativeRebuilds++;
+      }
     }
-    for (const a of ready) {
+    const additions = delta?.actions ?? ready;
+    if (!delta) this.writerWork.readyActionsScanned += additions.length;
+    for (const a of additions) {
       const key = `${a.id.actor}:${a.id.sequence}`;
       if (!this.applied.has(key)) {
         this.native.apply(key, a);
         this.applied.add(key);
+        this.writerWork.nativeBodiesApplied++;
       }
     }
+    this.ahead.clear();
+    this.synced = source;
   }
   edit<Input>(
     session: AuthorSession,
@@ -561,6 +602,9 @@ export class LocalEditor {
   destroy(): void {
     if (this.editing) throw new Error('Cannot close during a local edit');
     this.closed = true;
+    this.synced = undefined;
+    this.ahead.clear();
+    this.applied.clear();
     this.native.destroy();
   }
 }

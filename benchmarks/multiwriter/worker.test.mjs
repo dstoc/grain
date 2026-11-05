@@ -232,6 +232,7 @@ test('discarded publication roots are collectable while held publications remain
         String.raw`
       import { commandGenesis, commandReplica } from './test/multiwriter/commands/replica.ts';
       import { insertText } from './src/editing/commands/insert-text.ts';
+      import { readySource } from './src/markdown/multiwriter/authoring/ready-source.ts';
       const turn = () => new Promise(resolve => setImmediate(resolve));
       const results = [];
       for (const managed of [false, true]) {
@@ -243,9 +244,12 @@ test('discarded publication roots are collectable while held publications remain
         const retired = (() => {
           edit(1);
           const value = peer.document.publication.status().publication;
-          return [new WeakRef(value.value), new WeakRef(value.native), new WeakRef(value.value.view.root)];
+          const ready = peer.document.store.readReady().ready;
+          return [new WeakRef(value.value), new WeakRef(value.native), new WeakRef(value.value.view.root), new WeakRef(ready), new WeakRef(readySource(ready))];
         })();
         let held = peer.document.publication.status().publication;
+        let heldReady = peer.document.store.readReady().ready;
+        let heldSource = readySource(heldReady);
         const retainedNative = held.native.encodeState(), retainedText = held.value.view.root.children[0].content;
         for (let i = 2; i <= 16; i++) edit(i);
         await turn(); global.gc(); global.gc();
@@ -255,7 +259,8 @@ test('discarded publication roots are collectable while held publications remain
         const heldAfter = retired.every(ref => ref.deref() !== undefined);
         if (held.value.view.root.children[0].content !== retainedText ||
             !Buffer.from(held.native.encodeState()).equals(retainedNative)) throw new Error('Held publication changed');
-        held = undefined;
+        if (!heldSource.has(heldReady[0].id.actor + ':' + heldReady[0].id.sequence)) throw new Error('Held ready metadata changed');
+        held = undefined; heldReady = undefined; heldSource = undefined;
         let released = false;
         for (let i = 0; i < 10; i++) {
           await turn(); global.gc(); global.gc();
