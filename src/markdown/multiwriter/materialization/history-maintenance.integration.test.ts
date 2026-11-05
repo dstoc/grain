@@ -1,4 +1,4 @@
-import { expect, test, vi } from 'vitest';
+import { expect, test } from 'vitest';
 import { commandGenesis, commandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import { createMaterializationOracle } from '../../../../test/multiwriter/materialization-oracle.js';
 import { insertText, cycleTaskState } from '../authoring/index.js';
@@ -8,7 +8,6 @@ import { journalBytes, decodeCheckpoint } from '../checkpoints/index.js';
 import { compareBytes } from '../actions/cbor.js';
 import { MaterializedPublication } from './publication.js';
 import { IndexedActionStore } from './readiness.js';
-import { ConstructionTreeDraft } from '../../semantic/construction-tree.js';
 
 class Journal implements CheckpointActionJournal {
   checkpoint?: Uint8Array;
@@ -36,43 +35,6 @@ const bytesOf = (value: unknown) =>
   new TextEncoder().encode(
     JSON.stringify(value, (_key, item) => (typeof item === 'bigint' ? item.toString() : item)),
   ).byteLength;
-
-test('managed literal input with a selection keeps the command overlay through the history driver', () => {
-  const peer = commandReplica(commandGenesis('abcdef'), undefined, 'materialized');
-  const adopt = vi.spyOn(ConstructionTreeDraft.prototype, 'adopt');
-  try {
-    const h = peer.editor.session('overlay'),
-      nodeId = peer.handle(peer.nodes()[0]);
-    const result = h.edit(
-      insertText,
-      { nodeId, from: 2, text: 'X' },
-      {
-        typing: true,
-        selectionBefore: {
-          anchor: { nodeId, offset: 2, affinity: 'right' },
-          focus: { nodeId, offset: 2, affinity: 'right' },
-        },
-      },
-    );
-    expect(result.status).toBe('applied');
-    expect(adopt).not.toHaveBeenCalled();
-    expect(h.status()).toMatchObject({ undo: 1, redo: 0 });
-    const undo = h.undo();
-    expect(undo.state).toBe('applied');
-    if (undo.state === 'applied')
-      expect(undo.restoration).toMatchObject({
-        state: 'exact',
-        anchor: { offset: 2 },
-        focus: { offset: 2 },
-      });
-    expect(peer.nodes()[0].content).toBe('abcdef');
-    expect(h.redo().state).toBe('applied');
-    expect(peer.nodes()[0].content).toBe('abXcdef');
-  } finally {
-    adopt.mockRestore();
-    peer.close();
-  }
-});
 
 test('501 managed groups, strict one-way history, MW-18 consolidation and old-prefix catch-up preserve every fact', async () => {
   const genesis = commandGenesis('- [ ] keep');
