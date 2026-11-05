@@ -90,15 +90,16 @@ function project(input: ProjectionInput, groupActivity: Activity, structure?: Pr
     ...activity.actions.flatMap((action) => action.allocations),
   ];
   const initial = input.initialProperties ?? [];
+  const propertyNodes = initial.length
+    ? new Set(
+        allocations
+          .filter((allocation) => allocation.type === 'node')
+          .map((node) => resourceKey(node.id)),
+      )
+    : undefined;
   if (
     new Set(initial.map((entry) => resourceKey(entry.node))).size !== initial.length ||
-    initial.some(
-      (entry) =>
-        !allocations.some(
-          (allocation) =>
-            allocation.type === 'node' && resourceKey(allocation.id) === resourceKey(entry.node),
-        ),
-    )
+    initial.some((entry) => !propertyNodes!.has(resourceKey(entry.node)))
   )
     throw new ProjectionError('Initial properties require unique retained node origins');
   const read = (range: NativeTextRange) =>
