@@ -70,7 +70,6 @@ export class MaterializedLayout {
   // Run → immutable flow, flow → run or own block terminal; block terminals end ancestry.
   private inline = new PersistentMap<ForestEdge<string, FlowPlacement | null>>();
   private actions = new PersistentMap<true>();
-  private observes?: (id: ActionId) => boolean;
   private current: LayoutAction | null = null;
   private nextOrdinal = 0;
   private rootId: NodeId | null = null;
@@ -88,7 +87,6 @@ export class MaterializedLayout {
       this.blocks = source.blocks.fork();
       this.inline = source.inline.fork();
       this.actions = source.actions.fork();
-      this.observes = source.observes;
       this.current = source.current;
       this.nextOrdinal = source.nextOrdinal;
       this.rootId = source.rootId;
@@ -215,12 +213,12 @@ export class MaterializedLayout {
       if (!this.actions.has(actionKey(dependency))) throw new Error('Missing action dependency');
     this.actions.set(key, true);
     if (!observes) throw new Error('Coupled replay requires certified causal membership');
-    this.observes = observes;
     this.current = action;
     this.nextOrdinal = 0;
     this.allocate(
       { allocations: action.allocations, births: structuredClone(input.births) },
       action,
+      observes,
     );
   }
   /** Call once per effect, including inactive and non-layout effects, in ordinal order. */
@@ -339,7 +337,11 @@ export class MaterializedLayout {
     const placement: FlowPlacement = { flow: id, parent: { type: 'block', node: flow.home } };
     return replaceEdge(this.inline, resourceKey(id), resourceKey(flow.home), placement, true);
   }
-  private allocate(batch: LayoutGenesis, action: LayoutAction | null): void {
+  private allocate(
+    batch: LayoutGenesis,
+    action: LayoutAction | null,
+    observes?: (id: ActionId) => boolean,
+  ): void {
     const orderById = new Map<string, EffectOrder>();
     for (const [ordinal, effect] of (action?.effects ?? []).entries()) {
       for (const id of effectOccurrences(effect)) {
@@ -430,7 +432,7 @@ export class MaterializedLayout {
           if (
             previous.order &&
             actionKey(previous.order.action.id) !== actionKey(action.id) &&
-            !this.observes!(previous.order.action.id)
+            !observes!(previous.order.action.id)
           )
             throw new Error('Predecessor is not causally available');
         }

@@ -231,7 +231,11 @@ export class MaterializedOwnership {
           throw new Error('Coupled candidate is no longer current');
         committed = true;
         this.state = result.state;
-        this.resources = result;
+        this.resources = {
+          homes: result.homes,
+          cohorts: result.cohorts,
+          requirements: result.requirements,
+        };
         this.native = input.native;
         this.order = order;
         this.markers = markers;

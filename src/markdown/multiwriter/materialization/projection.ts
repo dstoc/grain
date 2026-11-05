@@ -70,6 +70,40 @@ function recordDeletions(index: State['deletions'], action: ActionEnvelope): voi
       ]);
   }
 }
+/** Escaping lazy readers own only current roots. Defining these inside append
+ * would also retain that edit's lexical context and its previous State. */
+function textActivity(
+  groupActivity: Activity,
+  interpretations: Projection['interpretations'],
+): Projection['activity'] {
+  const effectActive = (ref: Parameters<Activity['isEffectActive']>[0]) =>
+    groupActivity.isEffectActive(ref) && interpretations.effectEligible(ref);
+  return {
+    get actions() {
+      return groupActivity.actions;
+    },
+    get effects() {
+      return groupActivity.effects.filter(effectActive);
+    },
+    isActive: groupActivity.isActive,
+    observes: groupActivity.observes,
+    concurrent: groupActivity.concurrent,
+    isEffectActive: effectActive,
+  };
+}
+function textVisibility(
+  tapes: readonly TapeId[],
+  text: State['text'],
+  nodes: Projection['visibility']['nodes'],
+): Projection['visibility'] {
+  let allText: readonly TextVisibility[] | undefined;
+  return {
+    get text() {
+      return (allText ??= tapes.flatMap((tape) => text.get(resourceKey(tape))?.entries ?? []));
+    },
+    nodes,
+  };
+}
 function freeze<T>(value: T): T {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) freeze(child);
@@ -500,37 +534,15 @@ export class MaterializedProjection {
       }
     }
     const interpretations = before.value.interpretations;
-    const effectActive = (ref: Parameters<Activity['isEffectActive']>[0]) =>
-      groupActivity.isEffectActive(ref) && interpretations.effectEligible(ref);
-    const activity = {
-      get actions() {
-        return groupActivity.actions;
-      },
-      get effects() {
-        return groupActivity.effects.filter(effectActive);
-      },
-      isActive: groupActivity.isActive,
-      observes: groupActivity.observes,
-      concurrent: groupActivity.concurrent,
-      isEffectActive: effectActive,
-    };
-    let allText: readonly TextVisibility[] | undefined;
     const value: Projection = {
       view: Object.freeze({
         root: nodes.get(key(before.value.view.root))!.node,
         emptyRoot: before.value.view.emptyRoot,
       }),
       ownership,
-      activity,
+      activity: textActivity(groupActivity, interpretations),
       interpretations,
-      visibility: {
-        get text() {
-          return (allText ??= before.tapes.flatMap(
-            (tape) => text.get(resourceKey(tape))?.entries ?? [],
-          ));
-        },
-        nodes: before.value.visibility.nodes,
-      },
+      visibility: textVisibility(before.tapes, text, before.value.visibility.nodes),
     };
     const commandOrigins = before.commandOrigins.fork();
     for (const node of changed.values())
