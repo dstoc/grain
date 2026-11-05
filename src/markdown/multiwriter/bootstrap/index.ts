@@ -4,6 +4,7 @@ export {
   createGenesis,
   decodeGenesis,
   encodeGenesis,
+  referenceGenesis,
 } from './descriptor.js';
 export type { BootstrapLimits, GenesisDescriptor } from './descriptor.js';
 export { decodeBundle, encodeBundle, openBootstrap } from './bundle.js';

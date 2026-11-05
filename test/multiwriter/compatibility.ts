@@ -1,5 +1,9 @@
 /** Baseline 1d76dddbd8620c5dc92b02ccb1c45e67af7ddc46: preserve behavior, not authority machinery. */
 export const compatibilityInventory = {
+  replicas: [
+    'src/markdown/multiwriter/replica/replica.test.ts',
+    'src/markdown/multiwriter/replica/render.test.ts',
+  ],
   providers: [
     'src/markdown/multiwriter/providers/adapter.test.ts',
     'src/markdown/multiwriter/providers/indexeddb.browser.test.ts',
@@ -29,6 +33,7 @@ export const compatibilityInventory = {
     'src/markdown/parser-unicode.review.test.ts',
   ],
   browser: [
+    'src/editing/multiwriter-editor.browser.test.ts',
     'src/decorators.browser.test.ts',
     'src/editing/canonical-editor.browser.test.ts',
     'src/editing/canonical-editor.correction.browser.test.ts',

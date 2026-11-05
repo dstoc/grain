@@ -200,3 +200,47 @@ persistence retry and 501 actual local groups with an old-prefix writer.
 These are headless controls. Existing browser selection, IME, clipboard and focus
 cases remain active until the later schema-3 browser integration gate supplies
 mounted replacements.
+
+## MW-14 experimental browser and headless integration
+
+No schema-2 tests are retired by this change. `main.ts` keeps its existing path
+until MW-13 acceptance and the remaining mounted matrix permit normal cutover.
+The new schema-3 cases use real common-genesis replicas, provider ingress and
+managed local history. They add the following named compatibility evidence in
+`src/editing/multiwriter-editor.browser.test.ts`:
+
+| Existing contract                                                         | Schema-3 case title                                                                               |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| Trusted typing, Enter, Backspace, independent undo/redo                   | `trusted typing, Enter, Backspace join and per-pane undo/redo use independent replicas`           |
+| Remote prepend, current native caret, unaffected DOM, inactive-pane focus | `remote prepend maps native caret and preserves distant DOM without focusing another pane`        |
+| Paste, task state, indent, copy and undo                                  | `Markdown paste, task state, indentation and block clipboard retain undo`                         |
+| Deletion fallback and render-only empty root                              | `remote deletion resolves fallback and empty-root caret does not author until input`              |
+| Code Enter, trailing LF, Unicode and paste undo                           | `trusted code Enter and plain text paste preserve trailing LF and Unicode`                        |
+| Native composition commit and isolated history                            | `CDP composition commits once through managed history`                                            |
+| Split recovery and one queued-input handoff                               | `composition invalidation follows split ownership and replays queued input exactly once`          |
+| Source focus during recovery                                              | `composition recovery cannot steal focus after Source wins an asynchronous render race`           |
+| Composition target deletion                                               | `a remote deletion during composition cancels the native branch and later typing uses fallback`   |
+| Native text/plain paste and cut failure                                   | `native text/plain-only paste remains literal and failed block cut leaves the document selected`  |
+| Exact IndexedDB restart and per-instance navigation                       | `same-account mounted restart preserves exact native state and only resets the restarted history` |
+| Nested host input and undo/redo                                           | `nested host input, selection and history stay in the initiating projected section`               |
+| Toolbar focus and pane attribution                                        | `toolbar navigation and edits target the initiating pane after toolbar focus`                     |
+| Independent host and command scope                                        | `scoped browser commands validate scope separately from the initiating host`                      |
+| Directional selected deletion/replacement                                 | `selected-block Delete preserves direction through undo and continued replacement`                |
+| Shift+Enter and supplementary IME                                         | `trusted Shift+Enter and supplementary-character composition round-trip through history`          |
+| Successful block cut                                                      | `successful block cut keeps Markdown markers and undo restores the selected block`                |
+| Composition continuity                                                    | `mode changes and a distant remote edit preserve a valid native composition`                      |
+| Retained-error selection and continued typing                             | `retained publication failure restores its staged caret without duplicating text or history`      |
+| Stale edits and deletion-wins                                             | `stale mounted typing and splitting cannot rescue a deleted native suffix`                        |
+
+`src/markdown/multiwriter/replica/replica.test.ts` supplies the composed 4×4
+endpoint matrix, strict one-way prerequisites, mode/history continuity,
+close/retry/restart, deferred publication, original-message controls, observer
+isolation, retained edits and unresolved ingress restart. Provider-only and
+reference tests remain independent supporting controls.
+
+The matrix is incomplete for normal cutover. It still needs the accepted MW-13
+engine under ordinary input, broader scoped replacement/alias migration,
+composition changes during every recovery wait (including nested selected
+composition and toolbar/pane changes), both mobile viewport/caret bounds, and
+physical device follow-up. Existing schema-2 tests continue to cover these
+historical paths; their results do not establish schema-3 acceptance.
