@@ -91,6 +91,7 @@ export class ActionStore {
   private decodeDepth: number;
   private decodeOperations: number;
   private readonly options: ActionStoreOptions;
+  private updateErrors?: unknown[];
 
   constructor(options: ActionStoreOptions) {
     if (typeof options.validate !== 'function') throw new Error('Action validation is required');
@@ -163,13 +164,13 @@ export class ActionStore {
 
   /** Also retains malformed/unsupported envelopes for diagnostics and lossless exchange. */
   appendEncoded(bytes: Uint8Array): void {
-    this.envelopes.push([bytes.slice()]);
+    this.mutate(() => this.envelopes.push([bytes.slice()]));
   }
 
   applyUpdate(update: Uint8Array): void {
     preflightUpdate(update, 'carrier', this.decodeOperations);
     this.revision++;
-    Y.applyUpdate(this.doc, update.slice());
+    this.mutate(() => Y.applyUpdate(this.doc, update.slice()));
   }
 
   /** Retry held bytes after a local capacity change. No canonical facts are removed. */
@@ -203,11 +204,39 @@ export class ActionStore {
     return Y.encodeStateVector(this.doc);
   }
 
-  /** Persistence/provider hook. Each listener receives its own copy of the update. */
+  /** Persistence/provider hook. Each listener receives its own copy of the update.
+   * Listener failures surface after native cleanup and all update notifications finish.
+   * The mutation is retained; the first failure is rethrown to the mutation caller.
+   */
   onUpdate(listener: (update: Uint8Array) => void): () => void {
-    const callback = (update: Uint8Array) => listener(update.slice());
+    const callback = (update: Uint8Array) => {
+      try {
+        listener(update.slice());
+      } catch (error) {
+        this.updateErrors!.push(error);
+      }
+    };
     this.doc.on('update', callback);
     return () => this.doc.off('update', callback);
+  }
+
+  private mutate(write: () => void): void {
+    // Reentrant writes from listeners share the outer boundary. Throwing inside Yjs's
+    // update event can strand its transaction cleanup queue and stop later collection.
+    if (this.updateErrors) {
+      write();
+      return;
+    }
+    const errors: unknown[] = [];
+    this.updateErrors = errors;
+    try {
+      write();
+    } catch (error) {
+      errors.push(error);
+    } finally {
+      this.updateErrors = undefined;
+    }
+    if (errors.length) throw errors[0];
   }
 
   destroy(): void {

@@ -227,13 +227,11 @@ for (const point of ['certify', 'append', 'observer', 'refresh'] as const)
             ? vi.spyOn(a.document.publication, 'refresh').mockImplementationOnce(() => {
                 throw new Error('injected');
               })
-            : (() => {
-                const append = a.document.store.append.bind(a.document.store);
-                return vi.spyOn(a.document.store, 'append').mockImplementationOnce((e) => {
-                  append(e);
+            : {
+                mockRestore: a.document.store.onUpdate(() => {
                   throw new Error('injected');
-                });
-              })();
+                }),
+              };
     const retained = point === 'observer' || point === 'refresh';
     let spy = inject();
     expect(() => type(a, 'x')).toThrow(retained ? RetainedEditError : Error);
