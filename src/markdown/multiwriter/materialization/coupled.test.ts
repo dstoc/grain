@@ -71,7 +71,7 @@ test('text append preserves unaffected view/address/handle records and old nativ
   }
 });
 
-test('coupled checkpoints restore before the earliest controlled target, then survive eviction/restart', () => {
+test('text-only controls preserve coupled roots and checkpoints through eviction/restart', () => {
   const p = open('abc'),
     oracle = createMaterializationOracle();
   try {
@@ -84,16 +84,16 @@ test('coupled checkpoints restore before the earliest controlled target, then su
     oracle.check(p.document, p.genesis);
     const undo = control(p, edits[129], false);
     expect(diagnostics(p).ownership).toMatchObject({
-      lastReplayFrom: 128,
-      lastReplayLength: 5,
-      checkpointRestores: 1,
+      lastReplayFrom: 132,
+      lastReplayLength: 1,
+      checkpointRestores: 0,
     });
     oracle.check(p.document, p.genesis);
     control(p, edits[129], true, undo);
     expect(diagnostics(p).ownership).toMatchObject({
-      lastReplayFrom: 128,
-      lastReplayLength: 6,
-      checkpointRestores: 2,
+      lastReplayFrom: 133,
+      lastReplayLength: 1,
+      checkpointRestores: 0,
     });
     oracle.check(p.document, p.genesis);
     const bytes = p.document.store.encodeUpdate();
@@ -238,7 +238,7 @@ test('bracketed edge typing refines cells and historical checkpoints without ful
     expect(compareBytes(before.native.encodeState(), oldNative)).toBe(0);
     oracle.check(p.document, p.genesis);
     const undo = control(p, edits[129], false);
-    expect(diagnostics(p).ownership.lastReplayFrom).toBe(128);
+    expect(diagnostics(p).ownership.lastReplayFrom).toBe(132);
     oracle.check(p.document, p.genesis);
     control(p, edits[129], true, undo);
     oracle.check(p.document, p.genesis);

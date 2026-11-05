@@ -75,13 +75,13 @@ test('refines checkpoint cell roots through later brackets before undo, redo and
       nativeMarkerFallbacks: 0,
     });
     expect(counters.get(133)).toMatchObject({
-      lastReplayFrom: 128,
-      lastReplayLength: 5,
+      lastReplayFrom: 132,
+      lastReplayLength: 1,
       nativeMarkerFallbacks: 0,
     });
     expect(counters.get(134)).toMatchObject({
-      lastReplayFrom: 128,
-      lastReplayLength: 6,
+      lastReplayFrom: 133,
+      lastReplayLength: 1,
       nativeMarkerFallbacks: 0,
     });
   } finally {

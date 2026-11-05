@@ -1,5 +1,5 @@
 import { OwnershipResult } from '../ownership/ownership.js';
-import { isTextRefinement } from '../ownership/text-validation.js';
+import { isTextRefinement, textControlTargets } from '../ownership/text-validation.js';
 import { cellKey } from '../ownership/cells.js';
 import { PersistentMap } from './map.js';
 import type { TapeSnapshot } from '../text/types.js';
@@ -252,20 +252,24 @@ export class MaterializedOwnership {
     const action = actions.at(-1),
       prior = this.state,
       resources = this.resources;
-    if (
-      !prior ||
-      !resources ||
-      !this.native ||
-      !action ||
-      actions.length !== this.order.length + 1 ||
-      !isTextRefinement(action) ||
-      this.order.some(
-        (payload, i) =>
-          payload.key !== actionKey(actions.at(i)!.id) ||
-          variants.get(payload.key) !== payload.bytes,
-      )
-    )
+    if (!prior || !resources || !this.native || !action || actions.length !== this.order.length + 1)
       return undefined;
+    const textAction = isTextRefinement(action);
+    const byId = textAction ? undefined : new Map<string, typeof action>();
+    for (let i = 0; i < this.order.length; i++) {
+      const payload = this.order[i],
+        retained = actions.at(i)!;
+      if (payload.key !== actionKey(retained.id) || variants.get(payload.key) !== payload.bytes)
+        return undefined;
+      byId?.set(payload.key, retained);
+    }
+    const changes = textAction
+      ? [action]
+      : textControlTargets(action, (id) => byId!.get(actionKey(id)));
+    if (!changes) return undefined;
+    const controlTargets = textAction
+      ? undefined
+      : new Set(changes.map((target) => actionKey(target.id)));
     const touched = stagedTapes ?? changedNativeTapes(this.native, native);
     if (!touched) return undefined;
     const hasMarkers = action.allocations.some((allocation) => allocation.type === 'marker');
@@ -276,9 +280,7 @@ export class MaterializedOwnership {
     const index = prior.index.refine(snapshots);
     this.counts.nativeTapeReads += snapshots.length;
     this.counts.cellTapesIndexed += snapshots.length;
-    const { owners } = action.allocations.length
-      ? refineCheckpoint(prior, snapshots, index)
-      : prior;
+    const { owners } = hasMarkers ? refineCheckpoint(prior, snapshots, index) : prior;
     const snapshotCache = this.snapshots.fork();
     for (const snapshot of snapshots) snapshotCache.set(resourceKey(snapshot.tape), snapshot);
     const markers = this.markers.fork();
@@ -316,6 +318,8 @@ export class MaterializedOwnership {
     return {
       value,
       touched,
+      changes,
+      control: !textAction,
       commit: () => {
         if (committed || generation !== this.generation)
           throw new Error('Coupled text candidate is no longer current');
@@ -324,7 +328,20 @@ export class MaterializedOwnership {
         this.markers = markers;
         this.snapshots = snapshotCache;
         this.native = native;
-        this.order = [...this.order, payload];
+        const order = controlTargets
+          ? this.order.map((prior, i) => {
+              if (!controlTargets.has(prior.key)) return prior;
+              const target = actions.at(i)!;
+              const decisions = target.effects
+                .map(
+                  (_, ordinal) =>
+                    `${Number(activity.isEffectActive({ action: target.id, ordinal }))}0`,
+                )
+                .join('');
+              return decisions === prior.decisions ? prior : { ...prior, decisions };
+            })
+          : this.order;
+        this.order = [...order, payload];
         if (hasMarkers)
           this.checkpoints = this.checkpoints.map((checkpoint) =>
             refineCheckpoint(checkpoint, snapshots, index),
