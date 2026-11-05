@@ -13,17 +13,17 @@ Yjs remains pinned to 13.6.33. No browser cutover or canonical pruning is includ
 
 ## Current behavior
 
-| Boundary             | Reused work                                                                                                                                       | Remaining cost or fallback                                                                                                                                                                                                                 |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Readiness            | Reverse dependencies, immutable certificates, actor causal frontiers, ready-membership roots and resource queries                                 | Private readers use a persistent ordered sequence. Explicit diagnostic/public exports still materialize detached arrays. Payload roots and head dependencies update locally.                                                               |
-| Author certification | Exact causal native branch; touched-tape refinement; property-only updates query exact author-past resources                                      | Changed ready-payload paths validate retained author branches, including new unappended candidates. Structural actions and property controls still construct causal arrays; different author branches can reconstruct native state.        |
-| Native publication   | Shared ready-root differences select new native bodies; old views retain immutable roots                                                          | Range reads seek by position and visit the requested interval. Snapshot and cell construction still index the affected tape as a whole.                                                                                                    |
-| Activity             | Persistent roots and deterministic suffix replay                                                                                                  | Exact ready roots certify ordered appends. Earlier arrivals and unregistered inputs retain full comparison. Ordinary maps retain full author-branch compatibility checks.                                                                  |
-| Coupled replay       | Persistent placement/ownership roots, resource/home certificates and split topology-read intervals                                                | Endpoint minima bound mixed-overlap queries. Coupled checkpoints retain per-component coverage; only invalidated root flows are traversed. Cold replay certifies genesis once. Tape/cell construction remains global within touched tapes. |
-| Local projection     | Insertions, exact deletion/replacement, text controls and checked/info updates replace affected view records and ancestors                        | Subtree deletion, dormant births, scaffolds, presentation/marker changes, structural edits and interpretation still use full projection.                                                                                                   |
-| Command preparation  | Lazy text/checked/info overlays; participating split tapes; private coupled ownership forks; indexed native planning                              | Structural drafts still copy the semantic tree. Parser conversion, cold ownership preparation and general structural compatibility remain whole-state work.                                                                                |
-| Managed history      | Exact pre-append selection staging; local text and checked/info projection; structural staging reuses suffix-replayed ownership on a private fork | Structural staging still runs full visibility/normalization projection. Structural/property controls retain full author validation.                                                                                                        |
-| Cache eviction       | Drops readiness/author certificates and preimages, private native caches and historical reducer roots; reverse indexes rebuild on the next read   | Active publications retain shared roots. Cache counts and controlled released-heap deltas do not establish total cache heap or peak candidate memory.                                                                                      |
+| Boundary             | Reused work                                                                                                                                        | Remaining cost or fallback                                                                                                                                                                                                          |
+| -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Readiness            | Reverse dependencies, immutable certificates, actor causal frontiers, ready-membership roots and resource queries                                  | Private readers use a persistent ordered sequence. Explicit diagnostic/public exports still materialize detached arrays. Payload roots and head dependencies update locally.                                                        |
+| Author certification | Exact causal native branch; touched-tape refinement; property-only updates query exact author-past resources                                       | Changed ready-payload paths validate retained author branches, including new unappended candidates. Structural actions and property controls still construct causal arrays; different author branches can reconstruct native state. |
+| Native publication   | Immutable native tape roots copy affected item/index paths; old views keep prior roots                                                             | Yjs validation and position discovery can still walk retained context. Complete snapshots remain detached exports. Marker refinement and unindexed staging still rebuild affected cell indexes.                                     |
+| Activity             | Persistent roots and deterministic suffix replay                                                                                                   | Exact ready roots certify ordered appends. Earlier arrivals and unregistered inputs retain full comparison. Ordinary maps retain full author-branch compatibility checks.                                                           |
+| Coupled replay       | Exact append decisions, private activity/ownership forks, per-component coverage and split read intervals; marker-stable text reuses cell topology | Controls, earlier arrivals, selection changes and affected native reads retain conservative suffix replay. Native reader invalidation can still restart at genesis.                                                                 |
+| Local projection     | Affected text/properties and ancestor records; direct property overlays; unchanged fragments and addresses                                         | Visibility/tape arrays still traverse retained text. Structural/deletion/interpretation projection and normalization retain full paths.                                                                                             |
+| Command preparation  | Literal/property overlays and private activity/ownership forks compare only the candidate action on exact appends                                  | Structural drafts, birth arrays, parser conversion and unindexed native staging retain full paths.                                                                                                                                  |
+| Managed history      | Exact pre-append selection staging; local text and checked/info projection; structural staging reuses suffix-replayed ownership on a private fork  | Structural staging still runs full visibility/normalization projection. Structural/property controls retain full author validation.                                                                                                 |
+| Cache eviction       | Drops private derived caches and historical roots while active publications stay readable                                                          | Scoped history-navigation heap is measured separately. Total/shared/peak cache and broader mixed-history heap remain open.                                                                                                          |
 
 The independent reference entry still performs full readiness, native, activity,
 ownership, visibility and semantic replay. It does not call the optimized
@@ -47,7 +47,7 @@ including joined tapes outside its authored basis. Marker subdivision refines ea
 checkpoint's own assignments before the first affected reader. A tape unrelated
 to that reader does not invalidate its prefix. Checkpoints before a tape's birth
 do not acquire its ownership. Marker withdrawal or reordering forces replay from
-genesis. Old publications keep their original roots. Split readers now retain the marker intervals read by range, adjacency and token queries. New markers outside those intervals do not invalidate the split. Marker-order validation makes position and membership queries stable under subdivision. Reverse-read queries use a persistent endpoint minimum envelope, including mixed overlap. Point and gap minima retain strictly open endpoints. Native construction still indexes the whole touched tape.
+genesis. Old publications keep their original roots. Split readers now retain the marker intervals read by range, adjacency and token queries. New markers outside those intervals do not invalidate the split. Marker-order validation makes position and membership queries stable under subdivision. Reverse-read queries use a persistent endpoint minimum envelope, including mixed overlap. Point and gap minima retain strictly open endpoints. Native read-index construction now copies affected item paths. Marker refinement and unindexed command staging still rebuild affected cell tapes; explicit snapshot and visibility exports remain full.
 
 Preparation returns a candidate. The reader commits activity and projection only
 after complete publication. Cancellation, failure or changed receipts preserve
@@ -580,6 +580,77 @@ Sampling and fresh-writer costs make this diagnostic unsuitable for matched
 latency claims. It identifies a structural replay frontier to investigate; the
 mixed slowdown must not be attributed solely to the general visibility gate.
 
+## Native roots, retained cells and fragments stage
+
+Engine/test source: `11216a9905ef3306aaf95b7703b386e61852ab90`.
+Combined MW-10/MW-18 source: `0af6b0e69f8fda9eb61c4fa74a71d4b71129801e`.
+The four commits add exact structural append decisions and private activity forks,
+persistent checked/info overlays, affected-item native indexes, marker-stable cell
+reuse and unchanged fragment reuse. New native indexes preserve final Yjs item
+segmentation, including merges with retained text. Scalar UTF-16 ownership accepts
+both surrogate units; mutation/range boundaries retain Unicode checks. Native
+reader invalidation remains conservative.
+
+All 2,366 ordinary runnable Node cases pass across broad plus isolated reports.
+The occurrence audit preserves every incoming case and the original 194 source
+skips, with 17 additive cases. The unchanged materialization/reference retention
+cases pass alone in 272.553/218.252 seconds. Both opt-in wide-bootstrap cases pass.
+Build/web/lint/format/boundaries/both Knip modes and all seven benchmark/GC controls
+pass. Combined integration passes 405 checks in 39 files and build; real managed
+501 groups take 35.311 seconds and frozen checkpoint/history takes 127.637 seconds.
+These are source-scoped partitioned reports, not one unfiltered invocation. No new
+Chromium or completed CI result is claimed.
+
+Three alternating fresh-process native pairs use exact original carriers. At
+4,096 fragments, candidate native integration/index p50/p95 is 2.794/3.827 ms
+versus 14.224/17.458 ms incoming. It indexes 24 affected items across 24 inputs
+versus 196,956 complete tape parts. This native-only fixture excludes Markdown
+layout, visibility, authoring and history; it does not prove full core budgets or
+cache heap. At 64 fragments the corresponding timings are 0.294/0.395 versus
+0.445/0.560 ms.
+
+Three structural triples retain the original 150-paragraph fixture. Candidate
+split/join median per-process p50 is 519.984/394.030 ms, versus 510.491/396.069 ms
+incoming. Structural latency targets remain unmet. Three current/reference
+replacement pairs give candidate whole-command p50/p95 4.819/5.187 ms, versus
+409.442/417.863 ms full reference. Three shallow task pairs on the retained
+150-task genesis give 0.925/1.236 ms versus 1.681/1.877 ms incoming. API envelopes
+can overlap; these are not exclusive core timings or retained-depth acceptance.
+
+Exact 1,000-action prefix diagnostics at 94db930 and 11216a9 cold-match all five
+commands. Replacement stays local. Split/join still replay 1,002/1,003 actions
+from genesis; Undo/Redo resumes at 896 and replays 108/109. Whole-command sampled
+timings remain materially unchanged. The first CPU sample is too late to isolate
+the replacement phase by its nominal duration; no phase-cost conclusion is drawn.
+The original prefix remains diagnostic input, not a resumed long run.
+
+The actual MW-10 navigation-root heap probe authors 501 replacement groups on
+150 tasks. V8 strong-edge graph accounting finds 5,218,696 retained bytes through
+500 navigation groups, versus 23,304 bytes after limiting history to two. The
+session shell is a separate 200 bytes. Navigation data is counted once and split
+into exclusive/shared reachability; raw full-GC snapshots and an owned/shared
+control are retained. Canonical/native bytes remain unchanged through history and
+cache eviction; continued Undo/Redo cold-matches reference. This scoped graph
+method is not total session-driver memory, total/shared/peak cache attribution,
+physical storage, or broad mixed-history heap acceptance.
+
+The new combined 150-task 10,000-action attempt ends incomplete (exit 124) during authoring. Its unchanged 2,100-second guard preserves 3,000 checked source/control actions and 3,000 complete original carrier frames, with 0 trailing unparsed bytes. No restarted prefix is an uninterrupted result. The final long-run maintenance/catch-up/restart/cold sequence is not completed.
+The separate 100-action smoke completes the full final sequence. The original
+framed prefix reconstructs 3,000 outer records,
+2,949,597 envelope payload bytes including
+74,899 native-insertion bytes, and
+2,976,505 full actionDoc bytes. Outer-byte analysis
+does not certify semantic readiness or full projection. Memory-backed journals,
+diagnostic disk framing and sampled whole-process heap do not close physical
+storage or cache/history memory gates.
+
+The `native-interval-stage-verification`, `native-interval-stage-measurements`
+and `history-navigation-heap` issue artifacts retain exact sources, scripts,
+fixtures, raw samples and verified catalogs. Earlier artifacts and reports remain
+scoped to their original sources; the completed 5,000-paragraph report still
+belongs only to 17cab90. PR #79 still needs normal conflict resolution,
+independent review and merge. Keep PR #88 draft.
+
 ## Evidence and outstanding gates
 
 Focused checks cover detached exports, concurrent-resource exclusion, exact
@@ -592,29 +663,23 @@ column. The issue artifacts identify exact source heads and completed runs.
 
 Complete the following before accepting MW-13:
 
-1. Finish affected-interval native snapshot and cell construction. Range queries
-   and mixed-overlap reverse reads are bounded, but touched tapes are rebuilt.
-   Changed-component coverage is cached; general structural compatibility and
-   projection exports still traverse retained structure. Earlier-arrival resource
-   reconstruction is cold.
-2. Extend affected-container projection through deletion, dormant births,
-   interpretation selection, lifting, wrapper grouping and ordered numbering.
-3. Finish general structural compatibility and action-local structural compilation.
-   Private ordered reads avoid ready-array copying/sorting, and exact changed
-   payload paths validate retained author branches. Diagnostic arrays and ordinary
-   caller-supplied maps retain full exports/checks. Payload and head metadata update locally. Intermediate ownership and structural selection staging now reuse
-   private coupled forks, but semantic structural drafts still copy the tree,
-   parser conversion still projects fully and structural selection staging still
-   runs full visibility/normalization. Property-only author certification and
-   checked/info overlays/projection are local; property controls retain full author
-   validation.
-4. Replace whole touched-tape work with affected native interval indexes.
-5. Verify cancellation/capacity/withdrawal at the new boundaries against the full
-   oracle, including the frozen corpus, generated schedules and real commands.
-6. Complete matched whole-command scale/fragmentation, mixed uninterrupted
-   10,000-action, strict one-way/catch-up and real MW-10/MW-18 timing/storage/cache
-   reports. Keep canonical bytes, journals, cache heap and history metadata
-   separate. No core latency target or complete performance pass is established.
+1. Finish interval-local native position discovery, marker/cell refinement and
+   unindexed command staging. Merged native items can include retained text;
+   current snapshots and visibility arrays still traverse complete touched tapes.
+2. Complete general structural decision/author compatibility and refinement
+   replay. Preserve exact author closures, private-home adjacency, native marker
+   order and cohorts. Do not remove conservative gates without proof.
+3. Extend affected projection through subtree deletion, dormant births, scaffolds,
+   interpretation, lifting, wrapper grouping and ordered numbering.
+4. Complete structural drafts, birth arrays and pre-append selection staging.
+   Private activity forks and append certificates do not remove those full paths.
+5. Attribute total/shared/peak materialization-cache and broader actual history
+   heap without double-counting roots. The scoped navigation study is separate.
+6. Complete remaining matched scales, long tapes, wide siblings and fragmentation;
+   uninterrupted mixed 10,000-action pairs; long-lived directional catch-up;
+   physical storage and broader real MW-10/MW-18 maintenance measurements. Preserve
+   every independent oracle, assertion, trace, seed, schedule, deadline, canonical
+   fact, pending carrier and original identity.
 
-Keep draft PR #88 and all outstanding gates open. The earlier measurement and
-verification artifacts remain historical evidence for their original source.
+Keep draft PR #88 and all outstanding gates open. Earlier measurements and
+verification artifacts remain historical evidence for their original sources.
