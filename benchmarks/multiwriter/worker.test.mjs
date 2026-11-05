@@ -235,12 +235,15 @@ test('discarded publication roots are collectable while held publications remain
       import { readySource } from './src/markdown/multiwriter/authoring/ready-source.ts';
       const turn = () => new Promise(resolve => setImmediate(resolve));
       const results = [];
-      for (const managed of [false, true]) {
-        const peer = commandReplica(commandGenesis('abc'), undefined, 'materialized');
+      for (const kind of ['text', 'info']) for (const managed of [false, true]) {
+        const peer = commandReplica(commandGenesis(kind === 'text' ? 'abc' : '\x60\x60\x60js\nabc\n\x60\x60\x60'), undefined, 'materialized');
         const history = managed ? peer.editor.session('gc') : undefined;
-        const edit = i => history
-          ? history.edit(insertText, {nodeId: peer.handle(peer.nodes()[0]), from: 1, text: 'x'})
-          : peer.editor.edit({local: 'gc', group: BigInt(i)}, insertText, {nodeId: peer.handle(peer.nodes()[0]), from: 1, text: 'x'});
+        const property = (ctx, args) => { ctx.draft.setInfo(args.nodeId, args.info); return {status: 'handled'}; };
+        const edit = i => {
+          const command = kind === 'text' ? insertText : property;
+          const input = kind === 'text' ? {nodeId: peer.handle(peer.nodes()[0]), from: 1, text: 'x'} : {nodeId: peer.handle(peer.nodes()[0]), info: String(i)};
+          return history ? history.edit(command, input) : peer.editor.edit({local: 'gc', group: BigInt(i)}, command, input);
+        };
         const retired = (() => {
           edit(1);
           const value = peer.document.publication.status().publication;
@@ -250,14 +253,14 @@ test('discarded publication roots are collectable while held publications remain
         let held = peer.document.publication.status().publication;
         let heldReady = peer.document.store.readReady().ready;
         let heldSource = readySource(heldReady);
-        const retainedNative = held.native.encodeState(), retainedText = held.value.view.root.children[0].content;
+        const retainedNative = held.native.encodeState(), retainedText = held.value.view.root.children[0].content, retainedInfo = held.value.view.root.children[0].info;
         for (let i = 2; i <= 16; i++) edit(i);
         await turn(); global.gc(); global.gc();
         const heldBefore = retired.every(ref => ref.deref() !== undefined);
         await turn(); peer.document.publication.evict();
         await turn(); global.gc(); global.gc();
         const heldAfter = retired.every(ref => ref.deref() !== undefined);
-        if (held.value.view.root.children[0].content !== retainedText ||
+        if (held.value.view.root.children[0].content !== retainedText || held.value.view.root.children[0].info !== retainedInfo ||
             !Buffer.from(held.native.encodeState()).equals(retainedNative)) throw new Error('Held publication changed');
         if (!heldSource.has(heldReady[0].id.actor + ':' + heldReady[0].id.sequence)) throw new Error('Held ready metadata changed');
         held = undefined; heldReady = undefined; heldSource = undefined;
@@ -266,7 +269,7 @@ test('discarded publication roots are collectable while held publications remain
           await turn(); global.gc(); global.gc();
           if (retired.every(ref => ref.deref() === undefined)) { released = true; break; }
         }
-        results.push({managed, heldBefore, heldAfter, released});
+        results.push({kind, managed, heldBefore, heldAfter, released});
         peer.close();
       }
       console.log(JSON.stringify(results));
@@ -277,11 +280,14 @@ test('discarded publication roots are collectable while held publications remain
   );
   assert.deepEqual(
     result,
-    [false, true].map((managed) => ({
-      managed,
-      heldBefore: true,
-      heldAfter: true,
-      released: true,
-    })),
+    ['text', 'info'].flatMap((kind) =>
+      [false, true].map((managed) => ({
+        kind,
+        managed,
+        heldBefore: true,
+        heldAfter: true,
+        released: true,
+      })),
+    ),
   );
 });
