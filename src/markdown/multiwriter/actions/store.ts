@@ -44,17 +44,20 @@ export interface ActionStoreSnapshot {
   readonly diagnostics: readonly string[];
   readonly integrity: boolean;
 }
-interface Variant {
+export interface ActionVariant {
   readonly bytes: Uint8Array;
   readonly envelope?: ActionEnvelope;
   readonly reason?: QuarantineReason;
 }
-interface Entry {
+export interface ActionFact {
   readonly id: ActionId;
-  readonly variants: Variant[];
+  readonly variants: readonly ActionVariant[];
+}
+interface Entry extends ActionFact {
+  readonly variants: ActionVariant[];
 }
 interface ReadyCertificate {
-  readonly variant: Variant;
+  readonly variant: ActionVariant;
   readonly dependencies: readonly ReadyCertificate[];
 }
 const quarantined = (reason: QuarantineReason): ActionReadiness => ({
@@ -90,7 +93,7 @@ export class ActionStore {
   private active?: Work<ActionStoreSnapshot>;
   private decodeDepth: number;
   private decodeOperations: number;
-  private readonly options: ActionStoreOptions;
+  protected readonly options: ActionStoreOptions;
 
   constructor(options: ActionStoreOptions) {
     if (typeof options.validate !== 'function') throw new Error('Action validation is required');
@@ -228,7 +231,7 @@ export class ActionStore {
 
   private *decode(bytes: Uint8Array): Work<void> {
     let id: ActionId;
-    let variant: Variant;
+    let variant: ActionVariant;
     try {
       const envelope = yield* decodeEnvelopeSteps(bytes, this.decodeDepth, this.decodeOperations);
       id = envelope.id;
@@ -247,8 +250,9 @@ export class ActionStore {
     if (!entry.variants.some((item) => compareBytes(item.bytes, bytes) === 0)) {
       entry.variants.push(variant);
       entry.variants.sort((a, b) => compareBytes(a.bytes, b.bytes));
+      this.entries.set(key, entry);
+      this.factChanged(entry);
     }
-    this.entries.set(key, entry);
   }
 
   snapshot(): ActionStoreSnapshot {
@@ -271,11 +275,24 @@ export class ActionStore {
     );
   }
 
-  private *calculate(): Work<ActionStoreSnapshot> {
+  /** Borrowed decoded facts for derived readers only. The canonical Y.Doc stays private.
+   * Readers must not mutate these values or expose them through public snapshots.
+   */
+  protected fact(key: string): ActionFact | undefined {
+    return this.entries.get(key);
+  }
+  protected factChanged(_fact: ActionFact): void {}
+  protected *decodePending(): Work<void> {
     while (this.undecoded.length) {
       yield* this.decode(this.undecoded[0]);
       this.undecoded.shift();
     }
+  }
+  protected factStatus(): { readonly integrity: boolean; readonly diagnostics: readonly string[] } {
+    return { integrity: this.integrity, diagnostics: this.diagnostics };
+  }
+  protected *calculate(): Work<ActionStoreSnapshot> {
+    yield* this.decodePending();
     const entries = [...this.entries.values()].sort((a, b) => compareIds(a.id, b.id));
     const states = new Map<string, ActionReadiness>();
     const candidates: ActionEnvelope[] = [];
@@ -421,7 +438,7 @@ export class ActionStore {
     });
   }
 
-  private *chainError(action: ActionEnvelope): Work<QuarantineReason | null> {
+  protected *chainError(action: ActionEnvelope): Work<QuarantineReason | null> {
     if (
       action.documentId !== this.options.documentId ||
       action.genesisId !== this.options.genesisId

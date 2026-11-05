@@ -4,8 +4,9 @@ The opt-in materializer reuses ready native bodies and keeps old publications
 readable while preparing the next view. It also avoids building an isolated
 command tree for literal input. This is the first implementation stage of
 [grain/94](https://tines.tbuckley.dev/issues/prj_L8Cva7P0y96K81kq/94), not completed
-MW-13 acceptance. Readiness and semantic projection still use the full reference
-algorithms.
+MW-13 acceptance. Readiness uses a dirty dependency index; author closure
+construction, detached snapshot exports and semantic projection retain full-state
+costs.
 
 Open through the existing bootstrap API with a local implementation choice:
 
@@ -23,6 +24,28 @@ The default remains `reference`. Unknown implementation names fail before journa
 envelopes, bundles and provider settings. Both implementations certify against
 exact author closures. `openReferenceDocument()` and `projectMarkdown()` remain
 independent full-replay oracles.
+
+## Readiness
+
+The optimized document uses `IndexedActionStore`. It shares the private decoded
+fact collection with `ActionStore`, whose full readiness calculation remains the
+independent reference. New payload variants invalidate their identity and the
+transitive reverse dependency closure. Missing identities retain waiters. A later
+arrival can release pending descendants; a later fork withdraws ready descendants.
+Independent branches retain their successful exact-fact certificates. Duplicate
+payloads do not trigger readiness evaluation.
+
+Intrinsic failures and known noncausal edges are established before dependency
+propagation. Candidates then use the same semantic order and failure precedence
+as the reference. Cancellation retains the dirty closure until evaluation finishes;
+no partial ready result escapes. Changing decoder limits cancels suspended work.
+Public snapshots and validator arguments remain detached from retained facts.
+
+`store.readinessDiagnostics()` reports changed facts, evaluated entries,
+dependency and closure edges, author checks and detached snapshot exports.
+A causal suffix append evaluates one new entry; an exact duplicate evaluates none.
+This does not eliminate full closure construction for a new author check, full
+snapshot export or full semantic projection. Those costs remain acceptance gaps.
 
 ## Publication and cancellation
 
@@ -88,7 +111,7 @@ tape indexes completed before a later cancellation:
 - `fullProjections`: calls to the full semantic projection fallback.
 - `unchangedRefreshes`: refreshes that reused the complete publication.
 
-This stage does not meet the complete ordinary-input work gate. Readiness exports
+This stage does not meet the complete ordinary-input work gate. Detached readiness exports
 and certification still enumerate or clone closures; semantic projection still
 rebuilds the view. Command preparation still indexes projected handles and scans
 allocation/manifest metadata. Structural suffix replay, reducer checkpoints,

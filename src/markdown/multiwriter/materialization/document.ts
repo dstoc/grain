@@ -1,4 +1,4 @@
-import { ReferenceActionStore } from '../reference/store.js';
+import { IndexedActionStore } from './readiness.js';
 import type { ReferenceGenesis } from '../reference/document.js';
 import { createIngestValidator } from '../ingest/validator.js';
 import { assertLimit } from '../ingest/work.js';
@@ -12,7 +12,8 @@ import type { ActionEnvelope } from '../contracts.js';
 import { MaterializedPublication } from './publication.js';
 
 /** Opt-in native materialization stage. The full reference document remains independent.
- * Readiness, author certification and semantic projection are still reference fallbacks.
+ * Readiness uses dirty dependency indexes. Author closure construction and semantic
+ * projection still use full-array/reference fallbacks.
  */
 export function openMaterializedDocument(
   input: ReferenceGenesis,
@@ -35,7 +36,7 @@ export function openMaterializedDocument(
       }
     },
   });
-  const store = new ReferenceActionStore({
+  const store = new IndexedActionStore({
     documentId: genesis.documentId,
     genesisId: genesis.genesisId,
     genesisAllocations: genesis.layout.allocations,
