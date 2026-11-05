@@ -353,7 +353,7 @@ export class CommandCompiler {
   }
   private flow(handle: Handle): FlowId {
     const id = this.id(handle),
-      flow = this.ownership().nodeAllocations.find((n) => same(n.id, id))?.flow;
+      flow = this.ownership().nodeAllocation(id).flow;
     if (!flow) throw new Error('Command target has no inline flow');
     return flow;
   }
@@ -450,9 +450,7 @@ export class CommandCompiler {
       };
     }
     const flow = this.flow(handle),
-      home = ownership.homeBindings.find((h) =>
-        ownership.runLayouts.some((r) => same(r.run, h.run) && same(r.flow, flow)),
-      );
+      home = ownership.homeForFlow(flow);
     if (!home) throw new Error('Empty inline has no retained home');
     return {
       tape: home.cell.tape,
@@ -468,10 +466,9 @@ export class CommandCompiler {
       ownership = this.ownership();
     const neighbor = index.adjacent(point.slot.boundary, point.slot.side);
     let ranges: readonly NativeTextRange[] = [];
-    const homes = new HomeIndex(
-      ownership.homeBindings.filter((home) => same(home.cell.tape, point.tape)),
-      index,
-    );
+    const home = ownership.homeForTape(point.tape);
+    if (!home) throw new Error('Text insertion requires a retained private home');
+    const homes = new HomeIndex([home], index);
     if (homes.isReserved(neighbor.range)) {
       for (const op of homes.planTextInsertion(point.slot, text, () => this.alloc('marker')))
         ranges = [...ranges, ...this.native.add(op)];

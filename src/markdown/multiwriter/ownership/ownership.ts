@@ -44,6 +44,13 @@ export interface DestinationRequirement {
   readonly nodes: readonly NodeId[];
 }
 
+const homeIndexes = new WeakMap<
+  readonly HomeBinding[],
+  {
+    readonly tapes: ReadonlyMap<string, HomeBinding>;
+    readonly flows: ReadonlyMap<string, HomeBinding>;
+  }
+>();
 /** Read-only facade over a completed replay. Queries return detached values.
  * This is raw ownership, not visibility or normalization. containsBirthContent for
  * MW-05 must be derived separately from each node's birth-causal intervals.
@@ -59,6 +66,29 @@ export class OwnershipResult {
     private readonly requirements: readonly DestinationRequirement[],
     private readonly homes: readonly HomeBinding[],
   ) {}
+  private homeIndex() {
+    let index = homeIndexes.get(this.homes);
+    if (!index) {
+      const tapes = new Map<string, HomeBinding>(),
+        flows = new Map<string, HomeBinding>();
+      for (const home of this.homes) {
+        tapes.set(resourceKey(home.cell.tape), home);
+        flows.set(resourceKey(this.layout.runLayout(home.run).flow), home);
+      }
+      index = { tapes, flows };
+      homeIndexes.set(this.homes, index);
+    }
+    return index;
+  }
+  homeForTape(tape: TapeId): HomeBinding | undefined {
+    return structuredClone(this.homeIndex().tapes.get(resourceKey(tape)));
+  }
+  homeForFlow(flow: FlowId): HomeBinding | undefined {
+    return structuredClone(this.homeIndex().flows.get(resourceKey(flow)));
+  }
+  nodeAllocation(node: NodeId) {
+    return structuredClone(this.layout.nodeAllocation(node));
+  }
   get homeBindings(): readonly HomeBinding[] {
     return structuredClone(this.homes);
   }
