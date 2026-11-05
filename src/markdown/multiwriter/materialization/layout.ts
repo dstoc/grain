@@ -343,6 +343,7 @@ export class MaterializedLayout {
     observes?: (id: ActionId) => boolean,
   ): void {
     const orderById = new Map<string, EffectOrder>();
+    const changedSequences = new Set<string>();
     for (const [ordinal, effect] of (action?.effects ?? []).entries()) {
       for (const id of effectOccurrences(effect)) {
         const key = resourceKey(id);
@@ -399,6 +400,7 @@ export class MaterializedLayout {
             };
             this.occurrences.set(key, occurrence);
             const sequence = slotSequence(allocation.slot);
+            changedSequences.add(sequence);
             this.sequences.set(sequence, { occurrence, previous: this.sequences.get(sequence) });
           }
           break;
@@ -449,32 +451,28 @@ export class MaterializedLayout {
       unplaced.some((node) => !births.has(resourceKey(node.id)))
     )
       throw new Error('Birth bindings must cover exactly the new non-root nodes');
+    const newOccurrences = new Set(
+      batch.allocations.flatMap((allocation) =>
+        allocation.type === 'occurrence' ? [resourceKey(allocation.id)] : [],
+      ),
+    );
     for (const node of unplaced) {
       const birth = births.get(resourceKey(node.id))!;
       const occurrence = this.occurrence(birth.occurrence);
-      if (
-        !batch.allocations.some(
-          (allocation) =>
-            allocation.type === 'occurrence' &&
-            resourceKey(allocation.id) === resourceKey(birth.occurrence),
-        )
-      )
+      if (!newOccurrences.has(resourceKey(birth.occurrence)))
         throw new Error('Birth occurrence must be newly allocated');
       if (!sameSlot(occurrence.slot, node.birthSlot!))
         throw new Error('Birth occurrence must use the immutable birth slot');
       if (this.moveBlock({ ...birth, slot: node.birthSlot! }) !== 'applied')
         throw new Error('Invalid fallback placement');
     }
-    // Unchanged immutable sequences require no work on text-only actions.
-    if (!batch.allocations.some((a) => a.type === 'occurrence')) return;
-    // Validate each complete sequence now, including inactive/ineffective occurrences.
-    const sequences = new Map<string, OrderedOccurrence[]>();
-    for (const occurrence of this.occurrences.values()) {
-      const sequence = slotSequence(occurrence.slot);
-      const entries = sequences.get(sequence) ?? [];
-      entries.push(occurrence);
-      sequences.set(sequence, entries);
+    // Only new occurrences can change an immutable sequence. Validate the whole
+    // affected sequence, including retained inactive/ineffective anchors.
+    for (const sequence of changedSequences) {
+      const entries: OrderedOccurrence[] = [];
+      for (let link = this.sequences.get(sequence); link; link = link.previous)
+        entries.push(link.occurrence);
+      orderOccurrences(entries.reverse());
     }
-    for (const entries of sequences.values()) orderOccurrences(entries);
   }
 }
