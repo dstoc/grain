@@ -145,17 +145,17 @@ test('501 managed groups, strict one-way history, MW-18 consolidation and old-pr
     oracle.check(a.document, genesis);
     // B is still the same writer opened at the original prefix, with its own stack.
     expect(compareBytes(b.document.store.encodeUpdate(), initial)).toBe(0);
+    const isolatedA = a.document.store.encodeUpdate(),
+      aHistory = h.groups();
     expect(
       bh.edit(insertText, { nodeId: b.handle(b.nodes()[0]), from: 2, text: 'old' }).status,
     ).toBe('applied');
-    const bFacts = b.document.store.encodeUpdate();
-    expect(ios[0].receive('peer', bFacts)).toBe(false);
     expect(bh.undo().state).toBe('applied');
     expect(bh.redo().state).toBe('applied');
     expect(b.editor.nativeClientId).toBe(bNative);
-    const beforeRejectedReceive = a.document.store.encodeUpdate();
-    expect(ios[0].receive('catch-up', b.document.store.encodeUpdate())).toBe(false);
-    expect(compareBytes(a.document.store.encodeUpdate(), beforeRejectedReceive)).toBe(0);
+    // No reverse receive call, reverse link or acknowledgment occurs in this phase.
+    expect(compareBytes(a.document.store.encodeUpdate(), isolatedA)).toBe(0);
+    expect(h.groups()).toEqual(aHistory);
     await ios[0].publish();
     // A has no incoming link or acknowledgments. Repeated send retains the same controls.
     await ios[0].publish();
@@ -237,6 +237,7 @@ test('501 managed groups, strict one-way history, MW-18 consolidation and old-pr
           method: 'work counters only; heap not measured',
           work: materializer.diagnostics(),
           readiness: indexedStore.readinessDiagnostics(),
+          activity: 'activityDiagnostics' in a.document ? a.document.activityDiagnostics() : null,
         },
         transport: {
           forwardMessages: receivedMessages,
