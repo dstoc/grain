@@ -1,6 +1,5 @@
 import { expect, test } from 'vitest';
 import { commandGenesis, commandReplica } from '../../../../test/multiwriter/commands/replica.js';
-import { control } from '../../../../test/multiwriter/commands/control.js';
 import { insertText } from '../../../editing/commands/insert-text.js';
 import { insertParagraph } from '../../../editing/commands/insert-paragraph.js';
 import { indent } from '../../../editing/commands/indent.js';
@@ -61,24 +60,27 @@ test('real MW-18 consolidation, failed-prefix retry, cache eviction, restart and
     mode: 'bidirectional',
   });
   try {
-    const split = applied(
-      p.editor.edit({ local: 'P', group: 1n }, insertParagraph, {
+    const splitHistory = p.editor.session('split');
+    const history = p.editor.session('P');
+    applied(
+      splitHistory.edit(insertParagraph, {
         nodeId: p.handle(p.nodes()[0]),
         from: 3,
       }),
     );
-    applied(p.editor.edit({ local: 'P', group: 2n }, indent, { nodeId: p.handle(p.nodes()[1]) }));
+    applied(history.edit(indent, { nodeId: p.handle(p.nodes()[1]) }));
     applied(
-      p.editor.edit({ local: 'P', group: 3n }, insertText, {
+      history.edit(insertText, {
         nodeId: p.handle(p.nodes()[0]),
         from: 1,
         to: 2,
         text: '',
       }),
     );
-    // These are actual replicated logical controls; production MW-10 navigation is absent.
-    const undo = control(p, split, false);
-    control(p, split, true, undo);
+    expect(splitHistory.undo().state).toBe('applied');
+    expect(splitHistory.redo().state).toBe('applied');
+    const historyBefore = splitHistory.groups();
+    check(p);
     const canonical = p.document.store.encodeUpdate();
     const canonicalAtConsolidation = p.document.store.retainedBytes();
     const old = p.document.publication.status().publication!;
@@ -96,12 +98,13 @@ test('real MW-18 consolidation, failed-prefix retry, cache eviction, restart and
     expect(compareBytes(p.document.store.encodeUpdate(), canonical)).toBe(0);
     expect(p.document.store.retainedBytes()).toEqual(canonicalAtConsolidation);
     expect(p.view()).toEqual(beforeView);
+    expect(splitHistory.groups()).toEqual(historyBefore);
     const materializer = p.document.publication;
     if (!(materializer instanceof MaterializedPublication)) throw new Error();
     materializer.evict();
     expect(compareBytes(old.native.encodeState(), oldNative)).toBe(0);
     applied(
-      p.editor.edit({ local: 'P', group: 4n }, insertText, {
+      history.edit(insertText, {
         nodeId: p.handle(p.nodes()[0]),
         from: 0,
         text: 'next',
@@ -115,7 +118,7 @@ test('real MW-18 consolidation, failed-prefix retry, cache eviction, restart and
     await expect(provider.consolidate()).rejects.toThrow('storage unavailable');
     expect(await journal.readCheckpoint()).toEqual(storage);
     applied(
-      p.editor.edit({ local: 'P', group: 5n }, insertText, {
+      history.edit(insertText, {
         nodeId: p.handle(p.nodes()[0]),
         from: 1,
         text: 'late',
@@ -135,6 +138,11 @@ test('real MW-18 consolidation, failed-prefix retry, cache eviction, restart and
     try {
       restarted.editor.refresh();
       expect(restarted.observe()).toEqual(p.observe());
+      expect(restarted.editor.session('split').status()).toMatchObject({
+        undo: 0,
+        redo: 0,
+        reset: true,
+      });
       // This writer still owns its original pre-maintenance native branch and anchors.
       const edit = applied(
         offline.editor.edit({ local: 'offline', group: 1n }, insertText, {
@@ -164,7 +172,7 @@ test('real MW-18 consolidation, failed-prefix retry, cache eviction, restart and
           canonicalAtConsolidation,
           canonicalAfterContinuedEditing: p.document.store.retainedBytes(),
           genesisSeparate: true,
-          productionHistory: 'unavailable',
+          productionHistory: 'MW-10 managed sessions',
           fullMW13Acceptance: false,
         }),
       );
