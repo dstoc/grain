@@ -66,6 +66,7 @@ export class MultiwriterEditor extends LitElement {
   private savedContext?: HostContext;
   private lastInline?: MarkdownInline;
   private pendingSelection?: { saved: StableSelection };
+  private blockSelection?: StableSelection;
   private readonly selection = new SelectionController<ReplicaNodeView, Anchor>(
     {
       document: () => this.selectionDocument(),
@@ -220,6 +221,7 @@ export class MultiwriterEditor extends LitElement {
     this.selectionEpoch++;
     this.composition.cancel(false);
     this.selection.resetDocument();
+    this.blockSelection = undefined;
     this.bound = this.replica;
     this.tree = new ReplicaRenderTree();
     this.root = undefined;
@@ -245,9 +247,19 @@ export class MultiwriterEditor extends LitElement {
           this.error(error);
         }
         if (!this.local && focused && !focused.composing) {
-          const pending = this.pendingSelection;
-          if (pending) void this.restoreStable(pending.saved, this.savedContext, guard);
+          const saved = this.pendingSelection?.saved ?? this.blockSelection;
+          if (saved) void this.restoreStable(saved, this.savedContext, guard);
           else void this.selection.restoreSavedSelection(this.savedContext, guard);
+        } else if (!this.local && !focused) {
+          const anchor = this.selection.selectionAnchor,
+            focus = this.selection.selectionFocus ?? anchor;
+          const saved =
+            this.blockSelection ??
+            (anchor && focus && !('empty' in anchor) && !('empty' in focus)
+              ? { anchor, focus }
+              : undefined);
+          if (saved)
+            this.reconcilePassiveSelection(saved, this.savedContext ?? this.renderer?.hostContext);
         }
       }
       this.requestUpdate();
@@ -280,12 +292,16 @@ export class MultiwriterEditor extends LitElement {
   private seal() {
     if (this.replica?.status().lifecycle === 'open') this.replica.sealGroup();
   }
-  private onPointer = () => this.seal();
+  private onPointer = () => {
+    this.blockSelection = undefined;
+    this.seal();
+  };
   private onInlineFocus = () => {
     const inline = this.focusedInline();
     if (inline) {
       this.savedContext = inline.hostContext;
       this.lastInline = inline;
+      this.rememberBlocks(inline.hostContext);
     }
     this.selection.captureSelection();
   };
@@ -360,6 +376,61 @@ export class MultiwriterEditor extends LitElement {
       focus: { ...selection.focus, nodeId: lower(selection.focus.nodeId) },
     };
   }
+  private rememberBlocks(context?: HostContext) {
+    const selected = this.selection.currentBlockSelection(context);
+    const range = this.selection.blockSelectionBefore(selected, context);
+    if (!range) {
+      this.blockSelection = undefined;
+      return;
+    }
+    const anchor = this.byId(range.anchor.nodeId),
+      focus = this.byId(range.focus.nodeId);
+    if (!anchor?.projection || !focus?.projection) return;
+    const a = this.capture(anchor, range.anchor.offset, range.anchor.affinity, context),
+      f = this.capture(focus, range.focus.offset, range.focus.affinity, context);
+    if ('empty' in a || 'empty' in f) return;
+    this.savedContext = context;
+    this.blockSelection = {
+      anchor: a,
+      focus: f,
+      blocks: selected.flatMap((node) => (node.projection ? [node.projection.origin] : [])),
+    };
+  }
+  private reconcilePassiveSelection(saved: StableSelection, context?: HostContext) {
+    const result = resolveSelection(this.replica!.publication(), saved, saved.focus.host);
+    this.blockSelection = undefined;
+    if (result.state === 'unavailable') {
+      context?.clearSelection();
+      this.selection.resetDocument();
+      return;
+    }
+    if (result.state === 'empty-root') {
+      context?.clearSelection();
+      this.selection.rememberAnchors({ empty: true }, { empty: true });
+      return;
+    }
+    const anchor = this.tree.node(result.anchor.origin.representative),
+      focus = this.tree.node(result.focus.origin.representative);
+    if (!anchor || !focus) return;
+    const a = this.capture(anchor, result.anchor.offset, result.anchor.affinity, context),
+      f = this.capture(focus, result.focus.offset, result.focus.affinity, context);
+    this.selection.rememberAnchors(a, f);
+    if (result.state === 'exact' && result.blocks && !('empty' in a) && !('empty' in f)) {
+      this.blockSelection = { anchor: a, focus: f, blocks: result.blocks };
+      const nodes = Array.from(
+        new Set(
+          result.blocks.flatMap((address) =>
+            address.type === 'node'
+              ? [this.tree.node(address.representative)].filter(
+                  (node): node is ReplicaNodeView => !!node,
+                )
+              : [],
+          ),
+        ),
+      );
+      this.selection.setBlockSelection(nodes, anchor, focus, context);
+    } else context?.clearSelection();
+  }
   private scopedNode(host: ReplicaNodeView): ReplicaNodeView {
     if (!this.scopeRoot) return host;
     if (this.scopeRoot.type !== 'node') throw new Error('Scope must name a visible node');
@@ -416,6 +487,7 @@ export class MultiwriterEditor extends LitElement {
   ) {
     const pending = { saved };
     this.pendingSelection = pending;
+    this.blockSelection = saved.blocks?.length ? saved : undefined;
     try {
       const p = this.replica!.publication();
       const result = resolveSelection(p, saved, saved.focus.host);
@@ -430,6 +502,7 @@ export class MultiwriterEditor extends LitElement {
     context?: HostContext,
     guard?: FocusRestoreGuard,
   ) {
+    this.blockSelection = undefined;
     if (result.state === 'unavailable') return;
     if (result.state === 'empty-root') {
       await this.selection.restoreAnchors(
@@ -448,6 +521,8 @@ export class MultiwriterEditor extends LitElement {
     if (!anchor || !focus) return;
     const a = this.capture(anchor, result.anchor.offset, result.anchor.affinity, context),
       f = this.capture(focus, result.focus.offset, result.focus.affinity, context);
+    if (result.state === 'exact' && result.blocks && !('empty' in a) && !('empty' in f))
+      this.blockSelection = { anchor: a, focus: f, blocks: result.blocks };
     await this.selection.restoreAnchors(
       a,
       f,
@@ -604,7 +679,9 @@ export class MultiwriterEditor extends LitElement {
       this.navigate(intent.direction, context);
     } else if (intent.type === 'move-caret') {
       this.seal();
-      void this.selection.moveAcrossBlocks(inline, inline.nodeView!, key);
+      void this.selection
+        .moveAcrossBlocks(inline, inline.nodeView!, key)
+        .then(() => this.rememberBlocks(context));
     } else if (intent.type === 'delete-block-selection') {
       key.preventDefault();
       this.delete(selected, context);
@@ -634,6 +711,7 @@ export class MultiwriterEditor extends LitElement {
         this.selection.setBlockSelection([node], node, node, context);
       else inline.setSelectionOffsets(0, node.content?.length ?? 0);
     } else if (intent.type === 'seal-typing') this.seal();
+    if (intent.type === 'select-all') this.rememberBlocks(context);
   };
   navigate(direction: 'undo' | 'redo', context = this.savedContext) {
     if (!this.ready()) return;

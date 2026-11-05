@@ -142,5 +142,7 @@ BroadcastChannel path or foreign-journal discovery.
 The compatibility crosswalk is in [legacy-test-crosswalk.md](legacy-test-crosswalk.md).
 Chromium desktop automation does not prove physical Android, iOS or IME behavior.
 The reference path still reconstructs state and is not ordinary-input performance
-acceptance. Normal harness cutover, complete mobile caret/keyboard geometry and
-the final MW-16 gate remain separate from these experimental checks.
+acceptance. Normal harness cutover, physical mobile keyboard/IME behavior and the final
+MW-16 gate remain separate from these experimental checks. Host probes cover
+final native caret visibility after trusted desktop typing at 390×667 and
+390×844.

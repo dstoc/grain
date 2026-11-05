@@ -239,6 +239,13 @@ export class SelectionController<ModelNode extends SelectionNode<ModelNode>, Anc
     }
   }
 
+  /** Update saved model anchors without changing native focus or selection. */
+  rememberAnchors(anchor: Anchor, focus: Anchor): void {
+    this.anchor = anchor;
+    this.focus = focus;
+    this.expectedInputSelection = undefined;
+  }
+
   async restoreSavedSelection(
     hostContext?: HostContext,
     shouldRestoreFocus?: FocusRestoreGuard,

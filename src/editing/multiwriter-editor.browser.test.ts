@@ -674,3 +674,59 @@ test('successful block cut keeps Markdown markers and undo restores the selected
   expect(markdown(p.replica)).toContain('* [x] task');
   expect(context.selection.size).toBe(1);
 });
+
+test('remote partial block-selection deletion collapses to its surviving directional focus', async () => {
+  const bytes = createGenesis('mounted-partial-selection', 'Alpha\n\nBeta\n\nGamma\n\nDelta');
+  const a = await mount(bytes),
+    b = await mount(bytes);
+  focus(a.inlines()[1]);
+  await type('{Control>}a{/Control}', a.editor);
+  await type('{Control>}a{/Control}', a.editor);
+  await type('{Shift>}{ArrowDown}{/Shift}', a.editor);
+  expect([...a.renderer.hostContext.selection].map((node) => node.content).sort()).toEqual([
+    'Beta',
+    'Gamma',
+  ]);
+  const beta = b.replica.publication().value.view.root.children[1];
+  b.replica.edit(({ draft }, id: string) => {
+    draft.deleteSubtree(id);
+    return { status: 'handled' };
+  }, b.replica.handle(beta.origin.representative));
+  a.replica.receiveBundle('peer', b.replica.captureBundle());
+  await settle(a.editor);
+  expect(a.renderer.hostContext.selection.size).toBe(0);
+  expect(a.inlines()[1].nodeView!.content).toBe('Gamma');
+  expect(a.inlines()[1].getTextSelection()).toEqual({ anchor: 5, focus: 5 });
+  await type('X', a.editor);
+  expect(markdown(a.replica)).toBe('Alpha\n\nGammaX\n\nDelta\n');
+});
+
+test('inactive pane maps partial block selection without stealing peer focus and resumes from the mapped caret', async () => {
+  const bytes = createGenesis('mounted-inactive-selection', 'Alpha\n\nBeta\n\nGamma\n\nDelta');
+  const a = await mount(bytes),
+    b = await mount(bytes);
+  focus(a.inlines()[1]);
+  await type('{Control>}a{/Control}', a.editor);
+  await type('{Control>}a{/Control}', a.editor);
+  await type('{Shift>}{ArrowDown}{/Shift}', a.editor);
+  focus(b.inlines()[0]);
+  await nextTask();
+  const beta = b.replica.publication().value.view.root.children[1];
+  b.replica.edit(({ draft }, id: string) => {
+    draft.deleteSubtree(id);
+    return { status: 'handled' };
+  }, b.replica.handle(beta.origin.representative));
+  a.replica.receiveBundle('peer', b.replica.captureBundle());
+  await settle(a.editor);
+  expect(b.inlines()[0].matches(':focus')).toBe(true);
+  expect(a.renderer.hostContext.selection.size).toBe(0);
+  const control = document.createElement('button');
+  document.body.append(control);
+  control.focus();
+  await a.editor.toolbarAction('left');
+  await settle(a.editor);
+  expect(a.inlines()[1].getTextSelection()).toEqual({ anchor: 4, focus: 4 });
+  await type('X', a.editor);
+  expect(markdown(a.replica)).toBe('Alpha\n\nGammXa\n\nDelta\n');
+  control.remove();
+});
