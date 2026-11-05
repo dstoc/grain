@@ -2,7 +2,11 @@ import type { ActionEnvelope, NativeTextRange, RangeRef } from '../contracts.js'
 import type { BirthPlacement, LayoutGenesis } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
 import { createOwnershipAuthorValidator, reduceOwnership } from '../ownership/index.js';
-import { isTextRefinement, validateTextRefinement } from '../ownership/text-validation.js';
+import {
+  isTextRefinement,
+  validateTextRefinement,
+  TextRefinementError,
+} from '../ownership/text-validation.js';
 import type { IngestValidatorOptions } from '../ingest/validator.js';
 import { finish, IngestCapacityError, IngestDataError } from '../ingest/work.js';
 import { reduceActivity } from '../visibility/index.js';
@@ -29,8 +33,7 @@ export function createProjectionAuthorValidator(options: {
         validateTextRefinement(action, context);
         return null;
       } catch (error) {
-        if (error instanceof IngestDataError || error instanceof IngestCapacityError) throw error;
-        if (!(error instanceof Error)) throw error;
+        if (!(error instanceof TextRefinementError)) throw error;
         return 'reference';
       }
     }
