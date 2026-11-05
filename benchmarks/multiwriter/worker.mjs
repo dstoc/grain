@@ -43,8 +43,17 @@ function refresh(document) {
 function observation(document) {
   const p = document.publication.status().publication;
   const o = p.value.ownership;
+  const snapshot = document.store.snapshot();
   return semanticHash({
-    ready: document.store.snapshot(),
+    // Export insertion order is not semantic. Use the original reference contract
+    // order so old exact-carrier fixtures keep the same observation hash.
+    ready: {
+      actions: snapshot.actions,
+      ready: snapshot.ready,
+      heads: snapshot.heads,
+      diagnostics: snapshot.diagnostics,
+      integrity: snapshot.integrity,
+    },
     heads: p.heads,
     view: p.value.view,
     activity: p.value.activity.effects,

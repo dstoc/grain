@@ -35,7 +35,9 @@ run the same literal insertion script against that genesis; their fresh writer
 identities differ. The worker compares replay output, readiness, raw placement,
 ownership, addresses, visibility and exact native/canonical bytes with the
 capture's reference hash after timing. Command runs compare exported Markdown.
-Neither comparison is included in the measured intervals.
+Neither comparison is included in the measured intervals. Snapshot contract fields
+are hashed in the original reference order; JavaScript property insertion order
+in a reader export is not a semantic difference. Original fixtures remain valid.
 
 `report.json` names the source commits, dirty status, runtime, Yjs, CPU, fixture
 hashes and raw per-process samples. `coldMs` measures initial publication, before
