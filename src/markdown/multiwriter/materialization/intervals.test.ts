@@ -93,8 +93,60 @@ test('disjoint and overlapping reader queries skip retained tape history', () =>
   let visits = 0;
   expect(overlapping.first(18000, position, () => visits++)).toBe(4096);
   expect(visits).toBeLessThan(80);
-  // Mixed overlap can still require a linear interval-tree search. Keep this
-  // adversarial semantic control separate from the disjoint/all-overlap bounds.
+  // Earlier disjoint reads and later long reads defeat a subtree's independent
+  // min-reader/max-end bounds. The endpoint envelope still takes one search path.
   for (let i = 0; i < 4096; i++) index = index.add(range(i, 20000 + i), i + 4096, position);
-  expect(index.first(18000, position)).toBe(4096);
+  visits = 0;
+  expect(index.first(18000, position, () => visits++)).toBe(4096);
+  expect(visits).toBeLessThan(40);
+});
+
+test('open endpoint minima preserve gaps between adjoining reads and spanning earlier reads', () => {
+  const separate = NativeReadIntervals.empty()
+    .add(range(1, 5), 8, position)
+    .add(range(5, 9), 3, position);
+  expect(separate.first(5, position)).toBeUndefined();
+  const joined = separate.add(range(3, 7), 6, position);
+  expect(joined.first(3, position)).toBe(8);
+  expect(joined.first(4, position)).toBe(6);
+  expect(joined.first(5, position)).toBe(6);
+  expect(joined.first(6, position)).toBe(3);
+  expect(joined.first(7, position)).toBe(3);
+  expect(joined.add(range(2, 8), 10, position)).toBe(joined);
+  const earliest = joined.add(range(0, 10), 1, position);
+  for (let i = 1; i < 20; i++) expect(earliest.first(i / 2, position)).toBe(1);
+  expect(earliest.first(0, position)).toBeUndefined();
+  expect(earliest.first(10, position)).toBeUndefined();
+  expect(joined.first(5, position)).toBe(6);
+  expect(separate.first(5, position)).toBeUndefined();
+});
+
+test('large earlier reads update only boundary paths and preserve retained roots through rotations', () => {
+  let index = NativeReadIntervals.empty();
+  const reads: Read[] = [];
+  for (let i = 0; i < 4096; i++) {
+    const read = { range: range(i * 4, i * 4 + 2), count: i + 10 };
+    reads.push(read);
+    index = index.add(read.range, read.count, position);
+  }
+  const held = index;
+  let positions = 0;
+  const earlier = { range: range(3, 16379), count: 1 };
+  index = index.add(earlier.range, earlier.count, (marker) => {
+    positions++;
+    return position(marker);
+  });
+  expect(positions).toBeLessThan(1000);
+  reads.push(earlier);
+  // Insert new endpoints after the lazy range minimum, forcing rotations/pushes.
+  for (let i = 0; i < 64; i++) {
+    const read = { range: range(16000 + i, 17000 + i), count: 4 };
+    reads.push(read);
+    index = index.add(read.range, read.count, position);
+  }
+  for (let point = 0; point <= 17100; point += 13) {
+    expect(index.first(point, position)).toBe(full(reads, point));
+    const old = point % 4 === 1 ? Math.floor(point / 4) + 10 : undefined;
+    expect(held.first(point, position)).toBe(point < 16384 ? old : undefined);
+  }
 });
