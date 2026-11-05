@@ -1,0 +1,336 @@
+{
+  "source": "88cf771117e5efebf1fa7e76e0cd6372ae847f60",
+  "dirty": "",
+  "reference": "current-source full reference with accepted MW-10; not pinned pre-MW-10 baseline",
+  "runtime": "v26.13.0",
+  "yjs": "13.6.33",
+  "host": {
+    "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+    "platform": "linux",
+    "release": "6.17.7-300.fc43.x86_64"
+  },
+  "scope": "same literal schedule/common genesis; real managed selection/edit/Undo/Redo; serialized navigation, whole-replica GC heap; no cache-only heap/journal/10k acceptance",
+  "runs": 3,
+  "warmup": 4,
+  "complete": true,
+  "samples": [
+    {
+      "pair": 0,
+      "mode": "command",
+      "implementation": "reference",
+      "size": 150,
+      "steps": 24,
+      "warmup": 4,
+      "coldMs": 356.3768049999999,
+      "latencyMs": {
+        "samples": [
+          1414.9305459999996, 1278.7692699999989, 1239.773599, 1310.7159909999991,
+          1249.4042499999996, 1251.7311279999994, 1208.1131530000002, 1387.954987000001,
+          1537.6489409999995, 1326.9804320000003, 1304.0915000000023, 1347.0823180000007,
+          1362.8504189999985, 1330.7295140000024, 1537.7587120000026, 1443.4536919999991,
+          1411.4262280000003, 1485.586094000002, 1613.9862619999985, 1435.4793290000016
+        ],
+        "p50": 1347.0823180000007,
+        "p95": 1537.7587120000026
+      },
+      "diagnostics": null,
+      "canonicalBytes": 16238,
+      "envelopeBytes": 15990,
+      "embeddedNativeUpdateBytes": 576,
+      "genesisBytes": 693053,
+      "nativeBytes": 71107,
+      "processHeapDelta": 19618312,
+      "storageJournalBytes": null,
+      "localHistoryBytes": 209533,
+      "historyMethod": "serialized MW-10 navigation metadata; not heap",
+      "historyStatus": {
+        "canUndo": true,
+        "canRedo": false,
+        "undo": 24,
+        "redo": 0,
+        "limit": 500,
+        "reset": false
+      },
+      "historyMode": "managed",
+      "navigation": {
+        "undoMs": 615.3826799999952,
+        "redoMs": 576.3366290000049,
+        "undoRestoration": "exact",
+        "redoRestoration": "exact"
+      },
+      "consolidation": null,
+      "verified": true,
+      "markdownSha256": "017c6cbf57b8891e4a5f6ba4caa98f099a854c84eafe046433695d7bf3db1de9",
+      "fixtureSha256": "8c99db5a2bd16ac097e3f797b9ff232fa049be9111dcce165bfafa5b2e6479b3"
+    },
+    {
+      "pair": 0,
+      "mode": "command",
+      "implementation": "materialized",
+      "size": 150,
+      "steps": 24,
+      "warmup": 4,
+      "coldMs": 299.866815,
+      "latencyMs": {
+        "samples": [
+          4.631816000000072, 3.4966679999999997, 6.173313000000007, 3.8430140000000392,
+          4.359352000000172, 4.209129999999959, 3.3145049999998264, 3.3028350000001865,
+          3.4564080000000104, 3.391766000000189, 3.3104960000000574, 3.3602359999999862,
+          3.4714689999998427, 3.4590670000000046, 3.5773699999999735, 3.544338999999809,
+          5.556503000000021, 3.5788700000000517, 3.50372799999991, 3.535238000000163
+        ],
+        "p50": 3.50372799999991,
+        "p95": 5.556503000000021
+      },
+      "diagnostics": {
+        "nativeBodiesIntegrated": 27,
+        "tapesIndexed": 174,
+        "partsIndexed": 978,
+        "nativeRebuilds": 0,
+        "fullProjections": 3,
+        "unchangedRefreshes": 0,
+        "discardedNativeCandidates": 0
+      },
+      "canonicalBytes": 16238,
+      "envelopeBytes": 15990,
+      "embeddedNativeUpdateBytes": 576,
+      "genesisBytes": 693053,
+      "nativeBytes": 71107,
+      "processHeapDelta": 21845320,
+      "storageJournalBytes": null,
+      "localHistoryBytes": 209533,
+      "historyMethod": "serialized MW-10 navigation metadata; not heap",
+      "historyStatus": {
+        "canUndo": true,
+        "canRedo": false,
+        "undo": 24,
+        "redo": 0,
+        "limit": 500,
+        "reset": false
+      },
+      "historyMode": "managed",
+      "navigation": {
+        "undoMs": 430.19820500000014,
+        "redoMs": 430.05127300000004,
+        "undoRestoration": "exact",
+        "redoRestoration": "exact"
+      },
+      "consolidation": null,
+      "verified": true,
+      "markdownSha256": "017c6cbf57b8891e4a5f6ba4caa98f099a854c84eafe046433695d7bf3db1de9",
+      "fixtureSha256": "8c99db5a2bd16ac097e3f797b9ff232fa049be9111dcce165bfafa5b2e6479b3"
+    },
+    {
+      "pair": 1,
+      "mode": "command",
+      "implementation": "materialized",
+      "size": 150,
+      "steps": 24,
+      "warmup": 4,
+      "coldMs": 238.58166400000005,
+      "latencyMs": {
+        "samples": [
+          3.739763000000039, 3.5340989999999692, 3.43190699999991, 3.699901999999838,
+          7.829250000000002, 3.951046000000133, 3.512388000000101, 3.4900480000001153,
+          3.6224009999998543, 3.5505990000001475, 4.029416999999967, 3.9529159999999592,
+          3.498108000000002, 3.344336000000112, 3.4838280000001305, 3.452927999999929,
+          3.4720279999999093, 3.5676480000001902, 5.081566000000066, 3.588068999999905
+        ],
+        "p50": 3.5505990000001475,
+        "p95": 5.081566000000066
+      },
+      "diagnostics": {
+        "nativeBodiesIntegrated": 27,
+        "tapesIndexed": 174,
+        "partsIndexed": 978,
+        "nativeRebuilds": 0,
+        "fullProjections": 3,
+        "unchangedRefreshes": 0,
+        "discardedNativeCandidates": 0
+      },
+      "canonicalBytes": 16238,
+      "envelopeBytes": 15990,
+      "embeddedNativeUpdateBytes": 576,
+      "genesisBytes": 693053,
+      "nativeBytes": 71107,
+      "processHeapDelta": 21873248,
+      "storageJournalBytes": null,
+      "localHistoryBytes": 209261,
+      "historyMethod": "serialized MW-10 navigation metadata; not heap",
+      "historyStatus": {
+        "canUndo": true,
+        "canRedo": false,
+        "undo": 24,
+        "redo": 0,
+        "limit": 500,
+        "reset": false
+      },
+      "historyMode": "managed",
+      "navigation": {
+        "undoMs": 410.00355000000013,
+        "redoMs": 402.583895,
+        "undoRestoration": "exact",
+        "redoRestoration": "exact"
+      },
+      "consolidation": null,
+      "verified": true,
+      "markdownSha256": "017c6cbf57b8891e4a5f6ba4caa98f099a854c84eafe046433695d7bf3db1de9",
+      "fixtureSha256": "8c99db5a2bd16ac097e3f797b9ff232fa049be9111dcce165bfafa5b2e6479b3"
+    },
+    {
+      "pair": 1,
+      "mode": "command",
+      "implementation": "reference",
+      "size": 150,
+      "steps": 24,
+      "warmup": 4,
+      "coldMs": 338.8586240000001,
+      "latencyMs": {
+        "samples": [
+          1295.6114990000005, 1299.7885989999995, 1276.5538319999996, 1231.0439939999997,
+          1290.148627999999, 1244.826234, 1258.2436280000002, 1279.4096799999988, 1353.87529,
+          1371.481542999998, 1360.423788, 1462.4242670000021, 1702.6495479999976,
+          1523.9187920000004, 1361.5920170000027, 1362.2658010000014, 1374.120756999997,
+          1292.215013000001, 1254.5492159999994, 1273.9317679999986
+        ],
+        "p50": 1295.6114990000005,
+        "p95": 1523.9187920000004
+      },
+      "diagnostics": null,
+      "canonicalBytes": 16238,
+      "envelopeBytes": 15990,
+      "embeddedNativeUpdateBytes": 576,
+      "genesisBytes": 693053,
+      "nativeBytes": 71107,
+      "processHeapDelta": 19638928,
+      "storageJournalBytes": null,
+      "localHistoryBytes": 209261,
+      "historyMethod": "serialized MW-10 navigation metadata; not heap",
+      "historyStatus": {
+        "canUndo": true,
+        "canRedo": false,
+        "undo": 24,
+        "redo": 0,
+        "limit": 500,
+        "reset": false
+      },
+      "historyMode": "managed",
+      "navigation": {
+        "undoMs": 561.8029569999999,
+        "redoMs": 566.8741620000001,
+        "undoRestoration": "exact",
+        "redoRestoration": "exact"
+      },
+      "consolidation": null,
+      "verified": true,
+      "markdownSha256": "017c6cbf57b8891e4a5f6ba4caa98f099a854c84eafe046433695d7bf3db1de9",
+      "fixtureSha256": "8c99db5a2bd16ac097e3f797b9ff232fa049be9111dcce165bfafa5b2e6479b3"
+    },
+    {
+      "pair": 2,
+      "mode": "command",
+      "implementation": "reference",
+      "size": 150,
+      "steps": 24,
+      "warmup": 4,
+      "coldMs": 352.22497599999997,
+      "latencyMs": {
+        "samples": [
+          1365.1415480000005, 1507.1929729999993, 1408.9715479999995, 1351.296757,
+          1418.8986720000012, 1331.6979890000002, 1258.924618000001, 1277.043880000001,
+          1229.9882179999986, 1328.2476540000025, 1318.000351999999, 1270.0630230000024,
+          1302.1380279999976, 1378.6617729999998, 1272.6087559999978, 1296.417013000002,
+          1289.0562200000022, 1364.3508339999971, 1381.793264, 1389.0700859999997
+        ],
+        "p50": 1328.2476540000025,
+        "p95": 1418.8986720000012
+      },
+      "diagnostics": null,
+      "canonicalBytes": 16238,
+      "envelopeBytes": 15990,
+      "embeddedNativeUpdateBytes": 576,
+      "genesisBytes": 693053,
+      "nativeBytes": 71107,
+      "processHeapDelta": 19678888,
+      "storageJournalBytes": null,
+      "localHistoryBytes": 209533,
+      "historyMethod": "serialized MW-10 navigation metadata; not heap",
+      "historyStatus": {
+        "canUndo": true,
+        "canRedo": false,
+        "undo": 24,
+        "redo": 0,
+        "limit": 500,
+        "reset": false
+      },
+      "historyMode": "managed",
+      "navigation": {
+        "undoMs": 573.3016290000014,
+        "redoMs": 587.5585859999992,
+        "undoRestoration": "exact",
+        "redoRestoration": "exact"
+      },
+      "consolidation": null,
+      "verified": true,
+      "markdownSha256": "017c6cbf57b8891e4a5f6ba4caa98f099a854c84eafe046433695d7bf3db1de9",
+      "fixtureSha256": "8c99db5a2bd16ac097e3f797b9ff232fa049be9111dcce165bfafa5b2e6479b3"
+    },
+    {
+      "pair": 2,
+      "mode": "command",
+      "implementation": "materialized",
+      "size": 150,
+      "steps": 24,
+      "warmup": 4,
+      "coldMs": 231.027238,
+      "latencyMs": {
+        "samples": [
+          3.571779000000106, 3.398926999999958, 3.356226000000106, 3.5397189999998773,
+          3.5136579999998503, 3.5335379999999077, 3.3519960000000992, 5.526981999999862,
+          3.553079000000025, 3.3362460000000738, 3.25879400000008, 3.2381339999999454,
+          3.3582870000000185, 3.25921500000004, 3.3956470000000536, 3.4258370000000014,
+          3.448417000000063, 3.5918400000000474, 3.3968070000000807, 3.569488999999976
+        ],
+        "p50": 3.398926999999958,
+        "p95": 3.5918400000000474
+      },
+      "diagnostics": {
+        "nativeBodiesIntegrated": 27,
+        "tapesIndexed": 174,
+        "partsIndexed": 978,
+        "nativeRebuilds": 0,
+        "fullProjections": 3,
+        "unchangedRefreshes": 0,
+        "discardedNativeCandidates": 0
+      },
+      "canonicalBytes": 16238,
+      "envelopeBytes": 15990,
+      "embeddedNativeUpdateBytes": 576,
+      "genesisBytes": 693053,
+      "nativeBytes": 71107,
+      "processHeapDelta": 21876384,
+      "storageJournalBytes": null,
+      "localHistoryBytes": 209261,
+      "historyMethod": "serialized MW-10 navigation metadata; not heap",
+      "historyStatus": {
+        "canUndo": true,
+        "canRedo": false,
+        "undo": 24,
+        "redo": 0,
+        "limit": 500,
+        "reset": false
+      },
+      "historyMode": "managed",
+      "navigation": {
+        "undoMs": 405.5581649999999,
+        "redoMs": 402.388512,
+        "undoRestoration": "exact",
+        "redoRestoration": "exact"
+      },
+      "consolidation": null,
+      "verified": true,
+      "markdownSha256": "017c6cbf57b8891e4a5f6ba4caa98f099a854c84eafe046433695d7bf3db1de9",
+      "fixtureSha256": "8c99db5a2bd16ac097e3f797b9ff232fa049be9111dcce165bfafa5b2e6479b3"
+    }
+  ]
+}

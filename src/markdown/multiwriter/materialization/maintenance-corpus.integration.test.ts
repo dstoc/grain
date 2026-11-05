@@ -1,10 +1,10 @@
-import { expect, test } from 'vitest';
+import { test } from 'vitest';
 import { contractCorpus } from '../../../../test/multiwriter/corpus.js';
 import { replicaTraceAdapter } from '../../../../test/multiwriter/network.js';
 import { referenceFactory } from '../../../../test/multiwriter/reference/factory.js';
 import { runContractTrace } from '../../../../test/multiwriter/trace.js';
 import { openMaterializedDocument } from './document.js';
-const equal = (a: unknown, b: unknown, context: string) => expect(a, context).toEqual(b);
+import { equal } from '../../../../test/multiwriter/equal.js';
 for (const id of [
   'old-prefix-after-lossless-maintenance',
   'history-limit-retains-canonical-facts',

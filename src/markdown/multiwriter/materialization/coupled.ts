@@ -1,4 +1,8 @@
 import { OwnershipResult } from '../ownership/ownership.js';
+import { isTextRefinement } from '../ownership/text-validation.js';
+import { cellKey } from '../ownership/cells.js';
+import { PersistentMap } from './map.js';
+import type { TapeSnapshot } from '../text/types.js';
 import type { TapeId } from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
 import { changedNativeTapes } from './native.js';
@@ -10,8 +14,15 @@ import { compareBytes } from '../actions/cbor.js';
 import { resourceKey } from '../layout/index.js';
 import type { OwnershipCheckpoint } from './ownership.js';
 import type { ActionSequence, PayloadIndex } from './activity.js';
-import { replayOwnershipSuffix } from './ownership.js';
+import { replayOwnershipSuffix, orderedOwners } from './ownership.js';
 
+function markerSignature(snapshot: TapeSnapshot): string {
+  return snapshot.parts
+    .flatMap((part) =>
+      part.type === 'marker' ? [JSON.stringify([resourceKey(part.marker), part.native])] : [],
+    )
+    .join('|');
+}
 interface Payload {
   readonly key: string;
   readonly bytes: Uint8Array;
@@ -23,12 +34,14 @@ export interface CoupledWork {
   checkpointRestores: number;
   coldReplays: number;
   nativeMarkerFallbacks: number;
+  nativeMarkerRefinements: number;
   lastReplayFrom: number;
   lastReplayLength: number;
 }
 /** The structural checkpoint holds placement and ownership at the same effect prefix.
- * Text-only native changes preserve cell identities. Existing-tape marker refinement
- * currently invalidates conservatively from genesis; it never reuses an unchecked prefix.
+ * Text-only native changes preserve cell identities. Marker refinement before any
+ * structural reader preserves home assignments, including checkpoint roots. Other
+ * existing-tape marker changes conservatively invalidate from genesis.
  */
 export class MaterializedOwnership {
   private state?: OwnershipCheckpoint;
@@ -39,7 +52,8 @@ export class MaterializedOwnership {
   private native?: NativeView;
   private order: readonly Payload[] = [];
   private checkpoints: readonly OwnershipCheckpoint[] = [];
-  private markers: ReadonlyMap<string, string> = new Map();
+  private markers = new PersistentMap<string>();
+  private textOnlyPrefix = false;
   private generation = 0;
   private readonly counts: CoupledWork = {
     actionsReplayed: 0,
@@ -47,6 +61,7 @@ export class MaterializedOwnership {
     checkpointRestores: 0,
     coldReplays: 0,
     nativeMarkerFallbacks: 0,
+    nativeMarkerRefinements: 0,
     lastReplayFrom: 0,
     lastReplayLength: 0,
   };
@@ -89,16 +104,9 @@ export class MaterializedOwnership {
     const snapshots = allocations.flatMap((a) =>
       a.type === 'tape' ? [input.native.snapshot(a.id)] : [],
     );
-    const markers = new Map(
-      snapshots.map((snapshot) => [
-        resourceKey(snapshot.tape),
-        snapshot.parts
-          .flatMap((p) =>
-            p.type === 'marker' ? [JSON.stringify([resourceKey(p.marker), p.native])] : [],
-          )
-          .join('|'),
-      ]),
-    );
+    const markers = new PersistentMap<string>();
+    for (const snapshot of snapshots)
+      markers.set(resourceKey(snapshot.tape), markerSignature(snapshot));
     const nativeChanged = [...this.markers].some(
       ([key, signature]) => markers.get(key) !== signature,
     );
@@ -145,6 +153,7 @@ export class MaterializedOwnership {
         this.native = input.native;
         this.order = order;
         this.markers = markers;
+        this.textOnlyPrefix = input.actions.every(({ action }) => isTextRefinement(action));
         this.checkpoints = checkpoints;
         this.counts.lastReplayFrom = from;
         this.counts.lastReplayLength = input.actions.length - from;
@@ -167,9 +176,8 @@ export class MaterializedOwnership {
       !this.native ||
       !action ||
       actions.length !== this.order.length + 1 ||
-      action.allocations.length ||
-      action.effects.some((effect) => effect.type !== 'InsertText') ||
-      action.nativeManifest.some((birth) => birth.type !== 'text') ||
+      !isTextRefinement(action) ||
+      (action.allocations.length > 0 && !this.textOnlyPrefix) ||
       this.order.some(
         (payload, i) =>
           payload.key !== actionKey(actions.at(i)!.id) ||
@@ -180,16 +188,41 @@ export class MaterializedOwnership {
     const touched = stagedTapes ?? changedNativeTapes(this.native, native);
     if (!touched) return undefined;
     const generation = ++this.generation;
-    const index = prior.index.refine(touched.map((tape) => native.snapshot(tape)));
+    const snapshots = touched.map((tape) => native.snapshot(tape));
+    const index = prior.index.refine(snapshots);
+    let owners = prior.owners;
+    const markers = this.markers.fork();
+    if (action.allocations.length) {
+      // Before any structural reader, every retained cell belongs to its home.
+      // Refine those assignments, including empty/reserved cells. Every text-only checkpoint has those same
+      // home assignments, so its native roots can be refined without replaying
+      // layout. Old published roots remain readable. Structural readers retain
+      // the conservative fallback until their dependencies are indexed.
+      owners = owners.fork();
+      for (const snapshot of snapshots) {
+        for (const cell of prior.index.tape(snapshot.tape)) {
+          const key = cellKey(cell.range);
+          const owner = owners.get(key);
+          if (!owner) throw new Error('Refined native cell has no prior owner');
+          const refined = index.range(cell.range);
+          if (refined.length === 1 && cellKey(refined[0].range) === key) continue;
+          owners.delete(key);
+          for (const next of refined)
+            owners.set(cellKey(next.range), { ...owner, cell: next.range });
+        }
+        markers.set(resourceKey(snapshot.tape), markerSignature(snapshot));
+      }
+      this.counts.nativeMarkerRefinements++;
+    }
     const layout = prior.layout.fork();
     layout.beginAction({ action, births: [] }, (id) => activity.observes(action.id, id));
     for (let ordinal = 0; ordinal < action.effects.length; ordinal++)
       layout.step(ordinal, activity.isEffectActive({ action: action.id, ordinal }));
-    const state: OwnershipCheckpoint = { ...prior, count: actions.length, layout, index };
+    const state: OwnershipCheckpoint = { ...prior, count: actions.length, layout, index, owners };
     const value = new OwnershipResult(
       layout,
       index,
-      prior.owners,
+      orderedOwners(index, owners, resources.homes),
       prior.roots,
       prior.attachments,
       resources.cohorts,
@@ -215,8 +248,15 @@ export class MaterializedOwnership {
           throw new Error('Coupled text candidate is no longer current');
         committed = true;
         this.state = state;
+        this.markers = markers;
         this.native = native;
         this.order = [...this.order, payload];
+        if (action.allocations.length)
+          this.checkpoints = this.checkpoints.map((checkpoint) => ({
+            ...checkpoint,
+            index,
+            owners,
+          }));
         if (state.count % 128 === 0) this.checkpoints = [...this.checkpoints, state].slice(-8);
         this.counts.lastReplayFrom = actions.length - 1;
         this.counts.lastReplayLength = 1;
@@ -233,6 +273,7 @@ export class MaterializedOwnership {
     this.native = undefined;
     this.order = [];
     this.checkpoints = [];
-    this.markers = new Map();
+    this.markers = new PersistentMap();
+    this.textOnlyPrefix = false;
   }
 }

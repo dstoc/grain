@@ -36,6 +36,28 @@ export interface OwnershipCheckpoint {
   readonly flowIntentions: PersistentMap<EffectOrder>;
   readonly installedTapes: PersistentMap<true>;
 }
+/** Match full replay's home-install/native-cell order independently of the edit
+ * order of the persistent assignment map. Refinement can insert cells between
+ * retained keys; changing a map key must not reorder the public raw result.
+ */
+export function orderedOwners(
+  index: MaterializedCells,
+  owners: PersistentMap<CellAssignment>,
+  homes: readonly HomeBinding[],
+) {
+  return {
+    get: (key: string) => owners.get(key),
+    *values(): Generator<CellAssignment, undefined, unknown> {
+      for (const home of homes)
+        for (const cell of index.range(home.cell)) {
+          const owner = owners.get(cellKey(cell.range));
+          if (!owner) throw new Error('Native cell lacks a refined assignment');
+          yield owner;
+        }
+      return undefined;
+    },
+  };
+}
 function actionKey(input: LayoutActionInput): string {
   return JSON.stringify([input.action.id.actor, input.action.id.sequence.toString()]);
 }
@@ -88,8 +110,14 @@ export function replayOwnershipSuffix(
   if (tapeAllocations.length !== input.snapshots.length)
     throw new Error('Native snapshots must cover exactly the ready tapes');
   const markerAllocations = allAllocations.filter((allocation) => allocation.type === 'marker');
+  const tapeById = new Map<string, (typeof tapeAllocations)[number]>();
+  const markerById = new Map<string, (typeof markerAllocations)[number]>();
+  for (const tape of tapeAllocations)
+    if (!tapeById.has(resourceKey(tape.id))) tapeById.set(resourceKey(tape.id), tape);
+  for (const marker of markerAllocations)
+    if (!markerById.has(resourceKey(marker.id))) markerById.set(resourceKey(marker.id), marker);
   for (const snapshot of input.snapshots) {
-    const tape = tapeAllocations.find((entry) => sameId(entry.id, snapshot.tape));
+    const tape = tapeById.get(resourceKey(snapshot.tape));
     const markers = snapshot.parts.filter((part) => part.type === 'marker');
     if (
       !tape ||
@@ -98,7 +126,7 @@ export function replayOwnershipSuffix(
     )
       throw new Error('Snapshot does not match retained tape endpoints');
     for (const marker of markers) {
-      const allocation = markerAllocations.find((entry) => sameId(entry.id, marker.marker));
+      const allocation = markerById.get(resourceKey(marker.marker));
       if (
         !allocation ||
         !sameId(allocation.tape, snapshot.tape) ||
@@ -448,7 +476,7 @@ export function replayOwnershipSuffix(
     value: new OwnershipResult(
       layout,
       index,
-      owners,
+      orderedOwners(index, owners, homes),
       roots,
       attachments,
       cohorts,

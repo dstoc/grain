@@ -272,41 +272,53 @@ function* assertInsertionOrder(
   }
   // IDs within a string retain clock order even if later insertions split the string.
   const own = new Set(items);
-  const retained = new Map<Y.Text, { id: NativeId; index: number }[]>();
-  const positions = new Map<Y.Item, number>();
-  function* position(item: Y.Item): Work<number> {
-    const path: Y.Item[] = [];
-    let cursor: Y.Item | null = item;
-    while (cursor && !positions.has(cursor)) {
-      yield;
-      path.push(cursor);
-      cursor = cursor.left;
-    }
-    let index = cursor ? positions.get(cursor)! + cursor.length : 0;
-    for (const entry of path.reverse()) {
-      yield;
-      positions.set(entry, index);
-      index += entry.length;
-    }
-    return positions.get(item)!;
-  }
+  const retained = new Map<Y.Text, Map<Y.Item, readonly NativeId[]>>();
   for (const [item, ids] of references) {
     yield;
     ids.sort((a, b) => a.clock - b.clock);
     for (let i = 1; i < ids.length; i++) before(ids[i - 1], ids[i]);
     if (!own.has(item)) {
       const parent = item.parent as Y.Text;
-      const ordered = retained.get(parent) ?? [];
-      const start = yield* position(item);
-      for (const id of ids) ordered.push({ id, index: start + id.clock - item.id.clock });
-      retained.set(parent, ordered);
+      const anchors = retained.get(parent) ?? new Map<Y.Item, readonly NativeId[]>();
+      anchors.set(item, ids);
+      retained.set(parent, anchors);
     }
   }
-  // Existing native order is immutable. Concurrent insertions may occupy the open interval.
-  for (const ordered of retained.values()) {
-    yield;
-    ordered.sort((a, b) => a.index - b.index);
-    for (let i = 1; i < ordered.length; i++) before(ordered[i - 1].id, ordered[i].id);
+  // Existing native order is immutable. Find the retained anchors around the
+  // first one, rather than locating each anchor from the beginning of its tape.
+  // This visits the interval containing those anchors, including concurrent text.
+  for (const anchors of retained.values()) {
+    const first = anchors.keys().next().value!;
+    const center = anchors.get(first)!;
+    anchors.delete(first);
+    const left: (readonly NativeId[])[] = [],
+      right: (readonly NativeId[])[] = [];
+    let beforeItem = first.left,
+      afterItem = first.right;
+    while (anchors.size) {
+      yield;
+      if (!beforeItem && !afterItem)
+        throw new NativeValidationError('Native anchors are not in one tape');
+      if (beforeItem) {
+        const ids = anchors.get(beforeItem);
+        if (ids) {
+          left.push(ids);
+          anchors.delete(beforeItem);
+        }
+        beforeItem = beforeItem.left;
+      }
+      if (!anchors.size) break;
+      if (afterItem) {
+        const ids = anchors.get(afterItem);
+        if (ids) {
+          right.push(ids);
+          anchors.delete(afterItem);
+        }
+        afterItem = afterItem.right;
+      }
+    }
+    const ordered = [...left.reverse().flat(), ...center, ...right.flat()];
+    for (let i = 1; i < ordered.length; i++) before(ordered[i - 1], ordered[i]);
   }
   const incoming = new Map([...edges.keys()].map((key) => [key, 0]));
   for (const next of edges.values())

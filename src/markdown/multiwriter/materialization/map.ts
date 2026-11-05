@@ -33,10 +33,15 @@ export function set<T>(root: MapRoot<T> | undefined, key: string, value: T): Map
   if (!root) return node(key, value);
   if (key === root.key)
     return Object.is(value, root.value) ? root : node(key, value, root.left, root.right);
-  let result =
+  const result =
     key < root.key
       ? node(root.key, root.value, set(root.left, key, value), root.right)
       : node(root.key, root.value, root.left, set(root.right, key, value));
+  return balance(result);
+}
+
+function balance<T>(root: MapRoot<T>): MapRoot<T> {
+  let result = root;
   if (height(result.left) - height(result.right) > 1) {
     if (height(result.left!.right) > height(result.left!.left))
       result = node(result.key, result.value, rotateLeft(result.left!), result.right);
@@ -50,6 +55,23 @@ export function set<T>(root: MapRoot<T> | undefined, key: string, value: T): Map
   return result;
 }
 
+function remove<T>(root: MapRoot<T> | undefined, key: string): MapRoot<T> | undefined {
+  if (!root) return undefined;
+  if (key < root.key) {
+    const left = remove(root.left, key);
+    return left === root.left ? root : balance(node(root.key, root.value, left, root.right));
+  }
+  if (key > root.key) {
+    const right = remove(root.right, key);
+    return right === root.right ? root : balance(node(root.key, root.value, root.left, right));
+  }
+  if (!root.left) return root.right;
+  if (!root.right) return root.left;
+  let next = root.right;
+  while (next.left) next = next.left;
+  return balance(node(next.key, next.value, root.left, remove(root.right, next.key)));
+}
+
 function* orderedEntries<T>(root: MapRoot<T> | undefined): Generator<readonly [string, T]> {
   if (!root) return;
   yield* orderedEntries(root.left);
@@ -60,31 +82,44 @@ function* orderedEntries<T>(root: MapRoot<T> | undefined): Generator<readonly [s
  * Forking shares both roots; replacing a value preserves its original iteration rank.
  */
 export class PersistentMap<T> implements Iterable<[string, T]> {
-  private data?: MapRoot<T>;
+  private data?: MapRoot<{ readonly value: T; readonly rank: string }>;
   private order?: MapRoot<string>;
   private count = 0;
+  private serial = 0;
   get size(): number {
     return this.count;
   }
   get(key: string): T | undefined {
-    return get(this.data, key);
+    return get(this.data, key)?.value;
   }
   has(key: string): boolean {
-    return this.get(key) !== undefined;
+    return get(this.data, key) !== undefined;
   }
   set(key: string, value: T): this {
-    if (!this.has(key)) {
-      this.order = set(this.order, String(this.count).padStart(16, '0'), key);
+    const previous = get(this.data, key);
+    if (previous && Object.is(previous.value, value)) return this;
+    const rank = previous?.rank ?? String(this.serial++).padStart(16, '0');
+    if (!previous) {
+      this.order = set(this.order, rank, key);
       this.count++;
     }
-    this.data = set(this.data, key, value);
+    this.data = set(this.data, key, { value, rank });
     return this;
+  }
+  delete(key: string): boolean {
+    const previous = get(this.data, key);
+    if (!previous) return false;
+    this.data = remove(this.data, key);
+    this.order = remove(this.order, previous.rank);
+    this.count--;
+    return true;
   }
   fork(): PersistentMap<T> {
     const copy = new PersistentMap<T>();
     copy.data = this.data;
     copy.order = this.order;
     copy.count = this.count;
+    copy.serial = this.serial;
     return copy;
   }
   *keys(): Generator<string> {

@@ -1,6 +1,6 @@
 // @ts-expect-error Node APIs are supplied by Vitest; Grain has no @types/node dependency.
 import { writeFileSync } from 'node:fs';
-import { expect, test } from 'vitest';
+import { test } from 'vitest';
 import {
   ReplicaNetwork,
   SeededRandom,
@@ -13,7 +13,7 @@ import { generateAction } from '../../../../test/multiwriter/reference/generator
 import { scenario, structuralChoices } from '../../../../test/multiwriter/reference/matrix.js';
 import { createMaterializationOracle } from '../../../../test/multiwriter/materialization-oracle.js';
 import { openMaterializedDocument } from './document.js';
-const equal = (a: unknown, b: unknown, context: string) => expect(a, context).toEqual(b);
+import { equal } from '../../../../test/multiwriter/equal.js';
 for (const seed of [1, 7, 42, 85, 89, 34064, 123456, 0xffffffff]) {
   test(`native materialization equals full reference during generated delivery: ${seed}`, async () => {
     const random = new SeededRandom(seed);

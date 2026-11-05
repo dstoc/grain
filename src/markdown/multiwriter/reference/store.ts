@@ -1,6 +1,7 @@
 import { ActionStore } from '../actions/store.js';
 import type { ActionStoreSnapshot } from '../actions/store.js';
 import { assertLimit } from '../ingest/work.js';
+import type { Computation } from '../ingest/work.js';
 
 /** Reference readers often inspect the same closure many times per schedule step.
  * Cache only complete results for the exact facts version; misses use MW-01 unchanged.
@@ -18,11 +19,25 @@ export class ReferenceActionStore extends ActionStore {
     if (operations !== undefined) assertLimit(operations);
     if (this.memo?.version === this.factsVersion)
       return { state: 'complete' as const, value: structuredClone(this.memo.snapshot) };
-    const result = super.compute(operations);
-    if (result.state === 'complete')
-      this.memo = { version: this.factsVersion, snapshot: structuredClone(result.value) };
-    return result;
+    const version = this.factsVersion;
+    const retain = (result: Computation<ActionStoreSnapshot>): Computation<ActionStoreSnapshot> => {
+      if (result.state === 'complete') {
+        if (version === this.factsVersion)
+          this.memo = { version, snapshot: structuredClone(result.value) };
+        return result;
+      }
+      const continuation = result.continuation;
+      return {
+        state: 'deferred',
+        continuation: {
+          cancel: () => continuation.cancel(),
+          resume: (budget) => retain(continuation.resume(budget)),
+        },
+      };
+    };
+    return retain(super.compute(operations));
   }
+
   override setDecodeLimits(limits: { depth?: number; operations?: number }): void {
     this.memo = undefined;
     super.setDecodeLimits(limits);

@@ -15,6 +15,7 @@ import { commandViewIndex, registerCommandViewIndex } from '../authoring/view-in
 import type { CommandViewIndex } from '../authoring/view-index.js';
 import { PersistentMap } from './map.js';
 import { MaterializedOwnership } from './coupled.js';
+import { isTextRefinement } from '../ownership/text-validation.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
 interface NodeRecord {
@@ -116,6 +117,7 @@ function projectInline(
   let content = '';
   const boundaries: TextBoundary[] = [],
     fragments: TextFragment[] = [];
+  const tapes = new Map<string, ReturnType<NativeView['snapshot']>>();
   const addresses = new Map(before.boundaries.map((b) => [addressKey(b.address), b.address]));
   for (const fragment of before.fragments)
     addresses.set(addressKey(fragment.address), fragment.address);
@@ -124,7 +126,12 @@ function projectInline(
   for (const entry of ownership.raw(flow)) {
     if (entry.type === 'slot') {
       const marker = native.marker(entry.slot.boundary),
+        id = resourceKey(marker.tape);
+      let snapshot = tapes.get(id);
+      if (!snapshot) {
         snapshot = native.snapshot(marker.tape);
+        tapes.set(id, snapshot);
+      }
       if (
         (marker.index === 0 && entry.slot.side === 'left') ||
         (marker.index === snapshot.length - 1 && entry.slot.side === 'right')
@@ -251,12 +258,7 @@ export class MaterializedProjection {
     };
   }
   canStageText(action: ActionEnvelope): boolean {
-    return (
-      this.state?.canAppendText === true &&
-      !action.allocations.length &&
-      action.effects.every((effect) => effect.type === 'InsertText') &&
-      action.nativeManifest.every((birth) => birth.type === 'text')
-    );
+    return this.state?.canAppendText === true && isTextRefinement(action);
   }
   /** The writer supplies its exact pre-append native draft. Derive selection only;
    * neither activity nor structural/projection roots are committed here.
@@ -298,6 +300,11 @@ export class MaterializedProjection {
       changed = new Map<string, ViewNode>();
     const affected = new Set<string>();
     for (const tape of touched) {
+      if (action.allocations.length) {
+        const home = ownership.homeForTape(tape);
+        if (!home) throw new Error('Marker refinement requires an existing home');
+        affected.add(resourceKey(ownership.flowBlock(ownership.runLayout(home.run).flow)));
+      }
       const id = resourceKey(tape),
         old = new Map((text.get(id) ?? []).map((entry) => [tokenKey(entry.token.native), entry]));
       for (const birth of action.nativeManifest)
