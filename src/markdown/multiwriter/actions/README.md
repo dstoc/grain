@@ -47,6 +47,14 @@ Use the [MW-11 provider](../providers/README.md) for those IO boundaries.
 Only actionDoc updates travel through these methods. Never attach a provider to
 a derived native text cache.
 
+Update listeners run synchronously and each receives a separate byte copy. If a
+listener throws, the store finishes native transaction cleanup and notifies the
+remaining listeners before the mutation call rethrows the first error. Writes
+made by a listener share that outer error boundary. The bytes are already
+retained; an error does not roll back or require repeating the mutation. Managed
+editing reports this as `RetainedEditError` and requires `editor.refresh()` before
+the next command or history control.
+
 `snapshot()` calculates full reference readiness. Action sequence numbers start
 at 1. Each later action must explicitly depend on its actor predecessor. Every
 dependency must have a complete valid closure. Lamport time must equal one plus
