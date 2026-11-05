@@ -27,6 +27,7 @@ import { selectInterpretations } from '../projection/interpretation.js';
 import type { PresentedProperties } from '../projection/interpretation.js';
 import { isPropertyRefinement } from './properties.js';
 import { finish } from '../ingest/work.js';
+import { indexedVisibility } from './text-deletions.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
 interface NodeRecord {
@@ -212,13 +213,24 @@ function projectInline(
   // records supply the persistent run; no complete allocation/run scan is needed.
   const rootRun = before.boundaries[0]?.address.slot.run;
   if (!rootRun) throw new Error('Inline projection lacks an addressable root');
-  const flow = ownership.runLayout(rootRun).flow;
+  const rootLayout = ownership.runLayout(rootRun),
+    runs = new Map([[resourceKey(rootRun), rootLayout]]);
+  const runLayout = (run: typeof rootRun) => {
+    const key = resourceKey(run);
+    let layout = runs.get(key);
+    if (!layout) {
+      layout = ownership.runLayout(run);
+      runs.set(key, layout);
+    }
+    return layout;
+  };
+  const flow = rootLayout.flow;
   if (resourceKey(ownership.flowBlock(flow)) !== resourceKey(allocation))
     throw new Error('Inline owner changed during text append');
   let content = '';
   const boundaries: TextBoundary[] = [],
     fragments: TextFragment[] = [];
-  const tapes = new Map<string, ReturnType<NativeView['snapshot']>>();
+  const tapeEnds = new Map<string, number>();
   const addresses = new Map(before.boundaries.map((b) => [addressKey(b.address), b.address]));
   const retainedFragments = new Map<string, TextFragment>(),
     seen = new WeakSet<object>();
@@ -235,19 +247,21 @@ function projectInline(
     if (entry.type === 'slot') {
       const marker = native.marker(entry.slot.boundary),
         id = resourceKey(marker.tape);
-      let snapshot = tapes.get(id);
-      if (!snapshot) {
-        snapshot = native.snapshot(marker.tape);
-        tapes.set(id, snapshot);
+      let end = tapeEnds.get(id);
+      if (end === undefined) {
+        const home = ownership.homeForTape(marker.tape);
+        if (!home) throw new Error('Text slot lacks a retained private home');
+        end = native.marker(home.cell.end).index;
+        tapeEnds.set(id, end);
       }
       if (
         (marker.index === 0 && entry.slot.side === 'left') ||
-        (marker.index === snapshot.length - 1 && entry.slot.side === 'right')
+        (marker.index === end && entry.slot.side === 'right')
       )
         continue;
-      const origin = ownership
-        .runLayout(entry.slot.run)
-        .skeleton.find((range) => ownership.containsBoundary(range, entry.slot.boundary));
+      const origin = runLayout(entry.slot.run).skeleton.find((range) =>
+        ownership.containsBoundary(range, entry.slot.boundary),
+      );
       if (!origin) throw new Error('Text slot lacks a retained origin');
       boundaries.push(
         Object.freeze({ offset: content.length, address: address(textOrigin(entry.slot, origin)) }),
@@ -366,6 +380,9 @@ export class MaterializedProjection {
     stagedStructureTapesRead: 0,
     localPropertyProjections: 0,
     stagedPropertyProjections: 0,
+    exactDeletionRangesIndexed: 0,
+    exactDeletionQueries: 0,
+    exactDeletionNodesVisited: 0,
   };
   fullProjectionCount(): number {
     return this.counts.fullProjections;
@@ -434,7 +451,10 @@ export class MaterializedProjection {
       };
       const prepared = yield* this.ownership.prepare(input, activity, variants, undefined, actions);
       yield;
-      const value = projectWithActivity(input, activity, prepared.value);
+      const value = projectWithActivity(input, activity, {
+        ...prepared.value,
+        visibility: indexedVisibility(this.counts),
+      });
       state = index(value, input);
       commitStructure = prepared.commit;
       this.counts.fullProjections++;
@@ -581,7 +601,10 @@ export class MaterializedProjection {
     ];
     try {
       const structure = finish(branch.prepare(input, activity, variants, touched, sequence));
-      const value = projectWithActivity(input, activity, structure.value);
+      const value = projectWithActivity(input, activity, {
+        ...structure.value,
+        visibility: indexedVisibility(this.counts),
+      });
       this.counts.stagedStructuralProjections++;
       return value;
     } finally {
@@ -689,18 +712,20 @@ export class MaterializedProjection {
           visible: insertionActive && !tags.size,
         });
       }
-      const entries = nativeTapes.has(id)
-        ? native.snapshot(tape).parts.flatMap((part) =>
-            part.type === 'text'
-              ? Array.from({ length: part.text.length }, (_, i) => {
-                  const entry = old.get(
-                    tokenKey({ client: part.native.client, clock: part.native.clock + i }),
-                  );
-                  if (!entry)
-                    throw new Error('Text change contains an uncertified native identity');
-                  return entry;
-                })
-              : [],
+      const home = nativeTapes.has(id) && ownership.homeForTape(tape);
+      if (nativeTapes.has(id) && !home)
+        throw new Error('Text change lacks a retained private home');
+      // Ordering still visits retained text on the affected tape. Read its open
+      // home interval without exporting/cloning a complete marker snapshot.
+      const entries = home
+        ? native.range(home.cell).flatMap((part) =>
+            Array.from({ length: part.text.length }, (_, i) => {
+              const entry = old.get(
+                tokenKey({ client: part.range.client, clock: part.range.clock + i }),
+              );
+              if (!entry) throw new Error('Text change contains an uncertified native identity');
+              return entry;
+            }),
           )
         : (text.get(id)?.entries ?? []).map((entry) => old.get(tokenKey(entry.token.native))!);
       text.set(id, { entries, byId: old });

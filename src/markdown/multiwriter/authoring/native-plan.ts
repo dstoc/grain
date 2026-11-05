@@ -38,10 +38,14 @@ export class NativePlan implements NativeView {
   private readonly client: number;
   private clock = 0;
   private readonly source?: { native: NativeView; tapes: readonly TapeId[] };
+  private readonly direct?: NativeView;
   constructor(input: readonly TapeSnapshot[] | NativePlanSource) {
     const lazy = 'native' in input ? input : undefined;
     const snapshots = 'native' in input ? [] : input;
     this.source = lazy;
+    // Only registered publication roots promise immutable direct reads. Keep
+    // snapshot isolation for arbitrary caller-supplied/lazy native facades.
+    this.direct = lazy && sources.get(lazy.native) === lazy ? lazy.native : undefined;
     const clients =
       lazy?.clients ?? new Set(snapshots.flatMap((s) => s.parts.map((p) => p.native.client)));
     let client = 0;
@@ -72,11 +76,15 @@ export class NativePlan implements NativeView {
   snapshot(tape: TapeId): TapeSnapshot {
     return structuredClone(this.readTape(tape));
   }
+  private untouched(tape: TapeId): NativeView | undefined {
+    return this.tapes.has(resourceKey(tape)) ? undefined : this.direct;
+  }
   marker(id: MarkerId) {
     const key = resourceKey(id);
     let marker = this.markers.get(key);
     if (!marker && this.source) {
       const found = this.source.native.marker(id);
+      if (this.untouched(found.tape)) return found;
       this.readTape(found.tape);
       marker = this.markers.get(key);
     }
@@ -90,6 +98,8 @@ export class NativePlan implements NativeView {
     });
   }
   locate(tape: TapeId, id: NativeId): number {
+    const source = this.untouched(tape);
+    if (source) return source.locate(tape, id);
     for (const part of this.readTape(tape).parts) {
       const size = part.type === 'text' ? part.text.length : 1;
       if (
@@ -102,6 +112,8 @@ export class NativePlan implements NativeView {
     throw new Error('Unknown planned native identity');
   }
   lookup(range: NativeTextRange): readonly LocatedText[] {
+    const source = this.untouched(range.tape);
+    if (source) return source.lookup(range);
     const result = this.readTape(range.tape).parts.flatMap((p) => {
       if (p.type !== 'text' || p.native.client !== range.client) return [];
       const from = Math.max(p.native.clock, range.clock),
@@ -121,6 +133,8 @@ export class NativePlan implements NativeView {
     return result;
   }
   range(range: RangeRef): readonly LocatedText[] {
+    const source = this.untouched(range.tape);
+    if (source) return source.range(range);
     const start = this.marker(range.start),
       end = this.marker(range.end);
     if (
