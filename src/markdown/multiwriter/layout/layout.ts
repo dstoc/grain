@@ -102,6 +102,7 @@ export class LayoutPrefix {
   private readonly flows = new Map<string, FlowAllocation>();
   private readonly runs = new Map<string, RunLayout>();
   private readonly occurrences = new Map<string, OrderedOccurrence>();
+  private readonly sequences = new Map<string, OrderedOccurrence[]>();
   private readonly blockOwners = new Map<string, string>();
   private readonly blocks = new Map<string, ForestEdge<string, BlockPlacement | null>>();
   // Run → immutable flow, flow → run or own block terminal; block terminals end ancestry.
@@ -160,17 +161,17 @@ export class LayoutPrefix {
   ): readonly OrderedOccurrence[] {
     this.validateSlot(slot);
     const sequence = slotSequence(slot);
-    return orderOccurrences(
-      [...this.occurrences.values()].filter((entry) => slotSequence(entry.slot) === sequence),
-      buckets,
-    );
+    const entries = this.sequences.get(sequence) ?? [];
+    return entries.length || buckets.length ? orderOccurrences(entries, buckets) : [];
   }
   children(parent: NodeId, buckets: readonly OccurrenceBucket[] = []): readonly NodeId[] {
     return this.occurrenceOrder({ parent, predecessor: null }, buckets).flatMap((occurrence) => {
       const key = resourceKey(occurrence.id);
-      return [...this.blocks.values()].flatMap((edge) =>
-        edge.value && resourceKey(edge.value.occurrence) === key ? [edge.value.node] : [],
-      );
+      const owner = this.blockOwners.get(key),
+        edge = owner && this.blocks.get(owner);
+      return edge && edge.value && resourceKey(edge.value.occurrence) === key
+        ? [edge.value.node]
+        : [];
     });
   }
   /** Flow attachments only. MW-04 uses occurrenceOrder for transferred run attachments. */
@@ -397,11 +398,16 @@ export class LayoutPrefix {
           break;
         case 'occurrence':
           if (this.occurrences.has(key)) throw new Error('Duplicate occurrence');
-          this.occurrences.set(key, {
+          const entry = {
             id: allocation.id,
             slot: allocation.slot,
             order: action ? (orderById.get(key) ?? { action, ordinal: -1 }) : null,
-          });
+          };
+          this.occurrences.set(key, entry);
+          const sequence = slotSequence(entry.slot);
+          const entries = this.sequences.get(sequence) ?? [];
+          entries.push(entry);
+          this.sequences.set(sequence, entries);
           break;
         default:
           break;
