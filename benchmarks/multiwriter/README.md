@@ -94,3 +94,28 @@ Schema 2 cannot replay schema-3 carriers. Its canonical checkpoint includes the
 initial document; schema-3 genesis and actionDoc sizes remain separate. Do not
 compare those individual byte fields as equivalent storage categories, and do
 not infer offline/concurrent capability from this literal control.
+
+## Managed history comparison
+
+Use an existing exact fixture to compare real MW-10 selection capture, edit,
+Undo and Redo in the current-source reference and materialized readers:
+
+```sh
+node benchmarks/multiwriter/managed.mjs --fixture /tmp/mw13-results/fixture-150.bin --output /tmp/mw13-managed-150
+```
+
+The destination must be new. The runner performs three fresh-process pairs and
+reverses their order on alternate pairs. Both implementations use this checkout's
+accepted MW-10 code and the same genesis/literal script. This reference is distinct
+from the pinned pre-MW-10 reference used by `run.mjs`. The script creates a separate
+history group per edit and supplies the native selection. Each process also times
+one real Undo and Redo, verifies exact restoration, and verifies final Markdown.
+The navigation samples are single operations per process, not per-action p95s.
+
+`localHistoryBytes` is serialized navigation metadata. `processHeapDelta` remains
+a controlled-GC whole-replica delta that includes history. Neither measures
+cache-only heap. Publication diagnostics do not count the additional full author
+projection used to stage managed selection. There is no attached storage journal
+or consolidation workload in this script. The real 501-group and MW-18 tests remain
+separate correctness/storage controls. These short managed literal measurements
+do not satisfy the mixed 10,000-action, directional catch-up or complete MW-13 gate.

@@ -21,8 +21,11 @@ const { values } = parseArgs({
     size: { type: 'string' },
     steps: { type: 'string' },
     warmup: { type: 'string' },
+    managed: { type: 'boolean', default: false },
   },
 });
+if (values.managed && values.mode !== 'command')
+  throw new Error('--managed requires --mode command');
 const limits = { bytes: 128 * 1024 * 1024, operations: 20_000_000, nativeOperations: 10_000_000 };
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const semanticHash = (value) =>
@@ -151,6 +154,7 @@ if (values.mode === 'capture') {
           nativeDecodeOperations: limits.nativeOperations,
         })
       : undefined;
+  const history = values.managed ? editor.session('bench') : undefined;
   const warmup = Number(values.warmup),
     samples = [];
   try {
@@ -158,10 +162,17 @@ if (values.mode === 'capture') {
       const before = performance.now();
       if (editor) {
         const node = document.publication.status().publication.value.view.root.children[0];
-        const result = editor.edit({ local: 'bench', group: BigInt(i + 1) }, insertText, {
-          nodeId: editor.handle(node.origin.representative),
-          ...fixture.schedule[i],
-        });
+        const nodeId = editor.handle(node.origin.representative),
+          input = { nodeId, ...fixture.schedule[i] };
+        const result = history
+          ? history.edit(insertText, input, {
+              typing: false,
+              selectionBefore: {
+                anchor: { nodeId, offset: input.from, affinity: 'right' },
+                focus: { nodeId, offset: input.from, affinity: 'right' },
+              },
+            })
+          : editor.edit({ local: 'bench', group: BigInt(i + 1) }, insertText, input);
         if (result.status !== 'applied') throw new Error('Timed command did not apply');
       } else {
         document.store.applyUpdate(fixture.carriers[i]);
@@ -169,6 +180,23 @@ if (values.mode === 'capture') {
       }
       const elapsed = performance.now() - before;
       if (i >= warmup) samples.push(elapsed);
+    }
+    let navigation = null;
+    if (history) {
+      const beforeUndo = performance.now(),
+        undo = history.undo(),
+        undoMs = performance.now() - beforeUndo;
+      if (undo.state !== 'applied') throw new Error('Managed Undo did not apply');
+      const beforeRedo = performance.now(),
+        redo = history.redo(),
+        redoMs = performance.now() - beforeRedo;
+      if (redo.state !== 'applied') throw new Error('Managed Redo did not apply');
+      navigation = {
+        undoMs,
+        redoMs,
+        undoRestoration: undo.restoration.state,
+        redoRestoration: redo.restoration.state,
+      };
     }
     const markdown = serializeProjection(document.publication.status().publication.value.view);
     if (markdown !== fixture.markdown) throw new Error('Command script output differs');
@@ -199,7 +227,17 @@ if (values.mode === 'capture') {
       // This includes canonical state AND all caches/editor metadata; it is not a cache-only heap measurement.
       processHeapDelta: heapAfter - heapBefore,
       storageJournalBytes: null,
-      localHistoryBytes: null,
+      localHistoryBytes: history
+        ? new TextEncoder().encode(
+            JSON.stringify(history.groups(), (_key, value) =>
+              typeof value === 'bigint' ? value.toString() : value,
+            ),
+          ).byteLength
+        : null,
+      historyMethod: history ? 'serialized MW-10 navigation metadata; not heap' : null,
+      historyStatus: history?.status() ?? null,
+      historyMode: history ? 'managed' : 'unmanaged',
+      navigation,
       consolidation: null,
       verified: true,
       markdownSha256: hash(markdown),
