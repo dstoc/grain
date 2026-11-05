@@ -60,7 +60,7 @@ export class HomeIndex {
   private readonly reserved = new Set<string>();
   constructor(
     bindings: readonly HomeBinding[],
-    private readonly index: CellIndex,
+    private readonly index: Pick<CellIndex, keyof CellIndex>,
   ) {
     for (const home of structuredClone(bindings)) {
       if (this.byRun.has(resourceKey(home.run)) || this.byTape.has(resourceKey(home.cell.tape)))

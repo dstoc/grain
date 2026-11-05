@@ -12,7 +12,10 @@ import type { ViewNode } from '../../../src/markdown/multiwriter/projection/type
 import type { SeedBlock } from '../trace.js';
 
 /** One construction only. Each replica receives detached genesis bytes and descriptors. */
-export function commandGenesis(markdown = 'abcdef'): ReferenceGenesis {
+export function commandGenesis(
+  markdown = 'abcdef',
+  nativeDecodeOperations?: number,
+): ReferenceGenesis {
   const parsed = parseBlocks(markdown).node,
     blocks: SeedBlock[] = [],
     nodes: { name: string; node: MarkdownNode }[] = [];
@@ -44,7 +47,7 @@ export function commandGenesis(markdown = 'abcdef'): ReferenceGenesis {
     for (const child of node.children ?? []) visit(child, name);
   };
   visit(parsed, null);
-  const f = new NativeFixture(blocks);
+  const f = new NativeFixture(blocks, nativeDecodeOperations);
   try {
     return structuredClone({
       documentId: 'D',
@@ -74,13 +77,14 @@ export function commandReplica(
   genesis: ReferenceGenesis,
   bytes?: Uint8Array,
   implementation: 'reference' | 'materialized' = 'reference',
+  options: { readonly nativeDecodeOperations?: number } = {},
 ) {
   const open = implementation === 'materialized' ? openMaterializedDocument : openReferenceDocument;
-  const document = open(structuredClone(genesis));
+  const document = open(structuredClone(genesis), options);
   if (bytes) document.store.applyUpdate(bytes);
   let refresh = document.publication.refresh();
   while (refresh.state === 'deferred') refresh = refresh.continuation.resume();
-  const editor = new LocalEditor(document, structuredClone(genesis));
+  const editor = new LocalEditor(document, structuredClone(genesis), options);
   const view = () => document.publication.status().publication!.value.view;
   const nodes = () => {
     const out: ViewNode[] = [];

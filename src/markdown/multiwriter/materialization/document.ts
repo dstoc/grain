@@ -3,14 +3,11 @@ import type { ReferenceGenesis } from '../reference/document.js';
 import { createIngestValidator } from '../ingest/validator.js';
 import { assertLimit } from '../ingest/work.js';
 import { createProjectionAuthorValidator } from '../projection/index.js';
-import { projectWithActivity } from '../projection/project.js';
 import { MaterializedActivity } from './activity.js';
+import { MaterializedProjection } from './projection.js';
 import type { PreparedActivity } from './activity.js';
-import {
-  ProvenanceError,
-  reconstructBirths,
-  reconstructProvenance,
-} from '../reference/provenance.js';
+import type { PreparedProjection } from './projection.js';
+import { ProvenanceError, reconstructBirths } from '../reference/provenance.js';
 import type { ActionEnvelope } from '../contracts.js';
 import { MaterializedPublication } from './publication.js';
 
@@ -46,6 +43,8 @@ export function openMaterializedDocument(
     validate,
   });
   const activity = new MaterializedActivity();
+  const projection = new MaterializedProjection();
+  let preparedProjection: PreparedProjection | undefined;
   let prepared: PreparedActivity | undefined;
   const publication = new MaterializedPublication(
     store,
@@ -53,36 +52,43 @@ export function openMaterializedDocument(
     function* (actions, native, variants) {
       prepared = yield* activity.prepare(actions, variants);
       yield;
-      return projectWithActivity(
-        {
-          genesis: genesis.layout,
-          genesisManifest: genesis.body.nativeManifest,
-          initialProperties: genesis.initialProperties,
-          ...reconstructProvenance(genesis.layout, actions),
-          native,
-        },
+      preparedProjection = yield* projection.prepare(
+        genesis,
+        actions,
+        native,
         prepared.value,
+        variants,
       );
+      return preparedProjection.value;
     },
     options.nativeDecodeOperations,
-    (actions) => validate.retainReady(actions),
+    (_actions, variants) => validate.retainReadyFacts(variants),
     {
+      fullProjectionCount: () => projection.fullProjectionCount(),
       commit() {
         prepared!.commit();
+        preparedProjection!.commit();
+        preparedProjection = undefined;
         prepared = undefined;
       },
       cancel() {
         prepared = undefined;
         activity.cancel();
+        preparedProjection = undefined;
+        projection.cancel();
       },
       evict() {
         activity.evict();
+        projection.evict();
       },
     },
   );
   return {
     commandMode: 'overlay' as const,
+    readyActions: () => store.readReady().ready,
     activityDiagnostics: () => activity.diagnostics(),
+    ownershipDiagnostics: () => projection.diagnostics().ownership,
+    projectionDiagnostics: () => projection.diagnostics(),
     store,
     publication,
     setNativeDecodeLimit(operations: number): void {

@@ -148,7 +148,7 @@ export class LocalEditor {
   }
   private base(session: AuthorSession) {
     const p = this.current(),
-      ready = this.document.store.snapshot().ready;
+      ready = this.document.readyActions?.() ?? this.document.store.snapshot().ready;
     this.sync(ready);
     const previousSequence = ready
       .filter((a) => a.id.actor === this.actor)
@@ -318,7 +318,7 @@ export class LocalEditor {
       if (status.stale || !status.canAuthor || !status.publication)
         throw new Error('Publication is stale or not authorable; refresh before editing');
       const p = status.publication,
-        ready = this.document.store.snapshot().ready;
+        ready = this.document.readyActions?.() ?? this.document.store.snapshot().ready;
       this.sync(ready);
       const draft = new MultiwriterCommandDraft(
         p.value.view.root,

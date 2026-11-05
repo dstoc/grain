@@ -10,6 +10,8 @@ import {
   resourceKey,
 } from '../text/identity.js';
 import type { LocatedText, NativeBody, TapePart, TapeSnapshot } from '../text/types.js';
+import { registerNativePlanSource } from '../authoring/native-plan.js';
+import { PersistentMap } from './map.js';
 import { get, set } from './map.js';
 import type { MapRoot } from './map.js';
 
@@ -21,6 +23,26 @@ interface TapeIndex {
 interface BodyLink {
   readonly previous?: BodyLink;
   readonly updates: readonly Uint8Array[];
+  readonly tapes: readonly TapeId[];
+}
+const nativeRoots = new WeakMap<NativeView, BodyLink | undefined>();
+/** Changes between two views of the same monotonically integrated private cache.
+ * A rebuilt/evicted native branch has no reusable prefix and returns undefined.
+ */
+export function changedNativeTapes(
+  before: NativeView,
+  after: NativeView,
+): readonly TapeId[] | undefined {
+  if (!nativeRoots.has(before) || !nativeRoots.has(after)) return undefined;
+  const stop = nativeRoots.get(before),
+    touched = new Map<string, TapeId>();
+  let link = nativeRoots.get(after);
+  while (link !== stop) {
+    if (!link) return undefined;
+    for (const tape of link.tapes) touched.set(resourceKey(tape), tape);
+    link = link.previous;
+  }
+  return [...touched.values()];
 }
 export interface NativeWork {
   bodiesIntegrated: number;
@@ -34,6 +56,8 @@ function readView(
   tapes: MapRoot<TapeIndex> | undefined,
   markerTapes: MapRoot<TapeId> | undefined,
   bodies: BodyLink | undefined,
+  tapeIds: PersistentMap<TapeId>,
+  clients: MapRoot<true> | undefined,
 ): NativeView {
   const tapeIndex = (id: TapeId) => {
     const tape = get(tapes, resourceKey(id));
@@ -71,7 +95,7 @@ function readView(
       affinity: part.affinity,
     });
   }
-  return {
+  const view: NativeView = {
     snapshot: (id) => structuredClone(tapeIndex(id).snapshot),
     marker,
     locate(tape, id) {
@@ -138,6 +162,15 @@ function readView(
       }
     },
   };
+  nativeRoots.set(view, bodies);
+  registerNativePlanSource(view, {
+    native: view,
+    get tapes() {
+      return structuredClone([...tapeIds.values()]);
+    },
+    clients: { has: (client) => get(clients, String(client)) === true },
+  });
+  return view;
 }
 
 /** Monotone private native integration with tape-local copy-on-write read roots.
@@ -149,13 +182,15 @@ export class MaterializedNative {
   private tapes?: MapRoot<TapeIndex>;
   private markerTapes?: MapRoot<TapeId>;
   private bodies?: BodyLink;
+  private clients?: MapRoot<true>;
+  private tapeIds = new PersistentMap<TapeId>();
   private damaged = false;
   readonly work: NativeWork = { bodiesIntegrated: 0, tapesIndexed: 0, partsIndexed: 0 };
   constructor(decodeOperations: number) {
     this.cache = new NativeTapeCache(decodeOperations);
   }
   view(): NativeView {
-    return readView(this.tapes, this.markerTapes, this.bodies);
+    return readView(this.tapes, this.markerTapes, this.bodies, this.tapeIds, this.clients);
   }
   *apply(key: string, input: NativeBody): Work<void> {
     if (this.damaged) throw new Error('Cancelled native indexing requires a fresh materializer');
@@ -198,11 +233,17 @@ export class MaterializedNative {
       }
       this.tapes = tapes;
       this.markerTapes = markers;
-      if (body.nativeInsertUpdates.length)
-        this.bodies = {
-          previous: this.bodies,
-          updates: body.nativeInsertUpdates,
-        };
+      const tapeIds = this.tapeIds.fork();
+      for (const allocation of body.allocations)
+        if (allocation.type === 'tape') tapeIds.set(resourceKey(allocation.id), allocation.id);
+      this.tapeIds = tapeIds;
+      for (const birth of body.nativeManifest)
+        this.clients = set(this.clients, String(birth.native.client), true);
+      this.bodies = {
+        previous: this.bodies,
+        updates: body.nativeInsertUpdates,
+        tapes: [...touched.values()],
+      };
       this.work.bodiesIntegrated++;
       committed = true;
     } finally {

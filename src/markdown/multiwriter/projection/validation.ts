@@ -2,6 +2,7 @@ import type { ActionEnvelope, NativeTextRange, RangeRef } from '../contracts.js'
 import type { BirthPlacement, LayoutGenesis } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
 import { createOwnershipAuthorValidator, reduceOwnership } from '../ownership/index.js';
+import { isTextRefinement, validateTextRefinement } from '../ownership/text-validation.js';
 import type { IngestValidatorOptions } from '../ingest/validator.js';
 import { finish, IngestCapacityError, IngestDataError } from '../ingest/work.js';
 import { reduceActivity } from '../visibility/index.js';
@@ -20,6 +21,19 @@ export function createProjectionAuthorValidator(options: {
 }): NonNullable<IngestValidatorOptions['validateAuthor']> {
   const genesis = structuredClone(options.genesis);
   return (action, context) => {
+    // The indexed past certifies all ancestor constructors. Pure refinement has
+    // no placement, ownership, packet membership or interpretation decisions.
+    // Resolve the host callback outside the rejection catch as on the full path.
+    if (context.indexed && isTextRefinement(action) && options.births(action).length === 0) {
+      try {
+        validateTextRefinement(action, context);
+        return null;
+      } catch (error) {
+        if (error instanceof IngestDataError || error instanceof IngestCapacityError) throw error;
+        if (!(error instanceof Error)) throw error;
+        return 'reference';
+      }
+    }
     const actions = [...context.dependencies, action];
     // Resolve host-supplied birth bindings before data-rejection catches. Host
     // failures must propagate; the reference boundary handles ProvenanceError.

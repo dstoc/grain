@@ -30,16 +30,18 @@ export type RawInlineEntry =
  */
 export function traverse(
   flow: FlowId,
-  layout: LayoutPrefix,
-  index: CellIndex,
-  assignments: ReadonlyMap<string, CellAssignment>,
-  roots: ReadonlyMap<string, readonly RunOrigin[]>,
-  attachments: ReadonlyMap<string, RunAttachment>,
+  layout: Pick<LayoutPrefix, keyof LayoutPrefix> & {
+    flowsAt?: (occurrence: OccurrenceId) => readonly FlowId[];
+  },
+  index: Pick<CellIndex, keyof CellIndex>,
+  assignments: Pick<ReadonlyMap<string, CellAssignment>, 'get' | 'values'>,
+  roots: Pick<ReadonlyMap<string, readonly RunOrigin[]>, 'get'>,
+  attachments: Pick<ReadonlyMap<string, RunAttachment>, 'get'>,
 ): readonly RawInlineEntry[] {
   const result: RawInlineEntry[] = [];
   const visited = new Set<string>();
   const emitted = new Set<string>();
-  const flows = layout.flowPlacements;
+  const flows = layout.flowsAt ? [] : layout.flowPlacements;
   function walkFlow(id: FlowId): void {
     const key = resourceKey(id);
     if (visited.has(key)) throw new Error('Repeated or cyclic inline flow traversal');
@@ -65,6 +67,11 @@ export function traverse(
             result.push({ type: 'attachment', occurrence: occurrence.id, target: attachment.run });
             walkRun(attachment);
           }
+          if (layout.flowsAt)
+            for (const flow of layout.flowsAt(occurrence.id)) {
+              result.push({ type: 'attachment', occurrence: occurrence.id, target: flow });
+              walkFlow(flow);
+            }
           for (const placement of flows) {
             if (
               placement.parent.type === 'flow' &&

@@ -1,12 +1,13 @@
 # Multiwriter materialization measurements
 
-This runner compares the native materialization/command-overlay stage with the
+This runner compares the opt-in native/readiness/activity materializer with the
 full reference implementation at `415363a4e85549a33eee3010d69e55ce6161002d`.
 It does not establish full MW-13 acceptance.
 
 Use the runner's installed dependencies (`npm install`) and Node with
-`module.registerHooks` support. Yjs must be exactly 13.6.33. Run on an otherwise
-idle host:
+`module.registerHooks` support. Yjs must be exactly 13.6.33. Verify exact fixture comparisons with
+`node --test benchmarks/multiwriter/worker.test.mjs`. Run measurements on an
+otherwise idle host:
 
 ```sh
 node benchmarks/multiwriter/run.mjs --output /tmp/mw13-results --size 150
@@ -35,7 +36,9 @@ run the same literal insertion script against that genesis; their fresh writer
 identities differ. The worker compares replay output, readiness, raw placement,
 ownership, addresses, visibility and exact native/canonical bytes with the
 capture's reference hash after timing. Command runs compare exported Markdown.
-Neither comparison is included in the measured intervals.
+Neither comparison is included in the measured intervals. Snapshot contract fields
+are hashed in the original reference order; JavaScript property insertion order
+in a reader export is not a semantic difference. Original fixtures remain valid.
 
 `report.json` names the source commits, dirty status, runtime, Yjs, CPU, fixture
 hashes and raw per-process samples. `coldMs` measures initial publication, before
@@ -50,7 +53,10 @@ The embedded native bytes are a subset of the envelopes, not additional storage.
 `processHeapDelta` is a controlled-GC whole-replica process delta. It includes
 canonical state, caches, local editing state and runtime noise; it is not a
 cache-only heap measurement. Journal, production-history and consolidation
-measurements are `null` because this stage does not integrate those systems.
+measurements are `null` in this low-level `LocalEditor.edit()` workload. It does not
+use managed `HistorySession` navigation or an attached journal. Actual managed
+history/checkpoint correctness and serialized-size controls run separately on the
+integration branch; these timing reports do not measure their command costs.
 
 An error or interruption leaves an incomplete report and any completed samples.
 Only `complete: true` means all requested cases completed and passed their

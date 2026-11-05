@@ -1,18 +1,45 @@
-import { ReferenceActionStore } from '../reference/store.js';
+import { ActionStore } from '../actions/store.js';
+import { compareBytes } from '../actions/cbor.js';
+import { encodeEnvelope } from '../actions/codec.js';
+import { assertLimit, compute, finish } from '../ingest/work.js';
+import type { Computation } from '../ingest/work.js';
+import * as persistent from './map.js';
+import type { MapRoot } from './map.js';
 import type {
   ActionFact,
   ActionStoreSnapshot,
   ActionVariant,
   QuarantineReason,
+  StoredAction,
+  ActionValidationContext,
 } from '../actions/store.js';
-import { actionKey, validReferencesSteps } from '../actions/references.js';
-import type { ActionEnvelope, ActionId, ActionReadiness } from '../contracts.js';
+import { actionKey, validCertifiedReferencesSteps } from '../actions/references.js';
+import { groupKey } from '../visibility/identity.js';
+import type { ActionEnvelope, ActionId, ActionReadiness, Allocation } from '../contracts.js';
 import { compareActions } from '../contracts.js';
 import type { Work } from '../ingest/work.js';
 
 interface Certificate {
-  readonly variant: ActionVariant;
+  readonly token: object;
+  variant: ActionVariant;
   readonly dependencies: readonly Certificate[];
+  readonly resources: ReadonlyMap<number, Allocation>;
+  readonly seals?: MapRoot<boolean>;
+  after?: MapRoot<Certificate>;
+}
+const emptyPast = Object.freeze({});
+const identities = new WeakMap<object, object>();
+function identity(root: object | undefined): object {
+  if (!root) return emptyPast;
+  let token = identities.get(root);
+  if (!token) identities.set(root, (token = Object.freeze({})));
+  return token;
+}
+function* entries<T>(root: MapRoot<T> | undefined): Generator<readonly [string, T]> {
+  if (!root) return;
+  yield* entries(root.left);
+  yield [root.key, root.value];
+  yield* entries(root.right);
 }
 export interface ReadinessWork {
   factsChanged: number;
@@ -21,6 +48,8 @@ export interface ReadinessWork {
   closureEdges: number;
   authorChecks: number;
   fullSnapshotBuilds: number;
+  frontierEntries: number;
+  localCertificatesReused: number;
 }
 const compareIds = (a: ActionId, b: ActionId): number =>
   a.actor < b.actor
@@ -39,11 +68,43 @@ const quarantine = (reason: QuarantineReason): ActionReadiness => ({
 
 /** Incremental readiness over retained decoded facts. No canonical writes, no fact pruning.
  * The reference ActionStore.calculate remains a separate full-scan oracle.
- * Detached snapshot exports and new-author closure checks remain explicit full-array costs.
+ * Public snapshot exports and new-author closure checks remain explicit full-array costs.
  */
-export class IndexedActionStore extends ReferenceActionStore {
+/** Borrowed immutable facts for trusted derived readers. Never expose these through
+ * public snapshots or validators. Native byte arrays remain privately owned by the store.
+ */
+export interface ReadyActionView {
+  readonly ready: readonly ActionEnvelope[];
+  readonly heads: readonly ActionId[];
+  readonly integrity: boolean;
+  readonly variants: ReadonlyMap<string, Uint8Array>;
+}
+interface ReadyState extends ReadyActionView {
+  readonly records?: MapRoot<StoredAction>;
+  readonly diagnostics: readonly string[];
+}
+function mapComputation<A, B>(state: Computation<A>, map: (value: A) => B): Computation<B> {
+  if (state.state === 'complete') return { state: 'complete', value: map(state.value) };
+  return {
+    state: 'deferred',
+    continuation: {
+      cancel: () => state.continuation.cancel(),
+      resume: (budget) => mapComputation(state.continuation.resume(budget), map),
+    },
+  };
+}
+
+export class IndexedActionStore extends ActionStore {
+  private memo?: { readonly version: number; readonly value: ReadyState };
+  private running?: Work<ReadyState>;
+  private generation = 0;
+  private records?: MapRoot<StoredAction>;
   private readonly changed = new Set<string>();
-  private readonly known = new Map<string, ActionFact>();
+  private certificateIndex?: MapRoot<Certificate>;
+  private staged?: Certificate;
+  private readonly genesisResources = new Map(
+    this.options.genesisAllocations.map((a) => [a.id.ordinal, a]),
+  );
   private readonly readers = new Map<string, Set<string>>();
   private readonly states = new Map<string, ActionReadiness>();
   private readonly ready = new Map<string, ActionEnvelope>();
@@ -55,13 +116,14 @@ export class IndexedActionStore extends ReferenceActionStore {
     closureEdges: 0,
     authorChecks: 0,
     fullSnapshotBuilds: 0,
+    frontierEntries: 0,
+    localCertificatesReused: 0,
   };
   readinessDiagnostics(): Readonly<ReadinessWork> {
     return { ...this.counts };
   }
   protected override factChanged(fact: ActionFact): void {
     const key = actionKey(fact.id);
-    this.known.set(key, fact);
     this.changed.add(key);
     this.counts.factsChanged++;
     // Include every retained variant. Extra edges after a fork are conservative;
@@ -74,7 +136,186 @@ export class IndexedActionStore extends ReferenceActionStore {
         readers.add(key);
       }
   }
-  protected override *calculate(): Work<ActionStoreSnapshot> {
+  /** Internal reads avoid detached diagnostic exports. Receipt/limit changes and
+   * replacement computations invalidate suspended work exactly as public compute does.
+   */
+  readReady(): ReadyActionView {
+    let result = this.computeReady(Number.MAX_SAFE_INTEGER);
+    while (result.state === 'deferred')
+      result = result.continuation.resume(Number.MAX_SAFE_INTEGER);
+    return result.value;
+  }
+  computeReady(operations?: number): Computation<ReadyState> {
+    this.cancelRead();
+    const version = this.factsVersion,
+      generation = this.generation;
+    if (this.memo?.version === version) {
+      // Validate the caller's budget even for a completed memoized result.
+      if (operations !== undefined) assertLimit(operations);
+      return { state: 'complete', value: this.memo.value };
+    }
+    const work = this.calculateReady(version);
+    this.running = work;
+    return compute(
+      work,
+      operations,
+      () => this.factsVersion === version && this.generation === generation,
+    );
+  }
+  override snapshot(): ActionStoreSnapshot {
+    return this.exportSnapshot(this.readReady() as ReadyState);
+  }
+  override compute(operations?: number): Computation<ActionStoreSnapshot> {
+    return mapComputation(this.computeReady(operations), (value) => this.exportSnapshot(value));
+  }
+  override setDecodeLimits(limits: { depth?: number; operations?: number }): void {
+    this.cancelRead();
+    this.memo = undefined;
+    super.setDecodeLimits(limits);
+  }
+  private cancelRead(): void {
+    this.generation++;
+    this.running?.return(undefined as unknown as ReadyState);
+    this.running = undefined;
+  }
+  private exportSnapshot(view: ReadyState): ActionStoreSnapshot {
+    this.counts.fullSnapshotBuilds++;
+    const actions: StoredAction[] = [];
+    const visit = (root: MapRoot<StoredAction> | undefined) => {
+      if (!root) return;
+      visit(root.left);
+      actions.push(root.value);
+      visit(root.right);
+    };
+    visit(view.records);
+    actions.sort((a, b) => compareIds(a.id, b.id));
+    return structuredClone({
+      actions,
+      ready: view.ready,
+      heads: view.heads,
+      diagnostics: view.diagnostics,
+      integrity: view.integrity,
+    });
+  }
+  override checkLocal(action: ActionEnvelope): QuarantineReason | null {
+    const bytes = encodeEnvelope(action);
+    const view = this.readReady();
+    if (!view.integrity) return 'reference';
+    const key = actionKey(action.id),
+      existing = this.fact(key);
+    if (existing)
+      return this.states.get(key)?.state === 'ready' &&
+        existing.variants.length === 1 &&
+        compareBytes(existing.variants[0].bytes, bytes) === 0
+        ? null
+        : 'reference';
+    const reason = finish(this.chainError(action));
+    if (reason) return reason;
+    if (action.dependencies.some((id) => !this.ready.has(actionKey(id)))) return 'reference';
+    const maximum = action.dependencies.reduce((max, id) => {
+      const time = this.ready.get(actionKey(id))!.lamport;
+      return time > max ? time : max;
+    }, 0n);
+    if (action.lamport !== maximum + 1n) return 'actor-chain';
+    const candidate = finish(this.candidate({ bytes, envelope: structuredClone(action) }));
+    if (!finish(validCertifiedReferencesSteps(action, candidate.context.indexed!.past)))
+      return 'reference';
+    const validation = this.options.validate(structuredClone(action), candidate.context);
+    const failure =
+      typeof validation === 'object' && validation !== null ? finish(validation) : validation;
+    if (!failure) this.staged = candidate.certificate;
+    return failure;
+  }
+  private *candidate(
+    variant: ActionVariant,
+  ): Work<{ readonly certificate: Certificate; readonly context: ActionValidationContext }> {
+    const action = variant.envelope!;
+    const dependencies = action.dependencies.map((id) => this.certified.get(actionKey(id))!);
+    let past: MapRoot<Certificate> | undefined, seals: MapRoot<boolean> | undefined;
+    for (const dependency of dependencies) {
+      yield;
+      if (!past) past = dependency.after;
+      else if (past !== dependency.after)
+        for (const [actor, certificate] of entries(dependency.after)) {
+          yield;
+          this.counts.frontierEntries++;
+          if (
+            (persistent.get(past, actor)?.variant.envelope!.id.sequence ?? 0n) <
+            certificate.variant.envelope!.id.sequence
+          )
+            past = persistent.set(past, actor, certificate);
+        }
+      if (!seals) seals = dependency.seals;
+      else if (seals !== dependency.seals)
+        for (const [key] of entries(dependency.seals)) {
+          yield;
+          seals = persistent.set(seals, key, true);
+        }
+    }
+    const index = this.certificateIndex;
+    const contains = (id: ActionId) =>
+      id.sequence > 0n &&
+      (persistent.get(past, id.actor)?.variant.envelope!.id.sequence ?? 0n) >= id.sequence;
+    const certificate: Certificate = {
+      token: Object.freeze({}),
+      variant,
+      dependencies,
+      resources: new Map(
+        action.allocations.map((allocation) => [allocation.id.ordinal, allocation]),
+      ),
+      seals: action.effects.reduce(
+        (root, effect) =>
+          effect.type === 'SetGroupActive'
+            ? persistent.set(root, groupKey(effect.group), true)
+            : root,
+        seals,
+      ),
+    };
+    certificate.after = persistent.set(past, action.id.actor, certificate);
+    let detached: readonly ActionEnvelope[] | undefined;
+    const context: ActionValidationContext = {
+      get dependencies() {
+        return (detached ??= structuredClone(finish(closure())));
+      },
+      indexed: {
+        past: {
+          identity: identity(past),
+          contains,
+          allocation: (id) => {
+            const allocation =
+              id.birth.type === 'genesis'
+                ? id.birth.genesisId === this.options.genesisId
+                  ? this.genesisResources.get(id.ordinal)
+                  : undefined
+                : contains(id.birth.action)
+                  ? persistent.get(index, actionKey(id.birth.action))?.resources.get(id.ordinal)
+                  : undefined;
+            return allocation?.id.kind === id.kind ? structuredClone(allocation) : undefined;
+          },
+          groupSealed: (group) => persistent.get(seals, groupKey(group)) === true,
+        },
+        resultIdentity: identity(certificate.after),
+        dependencies: Object.freeze(dependencies.map((certificate) => certificate.token)),
+      },
+    };
+    const closure = () => this.closure(action.dependencies);
+    return { certificate, context };
+  }
+  private *closure(dependencies: readonly ActionId[]): Work<readonly ActionEnvelope[]> {
+    const closure = new Map<string, ActionEnvelope>();
+    const ancestors = [...dependencies];
+    while (ancestors.length) {
+      yield;
+      this.counts.closureEdges++;
+      const key = actionKey(ancestors.pop()!);
+      if (closure.has(key)) continue;
+      const ancestor = this.ready.get(key)!;
+      closure.set(key, ancestor);
+      ancestors.push(...ancestor.dependencies);
+    }
+    return [...closure.values()].sort(compareActions);
+  }
+  private *calculateReady(version: number): Work<ReadyState> {
     yield* this.decodePending();
     const affected = new Set<string>();
     const stack = [...this.changed];
@@ -171,64 +412,82 @@ export class IndexedActionStore extends ReferenceActionStore {
         this.ready.set(key, action);
         continue;
       }
-      const closure = new Map<string, ActionEnvelope>();
-      const ancestors = [...dependencies];
-      while (ancestors.length) {
-        yield;
-        this.counts.closureEdges++;
-        const id = ancestors.pop()!,
-          ancestorKey = actionKey(id);
-        if (closure.has(ancestorKey)) continue;
-        const ancestor = this.ready.get(ancestorKey)!;
-        closure.set(ancestorKey, ancestor);
-        ancestors.push(...ancestor.dependencies);
-      }
-      const causalBase = [...closure.values()].sort(compareActions);
+      const staged = this.staged;
+      let certificate: Certificate;
       let reason: QuarantineReason | null;
-      if (!(yield* validReferencesSteps(action, causalBase, this.options.genesisAllocations)))
-        reason = 'reference';
-      else {
-        this.counts.authorChecks++;
-        const result = this.options.validate(structuredClone(action), {
-          dependencies: structuredClone(causalBase),
-        });
-        reason = typeof result === 'object' && result !== null ? yield* result : result;
+      if (
+        staged &&
+        compareBytes(staged.variant.bytes, variant.bytes) === 0 &&
+        staged.dependencies.length === dependencyCertificates.length &&
+        dependencyCertificates.every((value, index) => value === staged.dependencies[index])
+      ) {
+        certificate = staged;
+        this.counts.localCertificatesReused++;
+        reason = null;
+      } else {
+        const candidate = yield* this.candidate(variant);
+        certificate = candidate.certificate;
+        if (!(yield* validCertifiedReferencesSteps(action, candidate.context.indexed!.past)))
+          reason = 'reference';
+        else {
+          this.counts.authorChecks++;
+          const result = this.options.validate(structuredClone(action), candidate.context);
+          reason = typeof result === 'object' && result !== null ? yield* result : result;
+        }
       }
       this.states.set(key, reason ? quarantine(reason) : { state: 'ready' });
       if (!reason) {
         this.ready.set(key, action);
-        this.certified.set(key, { variant, dependencies: dependencyCertificates });
+        // Remember the canonical decoded variant for the direct certificate reuse check.
+        certificate.variant = variant;
+        this.certified.set(key, certificate);
+        this.certificateIndex = persistent.set(this.certificateIndex, key, certificate);
       }
     }
-    // Cancellation retains the complete dirty closure. It is safe to keep completed
-    // immutable certificates, but no partial readiness result can escape.
-    this.changed.clear();
+    // Capture only changed records in persistent roots. Older read views remain
+    // coherent through later forks, cancellation, decoder retries and public exports.
+    for (const key of affected) {
+      yield;
+      const fact = this.fact(key)!;
+      this.records = persistent.set(this.records, key, {
+        id: fact.id,
+        variants: fact.variants.map((variant) => variant.bytes),
+        readiness: this.states.get(key)!,
+      });
+    }
     const ready = [...this.ready.values()].sort(compareActions);
     const heads = new Map(ready.map((action) => [actionKey(action.id), action.id]));
-    for (const action of ready)
+    const variants = new Map<string, Uint8Array>();
+    for (const action of ready) {
+      yield;
+      variants.set(actionKey(action.id), this.fact(actionKey(action.id))!.variants[0].bytes);
       for (const id of action.dependencies) {
         yield;
         heads.delete(actionKey(id));
       }
+    }
     const status = this.factStatus();
-    this.counts.fullSnapshotBuilds++;
-    return structuredClone({
-      actions: [...this.known.values()]
-        .sort((a, b) => compareIds(a.id, b.id))
-        .map((fact) => ({
-          id: fact.id,
-          variants: fact.variants.map((variant) => variant.bytes),
-          readiness: this.states.get(actionKey(fact.id))!,
-        })),
+    const value: ReadyState = {
+      records: this.records,
       ready: status.integrity ? ready : [],
       heads: status.integrity ? [...heads.values()] : [],
-      ...status,
-    });
+      variants: status.integrity ? variants : new Map(),
+      integrity: status.integrity,
+      diagnostics: status.diagnostics.slice(),
+    };
+    // Cancellation retains the entire dirty closure until the coherent read exists.
+    this.changed.clear();
+    this.memo = { version, value };
+    return value;
   }
   override destroy(): void {
+    this.cancelRead();
+    this.memo = undefined;
+    this.records = undefined;
+    this.certificateIndex = undefined;
+    this.staged = undefined;
     super.destroy();
     this.changed.clear();
-    this.known.clear();
     this.readers.clear();
     this.states.clear();
     this.ready.clear();
