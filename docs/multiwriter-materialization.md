@@ -48,6 +48,35 @@ A causal suffix append evaluates one new entry; an exact duplicate evaluates non
 This does not eliminate full closure construction for a new author check, full
 snapshot export or full semantic projection. Those costs remain acceptance gaps.
 
+## Activity replay
+
+The materializer keeps immutable activity roots for ready actions, actor causal
+frontiers, group membership, controls and active flags. A causal append adds only
+its suffix. It does not copy ancestor sets. Late semantic arrivals and withdrawals
+restore a compatible private activity checkpoint and replay the suffix in order.
+The cache saves a checkpoint every 128 actions and retains eight historical roots.
+Exact retained payload bytes determine prefix compatibility. Eviction discards
+these roots; the next changed publication replays activity cold.
+
+This cache receives only the MW-01-certified ready set. Contiguous actor chains
+make the per-actor observed sequence frontier equivalent to ancestor membership.
+The independent `reduceActivity()` oracle still constructs full ancestor sets.
+`projectMarkdown()` always calls that oracle. The materializer supplies its own
+activity through an internal projector seam; ownership, visibility and legal view
+construction still run in full. These are activity checkpoints, not completed
+coupled layout/ownership checkpoints.
+
+`activityDiagnostics()` reports payload comparisons, replayed actions, frontier
+entries, checkpoint restores, cold replays and the latest committed suffix.
+Retained checkpoint/action counts describe cache structure, not heap bytes.
+Payload-prefix comparison and public activity arrays still enumerate the ready
+sequence. A new control updates the older target's activity, while the full
+ownership replay remains responsible for its structural effect.
+
+Activity candidates commit only with the complete publication. Failure,
+cancellation, replacement work and cache eviction cannot publish partial roots.
+Prior publications retain their old action, activity and native reads.
+
 ## Publication and cancellation
 
 `MaterializedPublication` applies each newly ready native body once. It does not
@@ -115,7 +144,7 @@ tape indexes completed before a later cancellation:
 This stage does not meet the complete ordinary-input work gate. Detached readiness exports
 and certification still enumerate or clone closures; semantic projection still
 rebuilds the view. Command preparation still indexes projected handles and scans
-allocation/manifest metadata. Structural suffix replay, reducer checkpoints,
+allocation/manifest metadata. Coupled structural suffix replay, complete reducer checkpoints,
 affected-container projection and stable unaffected view/address identity remain
 required by the approved proposal. No 10,000-action, production-history or
 consolidation performance pass follows from these counters.

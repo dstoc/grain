@@ -42,9 +42,18 @@ export class MaterializedPublication<T> {
   constructor(
     private readonly store: ActionStore,
     private readonly genesis: NativeBody,
-    private readonly reduce: (actions: readonly ActionEnvelope[], native: NativeView) => Work<T>,
+    private readonly reduce: (
+      actions: readonly ActionEnvelope[],
+      native: NativeView,
+      variants: ReadonlyMap<string, Uint8Array>,
+    ) => Work<T>,
     private decodeOperations = DEFAULT_INGEST_LIMITS.decodeOperations as number,
     private readonly retainReady: (actions: readonly ActionEnvelope[]) => void = () => {},
+    private readonly reduction: {
+      readonly commit?: () => void;
+      readonly cancel?: () => void;
+      readonly evict?: () => void;
+    } = {},
   ) {}
   diagnostics(): Readonly<MaterializationWork> {
     return { ...this.counts };
@@ -71,6 +80,7 @@ export class MaterializedPublication<T> {
     this.assertOpen();
     this.cancel();
     this.dropNative();
+    this.reduction.evict?.();
   }
   setDecodeLimit(operations: number): void {
     this.assertOpen();
@@ -99,6 +109,7 @@ export class MaterializedPublication<T> {
   private *build(version: number, generation: number): Work<PublishedProjection<T>> {
     this.refreshing = true;
     let state = this.store.compute(0);
+    let committed = false;
     try {
       while (state.state === 'deferred') {
         yield;
@@ -141,16 +152,19 @@ export class MaterializedPublication<T> {
       }
       const native = Object.freeze(this.native.view());
       this.counts.fullProjections++;
-      const value = yield* this.reduce(structuredClone(snapshot.ready), native);
+      const value = yield* this.reduce(structuredClone(snapshot.ready), native, variants);
       if (this.closed || version !== this.store.factsVersion || generation !== this.generation)
         throw new Error('Ingest publication invalidated by changed facts');
       const heads = Object.freeze(snapshot.heads.map((id) => Object.freeze(structuredClone(id))));
       const publication = Object.freeze({ heads, native, value });
+      this.reduction.commit?.();
       this.snapshot = snapshot;
       this.published = publication;
       this.publishedVersion = version;
+      committed = true;
       return publication;
     } finally {
+      if (!committed) this.reduction.cancel?.();
       if (state.state === 'deferred') state.continuation.cancel();
       this.refreshing = false;
     }
@@ -195,6 +209,7 @@ export class MaterializedPublication<T> {
     this.generation++;
     this.active?.return(undefined as unknown as PublishedProjection<T>);
     this.active = undefined;
+    this.reduction.cancel?.();
   }
   private dropNative(): void {
     this.native?.destroy();
@@ -204,6 +219,7 @@ export class MaterializedPublication<T> {
   destroy(): void {
     this.cancel();
     this.dropNative();
+    this.reduction.evict?.();
     this.published = undefined;
     this.snapshot = undefined;
     this.closed = true;

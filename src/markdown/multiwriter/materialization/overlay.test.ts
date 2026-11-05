@@ -18,7 +18,7 @@ for (const size of [10, 150]) {
     );
     try {
       const adopt = vi.spyOn(ConstructionTreeDraft.prototype, 'adopt');
-      const projector = vi.spyOn(projection, 'projectMarkdown');
+      const projector = vi.spyOn(projection, 'projectWithActivity');
       const publication = p.document.publication;
       if (!(publication instanceof MaterializedPublication)) throw new Error();
       const before = publication.diagnostics();
