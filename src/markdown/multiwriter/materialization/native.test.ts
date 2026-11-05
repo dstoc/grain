@@ -91,3 +91,32 @@ test('indexed native reads match cache validation and keep every returned object
     materialized.destroy();
   }
 });
+
+test('text changes retain permanent marker bindings while new brackets index only their own bindings', () => {
+  const fixture = new NativeFixture(seed),
+    materialized = new MaterializedNative(100000);
+  try {
+    finish(materialized.apply('G', fixture.bodies.get('G')!));
+    const before = materialized.view();
+    const marker = fixture.id('P:end', 'marker');
+    const initial = materialized.work.markerBindingsIndexed;
+    fixture.author('A1', (f) => f.insert('interior', 'x', 'P:after-a😀'));
+    finish(materialized.apply('A1', fixture.bodies.get('A1')!));
+    expect(materialized.work.markerBindingsIndexed).toBe(initial);
+    expect(materialized.view().marker(marker).index).toBe(before.marker(marker).index + 1);
+    const prior = materialized.view();
+    fixture.author('A2', (f) => f.insert('edge', 'z', 'P:end'), ['A1'], 2n);
+    const body = fixture.bodies.get('A2')!;
+    finish(materialized.apply('A2', body));
+    expect(materialized.work.markerBindingsIndexed - initial).toBe(2);
+    for (const allocation of body.allocations)
+      if (allocation.type === 'marker')
+        expect(materialized.view().marker(allocation.id)).toEqual(
+          fixture.peers.get('A')!.marker(allocation.id),
+        );
+    expect(before.marker(marker).index).toBe(prior.marker(marker).index - 1);
+  } finally {
+    fixture.destroy();
+    materialized.destroy();
+  }
+});

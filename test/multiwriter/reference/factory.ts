@@ -40,6 +40,24 @@ import { selectCarrier } from './carrier.js';
 
 const key = (id: ActionId) => `${id.actor}:${id.sequence}`;
 
+/** Observations contain semantic data only; native bytes use isolationState().
+ * Freeze one detached observation per facts version, so repeated readonly exports
+ * do not copy its whole tree. The network still takes its own detached snapshot
+ * on every read, and raw canonical/native isolation reads remain uncached.
+ */
+function freezeObservation(value: Observation): Observation {
+  const pending: unknown[] = [value],
+    seen = new WeakSet<object>();
+  while (pending.length) {
+    const item = pending.pop();
+    if (!item || typeof item !== 'object' || seen.has(item)) continue;
+    seen.add(item);
+    pending.push(...Object.values(item));
+    Object.freeze(item);
+  }
+  return value;
+}
+
 function lowerBoundIndex(entries: readonly { readonly index: number }[], position: number): number {
   let low = 0,
     high = entries.length;
@@ -406,11 +424,11 @@ export function referenceFactory(
       let observed: Observation | undefined;
       function observe(): Observation {
         if (observed && observedVersion === document.store.factsVersion)
-          return structuredClone({
+          return Object.freeze({
             ...observed,
-            undo: history.undo,
-            redo: history.redo,
-            emittedActions: emitted,
+            undo: Object.freeze([...history.undo]),
+            redo: Object.freeze([...history.redo]),
+            emittedActions: Object.freeze([...emitted]),
           });
         const { snapshot, p } = materialize();
         const beforeCanonical = document.store.encodeUpdate(),
@@ -668,7 +686,8 @@ export function referenceFactory(
         )
           throw new Error('Reference reads authored shared facts');
         observedVersion = document.store.factsVersion;
-        return structuredClone(observed);
+        observed = freezeObservation(structuredClone(observed));
+        return observed;
       }
       return {
         get handles() {

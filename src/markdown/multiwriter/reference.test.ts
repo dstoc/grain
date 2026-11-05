@@ -171,3 +171,28 @@ test('a reopened writer authors with a fresh actor and a reset runtime sequence'
     await reopened.dispose();
   }
 });
+
+test('readonly fixture observations retain detached immutable data and fresh raw isolation reads', async () => {
+  const trace = contractCorpus.find((entry) => entry.id === 'shared-empty-genesis')!;
+  const port = await referenceFactory(trace).open({ peer: 'A', genesis: trace });
+  try {
+    const before = await port.observe();
+    const raw = await port.isolationState();
+    expect(Object.isFrozen(before)).toBe(true);
+    if (!before.raw) throw new Error('Expected full reference observation');
+    expect(Object.isFrozen(before.raw.projection.root)).toBe(true);
+    expect(() => (before.held as string[]).push('fake')).toThrow();
+    const detached = structuredClone(before);
+    (detached.held as string[]).push('fake');
+    expect((await port.observe()).held).toEqual([]);
+    expect(await port.isolationState()).toEqual(raw);
+    const first = trace.steps.find((step) => step.type === 'author' && step.action.peer === 'A');
+    if (!first || first.type !== 'author') throw new Error('Missing local command');
+    await port.author(first.action);
+    expect((await port.observe()).held).toContain(first.action.id);
+    expect(before.held).toEqual([]);
+    expect((await port.isolationState()).canonical).not.toEqual(raw.canonical);
+  } finally {
+    await port.dispose();
+  }
+});

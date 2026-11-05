@@ -48,6 +48,7 @@ export interface NativeWork {
   bodiesIntegrated: number;
   tapesIndexed: number;
   partsIndexed: number;
+  markerBindingsIndexed: number;
 }
 const compareNative = (a: NativeId, b: NativeId) => a.client - b.client || a.clock - b.clock;
 
@@ -185,7 +186,12 @@ export class MaterializedNative {
   private clients?: MapRoot<true>;
   private tapeIds = new PersistentMap<TapeId>();
   private damaged = false;
-  readonly work: NativeWork = { bodiesIntegrated: 0, tapesIndexed: 0, partsIndexed: 0 };
+  readonly work: NativeWork = {
+    bodiesIntegrated: 0,
+    tapesIndexed: 0,
+    partsIndexed: 0,
+    markerBindingsIndexed: 0,
+  };
   constructor(decodeOperations: number) {
     this.cache = new NativeTapeCache(decodeOperations);
   }
@@ -225,12 +231,17 @@ export class MaterializedNative {
           ),
         };
         tapes = set(tapes, name, index);
-        for (const part of snapshot.parts)
-          if (part.type === 'marker')
-            markers = set(markers, resourceKey(part.marker), snapshot.tape);
+
         this.work.tapesIndexed++;
         this.work.partsIndexed += snapshot.parts.length;
       }
+      // Permanent marker-to-tape bindings never change after allocation. The tape
+      // root above carries current positions; update only newly allocated bindings.
+      for (const allocation of body.allocations)
+        if (allocation.type === 'marker') {
+          markers = set(markers, resourceKey(allocation.id), allocation.tape);
+          this.work.markerBindingsIndexed++;
+        }
       this.tapes = tapes;
       this.markerTapes = markers;
       const tapeIds = this.tapeIds.fork();
