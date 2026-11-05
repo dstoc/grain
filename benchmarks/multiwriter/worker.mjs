@@ -12,6 +12,7 @@ import { LocalEditor } from '../../src/markdown/multiwriter/authoring/editor.js'
 import { encodeEnvelope } from '../../src/markdown/multiwriter/actions/codec.js';
 import { insertText } from '../../src/editing/commands/insert-text.js';
 import { serializeProjection } from '../../src/markdown/multiwriter/projection/project.js';
+import { observePhases } from './phases.mjs';
 
 const { values } = parseArgs({
   options: {
@@ -155,10 +156,13 @@ if (values.mode === 'capture') {
         })
       : undefined;
   const history = values.managed ? editor.session('bench') : undefined;
+  const phases = observePhases(document),
+    phaseSamples = [];
   const warmup = Number(values.warmup),
     samples = [];
   try {
     for (let i = 0; i < fixture.schedule.length; i++) {
+      const phaseBefore = phases.snapshot();
       const before = performance.now();
       if (editor) {
         const node = document.publication.status().publication.value.view.root.children[0];
@@ -179,7 +183,10 @@ if (values.mode === 'capture') {
         refresh(document);
       }
       const elapsed = performance.now() - before;
-      if (i >= warmup) samples.push(elapsed);
+      if (i >= warmup) {
+        samples.push(elapsed);
+        phaseSamples.push(phases.since(phaseBefore));
+      }
     }
     let navigation = null;
     if (history) {
@@ -214,6 +221,17 @@ if (values.mode === 'capture') {
       warmup,
       coldMs,
       latencyMs: metrics(samples),
+      engineBoundaryMs: {
+        method:
+          'public append/receive/certify/stage/refresh calls, including yielded refresh resumes; nested boundaries overlap; timer overhead is retained; not exclusive internal phases or browser latency',
+        samples: phaseSamples,
+        boundaries: Object.fromEntries(
+          Object.keys(phases.snapshot()).map((name) => [
+            name,
+            metrics(phaseSamples.map((sample) => sample[name])),
+          ]),
+        ),
+      },
       diagnostics: document.publication.diagnostics?.() ?? null,
       canonicalBytes: canonical.byteLength,
       envelopeBytes: document.store
@@ -245,6 +263,7 @@ if (values.mode === 'capture') {
     };
     process.stdout.write(JSON.stringify(result) + '\n');
   } finally {
+    phases.restore();
     editor?.destroy();
     document.destroy();
   }
