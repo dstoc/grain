@@ -85,6 +85,10 @@ export class MultiwriterCommandDraft implements CommandDraft {
   private readonly siblings: CommandViewIndex['siblings'];
   private readonly handles: { get(view: ViewNode): NodeId | undefined };
   private readonly contents = new Map<NodeId, string>();
+  private readonly properties = new Map<
+    NodeId,
+    { checked?: boolean | null; info?: string | null }
+  >();
   private readonly views = new Map<NodeId, DraftNode>();
   readonly rootId: NodeId;
   private readonly fragments = new WeakMap<InlineFragment, readonly OriginPiece[]>();
@@ -209,13 +213,17 @@ export class MultiwriterCommandDraft implements CommandDraft {
       for (const id of this.origins.keys()) this.originPieces(id);
     }
   }
-  /** Structural commands keep the established isolated tree. Literal edits stay in an overlay. */
+  /** Structural commands keep the established isolated tree. Text and checked/info edits stay in an overlay. */
   get tree(): ConstructionTree {
     if (!this.tree_) {
       const tree = new ConstructionTree(projectionDocument({ root: this.root, emptyRoot: null }));
       for (const [id, content] of this.contents) {
         const before = tree.draft.node(id).content!;
         tree.draft.spliceText(id, { from: 0, to: before.length, insert: content });
+      }
+      for (const [id, properties] of this.properties) {
+        if (properties.checked !== undefined) tree.draft.setChecked(id, properties.checked);
+        if (properties.info !== undefined) tree.draft.setInfo(id, properties.info);
       }
       this.tree_ = tree;
     }
@@ -242,6 +250,7 @@ export class MultiwriterCommandDraft implements CommandDraft {
     const read = () => this.tree_?.draft.node(id);
     const inline = ['paragraph', 'section', 'code-block'].includes(view.type);
     const content = () => this.contents.get(id) ?? view.content;
+    const properties = () => this.properties.get(id);
     const children = () => Object.freeze(view.children.map((child) => this.handles.get(child)!));
     const result = Object.freeze({
       id,
@@ -262,10 +271,22 @@ export class MultiwriterCommandDraft implements CommandDraft {
             : null;
       },
       get info() {
-        return read() ? read()!.info : view.type === 'code-block' ? view.info : null;
+        return read()
+          ? read()!.info
+          : view.type === 'code-block'
+            ? properties()?.info !== undefined
+              ? properties()!.info
+              : view.info
+            : null;
       },
       get checked() {
-        return read() ? read()!.checked : view.type === 'list-item' ? view.checked : null;
+        return read()
+          ? read()!.checked
+          : view.type === 'list-item'
+            ? properties()?.checked !== undefined
+              ? properties()!.checked
+              : view.checked
+            : null;
       },
     }) as DraftNode;
     this.views.set(id, result);
@@ -405,13 +426,19 @@ export class MultiwriterCommandDraft implements CommandDraft {
     this.intents.push({ type: 'marker', id, marker });
   }
   setChecked(id: NodeId, checked: boolean | null): void {
-    if (this.node(id).checked === checked) return;
-    this.tree.draft.setChecked(id, checked);
+    const node = this.node(id);
+    if (node.checked === checked) return;
+    if (node.type !== 'list-item') throw new Error(`${node.type} has no checked state`);
+    if (this.tree_) this.tree_.draft.setChecked(id, checked);
+    else this.properties.set(id, { ...this.properties.get(id), checked });
     this.intents.push({ type: 'checked', id, checked });
   }
   setInfo(id: NodeId, info: string | null): void {
-    if (this.node(id).info === info) return;
-    this.tree.draft.setInfo(id, info);
+    const node = this.node(id);
+    if (node.info === info) return;
+    if (node.type !== 'code-block') throw new Error(`${node.type} has no code info`);
+    if (this.tree_) this.tree_.draft.setInfo(id, info);
+    else this.properties.set(id, { ...this.properties.get(id), info });
     this.intents.push({ type: 'info', id, info });
   }
   /** Apply a parser plan to this isolated draft; native binding remains compiler-owned. */

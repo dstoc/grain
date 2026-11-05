@@ -11,12 +11,12 @@ export class MaterializedCells {
   private markers = new PersistentMap<TapeId>();
   constructor(
     snapshots: readonly TapeSnapshot[],
-    private readonly onRead?: (tape: TapeId) => void,
+    private readonly onRead?: (range: RangeRef) => void,
   ) {
     this.install(snapshots);
   }
   /** A replay-local facade records semantic reads without changing published roots. */
-  observing(onRead: (tape: TapeId) => void): MaterializedCells {
+  observing(onRead: (range: RangeRef) => void): MaterializedCells {
     const copy = new MaterializedCells([], onRead);
     copy.tapes = this.tapes;
     copy.markers = this.markers;
@@ -38,7 +38,6 @@ export class MaterializedCells {
     }
   }
   private index(tape: TapeId): CellIndex {
-    this.onRead?.(tape);
     const index = this.tapes.get(resourceKey(tape));
     if (!index) throw new Error('Missing native tape snapshot');
     return index;
@@ -46,23 +45,37 @@ export class MaterializedCells {
   get cells(): readonly NativeCell[] {
     return [...this.tapes.values()].flatMap((index) => {
       const cells = index.cells;
-      if (cells[0]) this.onRead?.(cells[0].range.tape);
+      if (cells[0])
+        this.onRead?.({
+          tape: cells[0].range.tape,
+          start: cells[0].range.start,
+          end: cells.at(-1)!.range.end,
+        });
       return cells;
     });
   }
+  // Retained marker order is checked before reuse. Position/membership queries
+  // alone do not depend on new cells; range/adjacency/token reads do.
   position(tape: TapeId, marker: MarkerId): number {
     return this.index(tape).position(tape, marker);
   }
   adjacent(marker: MarkerId, side: 'left' | 'right'): NativeCell {
     const tape = this.markers.get(resourceKey(marker));
     if (!tape) throw new Error('Unknown permanent marker');
-    return this.index(tape).adjacent(marker, side);
+    const cell = this.index(tape).adjacent(marker, side);
+    this.onRead?.(cell.range);
+    return cell;
   }
   range(range: RangeRef): readonly NativeCell[] {
-    return this.index(range.tape).range(range);
+    const cells = this.index(range.tape).range(range);
+    this.onRead?.(range);
+    return cells;
   }
   tape(tape: TapeId): readonly NativeCell[] {
-    return this.index(tape).tape(tape);
+    const cells = this.index(tape).tape(tape);
+    if (cells[0])
+      this.onRead?.({ tape, start: cells[0].range.start, end: cells.at(-1)!.range.end });
+    return cells;
   }
   containsBoundary(range: RangeRef, marker: MarkerId): boolean {
     const tape = this.markers.get(resourceKey(marker));
@@ -73,9 +86,13 @@ export class MaterializedCells {
     );
   }
   locateToken(tape: TapeId, id: NativeId): NativeCell {
-    return this.index(tape).locateToken(tape, id);
+    const cell = this.index(tape).locateToken(tape, id);
+    this.onRead?.(cell.range);
+    return cell;
   }
   token(range: NativeTextRange): readonly NativeCell[] {
-    return this.index(range.tape).token(range);
+    const cells = this.index(range.tape).token(range);
+    for (const cell of cells) this.onRead?.(cell.range);
+    return cells;
   }
 }

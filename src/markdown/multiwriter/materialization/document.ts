@@ -188,17 +188,25 @@ export function openMaterializedDocument(
         const prepared = finish(activity.prepare(sequence, variants));
         const value = projection.canStageText(action)
           ? projection.stageText(sequence, native, prepared.value, variants)
-          : projection.stageStructure(
-              {
-                genesis: genesis.layout,
-                genesisManifest: genesis.body.nativeManifest,
-                initialProperties: genesis.initialProperties,
-                ...reconstructProvenance(genesis.layout, [...ready.ready, action]),
+          : projection.canStageProperties(action)
+            ? projection.stageProperties(
+                sequence,
                 native,
-              },
-              prepared.value,
-              variants,
-            );
+                prepared.value,
+                variants,
+                genesis.initialProperties,
+              )
+            : projection.stageStructure(
+                {
+                  genesis: genesis.layout,
+                  genesisManifest: genesis.body.nativeManifest,
+                  initialProperties: genesis.initialProperties,
+                  ...reconstructProvenance(genesis.layout, [...ready.ready, action]),
+                  native,
+                },
+                prepared.value,
+                variants,
+              );
         return value ? { heads: [action.id], native, value } : undefined;
       } finally {
         activity.cancel();

@@ -18,6 +18,7 @@ import {
   selectInterpretations,
   validatePacket,
   validateMembership,
+  isPropertyUpdate,
 } from './interpretation.js';
 
 /** MW-15 invokes this only on genesis + exact dependencies + candidate native body. */
@@ -38,6 +39,19 @@ export function createProjectionAuthorValidator(options: {
         if (!(error instanceof TextRefinementError)) throw error;
         return 'reference';
       }
+    }
+    // Every ancestor has an exact author certificate. A pure property update
+    // adds no native body, birth, membership or raw structural intention. Check
+    // its node references against that author past, without cloning the closure.
+    // Host birth callbacks still run outside data-rejection catches.
+    if (context.indexed && isPropertyUpdate(action) && options.births(action).length === 0) {
+      return action.effects.every(
+        (effect) =>
+          effect.type === 'SetProperties' &&
+          context.indexed!.past.allocation(effect.node)?.type === 'node',
+      )
+        ? null
+        : 'reference';
     }
     if (context.indexed && action.effects[0]?.type === 'SetGroupActive') {
       const past = new Map(

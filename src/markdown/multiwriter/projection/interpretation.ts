@@ -24,6 +24,17 @@ const defaults: PresentedProperties = {
 };
 const refKey = (ref: EffectRef) => `${ref.action.actor}:${ref.action.sequence}:${ref.ordinal}`;
 
+/** Property-only updates cannot change raw placement, ownership or packet membership. */
+export function isPropertyUpdate(action: ActionEnvelope): boolean {
+  return (
+    !action.allocations.length &&
+    !action.nativeManifest.length &&
+    !action.nativeInsertUpdates.length &&
+    action.effects.length > 0 &&
+    action.effects.every((effect) => effect.type === 'SetProperties')
+  );
+}
+
 /** Complete snapshot selection. Reactivated packets keep their original priority. */
 export function selectInterpretations(
   activity: Activity,

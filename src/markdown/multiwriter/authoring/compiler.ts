@@ -114,6 +114,10 @@ export class CommandCompiler {
   private readonly seenPlacements = new Set<Handle>();
   private readonly births = new Map<Handle, OccurrenceId>();
   private tree_?: ConstructionTree;
+  private readonly properties = new Map<
+    Handle,
+    { checked?: boolean | null; info?: string | null }
+  >();
   private readonly root: ViewNode;
   private readonly overlay: boolean;
   constructor(
@@ -173,9 +177,15 @@ export class CommandCompiler {
     }
   }
   private get tree(): ConstructionTree {
-    return (this.tree_ ??= new ConstructionTree(
-      projectionDocument({ root: this.root, emptyRoot: null }),
-    ));
+    if (!this.tree_) {
+      const tree = new ConstructionTree(projectionDocument({ root: this.root, emptyRoot: null }));
+      for (const [id, properties] of this.properties) {
+        if (properties.checked !== undefined) tree.draft.setChecked(id, properties.checked);
+        if (properties.info !== undefined) tree.draft.setInfo(id, properties.info);
+      }
+      this.tree_ = tree;
+    }
+    return this.tree_;
   }
   private alloc<K extends ResourceKind>(kind: K): ResourceId<K> {
     if (this.ordinal >= 0xffffffff) throw new Error('Action resource ordinal overflow');
@@ -1120,7 +1130,12 @@ export class CommandCompiler {
             node: this.id(intent.id),
             values: { checked: intent.checked },
           });
-          this.tree.draft.setChecked(intent.id, intent.checked);
+          if (this.tree_) this.tree_.draft.setChecked(intent.id, intent.checked);
+          else
+            this.properties.set(intent.id, {
+              ...this.properties.get(intent.id),
+              checked: intent.checked,
+            });
           break;
         case 'info':
           this.effects.push({
@@ -1128,7 +1143,12 @@ export class CommandCompiler {
             node: this.id(intent.id),
             values: { info: intent.info },
           });
-          this.tree.draft.setInfo(intent.id, intent.info);
+          if (this.tree_) this.tree_.draft.setInfo(intent.id, intent.info);
+          else
+            this.properties.set(intent.id, {
+              ...this.properties.get(intent.id),
+              info: intent.info,
+            });
           break;
         case 'convert': {
           const hidden =
