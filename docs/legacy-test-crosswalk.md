@@ -185,3 +185,18 @@ These names are exact active Vitest titles. The browser tests use canonical docu
 - The ordered-list parser case `mixed numbered lists survive incremental parsing and structural serialization` is migrated (`M`) and remains active in `src/markdown/ordered-list.test.ts`; it was not retired. The ordered-list editing cases that were removed use the active command tests `src/editing/commands/commands.review.test.ts :: Enter on the first empty ordered item preserves the remaining run start` and `src/editing/commands/commands.review.test.ts :: indenting the second list item nests it below the first without reversing order`, plus the selected-block browser command coverage `src/editing/canonical-editor.review.browser.test.ts :: M6 review browser contracts > selected-block %s preserves direction through undo`.
 - The removed standalone legacy reference case in `commands.review.test.ts` (`D`) duplicated three active tests: `src/editing/commands/commands.review.test.ts :: indenting the second list item nests it below the first without reversing order`, `src/editing/commands/commands.review.test.ts :: Backspace joins a paragraph into the immediately preceding code block`, and `src/editing/commands/commands.review.test.ts :: Enter on the first empty ordered item preserves the remaining run start`. Eight other command review tests were mistakenly listed as retired in the original ledger; all remain active: `src/editing/commands/commands.review.test.ts :: scoped typing undo follows the current tape owner after a join`, `src/editing/commands/commands.review.test.ts :: unrelated list-item visibility does not block an independent property inverse`, `src/editing/commands/commands.review.test.ts :: undoing a later property change reopens the earlier resource token`, `src/editing/commands/commands.review.test.ts :: centralized concurrent overlapping deletes do not duplicate restored characters`, and `src/editing/commands/commands.review.test.ts :: independently undoing disconnected replicas preserves the duplicate-restoration negative control` (the first three active tests are listed before this sentence).
 - The legacy mode of the code-copy regression (`D`) was removed from `canonical-editor.correction.browser.test.ts`. The canonical mode and its independent expected Markdown remain active in the same test.
+
+## MW-10 headless history coverage
+
+`src/markdown/multiwriter/history/session.test.ts` covers instance/session ownership,
+typing boundaries, input plus parser promotion, real command round trips,
+no-effect undo, redo isolation, limits and retained append failures.
+`selection.test.ts` covers caller affinities, native gap bounds, scalar-safe
+split/transfer/join mapping, directional block selections and host-scoped fallback.
+`scope.test.ts` covers exact native ranges, hidden footprints, mixed structural
+endpoints, normalized wrappers and lifted children. `network.test.ts` covers all
+four provider modes, one-way controls, reordered/duplicate delivery, restart,
+persistence retry and 501 actual local groups with an old-prefix writer.
+These are headless controls. Existing browser selection, IME, clipboard and focus
+cases remain active until the later schema-3 browser integration gate supplies
+mounted replacements.
