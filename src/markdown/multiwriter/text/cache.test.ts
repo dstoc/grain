@@ -764,3 +764,31 @@ it('cancels a suspended native position read when its tape changes', () => {
   expect(() => work.next()).toThrow('Native lookup invalidated');
   expect(target.locate(tape, observed)).toBe(2);
 });
+
+it('validates adjacent native anchors without walking an unrelated tape prefix', () => {
+  const work = (size: number) => {
+    const source = cache(),
+      receiver = cache();
+    const operations: NativeInsertion[] = [{ type: 'createTape', tape, start, end }];
+    for (let i = 0; i < size; i++) {
+      operations.push({ type: 'text', tape, index: i * 2 + 1, text: 'x' });
+      operations.push({
+        type: 'marker',
+        tape,
+        index: i * 2 + 2,
+        marker: id('marker', 10 + i),
+        affinity: 'left',
+      });
+    }
+    const g = publish(source, 'G', operations);
+    receiver.apply('G', g);
+    const insertion = publish(source, 'next', [
+      { type: 'text', tape, index: size * 2 + 1, text: 'z' },
+    ]);
+    let steps = 0;
+    for (const _ of receiver.applySteps('next', insertion)) steps++;
+    expect(receiver.snapshot(tape)).toEqual(source.snapshot(tape));
+    return steps;
+  };
+  expect(work(512)).toBeLessThanOrEqual(work(8) + 16);
+});
