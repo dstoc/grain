@@ -2,7 +2,10 @@ import { IndexedActionStore } from './readiness.js';
 import type { ReferenceGenesis } from '../reference/document.js';
 import { createIngestValidator } from '../ingest/validator.js';
 import { assertLimit } from '../ingest/work.js';
-import { createProjectionAuthorValidator, projectMarkdown } from '../projection/index.js';
+import { createProjectionAuthorValidator } from '../projection/index.js';
+import { projectWithActivity } from '../projection/project.js';
+import { MaterializedActivity } from './activity.js';
+import type { PreparedActivity } from './activity.js';
 import {
   ProvenanceError,
   reconstructBirths,
@@ -42,24 +45,44 @@ export function openMaterializedDocument(
     genesisAllocations: genesis.layout.allocations,
     validate,
   });
+  const activity = new MaterializedActivity();
+  let prepared: PreparedActivity | undefined;
   const publication = new MaterializedPublication(
     store,
     genesis.body,
-    function* (actions, native) {
+    function* (actions, native, variants) {
+      prepared = yield* activity.prepare(actions, variants);
       yield;
-      return projectMarkdown({
-        genesis: genesis.layout,
-        genesisManifest: genesis.body.nativeManifest,
-        initialProperties: genesis.initialProperties,
-        ...reconstructProvenance(genesis.layout, actions),
-        native,
-      });
+      return projectWithActivity(
+        {
+          genesis: genesis.layout,
+          genesisManifest: genesis.body.nativeManifest,
+          initialProperties: genesis.initialProperties,
+          ...reconstructProvenance(genesis.layout, actions),
+          native,
+        },
+        prepared.value,
+      );
     },
     options.nativeDecodeOperations,
     (actions) => validate.retainReady(actions),
+    {
+      commit() {
+        prepared!.commit();
+        prepared = undefined;
+      },
+      cancel() {
+        prepared = undefined;
+        activity.cancel();
+      },
+      evict() {
+        activity.evict();
+      },
+    },
   );
   return {
     commandMode: 'overlay' as const,
+    activityDiagnostics: () => activity.diagnostics(),
     store,
     publication,
     setNativeDecodeLimit(operations: number): void {

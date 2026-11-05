@@ -8,6 +8,7 @@ import { actionKey } from '../actions/references.js';
 import { NativeTapeCache } from '../text/cache.js';
 import type { NativeView } from '../ingest/publication.js';
 import { MaterializedPublication } from './publication.js';
+import * as projector from '../projection/project.js';
 
 afterEach(() => vi.restoreAllMocks());
 const open = (genesis = commandGenesis(), bytes?: Uint8Array) =>
@@ -303,6 +304,63 @@ test('a reducer failure after native integration preserves the old tuple and ret
     expect(compareBytes(target.document.store.encodeUpdate(), canonical)).toBe(0);
   } finally {
     publication.destroy();
+    source.close();
+    target.close();
+  }
+});
+
+test('semantic failure and cancellation do not commit a prepared activity suffix', () => {
+  const genesis = commandGenesis(),
+    source = commandReplica(genesis),
+    target = open(genesis);
+  if (!('activityDiagnostics' in target.document)) throw new Error('Expected activity cache');
+  const diagnostics = target.document.activityDiagnostics;
+  try {
+    const before = target.document.publication.status().publication!;
+    applied(
+      source.editor.edit({ local: 'source', group: 1n }, insertText, {
+        nodeId: source.handle(source.nodes()[0]),
+        from: 1,
+        text: 'X',
+      }),
+    );
+    target.document.store.applyUpdate(source.document.store.encodeUpdate());
+    const fail = vi.spyOn(projector, 'projectWithActivity').mockImplementationOnce(() => {
+      throw new Error('projection failed');
+    });
+    expect(() => target.editor.refresh()).toThrow('projection failed');
+    expect(target.document.publication.status().publication).toBe(before);
+    expect(diagnostics().retainedActions).toBe(0);
+    fail.mockRestore();
+    const held = target.document.publication.refresh(1);
+    expect(held.state).toBe('deferred');
+    if (held.state === 'deferred') held.continuation.cancel();
+    expect(diagnostics().retainedActions).toBe(0);
+    target.editor.refresh();
+    expect(diagnostics()).toMatchObject({
+      retainedActions: 1,
+      lastReplayFrom: 0,
+      lastReplayLength: 1,
+    });
+    equalReference(target);
+    expect(before.value.activity.actions).toHaveLength(0);
+    materializer(target).evict();
+    expect(diagnostics().retainedActions).toBe(0);
+    applied(
+      source.editor.edit({ local: 'source', group: 2n }, insertText, {
+        nodeId: source.handle(source.nodes()[0]),
+        from: 1,
+        text: 'Y',
+      }),
+    );
+    target.receive(source.document.store.encodeUpdate());
+    expect(diagnostics()).toMatchObject({
+      retainedActions: 2,
+      lastReplayFrom: 0,
+      lastReplayLength: 2,
+    });
+    equalReference(target);
+  } finally {
     source.close();
     target.close();
   }

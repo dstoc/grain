@@ -15,7 +15,7 @@ import { reduceOwnership } from '../ownership/index.js';
 import type { NativeView } from '../ingest/publication.js';
 import { NativeValidationError } from '../text/identity.js';
 import { reduceActivity, reduceVisibility } from '../visibility/index.js';
-import type { TextToken, VisibilityLayout } from '../visibility/index.js';
+import type { TextToken, VisibilityLayout, Activity } from '../visibility/index.js';
 import {
   ProjectionError,
   selectInterpretations,
@@ -52,15 +52,21 @@ const rangeToken = (range: NativeTextRange, i: number) => ({
 
 /** Full reference projection of one ready snapshot; no shared mutation API is accepted. */
 export function projectMarkdown(input: ProjectionInput) {
+  return projectWithActivity(input, reduceActivity(input.actions.map(({ action }) => action)));
+}
+
+/** Internal seam for a reader that already reduced activity at this exact ready set.
+ * The reference entry above always performs its own independent full reduction.
+ */
+export function projectWithActivity(input: ProjectionInput, groupActivity: Activity) {
   try {
-    return project(input);
+    return project(input, groupActivity);
   } catch (error) {
     if (error instanceof NativeValidationError) throw new ProjectionError(error.message);
     throw error;
   }
 }
-function project(input: ProjectionInput) {
-  const groupActivity = reduceActivity(input.actions.map(({ action }) => action));
+function project(input: ProjectionInput, groupActivity: Activity) {
   const interpretations = selectInterpretations(groupActivity, input.initialProperties);
   const effectActive = (ref: Parameters<typeof groupActivity.isEffectActive>[0]) =>
     groupActivity.isEffectActive(ref) && interpretations.effectEligible(ref);
