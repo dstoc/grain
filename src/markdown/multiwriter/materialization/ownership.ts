@@ -12,7 +12,6 @@ import { resourceKey } from '../layout/index.js';
 import type { EffectOrder, LayoutActionInput, LayoutGenesis } from '../layout/index.js';
 import { assignmentKey, cellKey, sameId } from '../ownership/cells.js';
 import { cutPosition, splitBuckets } from '../ownership/cohorts.js';
-import { deriveHomes, HomeIndex } from '../ownership/homes.js';
 import type { HomeBinding } from '../ownership/homes.js';
 import type { SplitBirth } from '../ownership/cohorts.js';
 import { traverse } from '../ownership/traversal.js';
@@ -24,6 +23,7 @@ import type { Activity } from '../visibility/activity.js';
 import { PersistentMap } from './map.js';
 import { MaterializedLayout } from './layout.js';
 import { MaterializedCells } from './cells.js';
+import { OwnershipResources } from './resources.js';
 export interface OwnershipCheckpoint {
   readonly count: number;
   readonly index: MaterializedCells;
@@ -72,31 +72,16 @@ export function replayOwnershipSuffix(
   activity: Activity,
   resume: OwnershipCheckpoint | undefined,
   save: (checkpoint: OwnershipCheckpoint) => void,
-  nativeIndex?: MaterializedCells,
+  nativeIndex: MaterializedCells,
+  resources: OwnershipResources,
 ) {
   const genesis = input.genesis;
   const actions = [
     ...new Map(input.actions.map((entry) => [actionKey(entry), entry])).values(),
   ].sort((a, b) => compareActions(a.action, b.action));
-  const homes = [
-    ...deriveHomes(genesis),
-    ...actions.flatMap((entry) =>
-      deriveHomes(
-        { allocations: entry.action.allocations, births: entry.births },
-        entry.action.effects,
-      ),
-    ),
-  ];
-  if (input.homes) {
-    const keys = (values: readonly HomeBinding[]) =>
-      values.map((home) => `${cellKey(home.cell)}:${assignmentKey(home)}`).sort();
-    const supplied = keys(input.homes);
-    if (new Set(supplied).size !== supplied.length) throw new Error('Conflicting home bindings');
-    if (supplied.length !== homes.length) throw new Error('Incomplete home bindings');
-    if (JSON.stringify(supplied) !== JSON.stringify(keys(homes)))
-      throw new Error('Home endpoints or binding differ from retained births');
-  }
-  const index = nativeIndex ?? new MaterializedCells(input.snapshots);
+  const homes = resources.homes;
+  if (input.homes) resources.assertHomes(input.homes);
+  const index = nativeIndex;
   const nativeReaders = resume?.nativeReaders.fork() ?? new PersistentMap<number>();
   const layout = resume ? resume.layout.fork() : new MaterializedLayout(genesis);
   const owners = resume?.owners.fork() ?? new PersistentMap<CellAssignment>();
@@ -106,91 +91,7 @@ export function replayOwnershipSuffix(
   let candidates = resume?.candidates ?? [];
   const flowIntentions = resume?.flowIntentions.fork() ?? new PersistentMap<EffectOrder>();
   const installedTapes = resume?.installedTapes.fork() ?? new PersistentMap<true>();
-  const allAllocations = [
-    ...genesis.allocations,
-    ...actions.flatMap((entry) => entry.action.allocations),
-  ];
-  const tapeAllocations = allAllocations.filter((allocation) => allocation.type === 'tape');
-  if (tapeAllocations.length !== input.snapshots.length)
-    throw new Error('Native snapshots must cover exactly the ready tapes');
-  const markerAllocations = allAllocations.filter((allocation) => allocation.type === 'marker');
-  const tapeById = new Map<string, (typeof tapeAllocations)[number]>();
-  const markerById = new Map<string, (typeof markerAllocations)[number]>();
-  for (const tape of tapeAllocations)
-    if (!tapeById.has(resourceKey(tape.id))) tapeById.set(resourceKey(tape.id), tape);
-  for (const marker of markerAllocations)
-    if (!markerById.has(resourceKey(marker.id))) markerById.set(resourceKey(marker.id), marker);
-  for (const snapshot of input.snapshots) {
-    const tape = tapeById.get(resourceKey(snapshot.tape));
-    const markers = snapshot.parts.filter((part) => part.type === 'marker');
-    if (
-      !tape ||
-      !sameId(markers[0].marker, tape.start) ||
-      !sameId(markers.at(-1)!.marker, tape.end)
-    )
-      throw new Error('Snapshot does not match retained tape endpoints');
-    for (const marker of markers) {
-      const allocation = markerById.get(resourceKey(marker.marker));
-      if (
-        !allocation ||
-        !sameId(allocation.tape, snapshot.tape) ||
-        allocation.native.client !== marker.native.client ||
-        allocation.native.clock !== marker.native.clock
-      )
-        throw new Error('Snapshot marker does not match retained allocation');
-    }
-  }
-  if (
-    markerAllocations.length !==
-    input.snapshots.reduce(
-      (sum, snapshot) => sum + snapshot.parts.filter((part) => part.type === 'marker').length,
-      0,
-    )
-  )
-    throw new Error('Native snapshots must cover exactly the ready markers');
-
-  const homeIndex = new HomeIndex(homes, index);
-  for (const allocation of allAllocations) {
-    if (allocation.type !== 'run') continue;
-    const home = homes.find((home) => sameId(home.run, allocation.id));
-    const captures = home ? allocation.skeleton.slice(0, -1) : allocation.skeleton;
-    const seen = new Set<string>();
-    for (const range of allocation.skeleton)
-      for (const cell of index.range(range)) {
-        const key = cellKey(cell.range);
-        if (seen.has(key)) throw new Error('Overlapping retained run skeleton');
-        seen.add(key);
-      }
-    for (const range of captures) homeIndex.assertCapture(range);
-  }
-  for (const entry of actions)
-    for (const effect of entry.action.effects) {
-      if (effect.type === 'SplitFlow') {
-        for (const member of effect.basis.ranges) homeIndex.assertCapture(member.range);
-        const newHome = homeIndex.home(effect.newRun);
-        if (!sameId(newHome.occurrence, effect.occurrence))
-          throw new Error('Split root occurrence differs from retained home');
-        if (!effect.basis.ranges.length) {
-          const home = homeIndex.home(effect.cut.run);
-          if (
-            !sameId(effect.cut.boundary, home.cell.end) ||
-            effect.cut.side !== 'left' ||
-            effect.cut.predecessor !== null
-          )
-            throw new Error('Empty split needs the canonical trailing home cut');
-          if (layoutRun(effect.newRun).skeleton.length !== 1)
-            throw new Error('Empty split must capture no source content');
-        }
-      } else if (effect.type === 'TransferRange')
-        for (const range of effect.ranges) homeIndex.assertCapture(range);
-    }
-  function layoutRun(run: RunId) {
-    const allocation = allAllocations.find(
-      (entry) => entry.type === 'run' && sameId(entry.id, run),
-    );
-    if (!allocation || allocation.type !== 'run') throw new Error('Missing retained run');
-    return allocation;
-  }
+  const homeIndex = resources.homeDomain;
   function install(batch: LayoutGenesis, effects: readonly SemanticEffect[]): void {
     const transfers = effects.filter((effect) => effect.type === 'TransferRange');
     // Retained occurrence locations are ghost traversal paths, even when inactive.
@@ -214,9 +115,7 @@ export function replayOwnershipSuffix(
         destination: transfer.destination,
       });
     }
-    for (const home of homes.filter((home) =>
-      batch.allocations.some((entry) => entry.type === 'tape' && sameId(entry.id, home.cell.tape)),
-    )) {
+    for (const home of resources.batchHomes(batch.allocations)) {
       const tapeKey = resourceKey(home.cell.tape);
       if (installedTapes.has(tapeKey)) throw new Error('Duplicate tape birth');
       installedTapes.set(tapeKey, true);
@@ -417,15 +316,9 @@ export function replayOwnershipSuffix(
     if (count % 128 === 0) save(checkpoint());
   }
   const final = checkpoint();
-  if (homes.some((home) => !installedTapes.has(resourceKey(home.cell.tape))))
+  if (installedTapes.size !== resources.tapeCount)
     throw new Error('Home binding references an unavailable tape');
-  const flowHome = (flow: FlowId): NodeId => {
-    const allocation = allAllocations.find(
-      (entry) => entry.type === 'flow' && sameId(entry.id, flow),
-    );
-    if (!allocation || allocation.type !== 'flow') throw new Error('Missing flow home');
-    return allocation.home;
-  };
+  const flowHome = (flow: FlowId): NodeId => resources.flowHome(flow);
   const requirements: DestinationRequirement[] = [];
   for (const { order, effect } of candidates) {
     const nodes: NodeId[] = [];
@@ -482,6 +375,7 @@ export function replayOwnershipSuffix(
   const cohorts = splitBuckets(splits, layout, index, homeIndex);
   return {
     state: final,
+    retained: resources,
     homes,
     cohorts,
     requirements,
