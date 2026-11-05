@@ -1,3 +1,4 @@
+import type { ReadySequence } from '../authoring/ready-source.js';
 import type {
   ActionEnvelope,
   NativeTextRange,
@@ -345,7 +346,7 @@ export class MaterializedProjection {
   }
   *prepare(
     genesis: ReferenceGenesis,
-    actions: readonly ActionEnvelope[],
+    actions: ReadySequence,
     native: NativeView,
     activity: Activity,
     variants: PayloadIndex,
@@ -395,7 +396,7 @@ export class MaterializedProjection {
         genesis: genesis.layout,
         genesisManifest: genesis.body.nativeManifest,
         initialProperties: genesis.initialProperties,
-        ...reconstructProvenance(genesis.layout, actions),
+        ...reconstructProvenance(genesis.layout, [...actions]),
         native,
       };
       const prepared = yield* this.ownership.prepare(input, activity, variants, undefined, actions);

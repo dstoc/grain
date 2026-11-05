@@ -41,12 +41,16 @@ for (const depth of [10, 150, 1000])
         native = publication(p).diagnostics(),
         activity = materializer(p).activityDiagnostics(),
         ownership = materializer(p).ownershipDiagnostics(),
-        author = materializer(p).cacheDiagnostics().author;
+        author = materializer(p).cacheDiagnostics().author,
+        readiness = store(p).readinessDiagnostics();
       const edit = type(p, depth + 1, '!');
       const after = p.editor.writerDiagnostics(),
         next = publication(p).diagnostics();
       expect(after.readyActionsScanned).toBe(before.readyActionsScanned);
       expect(after.frontierActionsScanned).toBe(0);
+      expect(store(p).readinessDiagnostics().orderedReadyActionsVisited).toBe(
+        readiness.orderedReadyActionsVisited,
+      );
       expect(after.readyIndexNodesVisited - before.readyIndexNodesVisited).toBeLessThan(200);
       expect(next.nativeMembershipScanned).toBe(native.nativeMembershipScanned);
       expect(next.nativeReadyActionsVisited - native.nativeReadyActionsVisited).toBe(1);

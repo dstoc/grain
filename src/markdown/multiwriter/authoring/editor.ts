@@ -1,3 +1,4 @@
+import type { ReadySequence } from './ready-source.js';
 import { decodeUpdate, Item } from 'yjs';
 import { encodeEnvelope } from '../actions/codec.js';
 import { compareBytes } from '../actions/cbor.js';
@@ -168,7 +169,7 @@ export class LocalEditor {
     const source = readySource(ready);
     const knownSequence =
       source?.sequence(this.actor) ??
-      ready.reduce((n, a) => {
+      Array.from(ready).reduce((n, a) => {
         this.writerWork.frontierActionsScanned++;
         return a.id.actor === this.actor && a.id.sequence > n ? a.id.sequence : n;
       }, 0n);
@@ -176,7 +177,7 @@ export class LocalEditor {
     const id = { actor: this.actor, sequence: previousSequence + 1n };
     const lamport =
       (source?.maxLamport ??
-        ready.reduce((max, a) => {
+        Array.from(ready).reduce((max, a) => {
           this.writerWork.frontierActionsScanned++;
           return a.lamport > max ? a.lamport : max;
         }, 0n)) + 1n;
@@ -292,7 +293,7 @@ export class LocalEditor {
     if (!found) throw new Error('Node is not in the current projection');
     return found;
   }
-  private sync(ready: readonly ActionEnvelope[]) {
+  private sync(ready: ReadySequence) {
     const source = readySource(ready);
     const delta =
       source && this.synced && [...this.ahead].every((key) => source.has(key))
@@ -301,7 +302,7 @@ export class LocalEditor {
     this.synced = undefined;
     if (delta) this.writerWork.readyIndexNodesVisited += delta.nodesVisited;
     else {
-      const keys = new Set(ready.map((a) => `${a.id.actor}:${a.id.sequence}`));
+      const keys = new Set(Array.from(ready).map((a) => `${a.id.actor}:${a.id.sequence}`));
       this.writerWork.readyActionsScanned += ready.length;
       if ([...this.applied].some((k) => !keys.has(k))) {
         this.native.destroy();

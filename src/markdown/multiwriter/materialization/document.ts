@@ -1,4 +1,4 @@
-import { IndexedActionStore } from './readiness.js';
+import { IndexedActionStore, readySequence } from './readiness.js';
 import type { ReferenceGenesis } from '../reference/document.js';
 import { createIngestValidator } from '../ingest/validator.js';
 import { actionKey } from '../actions/references.js';
@@ -106,7 +106,7 @@ export function openMaterializedDocument(
   );
   return {
     commandMode: 'overlay' as const,
-    readyActions: () => store.readReady().ready,
+    readyActions: () => readySequence(store.readReady()),
     activityDiagnostics: () => activity.diagnostics(),
     ownershipDiagnostics: () => projection.diagnostics().ownership,
     projectionDiagnostics: () => projection.diagnostics(),
@@ -123,7 +123,7 @@ export function openMaterializedDocument(
       return (action, native, touched) => {
         if (store.factsVersion !== version)
           throw new Error('Command ownership invalidated by changed facts');
-        const actions = [...ready.ready, action],
+        const actions = [...readySequence(ready), action],
           key = actionKey(action.id),
           bytes = encodeEnvelope(action);
         const variants = { get: (id: string) => (id === key ? bytes : ready.variants.get(id)) };
@@ -174,17 +174,19 @@ export function openMaterializedDocument(
       const status = publication.status();
       if (status.stale || !status.canAuthor) return undefined;
       const ready = store.readReady();
-      const length = ready.ready.length + 1,
+      const length = readySequence(ready).length + 1,
         key = actionKey(action.id),
         bytes = encodeEnvelope(action);
       const sequence = {
         length,
         at: (index: number) => {
+          index = Math.trunc(index) || 0;
           const at = index < 0 ? length + index : index;
-          return at === ready.ready.length ? action : ready.ready[at];
+          if (at < 0 || at >= length) return undefined;
+          return at === readySequence(ready).length ? action : readySequence(ready).at(at);
         },
       };
-      registerReadyAppend(sequence, ready.ready, action);
+      registerReadyAppend(sequence, readySequence(ready), action);
       const variants = { get: (id: string) => (id === key ? bytes : ready.variants.get(id)) };
       try {
         const prepared = finish(activity.prepare(sequence, variants));
@@ -203,7 +205,7 @@ export function openMaterializedDocument(
                   genesis: genesis.layout,
                   genesisManifest: genesis.body.nativeManifest,
                   initialProperties: genesis.initialProperties,
-                  ...reconstructProvenance(genesis.layout, [...ready.ready, action]),
+                  ...reconstructProvenance(genesis.layout, [...readySequence(ready), action]),
                   native,
                 },
                 prepared.value,

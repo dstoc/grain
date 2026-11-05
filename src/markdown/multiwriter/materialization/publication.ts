@@ -1,6 +1,6 @@
-import type { ActionEnvelope } from '../contracts.js';
 import type { ActionStore } from '../actions/store.js';
-import { IndexedActionStore } from './readiness.js';
+import { IndexedActionStore, readySequence } from './readiness.js';
+import type { ReadySequence } from '../authoring/ready-source.js';
 import type { ReadyActionView } from './readiness.js';
 import { actionKey } from '../actions/references.js';
 import { compareBytes } from '../actions/cbor.js';
@@ -54,13 +54,13 @@ export class MaterializedPublication<T> {
     private readonly store: ActionStore,
     private readonly genesis: NativeBody,
     private readonly reduce: (
-      actions: readonly ActionEnvelope[],
+      actions: ReadySequence,
       native: NativeView,
       variants: Pick<ReadonlyMap<string, Uint8Array>, 'get'>,
     ) => Work<T>,
     private decodeOperations = DEFAULT_INGEST_LIMITS.decodeOperations as number,
     private readonly retainReady: (
-      actions: readonly ActionEnvelope[],
+      actions: ReadySequence,
       variants: Pick<ReadonlyMap<string, Uint8Array>, 'get'>,
     ) => void = () => {},
     private readonly reduction: {
@@ -80,7 +80,7 @@ export class MaterializedPublication<T> {
     if (this.published && this.publishedVersion !== this.store.factsVersion && !this.refreshing) {
       const snapshot = this.readReady();
       if (this.sameReady(snapshot)) {
-        this.retainReady(snapshot.ready, snapshot.variants);
+        this.retainReady(readySequence(snapshot), snapshot.variants);
         this.snapshot = snapshot;
         this.publishedVersion = this.store.factsVersion;
       }
@@ -133,7 +133,7 @@ export class MaterializedPublication<T> {
       const snapshot = state.value;
       if (!snapshot.integrity)
         throw new IngestDataError('carrier', 'integrity', 'Canonical store integrity failed');
-      this.retainReady(snapshot.ready, snapshot.variants);
+      this.retainReady(readySequence(snapshot), snapshot.variants);
       const variants = snapshot.variants;
       if (this.sameReady(snapshot) && this.published) {
         this.snapshot = snapshot;
@@ -141,7 +141,7 @@ export class MaterializedPublication<T> {
         this.counts.unchangedRefreshes++;
         return this.published;
       }
-      const source = readySource(snapshot.ready);
+      const source = readySource(readySequence(snapshot));
       const delta = source && this.nativeSource ? source.additions(this.nativeSource) : undefined;
       if (delta) this.counts.readyIndexNodesVisited += delta.nodesVisited;
       // Native integration can advance before a suspended publication is cancelled.
@@ -163,7 +163,7 @@ export class MaterializedPublication<T> {
         this.native = new MaterializedNative(this.decodeOperations);
         yield* this.apply('genesis', this.genesis);
       }
-      for (const action of delta?.actions ?? snapshot.ready) {
+      for (const action of delta?.actions ?? readySequence(snapshot)) {
         yield;
         this.counts.nativeReadyActionsVisited++;
         const key = actionKey(action.id);
@@ -174,7 +174,7 @@ export class MaterializedPublication<T> {
       this.nativeSource = source;
       const native = Object.freeze(this.native.view());
       const fullBefore = this.reduction.fullProjectionCount?.();
-      const value = yield* this.reduce(snapshot.ready, native, variants);
+      const value = yield* this.reduce(readySequence(snapshot), native, variants);
       this.counts.fullProjections +=
         fullBefore === undefined ? 1 : this.reduction.fullProjectionCount!() - fullBefore;
       if (this.closed || version !== this.store.factsVersion || generation !== this.generation)
@@ -227,11 +227,11 @@ export class MaterializedPublication<T> {
     if (
       !snapshot.integrity ||
       !this.snapshot ||
-      this.snapshot.ready.length !== snapshot.ready.length
+      readySequence(this.snapshot).length !== readySequence(snapshot).length
     )
       return false;
-    const source = readySource(snapshot.ready),
-      before = readySource(this.snapshot.ready);
+    const source = readySource(readySequence(snapshot)),
+      before = readySource(readySequence(this.snapshot));
     if (source && before) {
       const delta = source.additions(before);
       if (delta) {
@@ -239,7 +239,7 @@ export class MaterializedPublication<T> {
         return delta.actions.length === 0;
       }
     }
-    return this.snapshot.ready.every((action) => {
+    return [...readySequence(this.snapshot)].every((action) => {
       const key = actionKey(action.id),
         bytes = this.snapshot!.variants.get(key);
       const next = snapshot.variants.get(key);

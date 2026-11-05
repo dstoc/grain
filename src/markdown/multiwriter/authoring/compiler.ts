@@ -1,3 +1,4 @@
+import type { ReadySequence } from './ready-source.js';
 import { convertedFocus } from './parser-focus.js';
 import { prepareParserConversion, bindParserConversion } from '../projection/parser-plan.js';
 import type { OutputBinding } from '../projection/parser-plan.js';
@@ -122,7 +123,7 @@ export class CommandCompiler {
   private readonly overlay: boolean;
   constructor(
     readonly genesis: ReferenceGenesis,
-    readonly ready: readonly ActionEnvelope[],
+    readonly ready: ReadySequence,
     readonly base: Omit<
       ActionEnvelope,
       'allocations' | 'nativeInsertUpdates' | 'nativeManifest' | 'effects'
@@ -139,7 +140,10 @@ export class CommandCompiler {
     const source = initial && nativePlanSource(native);
     if (source) this.native = new NativePlan(source);
     else {
-      const tapes = [...genesis.layout.allocations, ...ready.flatMap((a) => a.allocations)]
+      const tapes = [
+        ...genesis.layout.allocations,
+        ...Array.from(ready).flatMap((a) => a.allocations),
+      ]
         .filter((a) => a.type === 'tape')
         .map((t) => t.id);
       this.native = new NativePlan(
@@ -148,9 +152,10 @@ export class CommandCompiler {
               native,
               tapes,
               clients: new Set(
-                [...genesis.body.nativeManifest, ...ready.flatMap((a) => a.nativeManifest)].map(
-                  (entry) => entry.native.client,
-                ),
+                [
+                  ...genesis.body.nativeManifest,
+                  ...Array.from(ready).flatMap((a) => a.nativeManifest),
+                ].map((entry) => entry.native.client),
               ),
             }
           : tapes.map((tape) => native.snapshot(tape)),
@@ -360,7 +365,7 @@ export class CommandCompiler {
       null,
       ...[
         ...this.genesis.layout.allocations,
-        ...this.ready.flatMap((a) => a.allocations),
+        ...Array.from(this.ready).flatMap((a) => a.allocations),
       ].toReversed(),
     ];
     const safe = predecessors
@@ -862,7 +867,7 @@ export class CommandCompiler {
     this.allocations.push(...placementAllocations);
     const retained = [
       ...this.genesis.layout.allocations,
-      ...this.ready.flatMap((a) => a.allocations),
+      ...Array.from(this.ready).flatMap((a) => a.allocations),
     ];
     const bound = bindParserConversion(
       prepared,
