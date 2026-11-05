@@ -1,4 +1,10 @@
-import type { ActionEnvelope, NativeTextRange, TapeId } from '../contracts.js';
+import type {
+  ActionEnvelope,
+  NativeTextRange,
+  TapeId,
+  DeletionId,
+  ActionId,
+} from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
 import type { ActionSequence, PayloadIndex } from './activity.js';
 import type { Activity } from '../visibility/activity.js';
@@ -23,10 +29,22 @@ interface NodeRecord {
   readonly parent?: string;
   readonly depth: number;
 }
+interface TextTape {
+  readonly entries: readonly TextVisibility[];
+  readonly byId: ReadonlyMap<string, TextVisibility>;
+}
+interface TextDeletion {
+  readonly action: ActionId;
+  readonly ordinal: number;
+  readonly tag: DeletionId;
+  readonly ranges: readonly NativeTextRange[];
+}
 interface State {
   readonly value: Projection;
   readonly nodes: PersistentMap<NodeRecord>;
-  readonly text: PersistentMap<readonly TextVisibility[]>;
+  readonly text: PersistentMap<TextTape>;
+  readonly deletions: PersistentMap<readonly TextDeletion[]>;
+  readonly tapeNodes: PersistentMap<readonly string[]>;
   readonly tapes: readonly TapeId[];
   readonly canAppendText: boolean;
   readonly commandIndex: CommandViewIndex;
@@ -35,6 +53,23 @@ interface State {
 const key = (node: ViewNode) => resourceKey(node.origin.representative);
 const tokenKey = (range: { readonly client: number; readonly clock: number }) =>
   `${range.client}:${range.clock}`;
+/** Retain exact deletion declarations, including inactive ones, in semantic order. */
+function recordDeletions(index: State['deletions'], action: ActionEnvelope): void {
+  for (const [ordinal, effect] of action.effects.entries()) {
+    if (effect.type !== 'DeleteText') continue;
+    const tapes = new Set(effect.observed.map((range) => resourceKey(range.tape)));
+    for (const tape of tapes)
+      index.set(tape, [
+        ...(index.get(tape) ?? []),
+        {
+          action: action.id,
+          ordinal,
+          tag: effect.tag,
+          ranges: effect.observed.filter((range) => resourceKey(range.tape) === tape),
+        },
+      ]);
+  }
+}
 function freeze<T>(value: T): T {
   if (value && typeof value === 'object' && !Object.isFrozen(value)) {
     for (const child of Object.values(value)) freeze(child);
@@ -44,9 +79,18 @@ function freeze<T>(value: T): T {
 }
 function index(value: Projection, input: ProjectionInput): State {
   const nodes = new PersistentMap<NodeRecord>(),
-    text = new PersistentMap<readonly TextVisibility[]>();
+    text = new PersistentMap<TextTape>(),
+    deletions = new PersistentMap<readonly TextDeletion[]>(),
+    tapeNodes = new PersistentMap<readonly string[]>();
   const visit = (node: ViewNode, depth: number, parent?: string) => {
     nodes.set(key(node), { node, depth, parent });
+    // Ghost traversal slots still contribute addresses after their cells transfer.
+    // Index projected readers, not just final cell owners or private-home blocks.
+    const tapes = new Set([
+      ...node.boundaries.map((boundary) => resourceKey(boundary.address.origin.tape)),
+      ...node.fragments.map((fragment) => resourceKey(fragment.address.origin.tape)),
+    ]);
+    for (const tape of tapes) tapeNodes.set(tape, [...(tapeNodes.get(tape) ?? []), key(node)]);
     for (const child of node.children) visit(child, depth + 1, key(node));
   };
   visit(value.view.root, 0);
@@ -57,7 +101,12 @@ function index(value: Projection, input: ProjectionInput): State {
     list.push(entry);
     entries.set(id, list);
   }
-  for (const [id, list] of entries) text.set(id, list);
+  for (const [id, list] of entries)
+    text.set(id, {
+      entries: list,
+      byId: new Map(list.map((entry) => [tokenKey(entry.token.native), entry])),
+    });
+  for (const { action } of input.actions) recordDeletions(deletions, action);
   const sourceIndex = commandViewIndex(value.view.root);
   const commandOrigins = new PersistentMap<ViewNode>();
   for (const [id, node] of sourceIndex.origins) commandOrigins.set(id, node);
@@ -67,6 +116,8 @@ function index(value: Projection, input: ProjectionInput): State {
     value,
     nodes,
     text,
+    deletions,
+    tapeNodes,
     commandIndex,
     commandOrigins,
     tapes: [
@@ -76,13 +127,7 @@ function index(value: Projection, input: ProjectionInput): State {
     canAppendText:
       value.visibility.nodes.every(
         (n) => n.available && !n.deleted && !n.suppressed && !n.scaffold,
-      ) &&
-      value.visibility.text.every(
-        (t) => t.insertionActive && !t.tags.length && !t.deletedDestination,
-      ) &&
-      !value.activity.effects.some(
-        ({ effect }) => effect.type === 'DeleteText' || effect.type === 'DeleteSubtree',
-      ),
+      ) && !value.activity.effects.some(({ effect }) => effect.type === 'DeleteSubtree'),
   };
 }
 /** Rebuild one flow's text projection while keeping its semantic children and origin.
@@ -105,6 +150,7 @@ function projectInline(
   ownership: OwnershipResult,
   native: NativeView,
   interpretations: Projection['interpretations'],
+  visible: (range: NativeTextRange) => boolean,
 ): ViewNode {
   const allocation = before.origin.representative;
   // A rendered inline is the home of the effective top-level flow. Its boundary
@@ -154,9 +200,13 @@ function projectInline(
               clock: fragment.range.clock + i,
               length: 1,
             });
-          const mask = masked(start);
+          const isVisible = (i: number) =>
+            visible({ ...fragment.range, clock: fragment.range.clock + i, length: 1 });
+          const mask = masked(start),
+            shown = isVisible(start);
           let end = start + 1;
-          while (end < fragment.text.length && masked(end) === mask) end++;
+          while (end < fragment.text.length && masked(end) === mask && isVisible(end) === shown)
+            end++;
           const range: NativeTextRange = {
             ...fragment.range,
             clock: fragment.range.clock + start,
@@ -178,8 +228,10 @@ function projectInline(
               origin,
             ),
           );
-          fragments.push(freeze({ text, range, address: location, visible: !mask, masked: mask }));
-          if (!mask) content += text;
+          fragments.push(
+            freeze({ text, range, address: location, visible: shown && !mask, masked: mask }),
+          );
+          if (shown && !mask) content += text;
           start = end;
         }
       }
@@ -192,8 +244,9 @@ function projectInline(
   });
 }
 
-/** Local text projection is deliberately narrow. Deletions, inactive births,
- * scaffolds and structural/interpretation changes use the coupled/full fallback.
+/** Local text projection covers insertions and exact deletion on active nodes.
+ * Subtree deletion, inactive births, scaffolds and structural/interpretation
+ * changes use the coupled/full fallback.
  */
 export class MaterializedProjection {
   private readonly ownership = new MaterializedOwnership();
@@ -296,17 +349,24 @@ export class MaterializedProjection {
     groupActivity: Activity,
   ): State {
     const text = before.text.fork(),
+      deletions = before.deletions.fork(),
       nodes = before.nodes.fork(),
       changed = new Map<string, ViewNode>();
+    recordDeletions(deletions, action);
     const affected = new Set<string>();
-    for (const tape of touched) {
-      if (action.allocations.length) {
-        const home = ownership.homeForTape(tape);
-        if (!home) throw new Error('Marker refinement requires an existing home');
-        affected.add(resourceKey(ownership.flowBlock(ownership.runLayout(home.run).flow)));
-      }
-      const id = resourceKey(tape),
-        old = new Map((text.get(id) ?? []).map((entry) => [tokenKey(entry.token.native), entry]));
+    const nativeTapes = new Set(touched.map(resourceKey));
+    const semanticTapes = new Map(touched.map((tape) => [resourceKey(tape), tape]));
+    for (const effect of action.effects)
+      if (effect.type === 'DeleteText')
+        for (const range of effect.observed) {
+          semanticTapes.set(resourceKey(range.tape), range.tape);
+          for (const node of ownership.inlineOwner(range)) affected.add(resourceKey(node));
+        }
+    const hasMarkers = action.allocations.some((allocation) => allocation.type === 'marker');
+    for (const [id, tape] of semanticTapes) {
+      if (hasMarkers && nativeTapes.has(id))
+        for (const node of before.tapeNodes.get(id) ?? []) affected.add(node);
+      const old = new Map(text.get(id)?.byId);
       for (const birth of action.nativeManifest)
         if (birth.type === 'text' && resourceKey(birth.tape) === id) {
           for (let i = 0; i < birth.native.length; i++) {
@@ -323,27 +383,71 @@ export class MaterializedProjection {
               visible: true,
             });
           }
-          for (const owner of ownership.tokenOwners({ tape, ...birth.native }))
-            affected.add(resourceKey(ownership.flowBlock(ownership.runLayout(owner.run).flow)));
+          for (const node of ownership.inlineOwner({ tape, ...birth.native }))
+            affected.add(resourceKey(node));
         }
-      const entries = native.snapshot(tape).parts.flatMap((part) =>
-        part.type === 'text'
-          ? Array.from({ length: part.text.length }, (_, i) => {
-              const entry = old.get(
-                tokenKey({ client: part.native.client, clock: part.native.clock + i }),
-              );
-              if (!entry) throw new Error('Text append contains an uncertified native identity');
-              return entry;
-            })
+      const newDeletes = action.effects.flatMap((effect) =>
+        effect.type === 'DeleteText'
+          ? effect.observed.filter((range) => resourceKey(range.tape) === id)
           : [],
       );
-      text.set(id, entries);
+      const covers = (range: NativeTextRange, entry: TextVisibility) =>
+        range.client === entry.token.native.client &&
+        range.clock <= entry.token.native.clock &&
+        entry.token.native.clock < range.clock + range.length;
+      const activeDeletes = newDeletes.length
+        ? (deletions.get(id) ?? []).filter(
+            (deletion) =>
+              groupActivity.isEffectActive(deletion) &&
+              before.value.interpretations.effectEligible(deletion),
+          )
+        : [];
+      for (const [key, entry] of old) {
+        if (!newDeletes.some((range) => covers(range, entry))) continue;
+        const tags = new Map<string, DeletionId>();
+        for (const deletion of activeDeletes)
+          if (deletion.ranges.some((range) => covers(range, entry)))
+            tags.set(resourceKey(deletion.tag), deletion.tag);
+        const insertionActive = entry.insertionActive;
+        if (
+          entry.insertionActive === insertionActive &&
+          entry.tags.length === tags.size &&
+          entry.tags.every((tag, i) => resourceKey(tag) === [...tags.keys()][i])
+        )
+          continue;
+        old.set(key, {
+          ...entry,
+          insertionActive,
+          tags: [...tags.values()],
+          visible: insertionActive && !tags.size,
+        });
+      }
+      const entries = nativeTapes.has(id)
+        ? native.snapshot(tape).parts.flatMap((part) =>
+            part.type === 'text'
+              ? Array.from({ length: part.text.length }, (_, i) => {
+                  const entry = old.get(
+                    tokenKey({ client: part.native.client, clock: part.native.clock + i }),
+                  );
+                  if (!entry)
+                    throw new Error('Text change contains an uncertified native identity');
+                  return entry;
+                })
+              : [],
+          )
+        : (text.get(id)?.entries ?? []).map((entry) => old.get(tokenKey(entry.token.native))!);
+      text.set(id, { entries, byId: old });
       this.counts.textTapesRebuilt++;
     }
+    const visible = (range: NativeTextRange) =>
+      text.get(resourceKey(range.tape))?.byId.get(tokenKey(range))?.visible === true;
     for (const id of affected) {
       const record = nodes.get(id);
-      if (!record) throw new Error('Text append changed an unavailable projected owner');
-      changed.set(id, projectInline(record.node, ownership, native, before.value.interpretations));
+      if (!record) throw new Error('Text change changed an unavailable projected owner');
+      changed.set(
+        id,
+        projectInline(record.node, ownership, native, before.value.interpretations, visible),
+      );
     }
     const pending = new Set(changed.keys());
     while (pending.size) {
@@ -393,7 +497,9 @@ export class MaterializedProjection {
       interpretations,
       visibility: {
         get text() {
-          return (allText ??= before.tapes.flatMap((tape) => text.get(resourceKey(tape)) ?? []));
+          return (allText ??= before.tapes.flatMap(
+            (tape) => text.get(resourceKey(tape))?.entries ?? [],
+          ));
         },
         nodes: before.value.visibility.nodes,
       },
@@ -403,7 +509,7 @@ export class MaterializedProjection {
       commandOrigins.set(before.commandIndex.handle(node)!, node);
     const commandIndex = { ...before.commandIndex, origins: commandOrigins };
     registerCommandViewIndex(value.view.root, commandIndex);
-    return { ...before, value, nodes, text, commandIndex, commandOrigins };
+    return { ...before, value, nodes, text, deletions, commandIndex, commandOrigins };
   }
   cancel(): void {
     this.generation++;

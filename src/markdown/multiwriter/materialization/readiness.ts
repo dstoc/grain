@@ -123,9 +123,12 @@ export class IndexedActionStore extends ActionStore {
     return { ...this.counts };
   }
   protected override factChanged(fact: ActionFact): void {
+    this.counts.factsChanged++;
+    this.invalidate(fact);
+  }
+  private invalidate(fact: ActionFact): void {
     const key = actionKey(fact.id);
     this.changed.add(key);
-    this.counts.factsChanged++;
     // Include every retained variant. Extra edges after a fork are conservative;
     // removing edges could lose invalidation through a previously ready variant.
     for (const variant of fact.variants)
@@ -480,6 +483,33 @@ export class IndexedActionStore extends ActionStore {
     this.changed.clear();
     this.memo = { version, value };
     return value;
+  }
+  /** Drop only derived readiness state. Canonical payloads, decoded facts and
+   * undecoded ingress remain in ActionStore. The next read certifies them again.
+   */
+  evict(): void {
+    this.cancelRead();
+    this.memo = undefined;
+    this.records = undefined;
+    this.certificateIndex = undefined;
+    this.staged = undefined;
+    this.changed.clear();
+    this.readers.clear();
+    this.states.clear();
+    this.ready.clear();
+    this.certified.clear();
+    for (const fact of this.retainedFacts()) this.invalidate(fact);
+  }
+  /** Counts of direct cache entries, not transitive heap or canonical byte sizes. */
+  cacheDiagnostics() {
+    return {
+      certificates: this.certified.size,
+      stagedCertificates: Number(this.staged !== undefined),
+      records: this.states.size,
+      ready: this.ready.size,
+      dependencySources: this.readers.size,
+      dirtyFacts: this.changed.size,
+    };
   }
   override destroy(): void {
     this.cancelRead();

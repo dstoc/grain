@@ -50,6 +50,17 @@ export interface IngestValidatorOptions {
  */
 export type IngestValidator = ActionStoreOptions['validate'] & {
   destroy(): void;
+  /** Release the private native branch and exact certification preimages. */
+  evict(): void;
+  /** Direct cache counts and encoded payload lengths; these are not heap sizes. */
+  cacheDiagnostics(): {
+    readonly nativeBranch: boolean;
+    readonly busy: boolean;
+    readonly certificates: number;
+    readonly preimages: number;
+    readonly encodedBytes: number;
+    readonly preimageNativeBytes: number;
+  };
   setDecodeLimit(operations: number): void;
   /** Detached native diagnostics, including the retained certification branch. */
   encodeNativeState(): Uint8Array;
@@ -233,6 +244,30 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
     }
   }
   return Object.assign(validate, {
+    evict: () => {
+      if (busy) throw new Error('Cancel ingest computation before evicting its validator');
+      discard();
+      certificates.clear();
+    },
+    cacheDiagnostics: () => ({
+      nativeBranch: cache !== undefined,
+      busy,
+      certificates: certificates.size,
+      preimages: certificates.size,
+      encodedBytes: [...certificates.values()].reduce(
+        (sum, certificate) => sum + certificate.bytes.byteLength,
+        0,
+      ),
+      preimageNativeBytes: [...certificates.values()].reduce(
+        (sum, certificate) =>
+          sum +
+          certificate.envelope.nativeInsertUpdates.reduce(
+            (bytes, update) => bytes + update.byteLength,
+            0,
+          ),
+        0,
+      ),
+    }),
     encodeNativeState: () => cache?.encodeState() ?? Uint8Array.of(0, 0),
     retainReadyFacts,
     retainReady: (actions: readonly ActionEnvelope[]) => {

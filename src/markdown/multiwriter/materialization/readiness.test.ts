@@ -359,3 +359,102 @@ test('a lazy compatibility closure remains exact after withdrawal and destructio
   (captured!.dependencies[0] as { documentId: string }).documentId = 'caller-owned';
   expect(a.documentId).toBe('D');
 });
+
+test('readiness eviction rebuilds retained pending/forked facts without a canonical update', () => {
+  const p = pair();
+  try {
+    const a = action(A),
+      b = action(B, 1n, [a]),
+      c = action(C, 1n, [b]);
+    p.append(a);
+    p.append(b);
+    p.append(c);
+    p.append({ ...a, groupId: { ...a.groupId, sequence: 99n } });
+    p.append(action(B, 3n));
+    const old = p.indexed.readReady(),
+      before = p.indexed.encodeUpdate(),
+      count = p.indexed.readinessDiagnostics().factsChanged;
+    const events = vi.fn(),
+      off = p.indexed.onUpdate(events);
+    try {
+      p.indexed.evict();
+      expect(p.indexed.cacheDiagnostics()).toMatchObject({
+        certificates: 0,
+        stagedCertificates: 0,
+        records: 0,
+        ready: 0,
+        dirtyFacts: 4,
+      });
+      expect(events).not.toHaveBeenCalled();
+      expect(p.indexed.encodeUpdate()).toEqual(before);
+      expect(p.indexed.readinessDiagnostics().factsChanged).toBe(count);
+      p.equal();
+      expect(old.ready).toHaveLength(0);
+      p.append(action(C, 2n, [c]));
+    } finally {
+      off();
+    }
+  } finally {
+    p.close();
+  }
+});
+
+test('readiness eviction cancels suspended author validation before rebuilding its certificates', () => {
+  let entered = false,
+    cancelled = false;
+  const indexed = new IndexedActionStore({
+    ...options,
+    validate: function* () {
+      entered = true;
+      try {
+        yield;
+        return null;
+      } finally {
+        cancelled = true;
+      }
+    },
+  });
+  try {
+    indexed.append(action());
+    const before = indexed.encodeUpdate();
+    let work = indexed.computeReady(0);
+    for (let i = 0; !entered && i < 10000; i++) {
+      if (work.state !== 'deferred') throw new Error('Expected suspended readiness');
+      work = work.continuation.resume(1);
+    }
+    expect(entered).toBe(true);
+    indexed.evict();
+    expect(cancelled).toBe(true);
+    if (work.state !== 'deferred') throw new Error('Missing suspended computation');
+    expect(() => work.continuation.resume(1)).toThrow(/invalidated/);
+    expect(indexed.cacheDiagnostics().certificates).toBe(0);
+    expect(indexed.readReady().ready).toHaveLength(1);
+    expect(indexed.encodeUpdate()).toEqual(before);
+  } finally {
+    indexed.destroy();
+  }
+});
+
+test('eviction drops unappended local certificates and preserves undecoded ingress', () => {
+  const validate = vi.fn<ActionStoreOptions['validate']>(() => null);
+  const indexed = new IndexedActionStore({ ...options, validate });
+  const reference = new ActionStore(options);
+  try {
+    const a = action();
+    expect(indexed.checkLocal(a)).toBe(null);
+    expect(indexed.cacheDiagnostics().stagedCertificates).toBe(1);
+    indexed.evict();
+    expect(indexed.cacheDiagnostics().stagedCertificates).toBe(0);
+    indexed.append(a);
+    reference.append(a);
+    indexed.appendEncoded(Uint8Array.of(255));
+    reference.appendEncoded(Uint8Array.of(255));
+    indexed.evict();
+    expect(indexed.snapshot()).toEqual(reference.snapshot());
+    expect(indexed.readinessDiagnostics().localCertificatesReused).toBe(0);
+    expect(validate).toHaveBeenCalledTimes(2);
+  } finally {
+    indexed.destroy();
+    reference.destroy();
+  }
+});

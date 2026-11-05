@@ -9,8 +9,18 @@ import { PersistentMap } from './map.js';
 export class MaterializedCells {
   private tapes = new PersistentMap<CellIndex>();
   private markers = new PersistentMap<TapeId>();
-  constructor(snapshots: readonly TapeSnapshot[]) {
+  constructor(
+    snapshots: readonly TapeSnapshot[],
+    private readonly onRead?: (tape: TapeId) => void,
+  ) {
     this.install(snapshots);
+  }
+  /** A replay-local facade records semantic reads without changing published roots. */
+  observing(onRead: (tape: TapeId) => void): MaterializedCells {
+    const copy = new MaterializedCells([], onRead);
+    copy.tapes = this.tapes;
+    copy.markers = this.markers;
+    return copy;
   }
   refine(snapshots: readonly TapeSnapshot[]): MaterializedCells {
     const copy = new MaterializedCells([]);
@@ -28,12 +38,17 @@ export class MaterializedCells {
     }
   }
   private index(tape: TapeId): CellIndex {
+    this.onRead?.(tape);
     const index = this.tapes.get(resourceKey(tape));
     if (!index) throw new Error('Missing native tape snapshot');
     return index;
   }
   get cells(): readonly NativeCell[] {
-    return [...this.tapes.values()].flatMap((index) => index.cells);
+    return [...this.tapes.values()].flatMap((index) => {
+      const cells = index.cells;
+      if (cells[0]) this.onRead?.(cells[0].range.tape);
+      return cells;
+    });
   }
   position(tape: TapeId, marker: MarkerId): number {
     return this.index(tape).position(tape, marker);

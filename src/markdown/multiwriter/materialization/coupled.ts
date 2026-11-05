@@ -13,6 +13,7 @@ import { actionKey } from '../actions/references.js';
 import { compareBytes } from '../actions/cbor.js';
 import { resourceKey } from '../layout/index.js';
 import type { OwnershipCheckpoint } from './ownership.js';
+import { MaterializedCells } from './cells.js';
 import type { ActionSequence, PayloadIndex } from './activity.js';
 import { replayOwnershipSuffix, orderedOwners } from './ownership.js';
 
@@ -22,6 +23,44 @@ function markerSignature(snapshot: TapeSnapshot): string {
       part.type === 'marker' ? [JSON.stringify([resourceKey(part.marker), part.native])] : [],
     )
     .join('|');
+}
+/** A reusable prefix permits subdivision only: retained marker identities, native
+ * identities and their order must survive. Withdrawal/rebuilds fail closed. */
+function markerRefinement(before: TapeSnapshot, after: TapeSnapshot): boolean {
+  const retained = before.parts.filter((part) => part.type === 'marker');
+  let next = 0;
+  for (const part of after.parts) {
+    if (part.type !== 'marker' || next === retained.length) continue;
+    const old = retained[next];
+    if (resourceKey(old.marker) !== resourceKey(part.marker)) continue;
+    if (old.native.client !== part.native.client || old.native.clock !== part.native.clock)
+      return false;
+    next++;
+  }
+  return next === retained.length;
+}
+/** Refine each prefix's own assignments. A later prefix can have transferred or
+ * split cells that an older checkpoint still assigns to their private home. */
+function refineCheckpoint(
+  prior: OwnershipCheckpoint,
+  snapshots: readonly TapeSnapshot[],
+  index = prior.index.refine(snapshots),
+): OwnershipCheckpoint {
+  if (!snapshots.length) return prior;
+  const owners = prior.owners.fork();
+  for (const snapshot of snapshots) {
+    if (!prior.installedTapes.has(resourceKey(snapshot.tape))) continue;
+    for (const cell of prior.index.tape(snapshot.tape)) {
+      const key = cellKey(cell.range),
+        owner = owners.get(key);
+      if (!owner) throw new Error('Refined native cell has no prior owner');
+      const refined = index.range(cell.range);
+      if (refined.length === 1 && cellKey(refined[0].range) === key) continue;
+      owners.delete(key);
+      for (const next of refined) owners.set(cellKey(next.range), { ...owner, cell: next.range });
+    }
+  }
+  return { ...prior, index, owners };
 }
 interface Payload {
   readonly key: string;
@@ -35,13 +74,16 @@ export interface CoupledWork {
   coldReplays: number;
   nativeMarkerFallbacks: number;
   nativeMarkerRefinements: number;
+  nativeReaderInvalidations: number;
+  nativeTapeReads: number;
+  cellTapesIndexed: number;
   lastReplayFrom: number;
   lastReplayLength: number;
 }
 /** The structural checkpoint holds placement and ownership at the same effect prefix.
- * Text-only native changes preserve cell identities. Marker refinement before any
- * structural reader preserves home assignments, including checkpoint roots. Other
- * existing-tape marker changes conservatively invalidate from genesis.
+ * Marker subdivision preserves assignments before the first reader of each tape.
+ * Split adjacency reads record a tape-local replay frontier. Marker withdrawal or
+ * reordering conservatively invalidates from genesis.
  */
 export class MaterializedOwnership {
   private state?: OwnershipCheckpoint;
@@ -53,7 +95,7 @@ export class MaterializedOwnership {
   private order: readonly Payload[] = [];
   private checkpoints: readonly OwnershipCheckpoint[] = [];
   private markers = new PersistentMap<string>();
-  private textOnlyPrefix = false;
+  private snapshots = new PersistentMap<TapeSnapshot>();
   private generation = 0;
   private readonly counts: CoupledWork = {
     actionsReplayed: 0,
@@ -62,6 +104,9 @@ export class MaterializedOwnership {
     coldReplays: 0,
     nativeMarkerFallbacks: 0,
     nativeMarkerRefinements: 0,
+    nativeReaderInvalidations: 0,
+    nativeTapeReads: 0,
+    cellTapesIndexed: 0,
     lastReplayFrom: 0,
     lastReplayLength: 0,
   };
@@ -101,23 +146,59 @@ export class MaterializedOwnership {
       ...input.genesis.allocations,
       ...input.actions.flatMap(({ action }) => action.allocations),
     ];
-    const snapshots = allocations.flatMap((a) =>
-      a.type === 'tape' ? [input.native.snapshot(a.id)] : [],
-    );
-    const markers = new PersistentMap<string>();
-    for (const snapshot of snapshots)
-      markers.set(resourceKey(snapshot.tape), markerSignature(snapshot));
-    const nativeChanged = [...this.markers].some(
-      ([key, signature]) => markers.get(key) !== signature,
-    );
-    if (nativeChanged) {
+    const touched = this.native && changedNativeTapes(this.native, input.native);
+    const continuous = touched !== undefined && this.state !== undefined;
+    const dirty = new Set(touched?.map(resourceKey));
+    const snapshotCache = continuous ? this.snapshots.fork() : new PersistentMap<TapeSnapshot>();
+    const markers = continuous ? this.markers.fork() : new PersistentMap<string>();
+    const updated: TapeSnapshot[] = [];
+    const snapshots = allocations.flatMap((allocation) => {
+      if (allocation.type !== 'tape') return [];
+      const key = resourceKey(allocation.id);
+      let snapshot = snapshotCache.get(key);
+      if (!snapshot || dirty.has(key)) {
+        snapshot = input.native.snapshot(allocation.id);
+        snapshotCache.set(key, snapshot);
+        markers.set(key, markerSignature(snapshot));
+        updated.push(snapshot);
+        this.counts.nativeTapeReads++;
+      }
+      return [snapshot];
+    });
+    const index = continuous ? this.state!.index.refine(updated) : new MaterializedCells(snapshots);
+    this.counts.cellTapesIndexed += continuous ? updated.length : snapshots.length;
+    const changed = snapshots.filter((snapshot) => {
+      const signature = this.markers.get(resourceKey(snapshot.tape));
+      return signature !== undefined && signature !== markers.get(resourceKey(snapshot.tape));
+    });
+    const withdrawn = [...this.markers.keys()].some((key) => !markers.has(key));
+    const compatible =
+      !withdrawn &&
+      changed.every(
+        (snapshot) =>
+          this.native && markerRefinement(this.native.snapshot(snapshot.tape), snapshot),
+      );
+    if (!compatible) {
       frontier = 0;
       this.counts.nativeMarkerFallbacks++;
+    } else if (changed.length) {
+      let readerFrontier = this.order.length;
+      for (const snapshot of changed) {
+        const reader = this.state?.nativeReaders.get(resourceKey(snapshot.tape));
+        if (reader !== undefined) readerFrontier = Math.min(readerFrontier, reader);
+      }
+      if (readerFrontier < this.order.length) this.counts.nativeReaderInvalidations++;
+      frontier = Math.min(frontier, readerFrontier);
+      this.counts.nativeMarkerRefinements++;
     }
-    let checkpoints = this.checkpoints.filter((checkpoint) => checkpoint.count <= frontier);
+    let checkpoints = this.checkpoints
+      .filter((checkpoint) => checkpoint.count <= frontier)
+      .map((checkpoint) => refineCheckpoint(checkpoint, changed, index));
     const resume =
-      !nativeChanged && frontier === this.order.length ? this.state : checkpoints.at(-1);
-    if (resume && resume !== this.state) this.counts.checkpointRestores++;
+      compatible && frontier === this.order.length && this.state
+        ? refineCheckpoint(this.state, changed, index)
+        : checkpoints.at(-1);
+    if (resume && resume.count !== this.state?.count) this.counts.checkpointRestores++;
     if (!resume) this.counts.coldReplays++;
     yield;
     const from = resume?.count ?? 0;
@@ -135,6 +216,7 @@ export class MaterializedOwnership {
       activity,
       resume,
       (checkpoint) => checkpoints.push(checkpoint),
+      index,
     );
     this.counts.actionsReplayed += input.actions.length - from;
     this.counts.effectsReplayed += input.actions
@@ -153,7 +235,7 @@ export class MaterializedOwnership {
         this.native = input.native;
         this.order = order;
         this.markers = markers;
-        this.textOnlyPrefix = input.actions.every(({ action }) => isTextRefinement(action));
+        this.snapshots = snapshotCache;
         this.checkpoints = checkpoints;
         this.counts.lastReplayFrom = from;
         this.counts.lastReplayLength = input.actions.length - from;
@@ -177,7 +259,6 @@ export class MaterializedOwnership {
       !action ||
       actions.length !== this.order.length + 1 ||
       !isTextRefinement(action) ||
-      (action.allocations.length > 0 && !this.textOnlyPrefix) ||
       this.order.some(
         (payload, i) =>
           payload.key !== actionKey(actions.at(i)!.id) ||
@@ -187,31 +268,23 @@ export class MaterializedOwnership {
       return undefined;
     const touched = stagedTapes ?? changedNativeTapes(this.native, native);
     if (!touched) return undefined;
+    const hasMarkers = action.allocations.some((allocation) => allocation.type === 'marker');
+    if (hasMarkers && touched.some((tape) => prior.nativeReaders.has(resourceKey(tape))))
+      return undefined;
     const generation = ++this.generation;
     const snapshots = touched.map((tape) => native.snapshot(tape));
     const index = prior.index.refine(snapshots);
-    let owners = prior.owners;
+    this.counts.nativeTapeReads += snapshots.length;
+    this.counts.cellTapesIndexed += snapshots.length;
+    const { owners } = action.allocations.length
+      ? refineCheckpoint(prior, snapshots, index)
+      : prior;
+    const snapshotCache = this.snapshots.fork();
+    for (const snapshot of snapshots) snapshotCache.set(resourceKey(snapshot.tape), snapshot);
     const markers = this.markers.fork();
-    if (action.allocations.length) {
-      // Before any structural reader, every retained cell belongs to its home.
-      // Refine those assignments, including empty/reserved cells. Every text-only checkpoint has those same
-      // home assignments, so its native roots can be refined without replaying
-      // layout. Old published roots remain readable. Structural readers retain
-      // the conservative fallback until their dependencies are indexed.
-      owners = owners.fork();
-      for (const snapshot of snapshots) {
-        for (const cell of prior.index.tape(snapshot.tape)) {
-          const key = cellKey(cell.range);
-          const owner = owners.get(key);
-          if (!owner) throw new Error('Refined native cell has no prior owner');
-          const refined = index.range(cell.range);
-          if (refined.length === 1 && cellKey(refined[0].range) === key) continue;
-          owners.delete(key);
-          for (const next of refined)
-            owners.set(cellKey(next.range), { ...owner, cell: next.range });
-        }
+    if (hasMarkers) {
+      for (const snapshot of snapshots)
         markers.set(resourceKey(snapshot.tape), markerSignature(snapshot));
-      }
       this.counts.nativeMarkerRefinements++;
     }
     const layout = prior.layout.fork();
@@ -249,14 +322,13 @@ export class MaterializedOwnership {
         committed = true;
         this.state = state;
         this.markers = markers;
+        this.snapshots = snapshotCache;
         this.native = native;
         this.order = [...this.order, payload];
-        if (action.allocations.length)
-          this.checkpoints = this.checkpoints.map((checkpoint) => ({
-            ...checkpoint,
-            index,
-            owners,
-          }));
+        if (hasMarkers)
+          this.checkpoints = this.checkpoints.map((checkpoint) =>
+            refineCheckpoint(checkpoint, snapshots, index),
+          );
         if (state.count % 128 === 0) this.checkpoints = [...this.checkpoints, state].slice(-8);
         this.counts.lastReplayFrom = actions.length - 1;
         this.counts.lastReplayLength = 1;
@@ -274,6 +346,6 @@ export class MaterializedOwnership {
     this.order = [];
     this.checkpoints = [];
     this.markers = new PersistentMap();
-    this.textOnlyPrefix = false;
+    this.snapshots = new PersistentMap();
   }
 }
