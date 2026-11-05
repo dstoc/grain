@@ -197,7 +197,7 @@ test('indexed refinement propagates operational native-read failures and rejects
   const candidate = { ...emptyAction(), nativeManifest: [birth] };
   const validate = createProjectionAuthorValidator({ genesis: f.genesis, births: () => [] });
   const context: AuthorValidationContext = {
-    get dependencies() {
+    get dependencies(): readonly ActionEnvelope[] {
       throw new Error('Indexed refinement enumerated its closure');
     },
     indexed: {
