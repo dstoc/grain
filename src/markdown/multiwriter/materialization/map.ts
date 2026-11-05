@@ -55,7 +55,7 @@ function balance<T>(root: MapRoot<T>): MapRoot<T> {
   return result;
 }
 
-function remove<T>(root: MapRoot<T> | undefined, key: string): MapRoot<T> | undefined {
+export function remove<T>(root: MapRoot<T> | undefined, key: string): MapRoot<T> | undefined {
   if (!root) return undefined;
   if (key < root.key) {
     const left = remove(root.left, key);

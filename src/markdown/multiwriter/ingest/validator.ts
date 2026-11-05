@@ -67,7 +67,7 @@ export type IngestValidator = ActionStoreOptions['validate'] & {
   /** Withdraw a formerly certified branch when a late fork removes it from readiness. */
   retainReady(actions: readonly ActionEnvelope[]): void;
   /** Exact borrowed payload index from the optimized readiness reader. */
-  retainReadyFacts(variants: ReadonlyMap<string, Uint8Array>): void;
+  retainReadyFacts(variants: Pick<ReadonlyMap<string, Uint8Array>, 'get'>): void;
 };
 export function createIngestValidator(options: IngestValidatorOptions): IngestValidator {
   const genesis = structuredClone(options.genesis);
@@ -233,7 +233,7 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
       busy = false;
     }
   }
-  function retainReadyFacts(ready: ReadonlyMap<string, Uint8Array>): void {
+  function retainReadyFacts(ready: Pick<ReadonlyMap<string, Uint8Array>, 'get'>): void {
     if (busy) throw new Error('Cancel ingest computation before withdrawing its native branch');
     for (let fact = certified; fact; fact = fact.previous) {
       const bytes = ready.get(fact.key);

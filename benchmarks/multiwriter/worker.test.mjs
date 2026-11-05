@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { observePhases } from './phases.mjs';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 function worker(args) {
@@ -98,11 +99,109 @@ test('managed worker measures real selection/edit/Undo/Redo and serialized histo
       assert(sample.navigation.redoMs >= 0);
       assert.equal(sample.latencyMs.samples.length, 2);
       assert.equal(sample.storageJournalBytes, null);
+      assert.equal(sample.engineBoundaryMs.samples.length, 2);
+      for (const boundary of Object.values(sample.engineBoundaryMs.boundaries)) {
+        assert.equal(boundary.samples.length, 2);
+        assert(boundary.samples.every((value) => value >= 0));
+      }
+      assert(sample.engineBoundaryMs.boundaries.append.samples.every((value) => value > 0));
     }
     assert.equal(samples[0].markdownSha256, samples[1].markdownSha256);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('phase observation preserves deferred work, receiver identity, cancellation and nested boundaries', () => {
+  let clock = 0,
+    cancelled = 0;
+  const complete = { state: 'complete', value: {} };
+  const continuation = {
+    cancel() {
+      assert.equal(this, continuation);
+      cancelled++;
+    },
+    resume(budget) {
+      assert.equal(this, continuation);
+      clock += budget;
+      return complete;
+    },
+  };
+  class Publication {
+    refresh() {
+      assert.equal(this, publication);
+      clock += 5;
+      return { state: 'deferred', continuation };
+    }
+  }
+  const publication = new Publication();
+  const document = {
+    publication,
+    store: {
+      append(value) {
+        assert.equal(this, document.store);
+        clock += 2;
+        publication.refresh();
+        clock += 3;
+        return value;
+      },
+      applyUpdate() {
+        clock += 6;
+      },
+    },
+    certifyLocal() {
+      clock += 4;
+    },
+    stageLocalAction() {
+      clock += 3;
+    },
+  };
+  const originalAppend = document.store.append,
+    phases = observePhases(document, () => clock),
+    before = phases.snapshot();
+  const value = {};
+  assert.equal(document.store.append(value), value);
+  const work = publication.refresh();
+  work.continuation.cancel();
+  assert.equal(cancelled, 1);
+  assert.equal(work.continuation.resume(7), complete);
+  document.store.applyUpdate();
+  document.certifyLocal();
+  document.stageLocalAction();
+  assert.deepEqual(phases.since(before), {
+    append: 10,
+    receive: 6,
+    certify: 4,
+    stage: 3,
+    refresh: 17,
+  });
+  phases.restore();
+  assert.equal(document.store.append, originalAppend);
+  assert.equal(Object.hasOwn(publication, 'refresh'), false);
+});
+
+test('phase observation rethrows the original failure after recording the work once', () => {
+  let clock = 0,
+    calls = 0;
+  const failure = new Error('retained append observer');
+  const document = {
+    store: {
+      append() {
+        calls++;
+        clock += 2;
+        throw failure;
+      },
+    },
+    publication: {},
+  };
+  const phases = observePhases(document, () => clock);
+  assert.throws(
+    () => document.store.append(),
+    (error) => error === failure,
+  );
+  assert.equal(calls, 1);
+  assert.equal(phases.snapshot().append, 2);
+  phases.restore();
 });
 
 test('managed runner help and argument errors keep stdout machine-readable', () => {

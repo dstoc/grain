@@ -1,13 +1,14 @@
 import * as Y from 'yjs';
 import { expect, test, vi } from 'vitest';
 import { ActionStore } from '../actions/store.js';
-import type { ActionStoreOptions, ActionValidationContext } from '../actions/store.js';
+import type { ActionStoreOptions, ActionValidationContext, ActionFact } from '../actions/store.js';
 import type { ActionEnvelope } from '../contracts.js';
 import { A, B, C, action } from '../actions/test-fixtures.js';
 import { encodeEnvelope } from '../actions/codec.js';
 import { decodeCbor, encodeCbor } from '../actions/cbor.js';
 import { IndexedActionStore } from './readiness.js';
 import { SeededRandom } from '../../../../test/multiwriter/network.js';
+import { actionKey } from '../actions/references.js';
 
 const options: ActionStoreOptions = {
   documentId: 'D',
@@ -262,6 +263,95 @@ test('internal reads retain immutable payload identities while every public expo
     expect(second.ready).toEqual([a, b]);
     p.reference.applyUpdate(p.indexed.encodeUpdate());
     p.equal();
+  } finally {
+    p.close();
+  }
+});
+
+test('warm readiness updates only changed payload/head metadata while retaining ordered diagnostic cost', () => {
+  const p = pair(),
+    actions: ActionEnvelope[] = [];
+  try {
+    for (let i = 0; i < 1000; i++) {
+      const next = action(A, BigInt(i + 1), actions.length ? [actions.at(-1)!] : []);
+      actions.push(next);
+      p.indexed.append(next);
+    }
+    const before = p.indexed.readReady(),
+      counts = p.indexed.readinessDiagnostics();
+    const next = action(A, 1001n, [actions.at(-1)!]);
+    p.indexed.append(next);
+    const facts = vi.spyOn(
+      p.indexed as unknown as { fact(key: string): ActionFact | undefined },
+      'fact',
+    );
+    let after: ReturnType<IndexedActionStore['readReady']>;
+    try {
+      after = p.indexed.readReady();
+      expect(facts.mock.calls.length).toBeLessThan(30);
+    } finally {
+      facts.mockRestore();
+    }
+    const current = p.indexed.readinessDiagnostics();
+    expect(current.variantEntriesUpdated - counts.variantEntriesUpdated).toBe(1);
+    expect(current.headCandidatesEvaluated - counts.headCandidatesEvaluated).toBe(2);
+    expect(current.headDependencyEdges - counts.headDependencyEdges).toBeLessThan(5);
+    expect(current.orderedReadyActionsVisited - counts.orderedReadyActionsVisited).toBe(1001);
+    expect(after.heads).toEqual([next.id]);
+    expect(before.heads).toEqual([actions.at(-1)!.id]);
+    expect(before.variants.get(actionKey(next.id))).toBeUndefined();
+    expect(after.variants.get(actionKey(actions[0].id))).toBe(
+      before.variants.get(actionKey(actions[0].id)),
+    );
+    const peer = action(B);
+    p.indexed.append(peer);
+    expect(p.indexed.readReady().heads).toEqual([peer.id, next.id]);
+    p.indexed.append({ ...actions[499], groupId: { ...actions[499].groupId, sequence: 99n } });
+    const withdrawn = p.indexed.readReady();
+    expect(withdrawn.heads).toEqual([peer.id, actions[498].id]);
+    expect(withdrawn.variants.get(actionKey(actions[499].id))).toBeUndefined();
+    expect(after.variants.get(actionKey(actions[499].id))).toBeDefined();
+    p.reference.applyUpdate(p.indexed.encodeUpdate());
+    p.equal();
+    p.indexed.evict();
+    p.equal();
+    expect(before.heads).toEqual([actions.at(-1)!.id]);
+  } finally {
+    p.close();
+  }
+});
+
+test('cancelled metadata candidates cannot change held payload roots or head order', () => {
+  const p = pair(),
+    a = action(),
+    b = action(B, 1n, [a]);
+  try {
+    p.append(a);
+    const before = p.indexed.readReady(),
+      counts = p.indexed.readinessDiagnostics();
+    p.indexed.append(b);
+    let work = p.indexed.computeReady(0);
+    for (
+      let i = 0;
+      p.indexed.readinessDiagnostics().variantEntriesUpdated === counts.variantEntriesUpdated &&
+      i < 10000;
+      i++
+    ) {
+      if (work.state !== 'deferred') throw new Error('Metadata probe published early');
+      work = work.continuation.resume(1);
+    }
+    expect(p.indexed.readinessDiagnostics().variantEntriesUpdated).toBe(
+      counts.variantEntriesUpdated + 1,
+    );
+    expect(before.variants.get(actionKey(b.id))).toBeUndefined();
+    expect(before.heads).toEqual([a.id]);
+    if (work.state !== 'deferred') throw new Error('Expected unpublished metadata');
+    work.continuation.cancel();
+    p.reference.append(b);
+    p.equal();
+    expect(p.indexed.readReady().heads).toEqual([b.id]);
+    expect(before.heads).toEqual([a.id]);
+    expect(before.variants.get(actionKey(b.id))).toBeUndefined();
   } finally {
     p.close();
   }

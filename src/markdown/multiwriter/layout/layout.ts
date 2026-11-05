@@ -351,6 +351,7 @@ export class LayoutPrefix {
   }
   private allocate(batch: LayoutGenesis, action: LayoutAction | null): void {
     const orderById = new Map<string, EffectOrder>();
+    const changedSequences = new Set<string>();
     for (const [ordinal, effect] of (action?.effects ?? []).entries()) {
       for (const id of effectOccurrences(effect)) {
         const key = resourceKey(id);
@@ -405,6 +406,7 @@ export class LayoutPrefix {
           };
           this.occurrences.set(key, entry);
           const sequence = slotSequence(entry.slot);
+          changedSequences.add(sequence);
           const entries = this.sequences.get(sequence) ?? [];
           entries.push(entry);
           this.sequences.set(sequence, entries);
@@ -456,31 +458,24 @@ export class LayoutPrefix {
       unplaced.some((node) => !births.has(resourceKey(node.id)))
     )
       throw new Error('Birth bindings must cover exactly the new non-root nodes');
+    const newOccurrences = new Set(
+      batch.allocations.flatMap((allocation) =>
+        allocation.type === 'occurrence' ? [resourceKey(allocation.id)] : [],
+      ),
+    );
     for (const node of unplaced) {
       const birth = births.get(resourceKey(node.id))!;
       const occurrence = this.occurrence(birth.occurrence);
-      if (
-        !batch.allocations.some(
-          (allocation) =>
-            allocation.type === 'occurrence' &&
-            resourceKey(allocation.id) === resourceKey(birth.occurrence),
-        )
-      )
+      if (!newOccurrences.has(resourceKey(birth.occurrence)))
         throw new Error('Birth occurrence must be newly allocated');
       if (!sameSlot(occurrence.slot, node.birthSlot!))
         throw new Error('Birth occurrence must use the immutable birth slot');
       if (this.moveBlock({ ...birth, slot: node.birthSlot! }) !== 'applied')
         throw new Error('Invalid fallback placement');
     }
-    // Validate each complete sequence now, including inactive/ineffective occurrences.
-    const sequences = new Map<string, OrderedOccurrence[]>();
-    for (const occurrence of this.occurrences.values()) {
-      const sequence = slotSequence(occurrence.slot);
-      const entries = sequences.get(sequence) ?? [];
-      entries.push(occurrence);
-      sequences.set(sequence, entries);
-    }
-    for (const entries of sequences.values()) orderOccurrences(entries);
+    // Only new occurrences can change an immutable sequence. This full replay
+    // still reconstructs its own sequences; it never imports a cached prefix.
+    for (const sequence of changedSequences) orderOccurrences(this.sequences.get(sequence)!);
   }
 }
 

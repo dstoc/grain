@@ -56,12 +56,12 @@ export class MaterializedPublication<T> {
     private readonly reduce: (
       actions: readonly ActionEnvelope[],
       native: NativeView,
-      variants: ReadonlyMap<string, Uint8Array>,
+      variants: Pick<ReadonlyMap<string, Uint8Array>, 'get'>,
     ) => Work<T>,
     private decodeOperations = DEFAULT_INGEST_LIMITS.decodeOperations as number,
     private readonly retainReady: (
       actions: readonly ActionEnvelope[],
-      variants: ReadonlyMap<string, Uint8Array>,
+      variants: Pick<ReadonlyMap<string, Uint8Array>, 'get'>,
     ) => void = () => {},
     private readonly reduction: {
       readonly fullProjectionCount?: () => number;
@@ -239,9 +239,15 @@ export class MaterializedPublication<T> {
         return delta.actions.length === 0;
       }
     }
-    return [...this.snapshot.variants].every(([key, bytes]) => {
+    return this.snapshot.ready.every((action) => {
+      const key = actionKey(action.id),
+        bytes = this.snapshot!.variants.get(key);
       const next = snapshot.variants.get(key);
-      return next !== undefined && (next === bytes || compareBytes(next, bytes) === 0);
+      return (
+        bytes !== undefined &&
+        next !== undefined &&
+        (next === bytes || compareBytes(next, bytes) === 0)
+      );
     });
   }
   private *apply(key: string, body: NativeBody): Work<void> {
