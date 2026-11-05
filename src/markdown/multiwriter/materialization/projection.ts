@@ -348,10 +348,10 @@ export class MaterializedProjection {
       activity,
       interpretations,
       visibility: {
-        nodes: before.value.visibility.nodes,
         get text() {
           return (allText ??= before.tapes.flatMap((tape) => text.get(resourceKey(tape)) ?? []));
         },
+        nodes: before.value.visibility.nodes,
       },
     };
     const commandOrigins = before.commandOrigins.fork();
