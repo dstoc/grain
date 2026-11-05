@@ -75,13 +75,14 @@ Diagnostic action/effect/text arrays stay lazy.
 Exact deletion stores native tags without removing text. Undo recomputes insertion
 activity and active tags on affected tapes in semantic order. Managed command
 results retain the staged native focus; re-lowering an old numeric offset after a
-reentrant peer prepend can split a surrogate pair. Both readers have that regression.
+reentrant peer prepend can split a surrogate pair. Regression tests for both readers cover that case.
 
 Eviction releases publication-native, activity, coupled/projection, readiness and
 author-certification caches, including detached certification preimages. It first
 cancels suspended readiness validation, then releases its private native branch.
-Retained decoded facts and undecoded ingress remain in the canonical store;
-reverse dependencies rebuild on the next read. The active publication, live
+The decoded-fact registry, undecoded ingress and a dirty identity set remain in
+ActionStore; their heap still needs separate attribution. Reverse dependencies
+rebuild on the next read. The active publication, live
 history and canonical bytes remain intact. `cacheDiagnostics()` reports direct
 counts/encoded lengths, not heap. Controlled before/after-GC probes report only
 uniquely released whole-process heap while those retained roots stay fixed.
@@ -132,24 +133,52 @@ artifacts record the source and limits of each measurement.
 
 ## Reader, replacement and eviction stage
 
-Engine/test source `fc866472c92dba3595af99cafe5466569551efc6` passes the
-unfiltered Node suite: 2,252 tests, the same 194 original source skips, 648.45
-seconds with three workers. The unchanged frozen 501-group materialization case
-takes 292.179 seconds in that suite. No isolated rerun is claimed. The later
-formatting commit changes one test's layout only; its compiled JavaScript is equal.
-An occurrence audit preserves every previous test after one performance-case
-rename and adds 30 cases. Text-control work expectations now assert reusable raw
-roots; semantic/frozen assertions, seeds, schedules and deadlines remain unchanged.
-Structural rollback still checks checkpoint 128.
+Corrected engine/test source `9a8eece48c4ca10bf097bdb9799ff5c71d02cf9d`
+passes the unfiltered Node suite: 2,252 tests, the same 194 original source skips,
+565.32 seconds with three workers. An occurrence audit preserves every previous
+test after one performance-case rename and adds 30 cases. Text-control work
+expectations assert reusable raw roots; semantic/frozen assertions, seeds,
+schedules and deadlines remain unchanged. Structural rollback still checks
+checkpoint 128.
 
-Combined MW-10/MW-18 source `d1f8bed01cb01c3573b192be537e677c101b3212`
-passes 230 checks across 11 files in 213.92 seconds. It includes the real managed
-501-group control, both frozen maintenance traces, journal replacement/retry,
-cache eviction, old-prefix edits, restart and the new text/history regressions.
-Managed 501 groups use task-state commands, not mixed-text performance. Journal
-consolidation reduces batches but can increase serialized bytes. The dependency's
-normal conflict resolution and review/merge remain required. No new browser run
-is claimed; storage behavior is unchanged.
+The unchanged frozen 501-group materialization case takes 270.867 seconds in an
+isolated one-worker run, meeting the approximately five-minute direction on this
+runner. It takes 305.076 seconds in the full suite while a one-worker integration
+cohort overlaps. Both observations remain in the reports; no matched speedup or
+portable runtime guarantee is claimed. The original source deadline remains.
+
+Combined MW-10/MW-18 source `a5df71daf83ac3cc5aca113328a169bccc4630dc`
+passes 230 checks across 11 files in 232.10 seconds. It includes real managed
+501 groups, both frozen maintenance traces, journal replacement/retry, cache
+eviction, old-prefix edits, restart and the new text/history regressions. Managed
+501 groups use task-state commands, not mixed-text performance. Consolidation
+reduces batches but can increase serialized bytes. The dependency's normal conflict
+resolution and review/merge remain required. No new browser run is claimed;
+storage behavior is unchanged.
+
+Controlled GC exposed a lifetime bug at the earlier stage: lazy projection readers
+and retained layout callbacks kept prior preparation contexts alive. The corrected
+reader creates escaping getters with only current roots, uses causal membership
+only during allocation, and retains only declared resource fields. All five
+benchmark-harness tests pass, including managed/unmanaged GC checks: explicitly
+held publications stay readable, then discarded value/native/root objects collect
+after release while the current document stays open.
+
+Three alternating fresh-process triples at the corrected source use one retained
+150-paragraph genesis and six managed replacements with native selection (two
+warm-up commands). Median per-process p50/p95 is 1,249.878/1,257.793 ms for the
+previous materializer, 4.567/6.420 ms for the candidate, and 1,471.344/1,481.307 ms
+for current full reference. Candidate Undo/Redo medians are 5.911/4.749 ms. These
+small whole-command samples do not establish core-phase or scale budgets.
+
+Separate 64-group GC probes retain identical canonical bytes, active publication
+and live history across eviction. Median uniquely released process heap is
+4,784,608 bytes for the candidate and 1,772,968 for the previous source. This is
+released heap, not total cache memory. The active roots, decoded facts and writer
+remain; shared-root attribution and peak candidate memory are open. The eviction
+call excludes GC; continued editing includes rebuilding the evicted caches. No
+journal is attached to these timing workers. Raw byte/history fields stay separate.
+Earlier stage measurements remain historical evidence for their recorded source.
 
 Focused controls cover unrelated split tapes, transferred ghost addresses,
 checkpoints before transfers/new home births, joined traversal readers, cancelled
