@@ -22,6 +22,9 @@ import type { CommandViewIndex } from '../authoring/view-index.js';
 import { PersistentMap } from './map.js';
 import { MaterializedOwnership } from './coupled.js';
 import { isTextRefinement } from '../ownership/text-validation.js';
+import { selectInterpretations } from '../projection/interpretation.js';
+import { isPropertyRefinement } from './properties.js';
+import { finish } from '../ingest/work.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
 interface NodeRecord {
@@ -46,7 +49,7 @@ interface State {
   readonly deletions: PersistentMap<readonly TextDeletion[]>;
   readonly tapeNodes: PersistentMap<readonly string[]>;
   readonly tapes: readonly TapeId[];
-  readonly canAppendText: boolean;
+  readonly stableVisibility: boolean;
   readonly commandIndex: CommandViewIndex;
   readonly commandOrigins: PersistentMap<ViewNode>;
 }
@@ -72,7 +75,7 @@ function recordDeletions(index: State['deletions'], action: ActionEnvelope): voi
 }
 /** Escaping lazy readers own only current roots. Defining these inside append
  * would also retain that edit's lexical context and its previous State. */
-function textActivity(
+function projectedActivity(
   groupActivity: Activity,
   interpretations: Projection['interpretations'],
 ): Projection['activity'] {
@@ -158,7 +161,7 @@ function index(value: Projection, input: ProjectionInput): State {
       ...input.genesis.allocations,
       ...input.actions.flatMap(({ action }) => action.allocations),
     ].flatMap((a) => (a.type === 'tape' ? [a.id] : [])),
-    canAppendText:
+    stableVisibility:
       value.visibility.nodes.every(
         (n) => n.available && !n.deleted && !n.suppressed && !n.scaffold,
       ) && !value.activity.effects.some(({ effect }) => effect.type === 'DeleteSubtree'),
@@ -278,7 +281,39 @@ function projectInline(
   });
 }
 
-/** Local text projection covers insertions and exact deletion on active nodes.
+function replaceViews(before: State, changed: Map<string, ViewNode>) {
+  const nodes = before.nodes.fork();
+  let replaced = 0;
+  const pending = new Set(changed.keys());
+  while (pending.size) {
+    const id = [...pending].sort((a, b) => nodes.get(b)!.depth - nodes.get(a)!.depth)[0];
+    pending.delete(id);
+    const record = nodes.get(id)!,
+      value = changed.get(id)!;
+    nodes.set(id, { ...record, node: value });
+    replaced++;
+    if (record.parent) {
+      const parent = changed.get(record.parent) ?? nodes.get(record.parent)!.node;
+      changed.set(
+        record.parent,
+        Object.freeze({
+          ...parent,
+          children: Object.freeze(
+            parent.children.map((child) => (key(child) === id ? value : child)),
+          ),
+        }),
+      );
+      pending.add(record.parent);
+    }
+  }
+  const commandOrigins = before.commandOrigins.fork();
+  for (const node of changed.values()) commandOrigins.set(before.commandIndex.handle(node)!, node);
+  const commandIndex = { ...before.commandIndex, origins: commandOrigins };
+  registerCommandViewIndex(nodes.get(key(before.value.view.root))!.node, commandIndex);
+  return { nodes, commandOrigins, commandIndex, replaced };
+}
+
+/** Local projection covers text and checked/info changes on active nodes.
  * Subtree deletion, inactive births, scaffolds and structural/interpretation
  * changes use the coupled/full fallback.
  */
@@ -293,12 +328,20 @@ export class MaterializedProjection {
     textTapesRebuilt: 0,
     stagedTextProjections: 0,
     localTextControls: 0,
+    stagedStructuralProjections: 0,
+    stagedStructureActionsReplayed: 0,
+    stagedStructureTapesRead: 0,
+    localPropertyProjections: 0,
+    stagedPropertyProjections: 0,
   };
   fullProjectionCount(): number {
     return this.counts.fullProjections;
   }
   diagnostics() {
     return { ...this.counts, ownership: this.ownership.diagnostics() };
+  }
+  commandOwnership() {
+    return this.ownership.fork();
   }
   *prepare(
     genesis: ReferenceGenesis,
@@ -309,11 +352,30 @@ export class MaterializedProjection {
   ) {
     const generation = ++this.generation,
       before = this.state;
-    const suffix = before?.canAppendText
+    const suffix = before?.stableVisibility
       ? this.ownership.prepareText(actions, native, activity, variants)
       : undefined;
+    const properties =
+      !suffix && before?.stableVisibility
+        ? this.ownership.prepareProperties(actions, native, activity, variants)
+        : undefined;
+    const propertyState =
+      properties && before
+        ? this.appendProperties(
+            before,
+            properties.changes,
+            properties.value,
+            activity,
+            genesis.initialProperties,
+          )
+        : undefined;
     let state: State, commitStructure: () => void;
-    if (suffix && before) {
+    if (propertyState && properties) {
+      yield;
+      state = propertyState;
+      commitStructure = properties.commit;
+      this.counts.localPropertyProjections++;
+    } else if (suffix && before) {
       yield;
       state = this.append(
         before,
@@ -356,7 +418,7 @@ export class MaterializedProjection {
     };
   }
   canStageText(action: ActionEnvelope): boolean {
-    return this.state?.canAppendText === true && isTextRefinement(action);
+    return this.state?.stableVisibility === true && isTextRefinement(action);
   }
   /** The writer supplies its exact pre-append native draft. Derive selection only;
    * neither activity nor structural/projection roots are committed here.
@@ -385,6 +447,101 @@ export class MaterializedProjection {
       this.ownership.cancel();
     }
   }
+  canStageProperties(action: ActionEnvelope): boolean {
+    return this.state?.stableVisibility === true && isPropertyRefinement(action);
+  }
+  stageProperties(
+    actions: ActionSequence,
+    native: NativeView,
+    activity: Activity,
+    variants: PayloadIndex,
+    initial: ProjectionInput['initialProperties'],
+  ): Projection | undefined {
+    if (!this.state || !this.canStageProperties(actions.at(-1)!)) return undefined;
+    const prepared = this.ownership.prepareProperties(actions, native, activity, variants, []);
+    if (!prepared) return undefined;
+    try {
+      const state = this.appendProperties(
+        this.state,
+        prepared.changes,
+        prepared.value,
+        activity,
+        initial,
+      );
+      if (state) this.counts.stagedPropertyProjections++;
+      return state?.value;
+    } finally {
+      this.ownership.cancel();
+    }
+  }
+  private appendProperties(
+    before: State,
+    changes: readonly ActionEnvelope[],
+    ownership: OwnershipResult,
+    activity: Activity,
+    initial: ProjectionInput['initialProperties'],
+  ): State | undefined {
+    const changed = new Map<string, ViewNode>();
+    const interpretations = selectInterpretations(activity, initial);
+    for (const action of changes)
+      for (const effect of action.effects) {
+        if (effect.type !== 'SetProperties') return undefined;
+        const id = resourceKey(effect.node),
+          record = before.nodes.get(id);
+        // Normalized-away constituents must not change their representative's
+        // properties. Structural projection handles hidden/merged origins.
+        if (!record || record.node.origin.constituents.length !== 1) return undefined;
+        const node = record.node,
+          properties = interpretations.properties(effect.node);
+        if (node.info !== properties.info || node.checked !== properties.checked)
+          changed.set(
+            id,
+            Object.freeze({ ...node, info: properties.info, checked: properties.checked }),
+          );
+      }
+    const { nodes, commandOrigins, commandIndex, replaced } = replaceViews(before, changed);
+    this.counts.projectionRecordsReplaced += replaced;
+    const value: Projection = {
+      ...before.value,
+      view: Object.freeze({
+        ...before.value.view,
+        root: nodes.get(key(before.value.view.root))!.node,
+      }),
+      ownership,
+      activity: projectedActivity(activity, interpretations),
+      interpretations,
+    };
+    return { ...before, value, nodes, commandOrigins, commandIndex };
+  }
+  /** Complete pre-append selection projection over an isolated structural
+   * branch. The full projector still validates and normalizes the author result.
+   * It consumes suffix-replayed raw structure rather than reconstructing it.
+   */
+  stageStructure(
+    input: ProjectionInput,
+    activity: Activity,
+    variants: PayloadIndex,
+  ): Projection | undefined {
+    const branch = this.ownership.fork();
+    if (!branch) return undefined;
+    const action = input.actions.at(-1)!.action;
+    const touched = [
+      ...new Map(
+        action.nativeManifest.map((entry) => [resourceKey(entry.tape), entry.tape]),
+      ).values(),
+    ];
+    try {
+      const structure = finish(branch.prepare(input, activity, variants, touched));
+      const value = projectWithActivity(input, activity, structure.value);
+      this.counts.stagedStructuralProjections++;
+      return value;
+    } finally {
+      const work = branch.diagnostics();
+      this.counts.stagedStructureActionsReplayed += work.actionsReplayed;
+      this.counts.stagedStructureTapesRead += work.nativeTapeReads;
+      branch.cancel();
+    }
+  }
   private append(
     before: State,
     action: ActionEnvelope,
@@ -397,7 +554,6 @@ export class MaterializedProjection {
   ): State {
     const text = before.text.fork(),
       deletions = before.deletions.fork(),
-      nodes = before.nodes.fork(),
       changed = new Map<string, ViewNode>();
     recordDeletions(deletions, action);
     const affected = new Set<string>();
@@ -504,35 +660,15 @@ export class MaterializedProjection {
     const visible = (range: NativeTextRange) =>
       text.get(resourceKey(range.tape))?.byId.get(tokenKey(range))?.visible === true;
     for (const id of affected) {
-      const record = nodes.get(id);
+      const record = before.nodes.get(id);
       if (!record) throw new Error('Text change changed an unavailable projected owner');
       changed.set(
         id,
         projectInline(record.node, ownership, native, before.value.interpretations, visible),
       );
     }
-    const pending = new Set(changed.keys());
-    while (pending.size) {
-      const id = [...pending].sort((a, b) => nodes.get(b)!.depth - nodes.get(a)!.depth)[0];
-      pending.delete(id);
-      const record = nodes.get(id)!,
-        value = changed.get(id)!;
-      nodes.set(id, { ...record, node: value });
-      this.counts.projectionRecordsReplaced++;
-      if (record.parent) {
-        const parent = changed.get(record.parent) ?? nodes.get(record.parent)!.node;
-        changed.set(
-          record.parent,
-          Object.freeze({
-            ...parent,
-            children: Object.freeze(
-              parent.children.map((child) => (key(child) === id ? value : child)),
-            ),
-          }),
-        );
-        pending.add(record.parent);
-      }
-    }
+    const { nodes, commandIndex, commandOrigins, replaced } = replaceViews(before, changed);
+    this.counts.projectionRecordsReplaced += replaced;
     const interpretations = before.value.interpretations;
     const value: Projection = {
       view: Object.freeze({
@@ -540,15 +676,10 @@ export class MaterializedProjection {
         emptyRoot: before.value.view.emptyRoot,
       }),
       ownership,
-      activity: textActivity(groupActivity, interpretations),
+      activity: projectedActivity(groupActivity, interpretations),
       interpretations,
       visibility: textVisibility(before.tapes, text, before.value.visibility.nodes),
     };
-    const commandOrigins = before.commandOrigins.fork();
-    for (const node of changed.values())
-      commandOrigins.set(before.commandIndex.handle(node)!, node);
-    const commandIndex = { ...before.commandIndex, origins: commandOrigins };
-    registerCommandViewIndex(value.view.root, commandIndex);
     return { ...before, value, nodes, text, deletions, commandIndex, commandOrigins };
   }
   cancel(): void {

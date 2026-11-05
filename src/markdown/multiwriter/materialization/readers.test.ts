@@ -479,3 +479,57 @@ for (const size of [10, 150])
       p.close();
     }
   }, 60000);
+
+test('marker births outside transferred split-read intervals keep the committed prefix on the same tape', () => {
+  const p = open('abcdef\n\nXYZ\n\ntail'),
+    oracle = createMaterializationOracle();
+  try {
+    applied(
+      p.editor.edit(
+        { local: 'transfer', group: 1n },
+        (ctx, args) => {
+          ctx.draft.transferInlineRange({ ...args, from: 2, to: 4, at: 1, affinity: 'right' });
+          return { status: 'handled' };
+        },
+        { source: p.handle(p.nodes()[0]), destination: p.handle(p.nodes()[1]) },
+      ),
+    );
+    applied(
+      p.editor.edit({ local: 'interval-split', group: 1n }, insertParagraph, {
+        nodeId: p.handle(p.nodes()[1]),
+        from: 2,
+      }),
+    );
+    expect(p.nodes().map((n) => n.content)).toEqual(['abef', 'Xc', 'dYZ', 'tail']);
+    const before = p.document.publication.status().publication!,
+      counts = diagnostics(p).ownership;
+    const owners = before.value.ownership.assignments;
+    const full = vi.spyOn(projector, 'projectWithActivity');
+    try {
+      addMarker(p, tapeText(p, 'a'));
+      expect(full).not.toHaveBeenCalled();
+      expect(diagnostics(p).ownership).toMatchObject({
+        lastReplayFrom: 2,
+        lastReplayLength: 1,
+        nativeReaderInvalidations: counts.nativeReaderInvalidations,
+      });
+      expect(diagnostics(p).ownership.nativeIntervalSkips).toBeGreaterThan(
+        counts.nativeIntervalSkips,
+      );
+    } finally {
+      full.mockRestore();
+    }
+    expect(before.value.ownership.assignments).toEqual(owners);
+    oracle.check(p.document, p.genesis);
+    coldEqual(p);
+    const invalidations = diagnostics(p).ownership.nativeReaderInvalidations;
+    addMarker(p, tapeText(p, 'd'));
+    expect(diagnostics(p).ownership.nativeReaderInvalidations).toBe(invalidations + 1);
+    expect(p.nodes().map((n) => n.content)).toEqual(['abef', 'Xc', 'dYZ', 'tail']);
+    oracle.check(p.document, p.genesis);
+    coldEqual(p);
+  } finally {
+    oracle.destroy();
+    p.close();
+  }
+});

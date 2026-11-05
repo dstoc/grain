@@ -3,7 +3,7 @@ import { isTextRefinement, textControlTargets } from '../ownership/text-validati
 import { cellKey } from '../ownership/cells.js';
 import { PersistentMap } from './map.js';
 import type { TapeSnapshot } from '../text/types.js';
-import type { TapeId } from '../contracts.js';
+import type { TapeId, MarkerId } from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
 import { changedNativeTapes } from './native.js';
 import type { ProjectionInput } from '../projection/project.js';
@@ -15,6 +15,7 @@ import { resourceKey } from '../layout/index.js';
 import type { OwnershipCheckpoint } from './ownership.js';
 import { MaterializedCells } from './cells.js';
 import { OwnershipResources } from './resources.js';
+import { isPropertyRefinement, propertyControlTargets } from './properties.js';
 import type { ResourceWork } from './resources.js';
 import type { ActionSequence, PayloadIndex } from './activity.js';
 import { replayOwnershipSuffix, orderedOwners } from './ownership.js';
@@ -77,6 +78,7 @@ export interface CoupledWork extends ResourceWork {
   nativeMarkerFallbacks: number;
   nativeMarkerRefinements: number;
   nativeReaderInvalidations: number;
+  nativeIntervalSkips: number;
   nativeTapeReads: number;
   cellTapesIndexed: number;
   lastReplayFrom: number;
@@ -113,6 +115,7 @@ export class MaterializedOwnership {
     nativeMarkerFallbacks: 0,
     nativeMarkerRefinements: 0,
     nativeReaderInvalidations: 0,
+    nativeIntervalSkips: 0,
     nativeTapeReads: 0,
     cellTapesIndexed: 0,
     lastReplayFrom: 0,
@@ -121,7 +124,49 @@ export class MaterializedOwnership {
   diagnostics() {
     return { ...this.counts, retainedCheckpoints: this.checkpoints.length };
   }
-  *prepare(input: ProjectionInput, activity: Activity, variants: PayloadIndex) {
+  private markerReaderFrontier(
+    tape: TapeId,
+    markers: readonly MarkerId[],
+    native: NativeView,
+  ): number | undefined {
+    const key = resourceKey(tape),
+      first = this.state?.nativeReaders.get(key);
+    if (first === undefined || !markers.length) return undefined;
+    const reads = this.state?.nativeIntervals.get(key);
+    if (!reads) return first;
+    const positions = markers.map((marker) => native.marker(marker).index);
+    let frontier: number | undefined;
+    for (const read of reads) {
+      const start = native.marker(read.range.start).index,
+        end = native.marker(read.range.end).index;
+      if (positions.some((position) => start < position && position < end))
+        frontier = Math.min(frontier ?? read.count, read.count);
+    }
+    if (frontier === undefined) this.counts.nativeIntervalSkips++;
+    return frontier;
+  }
+  /** An unpublished command branch owns its generation and counters. It shares
+   * immutable roots, never the reader's mutable candidate or commit lifecycle.
+   */
+  fork(): MaterializedOwnership | undefined {
+    if (!this.state || !this.resources || !this.native) return undefined;
+    const copy = new MaterializedOwnership();
+    copy.state = this.state;
+    copy.resources = this.resources;
+    copy.native = this.native;
+    copy.order = this.order;
+    copy.checkpoints = this.checkpoints;
+    copy.markers = this.markers;
+    copy.snapshots = this.snapshots;
+    return copy;
+  }
+  *prepare(
+    input: ProjectionInput,
+    activity: Activity,
+    variants: PayloadIndex,
+    /** Exact changes in a private author draft based on this committed prefix. */
+    stagedTapes?: readonly TapeId[],
+  ) {
     const generation = ++this.generation;
     const interpretations = selectInterpretations(activity, input.initialProperties);
     let frontier = Math.min(this.order.length, input.actions.length);
@@ -148,7 +193,7 @@ export class MaterializedOwnership {
         order.push({ key, bytes, decisions });
       }
     }
-    const touched = this.native && changedNativeTapes(this.native, input.native);
+    const touched = stagedTapes ?? (this.native && changedNativeTapes(this.native, input.native));
     const continuous = touched !== undefined && this.state !== undefined;
     const snapshotCache = continuous ? this.snapshots.fork() : new PersistentMap<TapeSnapshot>();
     const markers = continuous ? this.markers.fork() : new PersistentMap<string>();
@@ -189,7 +234,15 @@ export class MaterializedOwnership {
     } else if (changed.length) {
       let readerFrontier = this.order.length;
       for (const snapshot of changed) {
-        const reader = this.state?.nativeReaders.get(resourceKey(snapshot.tape));
+        const previous = new Set(
+          this.snapshots
+            .get(resourceKey(snapshot.tape))
+            ?.parts.flatMap((part) => (part.type === 'marker' ? [resourceKey(part.marker)] : [])),
+        );
+        const added = snapshot.parts.flatMap((part) =>
+          part.type === 'marker' && !previous.has(resourceKey(part.marker)) ? [part.marker] : [],
+        );
+        const reader = this.markerReaderFrontier(snapshot.tape, added, input.native);
         if (reader !== undefined) readerFrontier = Math.min(readerFrontier, reader);
       }
       if (readerFrontier < this.order.length) this.counts.nativeReaderInvalidations++;
@@ -276,13 +329,33 @@ export class MaterializedOwnership {
     variants: PayloadIndex,
     stagedTapes?: readonly TapeId[],
   ) {
+    return this.prepareRefinement('text', actions, native, activity, variants, stagedTapes);
+  }
+  prepareProperties(
+    actions: ActionSequence,
+    native: NativeView,
+    activity: Activity,
+    variants: PayloadIndex,
+    stagedTapes?: readonly TapeId[],
+  ) {
+    return this.prepareRefinement('properties', actions, native, activity, variants, stagedTapes);
+  }
+  private prepareRefinement(
+    kind: 'text' | 'properties',
+    actions: ActionSequence,
+    native: NativeView,
+    activity: Activity,
+    variants: PayloadIndex,
+    stagedTapes?: readonly TapeId[],
+  ) {
     const action = actions.at(-1),
       prior = this.state,
       resources = this.resources;
     if (!prior || !resources || !this.native || !action || actions.length !== this.order.length + 1)
       return undefined;
-    const textAction = isTextRefinement(action);
-    const byId = textAction ? undefined : new Map<string, typeof action>();
+    const directAction = kind === 'text' ? isTextRefinement(action) : isPropertyRefinement(action);
+    if (!directAction && action.effects[0]?.type !== 'SetGroupActive') return undefined;
+    const byId = directAction ? undefined : new Map<string, typeof action>();
     for (let i = 0; i < this.order.length; i++) {
       const payload = this.order[i],
         retained = actions.at(i)!;
@@ -290,17 +363,29 @@ export class MaterializedOwnership {
         return undefined;
       byId?.set(payload.key, retained);
     }
-    const changes = textAction
+    const changes = directAction
       ? [action]
-      : textControlTargets(action, (id) => byId!.get(actionKey(id)));
+      : (kind === 'text' ? textControlTargets : propertyControlTargets)(action, (id) =>
+          byId!.get(actionKey(id)),
+        );
     if (!changes) return undefined;
-    const controlTargets = textAction
+    const controlTargets = directAction
       ? undefined
       : new Set(changes.map((target) => actionKey(target.id)));
     const touched = stagedTapes ?? changedNativeTapes(this.native, native);
-    if (!touched) return undefined;
+    if (!touched || (kind === 'properties' && touched.length)) return undefined;
     const hasMarkers = action.allocations.some((allocation) => allocation.type === 'marker');
-    if (hasMarkers && touched.some((tape) => prior.nativeReaders.has(resourceKey(tape))))
+    if (
+      hasMarkers &&
+      touched.some((tape) => {
+        const added = action.allocations.flatMap((allocation) =>
+          allocation.type === 'marker' && resourceKey(allocation.tape) === resourceKey(tape)
+            ? [allocation.id]
+            : [],
+        );
+        return this.markerReaderFrontier(tape, added, native) !== undefined;
+      })
+    )
       return undefined;
     const generation = ++this.generation;
     const snapshots = touched.map((tape) => native.snapshot(tape));
@@ -352,10 +437,10 @@ export class MaterializedOwnership {
       value,
       touched,
       changes,
-      control: !textAction,
+      control: !directAction,
       commit: () => {
         if (committed || generation !== this.generation)
-          throw new Error('Coupled text candidate is no longer current');
+          throw new Error('Coupled refinement candidate is no longer current');
         committed = true;
         this.state = state;
         this.resources = { ...resources, retained };

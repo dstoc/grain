@@ -195,14 +195,43 @@ export class CellIndex implements BoundaryIndex {
     this.locateToken(range.tape, range);
     if (!Number.isSafeInteger(range.length) || range.length <= 0)
       throw new Error('Invalid native text range');
-    const cells = this.tape(range.tape).filter((cell) =>
-      cell.fragments.some(
-        (fragment) =>
-          fragment.range.client === range.client &&
-          fragment.range.clock < range.clock + range.length &&
-          fragment.range.clock + fragment.range.length > range.clock,
-      ),
-    );
+    const client = this.native.get(resourceKey(range.tape))!.get(range.client)!;
+    let cells: readonly NativeCell[];
+    if (client.disjoint) {
+      // Native clock order and tape order can differ after later insertions.
+      // Select only overlapping clock intervals, then restore tape-cell order.
+      const intervals = client.intervals;
+      let low = 0,
+        high = intervals.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (intervals[middle].end <= range.clock) low = middle + 1;
+        else high = middle;
+      }
+      const selected = new Set<NativeCell>();
+      for (
+        let at = low;
+        at < intervals.length && intervals[at].start < range.clock + range.length;
+        at++
+      )
+        selected.add(intervals[at].cell);
+      cells = [...selected].sort(
+        (a, b) =>
+          this.markers.get(resourceKey(a.range.start))!.ordinal -
+          this.markers.get(resourceKey(b.range.start))!.ordinal,
+      );
+    } else {
+      // Overlapping diagnostic snapshots keep the original duplicate/coverage
+      // behavior. Certified native identity intervals are disjoint.
+      cells = this.tape(range.tape).filter((cell) =>
+        cell.fragments.some(
+          (fragment) =>
+            fragment.range.client === range.client &&
+            fragment.range.clock < range.clock + range.length &&
+            fragment.range.clock + fragment.range.length > range.clock,
+        ),
+      );
+    }
     let covered = 0;
     for (const cell of cells)
       for (const fragment of cell.fragments) {
