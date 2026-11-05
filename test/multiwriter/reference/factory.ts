@@ -41,7 +41,7 @@ const key = (id: ActionId) => `${id.actor}:${id.sequence}`;
 
 /** Observations contain semantic data only; native bytes use isolationState().
  * Freeze one detached observation per facts version, so repeated readonly exports
- * do not copy its whole tree. The network still takes its own detached snapshot
+ * do not copy its whole tree. The network still requests and checks a stable snapshot
  * on every read, and raw canonical/native isolation reads remain uncached.
  */
 function freezeObservation(value: Observation): Observation {
