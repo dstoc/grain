@@ -23,6 +23,7 @@ import {
 import { resourceKey } from '../../../src/markdown/multiwriter/layout/index.js';
 import { NativeFixture } from '../../../src/markdown/multiwriter/ownership/test-fixtures.js';
 import { NativeTapeCache } from '../../../src/markdown/multiwriter/text/cache.js';
+import type { TapePart } from '../../../src/markdown/multiwriter/text/cache.js';
 import { DirectionalActionProvider } from '../../../src/markdown/multiwriter/providers/adapter.js';
 import { journalBytes as measureJournal } from '../../../src/markdown/multiwriter/checkpoints/index.js';
 import { openReferenceDocument } from '../../../src/markdown/multiwriter/reference/document.js';
@@ -38,6 +39,17 @@ import type { Aliases } from './author.js';
 import { selectCarrier } from './carrier.js';
 
 const key = (id: ActionId) => `${id.actor}:${id.sequence}`;
+
+function lowerBoundIndex(entries: readonly { readonly index: number }[], position: number): number {
+  let low = 0,
+    high = entries.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (entries[middle].index < position) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
 
 interface HeadlessDocument extends AuthoringDocument {
   readonly store: ActionStore;
@@ -221,6 +233,7 @@ export function referenceFactory(
         // this native cache, so every insert on one tape sees the same snapshot.
         // Keep this local to one materialization, including fresh checkpoint opens.
         const tapeSnapshots = new Map<string, ReturnType<typeof native.snapshot>>();
+        const markerParts = new Map<string, readonly Extract<TapePart, { type: 'marker' }>[]>();
         for (const action of snapshot.ready) {
           const command = commandByName.get(name(action.id));
           if (!command) throw new Error('No immutable alias definition');
@@ -323,12 +336,15 @@ export function referenceFactory(
               if (!snap) {
                 snap = native.snapshot(birth.tape);
                 tapeSnapshots.set(tapeKey, snap);
+                markerParts.set(
+                  tapeKey,
+                  snap.parts.filter((part) => part.type === 'marker'),
+                );
               }
               const at = native.locate(birth.tape, birth.native);
-              const left = snap.parts.findLast((v) => v.type === 'marker' && v.index < at)!;
-              const right = snap.parts.find(
-                (v) => v.type === 'marker' && v.index >= at + birth.native.length,
-              )!;
+              const markers = markerParts.get(tapeKey)!;
+              const left = markers[lowerBoundIndex(markers, at) - 1];
+              const right = markers[lowerBoundIndex(markers, at + birth.native.length)];
               if (left.type === 'marker' && right.type === 'marker')
                 aliases.ranges.set(intent.cell, {
                   tape: birth.tape,
@@ -403,14 +419,44 @@ export function referenceFactory(
         const stateByName = new Map(snapshot.actions.map((v) => [name(v.id), v.readiness.state]));
         const o = p.value.ownership;
         const textEntries = [...aliases.text];
-        const tokenAlias = (range: NativeTextRange) =>
-          textEntries.find(
-            ([, v]) =>
-              resourceKey(v.tape) === resourceKey(range.tape) &&
-              v.client === range.client &&
-              v.clock <= range.clock &&
-              range.clock < v.clock + v.length,
-          )?.[0];
+        // Symbolic lookup only. Keep the original first-match rule for overlapping
+        // aliases; disjoint native ranges can use a clock index instead of rescanning
+        // every alias for every visible fragment at every observation.
+        const aliasIndex = new Map<string, { start: number; end: number; name: string }[]>();
+        for (const [name, range] of textEntries) {
+          const key = `${resourceKey(range.tape)}:${range.client}`;
+          const entries = aliasIndex.get(key) ?? [];
+          entries.push({ start: range.clock, end: range.clock + range.length, name });
+          aliasIndex.set(key, entries);
+        }
+        const overlapping = new Set<string>();
+        for (const [key, entries] of aliasIndex) {
+          entries.sort((a, b) => a.start - b.start);
+          if (entries.some((entry, i) => i > 0 && entries[i - 1].end > entry.start))
+            overlapping.add(key);
+        }
+        const tokenAlias = (range: NativeTextRange) => {
+          const key = `${resourceKey(range.tape)}:${range.client}`;
+          if (overlapping.has(key))
+            return textEntries.find(
+              ([, value]) =>
+                resourceKey(value.tape) === resourceKey(range.tape) &&
+                value.client === range.client &&
+                value.clock <= range.clock &&
+                range.clock < value.clock + value.length,
+            )?.[0];
+          const entries = aliasIndex.get(key);
+          if (!entries) return undefined;
+          let low = 0,
+            high = entries.length;
+          while (low < high) {
+            const middle = (low + high) >>> 1;
+            if (entries[middle].start <= range.clock) low = middle + 1;
+            else high = middle;
+          }
+          const entry = entries[low - 1];
+          return entry && range.clock < entry.end ? entry.name : undefined;
+        };
         const visible: Record<string, string[]> = {};
         const view: Observation['view'][number][] = [];
         const addresses: Record<string, Observation['addresses'][string]> = {};

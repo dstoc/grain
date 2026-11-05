@@ -10,6 +10,7 @@ import type {
   QuarantineReason,
 } from '../actions/store.js';
 import { encodeEnvelope } from '../actions/codec.js';
+import { sameEnvelopeData } from '../actions/equal.js';
 import { compareBytes } from '../actions/cbor.js';
 import {
   actionKey,
@@ -71,6 +72,7 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
   let branchIdentity: object | undefined;
   let busy = false;
   interface Certificate {
+    readonly envelope: ActionEnvelope;
     readonly bytes: Uint8Array;
     readonly dependencies: readonly Certificate[];
     readonly indexedDependencies?: readonly object[];
@@ -131,8 +133,11 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
         const dependencyFacts = new Map<string, Certificate>();
         for (const dependency of context.dependencies) {
           yield;
-          const encoded = encodeEnvelope(dependency),
-            prior = certificates.get(actionKey(dependency.id));
+          const prior = certificates.get(actionKey(dependency.id));
+          const encoded =
+            prior && sameEnvelopeData(dependency, prior.envelope)
+              ? prior.bytes
+              : encodeEnvelope(dependency);
           const matching = prior && compareBytes(prior.bytes, encoded) === 0;
           if (matching) dependencyFacts.set(actionKey(dependency.id), prior);
           bytes.push(matching ? prior.bytes : encoded);
@@ -203,6 +208,7 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
         dependencyCertificates.every((value): value is Certificate => value !== undefined)
       )
         certificates.set(actionKey(action.id), {
+          envelope: structuredClone(action),
           bytes: ownBytes,
           dependencies: dependencyCertificates as readonly Certificate[],
           ...(indexed ? { indexedDependencies: indexed.dependencies } : {}),
@@ -231,7 +237,18 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
     retainReadyFacts,
     retainReady: (actions: readonly ActionEnvelope[]) => {
       retainReadyFacts(
-        new Map(actions.map((action) => [actionKey(action.id), encodeEnvelope(action)])),
+        new Map(
+          actions.map((action) => {
+            const key = actionKey(action.id),
+              certificate = certificates.get(key);
+            return [
+              key,
+              certificate && sameEnvelopeData(action, certificate.envelope)
+                ? certificate.bytes
+                : encodeEnvelope(action),
+            ];
+          }),
+        ),
       );
     },
     setDecodeLimit: (operations: number) => {
