@@ -22,7 +22,7 @@ const indexedVisibility =
       layout,
       tokens,
       () => true,
-      (token) => index.tags(token),
+      (token) => index.matches(token),
     );
   };
 const tape = resource('tape', 0),
@@ -70,9 +70,13 @@ test('exact interval queries match an independent scan across overlaps, clients 
             ? [resourceKey(effect.tag)]
             : [],
         );
-        expect([...new Set(index.tags(token(clock, client, source)).map(resourceKey))]).toEqual(
-          expected,
-        );
+        expect([
+          ...new Set(
+            [...index.matches(token(clock, client, source))]
+              .sort((a, b) => a.order - b.order)
+              .map((match) => resourceKey(match.tag)),
+          ),
+        ]).toEqual(expected);
       }
   expect(work.exactDeletionRangesIndexed).toBe(600);
 });
@@ -91,13 +95,13 @@ test('disjoint retained deletion intervals need logarithmic query work, includin
     index = new ExactTextDeletions({ effects }, work);
   for (const clock of [0, 1, 2, 8191, 8192, 8193, 8194, 16380, 16381, 16382]) {
     const before = work.exactDeletionNodesVisited;
-    expect(index.tags(token(clock))).toEqual(
+    expect(index.matches(token(clock)).map((match) => match.tag)).toEqual(
       clock % 4 < 2 ? [resource('deletion', Math.floor(clock / 4))] : [],
     );
     expect(work.exactDeletionNodesVisited - before).toBeLessThanOrEqual(14);
   }
-  expect(index.tags(token(1, 8))).toEqual([]);
-  expect(index.tags(token(1, 7, otherTape))).toEqual([]);
+  expect(index.matches(token(1, 8))).toEqual([]);
+  expect(index.matches(token(1, 7, otherTape))).toEqual([]);
 });
 
 test('indexed exact tags preserve interleaved subtree tag order, duplicates and inactive controls', () => {
@@ -179,3 +183,57 @@ test('indexed exact tags preserve interleaved subtree tag order, duplicates and 
     reduceVisibility(inactive, layout, tokens),
   );
 });
+
+for (const finalKind of ['exact', 'subtree'] as const)
+  test(`reused tags follow their first covering declaration: ${finalKind}`, () => {
+    const root = resource('node', 0),
+      node = resource('node', 1),
+      a = action(A);
+    const first = resource('deletion', 0, a.id),
+      second = resource('deletion', 1, a.id);
+    const activity = reduceActivity([
+      {
+        ...a,
+        effects: [
+          { type: 'DeleteText', tag: first, observed: [{ tape, client: 7, clock: 0, length: 1 }] },
+          { type: 'DeleteText', tag: second, observed: [{ tape, client: 7, clock: 1, length: 1 }] },
+          finalKind === 'exact'
+            ? {
+                type: 'DeleteText',
+                tag: first,
+                observed: [{ tape, client: 7, clock: 1, length: 1 }],
+              }
+            : {
+                type: 'DeleteSubtree',
+                tag: first,
+                scope: {
+                  target: node,
+                  observedNodes: [node],
+                  ownedIntervals: [
+                    { tape, start: resource('marker', 0), end: resource('marker', 1) },
+                  ],
+                  joinedFlows: [],
+                  heads: [],
+                },
+              },
+        ],
+      },
+    ]);
+    const layout: VisibilityLayout = {
+      nodes: [root, node].map((id, i) => ({
+        type: 'node',
+        id,
+        role: i ? 'inline' : 'root',
+        flow: null,
+        birthSlot: i ? { parent: root, predecessor: null } : null,
+      })),
+      parent: (id) => (id === root ? null : root),
+      owner: () => node,
+      requirements: () => [],
+      contains: () => true,
+      containsBirthContent: () => false,
+    };
+    expect(indexedVisibility(counts())(activity, layout, [token(1)])).toEqual(
+      reduceVisibility(activity, layout, [token(1)]),
+    );
+  });
