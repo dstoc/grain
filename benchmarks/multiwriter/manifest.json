@@ -8,5 +8,5 @@
   "warmup": 4,
   "runs": 3,
   "workload": "literal insertion into the first paragraph; offsets repeat 0, 1, 2",
-  "scope": "incremental native materialization and command overlays; full MW-13 acceptance remains incomplete"
+  "scope": "opt-in native/readiness/activity materialization; unmanaged literal commands; managed-history/consolidation latency and full MW-13 acceptance remain incomplete"
 }
