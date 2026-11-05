@@ -35,6 +35,81 @@ function* permutations<T>(values: readonly T[]): Generator<T[]> {
       yield [values[i], ...rest];
 }
 
+for (const method of ['append', 'appendEncoded', 'applyUpdate'] as const)
+  it(`${method} surfaces listener failures after notifying every listener and preserves later collection`, () => {
+    const value = store(),
+      source = store(),
+      mirror = store();
+    const first = new Error('first listener'),
+      second = new Error('second listener');
+    const notified = vi.fn();
+    const offFirst = value.onUpdate((bytes) => {
+      bytes.fill(0);
+      throw first;
+    });
+    const offMirror = value.onUpdate((bytes) => mirror.applyUpdate(bytes));
+    const offSecond = value.onUpdate(() => {
+      throw second;
+    });
+    const offLast = value.onUpdate(notified);
+    const append = (entry: ActionEnvelope) => {
+      if (method === 'append') value.append(entry);
+      else if (method === 'appendEncoded') value.appendEncoded(encodeEnvelope(entry));
+      else {
+        source.append(entry);
+        value.applyUpdate(source.encodeUpdate());
+      }
+    };
+    const a1 = action(),
+      a2 = action(A, 2n, [a1]);
+    expect(() => append(a1)).toThrow(first);
+    expect(notified).toHaveBeenCalledTimes(1);
+    expect(ready(value)).toEqual([actionKey(a1.id)]);
+    expect(mirror.snapshot()).toEqual(value.snapshot());
+    offFirst();
+    offSecond();
+    append(a2);
+    expect(notified).toHaveBeenCalledTimes(2);
+    expect(ready(value)).toEqual([a1, a2].map((entry) => actionKey(entry.id)));
+    expect(mirror.snapshot()).toEqual(value.snapshot());
+    offMirror();
+    offLast();
+    value.destroy();
+    source.destroy();
+    mirror.destroy();
+  });
+
+it('defers failures from reentrant listener writes until their native transactions finish', () => {
+  const value = store(),
+    mirror = store();
+  const first = action(),
+    nested = action(B),
+    later = action(C);
+  let inserted = false;
+  const offWrite = value.onUpdate(() => {
+    if (!inserted) {
+      inserted = true;
+      value.append(nested);
+    }
+  });
+  const failure = new Error('listener');
+  const offFail = value.onUpdate(() => {
+    throw failure;
+  });
+  const offMirror = value.onUpdate((bytes) => mirror.applyUpdate(bytes));
+  expect(() => value.append(first)).toThrow(failure);
+  expect(ready(value)).toEqual([first, nested].map((entry) => actionKey(entry.id)));
+  expect(mirror.snapshot()).toEqual(value.snapshot());
+  offWrite();
+  offFail();
+  value.append(later);
+  expect(ready(value)).toEqual([first, nested, later].map((entry) => actionKey(entry.id)));
+  expect(mirror.snapshot()).toEqual(value.snapshot());
+  offMirror();
+  value.destroy();
+  mirror.destroy();
+});
+
 it('keeps incomplete branches pending while independent work becomes ready', () => {
   const value = store();
   const a1 = action();
