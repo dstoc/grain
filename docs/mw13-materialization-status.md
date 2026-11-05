@@ -85,6 +85,27 @@ candidate checkpoint to the reference replay. Native position reads share known
 positions until their tape changes; apply, local preparation, abort and rebuild
 invalidate those positions. Unfinished reads fail if their tape changes.
 
+At engine/test source `e5a1856088a2731baa3e2f44665aba79762ce3bc`, the
+unchanged 501-group frozen retention case completed in 279.128 seconds in isolation
+on the recorded runner, and 287.084 seconds within the unfiltered Node suite. The
+suite passed 2,222 tests with the same 194 source skips in 678.10 seconds. These are
+observations on this runner, not a portable runtime guarantee. All original
+retention assertions, cold replays, schedules and deadlines remain in place.
+
+Full reference causal closure uses fresh word-indexed relations and copies only
+layout input fields. Completed resumed readiness results are memoized at the exact
+facts version. Certification reuses encoded bytes only after exact comparison with
+its private detached preimage; differing data takes the original encoding path.
+These preimages add cache memory that still requires separate accounting.
+
+The network harness reuses detached observations only when their complete plain
+data graph is proven immutable. Mutable graphs retain the original clone path.
+Native isolation reads remain fresh. Symbolic native aliases use clock indexes,
+and retained-prefix checks compare exact stored payload bytes. These changes
+remove repeated harness work without removing observations or reference replay.
+The retained 579.595-second intermediate diagnostic was not a pinned matched
+baseline; it must not be used to claim a matched speedup ratio.
+
 This work does not yet replace full touched-tape index construction, conservative
 structural marker invalidation or general projection. The issue's profiling
 artifacts record the source and limits of each measurement.
