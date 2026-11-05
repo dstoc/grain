@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { test } from 'vitest';
 import { contractCorpus } from '../../../../test/multiwriter/corpus.js';
 import { replicaTraceAdapter } from '../../../../test/multiwriter/network.js';
 import { runContractTrace } from '../../../../test/multiwriter/trace.js';
@@ -6,8 +6,7 @@ import { referenceFactory } from '../../../../test/multiwriter/reference/factory
 import { openMaterializedDocument } from './document.js';
 import { createMaterializationOracle } from '../../../../test/multiwriter/materialization-oracle.js';
 
-const equal = (actual: unknown, expected: unknown, context: string) =>
-  expect(actual, context).toEqual(expected);
+import { equal } from '../../../../test/multiwriter/equal.js';
 
 for (const trace of contractCorpus) {
   test(

@@ -33,7 +33,22 @@ export function sameId(
 export class CellIndex implements BoundaryIndex {
   readonly cells: readonly NativeCell[];
   private readonly tapes = new Map<string, readonly NativeCell[]>();
-  private readonly markers = new Map<string, { tape: TapeId; position: number }>();
+  private readonly markers = new Map<string, { tape: TapeId; position: number; ordinal: number }>();
+
+  private readonly native = new Map<
+    string,
+    Map<
+      number,
+      {
+        readonly intervals: readonly {
+          readonly start: number;
+          readonly end: number;
+          readonly cell: NativeCell;
+        }[];
+        readonly disjoint: boolean;
+      }
+    >
+  >();
 
   constructor(snapshots: readonly TapeSnapshot[]) {
     const cells: NativeCell[] = [];
@@ -49,7 +64,11 @@ export class CellIndex implements BoundaryIndex {
         if (part.type === 'marker') {
           const markerKey = resourceKey(part.marker);
           if (this.markers.has(markerKey)) throw new Error('Duplicate native marker');
-          this.markers.set(markerKey, { tape: snapshot.tape, position });
+          this.markers.set(markerKey, {
+            tape: snapshot.tape,
+            position,
+            ordinal: tapeCells.length + Number(previous !== null),
+          });
           if (previous) {
             tapeCells.push({
               range: { tape: snapshot.tape, start: previous, end: part.marker },
@@ -71,6 +90,29 @@ export class CellIndex implements BoundaryIndex {
       }
       if (fragments.length || position !== snapshot.length || !tapeCells.length)
         throw new Error('Missing permanent tape endpoints');
+      const clients = new Map<number, { start: number; end: number; cell: NativeCell }[]>();
+      for (const cell of tapeCells)
+        for (const fragment of cell.fragments) {
+          const { client, clock, length } = fragment.range;
+          const intervals = clients.get(client) ?? [];
+          intervals.push({ start: clock, end: clock + length, cell });
+          clients.set(client, intervals);
+        }
+      this.native.set(
+        key,
+        new Map(
+          [...clients].map(([client, intervals]) => {
+            intervals.sort((a, b) => a.start - b.start);
+            return [
+              client,
+              {
+                intervals,
+                disjoint: intervals.every((entry, i) => !i || intervals[i - 1].end <= entry.start),
+              },
+            ];
+          }),
+        ),
+      );
       this.tapes.set(key, tapeCells);
       cells.push(...tapeCells);
     }
@@ -94,10 +136,9 @@ export class CellIndex implements BoundaryIndex {
     const start = this.position(range.tape, range.start);
     const end = this.position(range.tape, range.end);
     if (start >= end) throw new Error('Invalid open native range');
-    return this.tape(range.tape).filter(
-      (cell) =>
-        this.position(range.tape, cell.range.start) >= start &&
-        this.position(range.tape, cell.range.end) <= end,
+    return this.tape(range.tape).slice(
+      this.markers.get(resourceKey(range.start))!.ordinal,
+      this.markers.get(resourceKey(range.end))!.ordinal,
     );
   }
   tape(tape: TapeId): readonly NativeCell[] {
@@ -122,14 +163,31 @@ export class CellIndex implements BoundaryIndex {
       native.clock < 0
     )
       throw new Error('Invalid native text identity');
-    const cell = this.tape(tape).find((cell) =>
-      cell.fragments.some(
-        (fragment) =>
-          fragment.range.client === native.client &&
-          fragment.range.clock <= native.clock &&
-          fragment.range.clock + fragment.range.length > native.clock,
-      ),
-    );
+    const cells = this.tape(tape);
+    const client = this.native.get(resourceKey(tape))!.get(native.client);
+    let cell: NativeCell | undefined;
+    if (client?.disjoint) {
+      let low = 0,
+        high = client.intervals.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (client.intervals[middle].start <= native.clock) low = middle + 1;
+        else high = middle;
+      }
+      const interval = client.intervals[low - 1];
+      if (interval && native.clock < interval.end) cell = interval.cell;
+    } else if (client) {
+      // Preserve first-cell lookup for overlapping diagnostic snapshots. Certified
+      // native snapshots have disjoint clock intervals within each client.
+      cell = cells.find((candidate) =>
+        candidate.fragments.some(
+          (fragment) =>
+            fragment.range.client === native.client &&
+            fragment.range.clock <= native.clock &&
+            fragment.range.clock + fragment.range.length > native.clock,
+        ),
+      );
+    }
     if (!cell) throw new Error('Unknown native text identity');
     return cell;
   }

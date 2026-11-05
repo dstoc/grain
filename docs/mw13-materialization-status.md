@@ -66,6 +66,26 @@ the separate author-certification cache still need explicit eviction accounting.
 MW-18 journal consolidation remains a separate operation on the integration
 branch. A cached projection is never a canonical checkpoint.
 
+## Retention-test profiling
+
+The retention workload still compares every completed publication with independent
+full reference readiness, native reconstruction, provenance, ownership and semantic
+projection. Exact positive trace comparisons use Node's deep strict comparison,
+which handles nested binary payloads without enumerating their byte properties.
+Every mismatch falls back to the original Vitest matcher and diagnostics. No
+observation, assertion, schedule or deadline is omitted.
+
+Ephemeral marker-allocation indexes and ordinal cell ranges remove repeated scans
+within complete ownership replay. Cell identity queries use per-client native
+clock intervals. These indexes are built from each input; they do not supply a
+candidate checkpoint to the reference replay. Native position reads share known
+positions until their tape changes; apply, local preparation, abort and rebuild
+invalidate those positions. Unfinished reads fail if their tape changes.
+
+This work does not yet replace full touched-tape index construction, conservative
+structural marker invalidation or general projection. The issue's profiling
+artifacts record the source and limits of each measurement.
+
 ## Evidence and outstanding gates
 
 Focused checks cover detached exports, concurrent-resource exclusion, exact

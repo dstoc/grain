@@ -172,6 +172,7 @@ export function validateMembership(
   action: ActionEnvelope,
   allocations: readonly Allocation[],
 ): void {
+  if (!action.effects.some((effect) => effect.type === 'Interpret')) return;
   const byId = new Map(allocations.map((a) => [resourceKey(a.id), a]));
   const own = new Set(action.allocations.map((a) => resourceKey(a.id)));
   const outputs = new Set<string>(),

@@ -159,7 +159,10 @@ export class OwnershipResult {
   contains(range: RangeRef, token: { readonly tape: TapeId; readonly native: NativeId }): boolean {
     if (!sameId(range.tape, token.tape)) return false;
     const cell = this.index.locateToken(token.tape, token.native);
-    return this.index.range(range).some((member) => cellKey(member.range) === cellKey(cell.range));
+    return (
+      this.index.containsBoundary(range, cell.range.start) &&
+      this.index.containsBoundary(range, cell.range.end)
+    );
   }
   tokenOwners(token: NativeTextRange): readonly CellAssignment[] {
     return structuredClone(this.index.token(token).map((cell) => this.ownerOfCell(cell.range)));
@@ -249,8 +252,14 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
   if (tapeAllocations.length !== input.snapshots.length)
     throw new Error('Native snapshots must cover exactly the ready tapes');
   const markerAllocations = allAllocations.filter((allocation) => allocation.type === 'marker');
+  const tapeById = new Map<string, (typeof tapeAllocations)[number]>();
+  const markerById = new Map<string, (typeof markerAllocations)[number]>();
+  for (const tape of tapeAllocations)
+    if (!tapeById.has(resourceKey(tape.id))) tapeById.set(resourceKey(tape.id), tape);
+  for (const marker of markerAllocations)
+    if (!markerById.has(resourceKey(marker.id))) markerById.set(resourceKey(marker.id), marker);
   for (const snapshot of input.snapshots) {
-    const tape = tapeAllocations.find((entry) => sameId(entry.id, snapshot.tape));
+    const tape = tapeById.get(resourceKey(snapshot.tape));
     const markers = snapshot.parts.filter((part) => part.type === 'marker');
     if (
       !tape ||
@@ -259,7 +268,7 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
     )
       throw new Error('Snapshot does not match retained tape endpoints');
     for (const marker of markers) {
-      const allocation = markerAllocations.find((entry) => sameId(entry.id, marker.marker));
+      const allocation = markerById.get(resourceKey(marker.marker));
       if (
         !allocation ||
         !sameId(allocation.tape, snapshot.tape) ||

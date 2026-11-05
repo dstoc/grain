@@ -42,6 +42,7 @@ export class NativeTapeCache {
   #pending: object | null = null;
   #closed = false;
   #decodeOperations: number;
+  #positions = new WeakMap<Y.Text, WeakMap<Y.Item, number>>();
 
   constructor(decodeOperations = DEFAULT_INGEST_LIMITS.decodeOperations as number) {
     assertLimit(decodeOperations);
@@ -96,7 +97,10 @@ export class NativeTapeCache {
             this.#assertInsertion(tape, insertion.index);
             if (insertion.type === 'text') {
               assertUnicode(insertion.text);
-              if (insertion.text.length) tape.insert(insertion.index, insertion.text);
+              if (insertion.text.length) {
+                this.#positions.delete(tape);
+                tape.insert(insertion.index, insertion.text);
+              }
             } else
               this.#insertMarker(
                 insertion.tape,
@@ -205,6 +209,7 @@ export class NativeTapeCache {
           this.#doc.getText(resourceKey(tape.id));
         }
         for (const marker of inspection.markers) this.#markers.set(resourceKey(marker.id), marker);
+        for (const name of inspection.touched) this.#positions.delete(this.#doc.getText(name));
         for (const update of body.nativeInsertUpdates) Y.applyUpdate(this.#doc, update);
         this.#assertSettled(inspection.touched);
         this.#retained.set(key, body);
@@ -229,6 +234,7 @@ export class NativeTapeCache {
     }
     const old = this.#doc;
     this.#doc = candidate.#doc;
+    this.#positions = new WeakMap();
     this.#tapes = candidate.#tapes;
     this.#markers = candidate.#markers;
     this.#retained = candidate.#retained;
@@ -327,12 +333,27 @@ export class NativeTapeCache {
     // The offset itself must address a whole Unicode character or an embed.
     const offset = id.clock - item.id.clock;
     if (item.content instanceof Y.ContentString) assertTextBoundary(item.content.str, offset);
-    let index = offset;
-    for (let left = item.left; left; left = left.left) {
-      yield;
-      index += left.length;
+    const text = item.parent as Y.Text;
+    let positions = this.#positions.get(text);
+    if (!positions) {
+      positions = new WeakMap();
+      this.#positions.set(text, positions);
     }
-    return index;
+    const path: Y.Item[] = [];
+    let cursor: Y.Item | null = item;
+    while (cursor && !positions.has(cursor)) {
+      yield;
+      if (this.#positions.get(text) !== positions) throw new Error('Native lookup invalidated');
+      path.push(cursor);
+      cursor = cursor.left;
+    }
+    let index = cursor ? positions.get(cursor)! + cursor.length : 0;
+    for (let i = path.length - 1; i >= 0; i--) {
+      const entry = path[i];
+      positions.set(entry, index);
+      index += entry.length;
+    }
+    return positions.get(item)! + offset;
   }
 
   /** Exact observed IDs. Concurrent insertions inside the native interval are excluded. */
@@ -380,6 +401,7 @@ export class NativeTapeCache {
     this.#retained.clear();
     this.#tapes.clear();
     this.#markers.clear();
+    this.#positions = new WeakMap();
   }
   #open(): void {
     if (this.#closed) throw new Error('Native cache is closed');
@@ -414,7 +436,9 @@ export class NativeTapeCache {
         clock: Y.getState(this.#doc.store, this.#doc.clientID),
       },
     };
-    this.#text(tapeId).insertEmbed(index, { grainMarker: name });
+    const text = this.#text(tapeId);
+    this.#positions.delete(text);
+    text.insertEmbed(index, { grainMarker: name });
     this.#markers.set(name, marker);
     allocations.push(marker);
   }

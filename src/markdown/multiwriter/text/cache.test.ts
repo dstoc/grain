@@ -714,3 +714,53 @@ it('preserves all native text and marker IDs across seeded independent-client in
     expect(new Set(textIds).size).toBe(textIds.length);
   }
 });
+
+it('reuses native positions within a tape and invalidates them through apply, prepare, abort and rebuild', () => {
+  const g = genesis('ab');
+  const target = cache();
+  const peer = cache();
+  target.apply('G', g);
+  peer.apply('G', g);
+  const old = birth(g).native;
+  const observed = { client: old.client, clock: old.clock + 1 };
+  const locate = () => {
+    const work = target.locateSteps(tape, observed);
+    let steps = 0;
+    for (;;) {
+      const next = work.next();
+      if (next.done) return { steps, index: next.value };
+      steps++;
+    }
+  };
+  const bytes = target.encodeState();
+  expect(locate().index).toBe(2);
+  expect(locate()).toEqual({ steps: 0, index: 2 });
+  expect(target.encodeState()).toEqual(bytes);
+  const remote = publish(peer, 'remote', [{ type: 'text', tape, index: 1, text: 'R' }]);
+  target.apply('remote', remote);
+  expect(locate().index).toBe(3);
+  expect(locate()).toEqual({ steps: 0, index: 3 });
+  const draft = target.prepare('draft', [{ type: 'text', tape, index: 2, text: '😀' }]);
+  expect(locate().index).toBe(5);
+  draft.abort();
+  expect(locate().index).toBe(3);
+  target.rebuild([{ key: 'G', body: g }]);
+  expect(locate().index).toBe(2);
+  publish(target, 'local', [
+    { type: 'marker', tape, index: 2, marker: id('marker', 8, 1n), affinity: 'right' },
+  ]);
+  expect(locate().index).toBe(3);
+  expect(locate()).toEqual({ steps: 0, index: 3 });
+});
+
+it('cancels a suspended native position read when its tape changes', () => {
+  const g = genesis('ab');
+  const target = cache();
+  target.apply('G', g);
+  const observed = birth(g).native;
+  const work = target.locateSteps(tape, observed);
+  expect(work.next().done).toBe(false);
+  publish(target, 'local', [{ type: 'text', tape, index: 1, text: 'X' }]);
+  expect(() => work.next()).toThrow('Native lookup invalidated');
+  expect(target.locate(tape, observed)).toBe(2);
+});

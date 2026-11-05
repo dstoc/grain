@@ -124,7 +124,7 @@ for (const size of [10, 150, 1000])
       const plannedReads = new Set<string>();
       registerNativePlanSource(view, {
         clients: source.clients,
-        get tapes() {
+        get tapes(): never {
           throw new Error('Literal command enumerated native tapes');
         },
         native: {

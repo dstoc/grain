@@ -88,8 +88,14 @@ export function replayOwnershipSuffix(
   if (tapeAllocations.length !== input.snapshots.length)
     throw new Error('Native snapshots must cover exactly the ready tapes');
   const markerAllocations = allAllocations.filter((allocation) => allocation.type === 'marker');
+  const tapeById = new Map<string, (typeof tapeAllocations)[number]>();
+  const markerById = new Map<string, (typeof markerAllocations)[number]>();
+  for (const tape of tapeAllocations)
+    if (!tapeById.has(resourceKey(tape.id))) tapeById.set(resourceKey(tape.id), tape);
+  for (const marker of markerAllocations)
+    if (!markerById.has(resourceKey(marker.id))) markerById.set(resourceKey(marker.id), marker);
   for (const snapshot of input.snapshots) {
-    const tape = tapeAllocations.find((entry) => sameId(entry.id, snapshot.tape));
+    const tape = tapeById.get(resourceKey(snapshot.tape));
     const markers = snapshot.parts.filter((part) => part.type === 'marker');
     if (
       !tape ||
@@ -98,7 +104,7 @@ export function replayOwnershipSuffix(
     )
       throw new Error('Snapshot does not match retained tape endpoints');
     for (const marker of markers) {
-      const allocation = markerAllocations.find((entry) => sameId(entry.id, marker.marker));
+      const allocation = markerById.get(resourceKey(marker.marker));
       if (
         !allocation ||
         !sameId(allocation.tape, snapshot.tape) ||
