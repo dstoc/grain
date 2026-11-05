@@ -2,8 +2,6 @@ import type { DeletionId } from '../contracts.js';
 import { resourceKey } from '../visibility/identity.js';
 import type { Activity } from '../visibility/activity.js';
 import type { TextToken } from '../visibility/visibility.js';
-import { reduceVisibilityWithTextTags } from '../visibility/visibility.js';
-import type { reduceVisibility } from '../visibility/visibility.js';
 
 interface Interval {
   readonly start: number;
@@ -85,16 +83,4 @@ export class ExactTextDeletions {
     visit(this.tapes.get(resourceKey(token.tape))?.get(token.native.client));
     return found.sort((a, b) => a.order - b.order).map((entry) => entry.tag);
   }
-}
-
-/** Use the reference node/subtree rules with an independently indexed exact-text
- * query. No query or activity callback escapes into a publication/checkpoint.
- */
-export function indexedVisibility(work: TextDeletionWork): typeof reduceVisibility {
-  return (activity, layout, tokens, birthEnabled = () => true) => {
-    const index = new ExactTextDeletions(activity, work);
-    return reduceVisibilityWithTextTags(activity, layout, tokens, birthEnabled, (token) =>
-      index.tags(token),
-    );
-  };
 }

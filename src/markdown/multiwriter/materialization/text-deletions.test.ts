@@ -2,16 +2,29 @@ import { expect, test } from 'vitest';
 import { A, B, action, resource } from '../actions/test-fixtures.js';
 import type { ActiveEffect } from '../visibility/activity.js';
 import { reduceActivity } from '../visibility/activity.js';
-import { reduceVisibility } from '../visibility/visibility.js';
+import type { Activity } from '../visibility/activity.js';
+import { reduceVisibility, reduceVisibilityWithTextTags } from '../visibility/visibility.js';
 import type { TextToken, VisibilityLayout } from '../visibility/visibility.js';
 import { resourceKey } from '../visibility/identity.js';
-import { ExactTextDeletions, indexedVisibility } from './text-deletions.js';
+import { ExactTextDeletions } from './text-deletions.js';
 
 const counts = () => ({
   exactDeletionRangesIndexed: 0,
   exactDeletionQueries: 0,
   exactDeletionNodesVisited: 0,
 });
+const indexedVisibility =
+  (work: ReturnType<typeof counts>) =>
+  (activity: Activity, layout: VisibilityLayout, tokens: readonly TextToken[]) => {
+    const index = new ExactTextDeletions(activity, work);
+    return reduceVisibilityWithTextTags(
+      activity,
+      layout,
+      tokens,
+      () => true,
+      (token) => index.tags(token),
+    );
+  };
 const tape = resource('tape', 0),
   otherTape = resource('tape', 1);
 const token = (clock: number, client = 7, source = tape): TextToken => ({
