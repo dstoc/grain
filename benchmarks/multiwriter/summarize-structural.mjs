@@ -54,6 +54,7 @@ for (const sample of manifest.samples) {
   });
   cases.push({
     label: sample.label.replace('-attribution', ''),
+    source: sample.source ?? manifest.source,
     prefixActions: attribution.prefixActions,
     deleted: attribution.deleted,
     cold: {
@@ -69,7 +70,11 @@ const classification = existsSync(join(directory, 'classification.json'))
   ? JSON.parse(readFileSync(join(directory, 'classification.json')))
   : null;
 const coldManifest = manifest.coldSamples
-  ? { source: manifest.source, complete: manifest.complete, samples: manifest.coldSamples }
+  ? {
+      source: manifest.coldSource ?? manifest.source,
+      complete: manifest.complete,
+      samples: manifest.coldSamples,
+    }
   : existsSync(join(directory, 'cold-report.json'))
     ? JSON.parse(readFileSync(join(directory, 'cold-report.json')))
     : null;
@@ -84,7 +89,9 @@ const coldComplete =
   coldCases.length === cases.length &&
   coldCases.every((c) => c.complete);
 const result = {
-  source: manifest.source,
+  source: manifest.engineSource ?? manifest.source,
+  driverSources: manifest.driverSources ?? [manifest.source],
+  incompleteAttempts: manifest.incompleteAttempts ?? [],
   complete: manifest.complete && coldComplete,
   mainComplete: manifest.complete,
   coldComplete,
