@@ -428,7 +428,7 @@ function replayOwnershipSuffixMeasured(
     ),
   };
 }
-export function orderedLayoutInputs(input: readonly LayoutActionInput[]) {
+export function orderedLayoutInputs<T extends LayoutActionInput>(input: readonly T[]): T[] {
   countWork('ownership.fullInputEnumerated', input.length);
   countWork('ownership.fullInputMaterialized', input.length);
   countWork('ownership.fullInputDeduplicated', input.length);
