@@ -1,4 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { VisibilityWitnesses } from './visibility-witnesses.js';
+import { commandGenesis } from '../../../../test/multiwriter/commands/replica.js';
+import { action } from '../actions/test-fixtures.js';
 import { commandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import type { CommandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import { seed, change } from '../../../../test/multiwriter/projection-consumer.js';
@@ -143,6 +146,9 @@ for (const width of [8, 32, 128])
       expect(report.work['driver/projection.requirementReaderEntriesAdded']).toBe(added);
       expect(report.work['driver/projection.requirementReferencesInspected']).toBe(references);
       expect(inspected).toBeGreaterThanOrEqual(width * width);
+      expect(report.work['driver/witness.requirementFilterEntriesInspected']).toBe(width);
+      expect(report.work['driver/witness.requirementFilterEntriesCopied']).toBe(width);
+      expect(report.work['driver/witness.requirementActivityChecks']).toBe(width);
       const cold = commandReplica(p.genesis, bytes);
       try {
         const expected = cold.document.publication.status().publication!.value;
@@ -157,4 +163,43 @@ for (const width of [8, 32, 128])
       expect(before.visibility).toEqual(heldVisibility);
       expect(compareBytes(bytes, p.document.store.encodeUpdate())).toBe(0);
     });
+  });
+
+for (const width of [8, 32, 128])
+  test(`availability charges successful and unsuccessful activity searches (${width})`, () => {
+    const p = commandReplica(commandGenesis('abc'));
+    try {
+      const value = p.document.publication.status().publication!.value,
+        ownership = value.ownership,
+        root = value.view.root.origin.representative,
+        refs = Array.from({ length: width }, (_, ordinal) => ({ action: action().id, ordinal })),
+        runFlows = new Map(ownership.runLayouts.map((r) => [resourceKey(r.run), r.flow]));
+      for (const active of [0, width - 1, -1]) {
+        const input = {
+          ownership,
+          runFlows,
+          activity: {
+            ...value.activity,
+            isEffectActive: (ref: EffectRef) => ref.ordinal === active,
+          },
+          birthEnabled: () => true,
+          requirements: (node: NodeId) => (resourceKey(node) === resourceKey(root) ? refs : []),
+        };
+        const created = captureDiagnostics(() =>
+          VisibilityWitnesses.create(ownership.nodeAllocations, value.visibility, input),
+        );
+        expect(created.report.work['driver/witness.requirementActivityChecks']).toBe(
+          active === 0 ? 1 : width,
+        );
+        const prepared = captureDiagnostics(() =>
+          created.value.prepare({ ...input, nodes: [root], tags: () => [] }),
+        );
+        expect(prepared.report.work['driver/witness.requirementActivityChecks']).toBe(
+          active === 0 ? 1 : width,
+        );
+        expect(refs).toHaveLength(width);
+      }
+    } finally {
+      p.close();
+    }
   });

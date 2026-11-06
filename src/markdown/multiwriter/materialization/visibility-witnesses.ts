@@ -63,7 +63,10 @@ export class VisibilityWitnesses {
         allocation,
         parent: parent ? resourceKey(parent) : null,
         birth: birthActive(allocation, input),
-        required: input.requirements(allocation.id).some(input.activity.isEffectActive),
+        required: input.requirements(allocation.id).some((ref) => {
+          countWork('witness.requirementActivityChecks');
+          return input.activity.isEffectActive(ref);
+        }),
         content: 0,
         total: 0,
         own: false,
@@ -115,7 +118,10 @@ export class VisibilityWitnesses {
         allocation,
         parent: parent ? resourceKey(parent) : null,
         birth: birthActive(allocation, input),
-        required: input.requirements(node).some(input.activity.isEffectActive),
+        required: input.requirements(node).some((ref) => {
+          countWork('witness.requirementActivityChecks');
+          return input.activity.isEffectActive(ref);
+        }),
         content: old?.content ?? 0,
         total: old?.total ?? 0,
         own: old?.own ?? false,

@@ -51,6 +51,15 @@ import { projectionChange } from './projection-adapter.js';
 import type { ProducerBinding } from './projection-adapter.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
+function permittedRequirements(refs: readonly EffectRef[], visibility: SplitVisibility) {
+  return refs.filter((ref) => {
+    countWork('witness.requirementFilterEntriesInspected');
+    const permitted = visibility.permits(ref);
+    if (permitted) countWork('witness.requirementFilterEntriesCopied');
+    return permitted;
+  });
+}
+
 /** Seed once, then update only exact changed contributions. Until B supplies a
  * complete semantic delta, interpretation replacement/withdrawal remains a named
  * cold-index condition. The full reducer still owns subtree semantics.
@@ -468,7 +477,7 @@ function indexMeasured(
     birthEnabled: (node) =>
       value.interpretations.birthEnabled(node) && !splitVisibility.hidden(node),
     requirements: (node) =>
-      (nodeRequirements.get(resourceKey(node)) ?? []).filter((ref) => splitVisibility.permits(ref)),
+      permittedRequirements(nodeRequirements.get(resourceKey(node)) ?? [], splitVisibility),
   });
   return {
     value,
@@ -1124,9 +1133,7 @@ export class MaterializedProjection {
       activity,
       birthEnabled: (node) => interpretations.birthEnabled(node) && !splitVisibility.hidden(node),
       requirements: (node) =>
-        (nodeRequirements.get(resourceKey(node)) ?? []).filter((ref) =>
-          splitVisibility.permits(ref),
-        ),
+        permittedRequirements(nodeRequirements.get(resourceKey(node)) ?? [], splitVisibility),
       tags: (node) => coverage.index.nodeTags(node),
     });
     const destinationTapes = new Map(
@@ -1996,8 +2003,9 @@ export class MaterializedProjection {
       birthEnabled: (node) =>
         before.value.interpretations.birthEnabled(node) && !before.splitVisibility.hidden(node),
       requirements: (node) =>
-        (before.nodeRequirements.get(resourceKey(node)) ?? []).filter((ref) =>
-          before.splitVisibility.permits(ref),
+        permittedRequirements(
+          before.nodeRequirements.get(resourceKey(node)) ?? [],
+          before.splitVisibility,
         ),
       tags: (node) => subtrees.nodeTags(node),
     });

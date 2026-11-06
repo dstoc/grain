@@ -357,3 +357,12 @@ candidate roots must collect while that reader remains usable. It also verifies
 held native reads and unchanged canonical bytes. This complements closure
 inspection: the reader factory captures only its completed parent-map fork;
 entries contain semantic bucket/order facts and no activity or commit callbacks.
+
+Downstream availability retains its split-permission filter and activity search.
+`witness.requirementFilterEntriesInspected` charges every filter input;
+`witness.requirementFilterEntriesCopied` charges each retained output reference.
+`witness.requirementActivityChecks` charges every activity predicate, including
+unsuccessful searches and predicates before an early match. Cold, structural and
+text/control routes use the same filter accounting. The wide reverse-reader
+controls assert these counts, and 8/32/128-reference controls cover first/last/no
+active matches during both cold construction and private preparation.
