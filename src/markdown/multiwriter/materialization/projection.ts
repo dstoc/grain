@@ -1,13 +1,9 @@
 import { countWork, measureWork } from '../diagnostics.js';
 import { measure } from '../diagnostics.js';
-import type { ReadySequence } from '../authoring/ready-source.js';
-import type {
-  ActionEnvelope,
-  NativeTextRange,
-  TapeId,
-  DeletionId,
-  ActionId,
-} from '../contracts.js';
+import { readySource } from '../authoring/ready-source.js';
+import type { ReadySequence, ReadySource } from '../authoring/ready-source.js';
+import { actionKey } from '../actions/references.js';
+import type { ActionEnvelope, Allocation, NodeId, NativeTextRange, TapeId } from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
 import type { ActionSequence, PayloadIndex } from './activity.js';
 import type { Activity } from '../visibility/activity.js';
@@ -16,12 +12,13 @@ import type { ProjectionInput } from '../projection/project.js';
 import { projectWithActivity } from '../projection/project.js';
 import type { TextBoundary, TextFragment, ViewNode } from '../projection/types.js';
 import { textOrigin } from '../projection/types.js';
+import { registerAddressIndex } from '../projection/addresses.js';
 import { resourceKey } from '../layout/index.js';
 import type { OwnershipResult } from '../ownership/ownership.js';
 import { reconstructProvenance } from '../reference/provenance.js';
 import type { ReferenceGenesis } from '../reference/document.js';
-import { commandViewIndex, registerCommandViewIndex } from '../authoring/view-index.js';
-import type { CommandViewIndex } from '../authoring/view-index.js';
+import { registerCommandViewIndex } from '../authoring/view-index.js';
+import { IndexedCommandView } from './view-index.js';
 import { PersistentMap } from './map.js';
 import { MaterializedOwnership } from './coupled.js';
 import { isTextRefinement } from '../ownership/text-validation.js';
@@ -35,13 +32,56 @@ import { reduceVisibilityWithTextTags } from '../visibility/visibility.js';
 import type { reduceVisibility } from '../visibility/visibility.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
-/** No query or activity callback escapes into a publication/checkpoint. */
-function indexedVisibility(work: TextDeletionWork): typeof reduceVisibility {
-  return (activity, layout, tokens, birthEnabled = () => true) => {
-    const index = new ExactTextDeletions(activity, work);
-    return reduceVisibilityWithTextTags(activity, layout, tokens, birthEnabled, (token) =>
-      index.matches(token),
+/** Seed once, then update only exact changed contributions. Until B supplies a
+ * complete semantic delta, interpretation replacement/withdrawal remains a named
+ * cold-index condition. The full reducer still owns subtree semantics.
+ */
+function indexedVisibility(
+  before: State | undefined,
+  actions: Iterable<ActionEnvelope>,
+  source: ReadySource | undefined,
+  work: TextDeletionWork,
+) {
+  let index: ExactTextDeletions | undefined;
+  const reduce: typeof reduceVisibility = (activity, layout, tokens, birthEnabled = () => true) => {
+    if (!index) {
+      const additions = source && before?.source && source.additions(before.source);
+      let changes =
+        additions && !additions.actions.some((a) => a.effects.some((e) => e.type === 'Interpret'))
+          ? new Map(additions.actions.map((a) => [actionKey(a.id), a]))
+          : undefined;
+      if (changes) {
+        for (const action of additions!.actions)
+          for (const effect of action.effects)
+            if (changes && effect.type === 'SetGroupActive')
+              for (const id of effect.actions) {
+                const target = source!.get(actionKey(id));
+                if (!target) throw new Error('Control target is outside exact projection source');
+                if (target.effects.some((e) => e.type === 'Interpret')) {
+                  changes = undefined;
+                  break;
+                }
+                changes!.set(actionKey(id), target);
+              }
+      }
+      index =
+        changes && before
+          ? before.deletions.update(changes.values(), activity.isEffectActive, work)
+          : ExactTextDeletions.create(actions, activity.isEffectActive, work);
+    }
+    const order = new Map(
+      activity.effects.map((ref, i) => [`${actionKey(ref.action)}:${ref.ordinal}`, i]),
     );
+    return reduceVisibilityWithTextTags(activity, layout, tokens, birthEnabled, (token) =>
+      index!.matches(token, work, order),
+    );
+  };
+  return {
+    reduce,
+    root: () => {
+      if (!index) throw new Error('Projection did not reduce visibility');
+      return index;
+    },
   };
 }
 interface NodeRecord {
@@ -53,45 +93,25 @@ interface TextTape {
   readonly entries: readonly TextVisibility[];
   readonly byId: ReadonlyMap<string, TextVisibility>;
 }
-interface TextDeletion {
-  readonly action: ActionId;
-  readonly ordinal: number;
-  readonly tag: DeletionId;
-  readonly ranges: readonly NativeTextRange[];
-}
 interface State {
   readonly value: Projection;
   readonly nodes: PersistentMap<NodeRecord>;
   readonly text: PersistentMap<TextTape>;
-  readonly deletions: PersistentMap<readonly TextDeletion[]>;
+  readonly deletions: ExactTextDeletions;
+  readonly source?: ReadySource;
+  readonly unsafeTextTapes: ReadonlySet<string>;
+  readonly nodeVisibility: PersistentMap<Projection['visibility']['nodes'][number]>;
+  readonly nodeAllocations: PersistentMap<Extract<Allocation, { type: 'node' }>>;
+  readonly flowHomes: PersistentMap<NodeId>;
   readonly tapeNodes: PersistentMap<readonly string[]>;
   readonly tapes: readonly TapeId[];
-  readonly stableVisibility: boolean;
-  readonly commandIndex: CommandViewIndex;
-  readonly commandOrigins: PersistentMap<ViewNode>;
+  readonly commandIndex: IndexedCommandView;
   readonly propertyBase: Projection['interpretations'];
   readonly properties: PersistentMap<PresentedProperties>;
 }
 const key = (node: ViewNode) => resourceKey(node.origin.representative);
 const tokenKey = (range: { readonly client: number; readonly clock: number }) =>
   `${range.client}:${range.clock}`;
-/** Retain exact deletion declarations, including inactive ones, in semantic order. */
-function recordDeletions(index: State['deletions'], action: ActionEnvelope): void {
-  for (const [ordinal, effect] of action.effects.entries()) {
-    if (effect.type !== 'DeleteText') continue;
-    const tapes = new Set(effect.observed.map((range) => resourceKey(range.tape)));
-    for (const tape of tapes)
-      index.set(tape, [
-        ...(index.get(tape) ?? []),
-        {
-          action: action.id,
-          ordinal,
-          tag: effect.tag,
-          ranges: effect.observed.filter((range) => resourceKey(range.tape) === tape),
-        },
-      ]);
-  }
-}
 /** Escaping lazy readers own only current roots. Defining these inside append
  * would also retain that edit's lexical context and its previous State. */
 function projectedActivity(
@@ -145,13 +165,22 @@ function freeze<T>(value: T): T {
   }
   return value;
 }
-function index(value: Projection, input: ProjectionInput): State {
-  return measure('visibility-normalization', () => indexMeasured(value, input));
+function index(
+  value: Projection,
+  input: ProjectionInput,
+  deletions: ExactTextDeletions,
+  source?: ReadySource,
+): State {
+  return measure('visibility-normalization', () => indexMeasured(value, input, deletions, source));
 }
-function indexMeasured(value: Projection, input: ProjectionInput): State {
+function indexMeasured(
+  value: Projection,
+  input: ProjectionInput,
+  deletions: ExactTextDeletions,
+  source?: ReadySource,
+): State {
   const nodes = new PersistentMap<NodeRecord>(),
     text = new PersistentMap<TextTape>(),
-    deletions = new PersistentMap<readonly TextDeletion[]>(),
     tapeNodes = new PersistentMap<readonly string[]>();
   countWork('projection.fullIndexesConstructed');
   const visit = (node: ViewNode, depth: number, parent?: string) => {
@@ -180,30 +209,52 @@ function indexMeasured(value: Projection, input: ProjectionInput): State {
       entries: list,
       byId: new Map(list.map((entry) => [tokenKey(entry.token.native), entry])),
     });
-  for (const { action } of input.actions) recordDeletions(deletions, action);
-  const sourceIndex = commandViewIndex(value.view.root);
-  const commandOrigins = new PersistentMap<ViewNode>();
-  for (const [id, node] of sourceIndex.origins) commandOrigins.set(id, node);
-  const commandIndex = { ...sourceIndex, origins: commandOrigins };
+  const unsafeTextTapes = new Set<string>(),
+    nodeVisibility = new PersistentMap<Projection['visibility']['nodes'][number]>();
+  for (const entry of value.visibility.nodes) nodeVisibility.set(resourceKey(entry.node), entry);
+  // Captured subtree intervals can hide later insertions even when the tape is
+  // currently empty. Mark those resources, not the entire document.
+  for (const { effect } of value.activity.effects)
+    if (effect.type === 'DeleteSubtree')
+      for (const range of effect.scope.ownedIntervals) unsafeTextTapes.add(resourceKey(range.tape));
+  // Inherited coverage follows birth content, including transferred content.
+  // A conservative resource-local gate also covers explicitly captured nodes.
+  for (const entry of input.birthContent)
+    if (nodeVisibility.get(resourceKey(entry.node))!.tags.length)
+      for (const range of entry.intervals) unsafeTextTapes.add(resourceKey(range.tape));
+  const nodeAllocations = new PersistentMap<Extract<Allocation, { type: 'node' }>>(),
+    flowHomes = new PersistentMap<NodeId>();
+  for (const allocation of value.ownership.nodeAllocations) {
+    nodeAllocations.set(resourceKey(allocation.id), allocation);
+    if (allocation.flow && !flowHomes.has(resourceKey(allocation.flow)))
+      flowHomes.set(resourceKey(allocation.flow), allocation.id);
+    countWork('address.resourcesIndexed');
+  }
+  registerAddressIndex(value.ownership, value.visibility, {
+    allocations: nodeAllocations,
+    visibility: nodeVisibility,
+    flowHomes,
+  });
+  const commandIndex = IndexedCommandView.create(value.view.root);
   registerCommandViewIndex(value.view.root, commandIndex);
   return {
     value,
     nodes,
     text,
     deletions,
+    source,
+    unsafeTextTapes,
+    nodeVisibility,
+    nodeAllocations,
+    flowHomes,
     tapeNodes,
     commandIndex,
-    commandOrigins,
     propertyBase: value.interpretations,
     properties: new PersistentMap<PresentedProperties>(),
     tapes: [
       ...input.genesis.allocations,
       ...input.actions.flatMap(({ action }) => action.allocations),
     ].flatMap((a) => (a.type === 'tape' ? [a.id] : [])),
-    stableVisibility:
-      value.visibility.nodes.every(
-        (n) => n.available && !n.deleted && !n.suppressed && !n.scaffold,
-      ) && !value.activity.effects.some(({ effect }) => effect.type === 'DeleteSubtree'),
   };
 }
 /** Rebuild one flow's text projection while keeping its semantic children and origin.
@@ -373,16 +424,14 @@ function replaceViews(before: State, changed: Map<string, ViewNode>) {
       pending.add(record.parent);
     }
   }
-  const commandOrigins = before.commandOrigins.fork();
-  for (const node of changed.values()) commandOrigins.set(before.commandIndex.handle(node)!, node);
-  const commandIndex = { ...before.commandIndex, origins: commandOrigins };
-  registerCommandViewIndex(nodes.get(key(before.value.view.root))!.node, commandIndex);
-  return { nodes, commandOrigins, commandIndex, replaced };
+  const root = nodes.get(key(before.value.view.root))!.node;
+  const commandIndex = before.commandIndex.refine(root);
+  registerCommandViewIndex(root, commandIndex);
+  return { nodes, commandIndex, replaced };
 }
 
-/** Local projection covers text and checked/info changes on active nodes.
- * Subtree deletion, inactive births, scaffolds and structural/interpretation
- * changes use the coupled/full fallback.
+/** Resource-local text and checked/info projections. Structural changes still
+ * require the guarded producer; unrelated visibility features do not block edits.
  */
 export class MaterializedProjection {
   private readonly ownership = new MaterializedOwnership();
@@ -422,11 +471,15 @@ export class MaterializedProjection {
   ) {
     const generation = ++this.generation,
       before = this.state;
-    const suffix = before?.stableVisibility
+    let suffix = before
       ? this.ownership.prepareText(actions, native, activity, variants)
       : undefined;
+    if (suffix && before && !this.localText(before, suffix.changes)) {
+      this.ownership.cancel();
+      suffix = undefined;
+    }
     const properties =
-      !suffix && before?.stableVisibility
+      !suffix && before
         ? this.ownership.prepareProperties(actions, native, activity, variants)
         : undefined;
     const propertyState =
@@ -474,14 +527,16 @@ export class MaterializedProjection {
         this.ownership.prepare(input, activity, variants, undefined, actions),
       );
       yield;
+      const visibility = indexedVisibility(before, actions, readySource(actions), this.counts);
       const value = projectWithActivity(input, activity, {
         ...prepared.value,
-        visibility: indexedVisibility(this.counts),
+        visibility: visibility.reduce,
       });
-      state = index(value, input);
+      state = index(value, input, visibility.root(), readySource(actions));
       commitStructure = prepared.commit;
       this.counts.fullProjections++;
     }
+    state = { ...state, source: readySource(actions) };
     let committed = false;
     return {
       value: state.value,
@@ -494,8 +549,32 @@ export class MaterializedProjection {
       },
     };
   }
+  private localText(before: State, changes: readonly ActionEnvelope[]): boolean {
+    const tapes = new Set<string>();
+    for (const action of changes) {
+      for (const birth of action.nativeManifest) tapes.add(resourceKey(birth.tape));
+      for (const effect of action.effects)
+        if (effect.type === 'DeleteText')
+          for (const range of effect.observed) tapes.add(resourceKey(range.tape));
+    }
+    for (const tape of tapes) {
+      if (before.unsafeTextTapes.has(tape)) return false;
+      if (!before.tapeNodes.get(tape)?.length) return false;
+      for (const id of before.tapeNodes.get(tape) ?? []) {
+        const visibility = before.nodeVisibility.get(id);
+        if (
+          !visibility?.available ||
+          visibility.deleted ||
+          visibility.suppressed ||
+          visibility.scaffold
+        )
+          return false;
+      }
+    }
+    return true;
+  }
   canStageText(action: ActionEnvelope): boolean {
-    return this.state?.stableVisibility === true && isTextRefinement(action);
+    return !!this.state && isTextRefinement(action) && this.localText(this.state, [action]);
   }
   /** The writer supplies its exact pre-append native draft. Derive selection only;
    * neither activity nor structural/projection roots are committed here.
@@ -525,7 +604,7 @@ export class MaterializedProjection {
     }
   }
   canStageProperties(action: ActionEnvelope): boolean {
-    return this.state?.stableVisibility === true && isPropertyRefinement(action);
+    return !!this.state && isPropertyRefinement(action);
   }
   stageProperties(
     actions: ActionSequence,
@@ -602,7 +681,7 @@ export class MaterializedProjection {
             Object.freeze({ ...node, info: properties.info, checked: properties.checked }),
           );
       }
-    const { nodes, commandOrigins, commandIndex, replaced } = replaceViews(before, changed);
+    const { nodes, commandIndex, replaced } = replaceViews(before, changed);
     this.counts.projectionRecordsReplaced += replaced;
     const value: Projection = {
       ...before.value,
@@ -614,7 +693,12 @@ export class MaterializedProjection {
       activity: projectedActivity(activity, interpretations),
       interpretations,
     };
-    return { ...before, value, nodes, commandOrigins, commandIndex, propertyBase, properties };
+    registerAddressIndex(ownership, value.visibility, {
+      allocations: before.nodeAllocations,
+      visibility: before.nodeVisibility,
+      flowHomes: before.flowHomes,
+    });
+    return { ...before, value, nodes, commandIndex, propertyBase, properties };
   }
   /** Complete pre-append selection projection over an isolated structural
    * branch. The full projector still validates and normalizes the author result.
@@ -650,9 +734,15 @@ export class MaterializedProjection {
       const structure = finish(
         measureWork('coupled-replay', branch.prepare(input, activity, variants, touched, sequence)),
       );
+      const visibility = indexedVisibility(
+        this.state,
+        input.actions.map((a) => a.action),
+        sequence && readySource(sequence),
+        this.counts,
+      );
       const value = projectWithActivity(input, activity, {
         ...structure.value,
-        visibility: indexedVisibility(this.counts),
+        visibility: visibility.reduce,
       });
       this.counts.stagedStructuralProjections++;
       return value;
@@ -697,9 +787,13 @@ export class MaterializedProjection {
     control = false,
   ): State {
     const text = before.text.fork(),
-      deletions = before.deletions.fork(),
+      deletions = before.deletions.update(
+        changes,
+        (ref) =>
+          groupActivity.isEffectActive(ref) && before.value.interpretations.effectEligible(ref),
+        this.counts,
+      ),
       changed = new Map<string, ViewNode>();
-    recordDeletions(deletions, action);
     const affected = new Set<string>();
     const nativeTapes = new Set(touched.map(resourceKey));
     const semanticTapes = new Map(touched.map((tape) => [resourceKey(tape), tape]));
@@ -753,35 +847,24 @@ export class MaterializedProjection {
         range.client === entry.token.native.client &&
         range.clock <= entry.token.native.clock &&
         entry.token.native.clock < range.clock + range.length;
-      const activeDeletes =
-        newDeletes.length || control
-          ? (deletions.get(id) ?? []).filter(
-              (deletion) =>
-                groupActivity.isEffectActive(deletion) &&
-                before.value.interpretations.effectEligible(deletion),
-            )
-          : [];
       for (const [key, entry] of old) {
         if (!control && !newDeletes.some((range) => covers(range, entry))) continue;
-        const tags = new Map<string, DeletionId>();
-        for (const deletion of activeDeletes)
-          if (deletion.ranges.some((range) => covers(range, entry)))
-            tags.set(resourceKey(deletion.tag), deletion.tag);
+        const tags = deletions.tags(entry.token, this.counts);
         const insertionActive =
           control && entry.token.birth !== null
             ? groupActivity.isActive(entry.token.birth)
             : entry.insertionActive;
         if (
           entry.insertionActive === insertionActive &&
-          entry.tags.length === tags.size &&
-          entry.tags.every((tag, i) => resourceKey(tag) === [...tags.keys()][i])
+          entry.tags.length === tags.length &&
+          entry.tags.every((tag, i) => resourceKey(tag) === resourceKey(tags[i]))
         )
           continue;
         old.set(key, {
           ...entry,
           insertionActive,
-          tags: [...tags.values()],
-          visible: insertionActive && !tags.size,
+          tags,
+          visible: insertionActive && !tags.length && !entry.deletedDestination,
         });
       }
       const home = nativeTapes.has(id) && ownership.homeForTape(tape);
@@ -813,7 +896,7 @@ export class MaterializedProjection {
         projectInline(record.node, ownership, native, before.value.interpretations, visible),
       );
     }
-    const { nodes, commandIndex, commandOrigins, replaced } = replaceViews(before, changed);
+    const { nodes, commandIndex, replaced } = replaceViews(before, changed);
     this.counts.projectionRecordsReplaced += replaced;
     const interpretations = before.value.interpretations;
     const value: Projection = {
@@ -826,7 +909,12 @@ export class MaterializedProjection {
       interpretations,
       visibility: textVisibility(before.tapes, text, before.value.visibility.nodes),
     };
-    return { ...before, value, nodes, text, deletions, commandIndex, commandOrigins };
+    registerAddressIndex(ownership, value.visibility, {
+      allocations: before.nodeAllocations,
+      visibility: before.nodeVisibility,
+      flowHomes: before.flowHomes,
+    });
+    return { ...before, value, nodes, text, deletions, commandIndex };
   }
   cancel(): void {
     this.generation++;

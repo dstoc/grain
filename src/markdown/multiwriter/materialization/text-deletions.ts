@@ -1,9 +1,11 @@
 import { countWork } from '../diagnostics.js';
-import type { DeletionId } from '../contracts.js';
+import { compareEffects } from '../contracts.js';
+import type { ActionEnvelope, DeletionId, NativeTextRange } from '../contracts.js';
 import { resourceKey } from '../visibility/identity.js';
-import type { Activity } from '../visibility/activity.js';
-import type { TextToken } from '../visibility/visibility.js';
-import type { OrderedDeletionTag } from '../visibility/visibility.js';
+import type { Activity, EffectRef } from '../visibility/activity.js';
+import type { TextToken, OrderedDeletionTag } from '../visibility/visibility.js';
+import { PersistentMap, set, remove } from './map.js';
+import type { MapRoot } from './map.js';
 
 interface Interval {
   readonly start: number;
@@ -11,23 +13,41 @@ interface Interval {
   readonly tag: DeletionId;
   readonly order: number;
 }
-interface Root extends Interval {
-  readonly left?: Root;
-  readonly right?: Root;
-  readonly maximum: number;
+type Root<T extends Interval> = MapRoot<T> | undefined;
+const maxima = new WeakMap<object, number>();
+function maximum<T extends Interval>(root: Root<T>): number {
+  if (!root) return -Infinity;
+  let value = maxima.get(root);
+  if (value === undefined) {
+    value = Math.max(root.value.end, maximum(root.left), maximum(root.right));
+    maxima.set(root, value);
+    countWork('deletion.intervalNodesSummarized');
+  }
+  return value;
 }
-function build(intervals: readonly Interval[], from = 0, to = intervals.length): Root | undefined {
-  if (from === to) return undefined;
-  const at = (from + to) >>> 1,
-    left = build(intervals, from, at),
-    right = build(intervals, at + 1, to),
-    interval = intervals[at];
-  return {
-    ...interval,
-    left,
-    right,
-    maximum: Math.max(interval.end, left?.maximum ?? -Infinity, right?.maximum ?? -Infinity),
+const position = (value: number) => value.toString().padStart(16, '0');
+const pair = (tape: TextToken['tape'], client: number) => `${resourceKey(tape)}:${client}`;
+function query<T extends Interval>(root: Root<T>, clock: number, work: TextDeletionWork): T[] {
+  work.exactDeletionQueries++;
+  const found: T[] = [];
+  const visit = (node: Root<T>): void => {
+    if (!node || maximum(node) <= clock) return;
+    countWork('deletion.queryNodesVisited');
+    work.exactDeletionNodesVisited++;
+    visit(node.left);
+    if (node.value.start > clock) return;
+    if (clock < node.value.end) found.push(node.value);
+    visit(node.right);
   };
+  visit(root);
+  return found;
+}
+function insert<T extends Interval>(root: Root<T>, key: string, value: T): Root<T> {
+  const result = set(root, key, value);
+  // Summarize while preparing, so a selected-address read never pays deferred
+  // whole-index work. Unchanged child roots already have their summaries.
+  maximum(result);
+  return result;
 }
 export interface TextDeletionWork {
   exactDeletionRangesIndexed: number;
@@ -35,58 +55,181 @@ export interface TextDeletionWork {
   exactDeletionNodesVisited: number;
 }
 
-/** One immutable projection's active exact deletions. Native clocks are ordered
- * only within a tape/client pair. Subtree coverage stays in the shared semantic
- * reducer and never uses these exact insertion intervals.
- */
-export class ExactTextDeletions {
-  private readonly tapes = new Map<string, Map<number, Root | undefined>>();
+/** Cold numeric-order adapter retained for callers of the full visibility pass. */
+class NumericTextDeletions {
+  private readonly roots = new Map<string, Root<Interval>>();
   constructor(
     activity: Pick<Activity, 'effects'>,
     private readonly work: TextDeletionWork,
   ) {
     countWork('deletion.fullIndexesConstructed');
-    const tapes = new Map<string, Map<number, Interval[]>>();
     for (const [order, { effect }] of activity.effects.entries()) {
       countWork('deletion.retainedEffectsInspected');
       if (effect.type !== 'DeleteText') continue;
-      for (const range of effect.observed) {
-        const key = resourceKey(range.tape);
-        let clients = tapes.get(key);
-        if (!clients) tapes.set(key, (clients = new Map()));
-        let intervals = clients.get(range.client);
-        if (!intervals) clients.set(range.client, (intervals = []));
-        intervals.push({
-          start: range.clock,
-          end: range.clock + range.length,
-          tag: effect.tag,
-          order,
-        });
+      for (const [ordinal, range] of effect.observed.entries()) {
+        const key = pair(range.tape, range.client);
+        this.roots.set(
+          key,
+          insert(this.roots.get(key), `${position(range.clock)}:${order}:${ordinal}`, {
+            start: range.clock,
+            end: range.clock + range.length,
+            tag: effect.tag,
+            order,
+          }),
+        );
         countWork('deletion.rangesIndexed');
         work.exactDeletionRangesIndexed++;
       }
     }
-    for (const [tape, clients] of tapes) {
-      const roots = new Map<number, Root | undefined>();
-      for (const [client, intervals] of clients)
-        roots.set(client, build(intervals.sort((a, b) => a.start - b.start || a.order - b.order)));
-      this.tapes.set(tape, roots);
-    }
   }
   matches(token: Pick<TextToken, 'tape' | 'native'>): readonly OrderedDeletionTag[] {
-    this.work.exactDeletionQueries++;
-    const found: Interval[] = [],
-      clock = token.native.clock;
-    const visit = (root: Root | undefined): void => {
-      if (!root || root.maximum <= clock) return;
-      countWork('deletion.queryNodesVisited');
-      this.work.exactDeletionNodesVisited++;
-      visit(root.left);
-      if (root.start > clock) return;
-      if (clock < root.end) found.push(root);
-      visit(root.right);
+    return query(
+      this.roots.get(pair(token.tape, token.native.client)),
+      token.native.clock,
+      this.work,
+    ).map(({ tag, order }) => ({ tag, order }));
+  }
+}
+
+export interface DeletionDeclaration extends Interval {
+  /** Stable semantic order, independent of dense active-effect positions. */
+  readonly action: Pick<ActionEnvelope, 'id' | 'lamport'>;
+  readonly ordinal: number;
+}
+interface Contribution {
+  readonly declaration: DeletionDeclaration;
+  readonly ranges: readonly NativeTextRange[];
+  readonly active: boolean;
+}
+const effectKey = (ref: EffectRef) => `${ref.action.actor}:${ref.action.sequence}:${ref.ordinal}`;
+const intervalKey = (clock: number, ref: EffectRef, ordinal: number) =>
+  `${position(clock)}:${effectKey(ref)}:${ordinal}`;
+
+/** Immutable exact-deletion contributions. Updates touch only the named effects
+ * and their tape/client search paths. Inactive declarations remain available for
+ * controls; withdrawal removes only that declaration, never a reused tag group.
+ * No activity callback or previous index wrapper is retained.
+ */
+export class ExactTextDeletions {
+  private constructor(
+    private readonly roots = new PersistentMap<Root<DeletionDeclaration>>(),
+    private readonly effects = new PersistentMap<Contribution>(),
+  ) {}
+  static fromEffects(
+    activity: Pick<Activity, 'effects'>,
+    work: TextDeletionWork,
+  ): NumericTextDeletions {
+    return new NumericTextDeletions(activity, work);
+  }
+  static empty(): ExactTextDeletions {
+    return new ExactTextDeletions();
+  }
+  static create(
+    actions: Iterable<ActionEnvelope>,
+    active: (ref: EffectRef) => boolean,
+    work: TextDeletionWork,
+  ): ExactTextDeletions {
+    countWork('deletion.fullIndexesConstructed');
+    return ExactTextDeletions.empty().update(actions, active, work);
+  }
+  update(
+    actions: Iterable<ActionEnvelope>,
+    active: (ref: EffectRef) => boolean,
+    work: TextDeletionWork,
+    withdrawn: readonly EffectRef[] = [],
+  ): ExactTextDeletions {
+    const roots = this.roots.fork(),
+      effects = this.effects.fork();
+    const replace = (ref: EffectRef, after?: Contribution) => {
+      const id = effectKey(ref),
+        before = effects.get(id);
+      if (before === after) return;
+      for (const [contribution, adding] of [
+        [before, false],
+        [after, true],
+      ] as const) {
+        if (!contribution?.active) continue;
+        for (const [ordinal, range] of contribution.ranges.entries()) {
+          const tape = pair(range.tape, range.client),
+            key = intervalKey(range.clock, ref, ordinal);
+          const root = adding
+            ? insert(roots.get(tape), key, {
+                ...contribution.declaration,
+                start: range.clock,
+                end: range.clock + range.length,
+              })
+            : remove(roots.get(tape), key);
+          maximum(root);
+          roots.set(tape, root);
+          countWork(adding ? 'deletion.rangesIndexed' : 'deletion.rangesRemoved');
+          if (adding) work.exactDeletionRangesIndexed++;
+        }
+      }
+      if (after) effects.set(id, after);
+      else effects.delete(id);
+      countWork('deletion.contributionsChanged');
     };
-    visit(this.tapes.get(resourceKey(token.tape))?.get(token.native.client));
-    return found.map(({ tag, order }) => ({ tag, order }));
+    for (const ref of withdrawn) replace(ref);
+    for (const action of actions)
+      for (const [ordinal, effect] of action.effects.entries()) {
+        countWork('deletion.changedEffectsInspected');
+        if (effect.type !== 'DeleteText') continue;
+        const ref = { action: action.id, ordinal },
+          enabled = active(ref);
+        const before = effects.get(effectKey(ref));
+        // Exact payload compatibility is the producer's obligation. Still keep
+        // declaration replacement explicit for changed payloads and eligibility.
+        if (
+          before &&
+          before.ranges === effect.observed &&
+          before.active === enabled &&
+          before.declaration.action.lamport === action.lamport &&
+          resourceKey(before.declaration.tag) === resourceKey(effect.tag)
+        )
+          continue;
+        replace(ref, {
+          declaration: {
+            action: { id: action.id, lamport: action.lamport },
+            ordinal,
+            tag: effect.tag,
+            order: 0,
+            start: 0,
+            end: 0,
+          },
+          ranges: effect.observed,
+          active: enabled,
+        });
+      }
+    return new ExactTextDeletions(roots, effects);
+  }
+  declarations(
+    token: Pick<TextToken, 'tape' | 'native'>,
+    work: TextDeletionWork,
+  ): readonly DeletionDeclaration[] {
+    return query(
+      this.roots.get(pair(token.tape, token.native.client)),
+      token.native.clock,
+      work,
+    ).sort(compareEffects);
+  }
+  tags(token: Pick<TextToken, 'tape' | 'native'>, work: TextDeletionWork): readonly DeletionId[] {
+    return [
+      ...new Map(this.declarations(token, work).map(({ tag }) => [resourceKey(tag), tag])).values(),
+    ];
+  }
+  /** Bridge only at a full projection boundary; dense ranks never enter roots. */
+  matches(
+    token: Pick<TextToken, 'tape' | 'native'>,
+    work: TextDeletionWork,
+    order: ReadonlyMap<string, number>,
+  ): readonly OrderedDeletionTag[] {
+    return this.declarations(token, work).map((declaration) => {
+      const rank = order.get(
+        effectKey({ action: declaration.action.id, ordinal: declaration.ordinal }),
+      );
+      if (rank === undefined)
+        throw new Error('Exact deletion index differs from active projection');
+      return { tag: declaration.tag, order: rank };
+    });
   }
 }
