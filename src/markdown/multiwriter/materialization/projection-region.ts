@@ -29,7 +29,7 @@ function top(node: NodeId, ownership: OwnershipResult, root: string): string | u
     current = parent;
   }
 }
-export function normalizationInputs(
+function normalizationInputs(
   node: ViewNode,
   ownership: OwnershipResult,
   root: string,

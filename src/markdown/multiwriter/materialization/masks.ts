@@ -67,7 +67,3 @@ export class ExactSyntaxMasks {
     ).some((mask) => mask.end >= range.clock + range.length);
   }
 }
-/** Top-level factory avoids retaining a preparation's prior State/native roots. */
-export function withIndexedMasks(base: Interpretations, masks: ExactSyntaxMasks): Interpretations {
-  return { ...base, masked: (range) => masks.masked(range) };
-}
