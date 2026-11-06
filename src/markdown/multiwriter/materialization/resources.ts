@@ -31,10 +31,22 @@ export class OwnershipResources {
   private markers = new PersistentMap<Extract<Allocation, { type: 'marker' }>>();
   private snapshotMarkers = new PersistentMap<number>();
   private markerCount = 0;
-  private homeList: readonly HomeBinding[] = [];
+  private homeEntries = new PersistentMap<HomeBinding>();
+  private flowHomes = new PersistentMap<HomeBinding>();
+  private homeExport: { value?: readonly HomeBinding[] } = {};
   private homeIndex = new MaterializedHomes();
   get homes(): readonly HomeBinding[] {
-    return this.homeList;
+    if (!this.homeExport.value) {
+      countWork('resources.homesExported', this.homeEntries.size);
+      this.homeExport.value = [...this.homeEntries.values()];
+    }
+    return this.homeExport.value;
+  }
+  homeForFlow(flow: FlowId): HomeBinding | undefined {
+    return this.flowHomes.get(resourceKey(flow));
+  }
+  homeForTape(tape: TapeSnapshot['tape']): HomeBinding | undefined {
+    return this.homeEntries.get(resourceKey(tape));
   }
   snapshots(cache: PersistentMap<TapeSnapshot>): readonly TapeSnapshot[] {
     return [...this.tapes.values()].map((tape) => {
@@ -110,13 +122,15 @@ export class OwnershipResources {
     next.markers = this.markers.fork();
     next.snapshotMarkers = this.snapshotMarkers.fork();
     next.markerCount = this.markerCount;
-    next.homeList = this.homeList;
+    next.homeEntries = this.homeEntries.fork();
+    next.flowHomes = this.flowHomes.fork();
+    next.homeExport = this.homeExport;
     const homes = batches.flatMap(({ batch, effects }) => {
       const derived = deriveHomes(batch, effects);
       work.homesDerived += derived.length;
       return derived;
     });
-    if (homes.length) next.homeList = [...this.homeList, ...homes];
+    if (homes.length) next.homeExport = {};
     const markerTapes = new Set<string>();
     for (const { batch } of batches)
       for (const allocation of batch.allocations) {
@@ -131,6 +145,10 @@ export class OwnershipResources {
         countWork('resources.allocationsIndexed');
         work.allocationsIndexed++;
       }
+    for (const home of homes) {
+      next.homeEntries.set(resourceKey(home.cell.tape), home);
+      next.flowHomes.set(resourceKey(next.run(home.run).flow), home);
+    }
     const seenTapes = new Set<string>();
     for (const snapshot of snapshots) {
       const key = resourceKey(snapshot.tape),

@@ -1,5 +1,5 @@
 import { countWork, touchWork } from '../diagnostics.js';
-import { compareActions } from '../contracts.js';
+import { compareActions, compareEffects } from '../contracts.js';
 import type {
   Allocation,
   BlockSlot,
@@ -64,6 +64,8 @@ export class MaterializedLayout {
   private runs = new PersistentMap<RunLayout>();
   private occurrences = new PersistentMap<OrderedOccurrence>();
   private sequences = new PersistentMap<SequenceLink>();
+  /** Certified immutable follower priorities, including ghost anchors. */
+  private followerPriorities = new PersistentMap<true>();
   private joined = new PersistentMap<readonly FlowId[]>();
   private flowRanks = new PersistentMap<number>();
   private blockOwners = new PersistentMap<string>();
@@ -82,6 +84,7 @@ export class MaterializedLayout {
       this.runs = source.runs.fork();
       this.occurrences = source.occurrences.fork();
       this.sequences = source.sequences.fork();
+      this.followerPriorities = source.followerPriorities.fork();
       this.joined = source.joined.fork();
       this.flowRanks = source.flowRanks.fork();
       this.blockOwners = source.blockOwners.fork();
@@ -99,6 +102,27 @@ export class MaterializedLayout {
   fork(): MaterializedLayout {
     return new MaterializedLayout({ allocations: [], births: [] }, this);
   }
+  /** Exact root differences, including withdrawals and former locations. This
+   * does not traverse an unchanged container or export the complete layout. */
+  changes(before?: MaterializedLayout) {
+    const visit = () => countWork('layout.changeIndexNodes');
+    const changes = <T>(after: PersistentMap<T>, prior?: PersistentMap<T>) => [
+      ...after.changes(prior ?? new PersistentMap<T>(), visit),
+    ];
+    return {
+      nodes: changes(this.nodes, before?.nodes),
+      runs: changes(this.runs, before?.runs),
+      occurrences: changes(this.occurrences, before?.occurrences),
+      blocks: changes(this.blocks, before?.blocks).map(({ key, before, after }) => ({
+        key,
+        before: before?.value,
+        after: after?.value,
+      })),
+      flows: changes(this.inline, before?.inline)
+        .filter(({ before, after }) => before?.value || after?.value)
+        .map(({ key, before, after }) => ({ key, before: before?.value, after: after?.value })),
+    };
+  }
   get root(): NodeId {
     return this.rootId!;
   }
@@ -106,12 +130,15 @@ export class MaterializedLayout {
     return this.node(id);
   }
   get nodeAllocations(): readonly NodeAllocation[] {
+    countWork('layout.nodesExported', this.nodes.size);
     return [...this.nodes.values()];
   }
   get runLayouts(): readonly RunLayout[] {
+    countWork('layout.runsExported', this.runs.size);
     return [...this.runs.values()];
   }
   get flowPlacements(): readonly FlowPlacement[] {
+    countWork('layout.flowsExported', this.flows.size);
     return [...this.flows.keys()].map((key) => this.inline.get(key)!.value!);
   }
   blockPlacement(node: NodeId): BlockPlacement | null {
@@ -142,8 +169,10 @@ export class MaterializedLayout {
     this.validateSlot(slot);
     const sequence = slotSequence(slot);
     const entries: OrderedOccurrence[] = [];
-    for (let link = this.sequences.get(sequence); link; link = link.previous)
+    for (let link = this.sequences.get(sequence); link; link = link.previous) {
+      countWork('layout.sequenceAuditEntries');
       entries.push(link.occurrence);
+    }
     return orderOccurrences(entries.reverse(), buckets);
   }
   children(parent: NodeId, buckets: readonly OccurrenceBucket[] = []): readonly NodeId[] {
@@ -429,17 +458,39 @@ export class MaterializedLayout {
         if (resourceKey(this.flow(allocation.flow).home) !== resourceKey(allocation.id))
           throw new Error('Inline flow home mismatch');
       } else if (allocation.type === 'occurrence') {
+        countWork('layout.sequenceEntriesValidated');
         this.validateSlot(allocation.slot);
+        const current = this.occurrence(allocation.id);
         const previousId = allocation.slot.predecessor;
-        if (previousId && action) {
+        if (previousId) {
           const previous = this.occurrence(previousId);
           if (
+            previous.order &&
+            (!current.order ||
+              (countWork('layout.orderingComparisons'),
+              compareEffects(previous.order, current.order) > 0))
+          )
+            throw new Error('Predecessor must be earlier than its follower');
+          if (
+            action &&
             previous.order &&
             actionKey(previous.order.action.id) !== actionKey(action.id) &&
             !observes!(previous.order.action.id)
           )
             throw new Error('Predecessor is not causally available');
         }
+        const priority = JSON.stringify([
+          slotSequence(current.slot),
+          previousId && resourceKey(previousId),
+          current.order && [actionKey(current.order.action.id), current.order.ordinal],
+        ]);
+        if (this.followerPriorities.has(priority))
+          throw new Error(
+            current.order
+              ? 'Equal-priority followers must form a predecessor chain'
+              : 'Genesis occurrences must form a predecessor chain',
+          );
+        this.followerPriorities.set(priority, true);
       }
     }
     const births = new Map(batch.births.map((birth) => [resourceKey(birth.node), birth]));
@@ -458,6 +509,22 @@ export class MaterializedLayout {
         allocation.type === 'occurrence' ? [resourceKey(allocation.id)] : [],
       ),
     );
+    // Retained predecessor edges are immutable and already certified. They
+    // cannot point to a fresh ID, so new cycles lie entirely in this batch.
+    const done = new Set<string>();
+    for (const allocation of batch.allocations) {
+      if (allocation.type !== 'occurrence') continue;
+      let key: string | undefined = resourceKey(allocation.id);
+      const path = new Set<string>();
+      while (key && newOccurrences.has(key) && !done.has(key)) {
+        countWork('layout.predecessorEdgesValidated');
+        if (path.has(key)) throw new Error('Cyclic occurrence predecessors');
+        path.add(key);
+        const previous: OccurrenceId | null = this.occurrences.get(key)!.slot.predecessor;
+        key = previous ? resourceKey(previous) : undefined;
+      }
+      for (const visited of path) done.add(visited);
+    }
     for (const node of unplaced) {
       const birth = births.get(resourceKey(node.id))!;
       const occurrence = this.occurrence(birth.occurrence);
@@ -468,14 +535,18 @@ export class MaterializedLayout {
       if (this.moveBlock({ ...birth, slot: node.birthSlot! }) !== 'applied')
         throw new Error('Invalid fallback placement');
     }
-    // Only new occurrences can change an immutable sequence. Validate the whole
-    // affected sequence, including retained inactive/ineffective anchors.
+    // Initial construction retains the full independent sequence audit. Ordered
+    // reads also audit complete sequences (including ghosts and cohort buckets).
+    // Appends validate only fresh edges/priorities against the retained index.
     for (const sequence of changedSequences) {
       countWork('layout.containersRebuilt');
       touchWork('containers.rebuilt', sequence);
+      if (action) continue;
       const entries: OrderedOccurrence[] = [];
-      for (let link = this.sequences.get(sequence); link; link = link.previous)
+      for (let link = this.sequences.get(sequence); link; link = link.previous) {
+        countWork('layout.sequenceAuditEntries');
         entries.push(link.occurrence);
+      }
       orderOccurrences(entries.reverse());
     }
   }

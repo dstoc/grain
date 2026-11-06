@@ -331,16 +331,18 @@ test('discarded publication roots are collectable while held publications remain
         String.raw`
       import { commandGenesis, commandReplica } from './test/multiwriter/commands/replica.ts';
       import { insertText } from './src/editing/commands/insert-text.ts';
+      import { insertParagraph } from './src/editing/commands/insert-paragraph.ts';
+      import { joinWithPrevious } from './src/editing/commands/join-with-previous.ts';
       import { readySource } from './src/markdown/multiwriter/authoring/ready-source.ts';
       const turn = () => new Promise(resolve => setImmediate(resolve));
       const results = [];
-      for (const kind of ['text', 'info']) for (const managed of [false, true]) {
-        const peer = commandReplica(commandGenesis(kind === 'text' ? 'abc' : '\x60\x60\x60js\nabc\n\x60\x60\x60'), undefined, 'materialized');
+      for (const kind of ['text', 'info', 'structural']) for (const managed of [false, true]) {
+        const peer = commandReplica(commandGenesis(kind === 'info' ? '\x60\x60\x60js\nabc\n\x60\x60\x60' : 'abcdef'), undefined, 'materialized');
         const history = managed ? peer.editor.session('gc') : undefined;
         const property = (ctx, args) => { ctx.draft.setInfo(args.nodeId, args.info); return {status: 'handled'}; };
         const edit = i => {
-          const command = kind === 'text' ? insertText : property;
-          const input = kind === 'text' ? {nodeId: peer.handle(peer.nodes()[0]), from: 1, text: 'x'} : {nodeId: peer.handle(peer.nodes()[0]), info: String(i)};
+          const command = kind === 'structural' ? (i % 2 ? insertParagraph : joinWithPrevious) : kind === 'text' ? insertText : property;
+          const input = kind === 'structural' ? {nodeId: peer.handle(peer.nodes()[i % 2 ? 0 : 1]), from: 3} : kind === 'text' ? {nodeId: peer.handle(peer.nodes()[0]), from: 1, text: 'x'} : {nodeId: peer.handle(peer.nodes()[0]), info: String(i)};
           return history ? history.edit(command, input) : peer.editor.edit({local: 'gc', group: BigInt(i)}, command, input);
         };
         const retired = (() => {
@@ -379,7 +381,7 @@ test('discarded publication roots are collectable while held publications remain
   );
   assert.deepEqual(
     result,
-    ['text', 'info'].flatMap((kind) =>
+    ['text', 'info', 'structural'].flatMap((kind) =>
       [false, true].map((managed) => ({
         kind,
         managed,
@@ -441,8 +443,9 @@ test('short structural runner uses real managed history, independent checks, exc
     }
     const split = report.trace.find((s) => s.name === 'split').exclusive.work;
     assert.equal(split['author/draft.fullConstructionTrees'], 1);
-    assert(split['publication/ownership.fullInputEnumerated'] > 0);
-    assert(split['publication/ownership.sortInputs'] > 0);
+    assert.equal(split['publication/ownership.fullInputEnumerated'] ?? 0, 0);
+    assert.equal(split['publication/ownership.sortInputs'] ?? 0, 0);
+    assert.equal(split['publication/ownership.suffixActions'], 1);
     assert.equal(split['publication/deletion.fullIndexesConstructed'], 1);
     assert(split['publication/deletion.retainedEffectsInspected'] > 0);
     assert(split['publication/coupled.candidatesCommitted'] > 0);

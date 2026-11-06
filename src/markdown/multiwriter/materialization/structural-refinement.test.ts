@@ -19,6 +19,7 @@ import {
 import { createMaterializationOracle } from '../../../../test/multiwriter/materialization-oracle.js';
 import { deleteBlocks, insertParagraph, insertText, joinWithPrevious } from '../authoring/index.js';
 import type { LocalEditResult } from '../authoring/editor.js';
+import { control } from '../../../../test/multiwriter/commands/control.js';
 
 function applied(result: LocalEditResult) {
   expect(result.status).toBe('applied');
@@ -219,6 +220,12 @@ for (const markerCount of [1, 2])
         expect(p.nodes().map((n) => n.content)).toEqual(['a', 'bc']);
         compare(p, before);
       } else {
+        if (!('ownershipDiagnostics' in p.document)) throw new Error('Wrong reader');
+        expect(p.document.ownershipDiagnostics()).toMatchObject({
+          lastReplayFrom: 0,
+          lastReplayReason: 'reserved-content-reader',
+          nativeReaderInvalidations: 1,
+        });
         // Expected failure of the commuting hypothesis, not a production regression.
         expect(p.nodes().map((n) => n.content)).toEqual(['ac', 'b']);
         expect(text(expected, source.flow)).toBe('ac');
@@ -391,6 +398,11 @@ test('a genuinely earlier concurrent join changes a historical component and can
     const before = replay(p);
     applied(q.editor.session('join').edit(joinWithPrevious, { nodeId: q.handle(q.nodes()[1]) }));
     p.receive(q.document.store.encodeUpdate());
+    if (!('ownershipDiagnostics' in p.document)) throw new Error('Wrong reader');
+    expect(p.document.ownershipDiagnostics()).toMatchObject({
+      lastReplayFrom: 0,
+      lastReplayReason: 'changed-order-or-activity',
+    });
     oracle.check(p.document, p.genesis);
     expect(() => replay(p, before.state)).toThrow('Actions must enter in semantic order');
     q.receive(p.document.store.encodeUpdate());
@@ -400,6 +412,34 @@ test('a genuinely earlier concurrent join changes a historical component and can
     oracle.destroy();
     p.close();
     q.close();
+  }
+});
+
+test('reserved-to-ordinary changes while a split is dormant cannot certify its later reactivation', () => {
+  const { p, split, tape } = emptyHomeCounterexample(1),
+    oracle = createMaterializationOracle();
+  try {
+    const undo = control(p, split, false);
+    oracle.check(p.document, p.genesis);
+    if (!('ownershipDiagnostics' in p.document)) throw new Error('Wrong reader');
+    const before = p.document.ownershipDiagnostics();
+    markers(p, tape, 1);
+    expect(p.document.ownershipDiagnostics()).toMatchObject({
+      lastReplayFrom: 4,
+      lastReplayLength: 1,
+      nativeReaderInvalidations: before.nativeReaderInvalidations,
+    });
+    oracle.check(p.document, p.genesis);
+    control(p, split, true, undo);
+    expect(p.document.ownershipDiagnostics()).toMatchObject({
+      lastReplayFrom: 0,
+      lastReplayReason: 'changed-order-or-activity',
+    });
+    expect(p.nodes().map((n) => n.content)).toEqual(['ac', 'b']);
+    oracle.check(p.document, p.genesis);
+  } finally {
+    oracle.destroy();
+    p.close();
   }
 });
 
