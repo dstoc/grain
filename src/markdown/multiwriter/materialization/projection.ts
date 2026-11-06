@@ -484,7 +484,12 @@ function indexMeasured(
     requirementReaders,
     witnesses,
     splitVisibility,
-    normalization: indexNormalization(value.view.root, value.ownership),
+    normalization: indexNormalization(
+      value.view.root,
+      value.ownership,
+      value.interpretations,
+      nodeVisibility,
+    ),
     membership,
     inlineCount,
     interpretationIndex,
@@ -1352,6 +1357,10 @@ export class MaterializedProjection {
       touchWork('projection.rawFlowRecords', id);
     }
     for (const [parentId, parent] of changedParents) {
+      // An empty constituent can have joined this origin during cleanup across
+      // an available barrier. Giving it content changes the one-pass grouping,
+      // even when the normalized parent's own child sequence looks inert.
+      if (parent.origin.constituents.length !== 1) return regional('merged-container');
       const children: ViewNode[] = [],
         seen = new Set<string>(),
         rawChildren = new Map<string, readonly NodeId[]>();
@@ -1423,16 +1432,19 @@ export class MaterializedProjection {
     const normalization = {
       inputs: before.normalization.inputs.fork(),
       outputs: before.normalization.outputs.fork(),
+      boundaries: before.normalization.boundaries.fork(),
     };
     const nextRoot = nodes.get(rootKey)!.node,
       nextKeys = new Set(nextRoot.children.map(key));
     for (const old of root.children)
       if (!nextKeys.has(key(old))) {
-        for (const input of normalization.inputs.get(key(old)) ?? [])
+        for (const input of normalization.inputs.get(key(old)) ?? []) {
+          normalization.boundaries.delete(input);
           normalization.outputs.set(
             input,
             (normalization.outputs.get(input) ?? []).filter((id) => id !== key(old)),
           );
+        }
         normalization.inputs.delete(key(old));
       }
     for (const child of nextRoot.children)
@@ -1448,12 +1460,14 @@ export class MaterializedProjection {
           if (placement) inputs.add(resourceKey(current));
         }
         normalization.inputs.set(key(child), [...inputs]);
-        for (const input of inputs)
+        for (const input of inputs) {
+          normalization.boundaries.delete(input);
           if (!(normalization.outputs.get(input) ?? []).includes(key(child)))
             normalization.outputs.set(input, [
               ...(normalization.outputs.get(input) ?? []),
               key(child),
             ]);
+        }
       }
     return finalize({ nodes, rootOutputs, tapeNodes, membership, inlineCount, normalization });
   }

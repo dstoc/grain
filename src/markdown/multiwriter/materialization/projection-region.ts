@@ -11,9 +11,45 @@ import { countWork, touchWork } from '../diagnostics.js';
 import { PersistentMap } from './map.js';
 
 const key = (node: ViewNode) => resourceKey(node.origin.representative);
+interface Boundary {
+  readonly node: NodeId;
+  readonly type: ViewNode['type'];
+  /** A projected header/content witness remains after empty-container cleanup. */
+  readonly survives: boolean;
+}
 export interface NormalizationDependencies {
   readonly inputs: PersistentMap<readonly string[]>;
   readonly outputs: PersistentMap<readonly string[]>;
+  readonly boundaries: PersistentMap<readonly Boundary[]>;
+}
+const wrapper = (type: ViewNode['type']) => type === 'list' || type === 'block-quote';
+/** Boundary facts describe raw projection before the shared pass. In particular,
+ * available empty wrappers remain merge barriers until its cleanup stage. */
+function summarizeBoundary(
+  node: NodeId,
+  ownership: OwnershipResult,
+  interpretations: Interpretations,
+  visibility: RegionInput['visibility'],
+): readonly Boundary[] {
+  countWork('projection.normalizationBoundaryNodesInspected');
+  touchWork('projection.normalizationBoundaryNodes', resourceKey(node));
+  if (!visibility.get(resourceKey(node))?.available) return [];
+  const allocation = ownership.nodeAllocation(node),
+    type = projectedNodeType(allocation, interpretations.properties(node)),
+    children = ownership
+      .children(node)
+      .flatMap((child) => summarizeBoundary(child, ownership, interpretations, visibility));
+  if (allocation.flow && resourceKey(ownership.flowBlock(allocation.flow)) !== resourceKey(node))
+    return children;
+  return [
+    {
+      node,
+      type,
+      survives:
+        !['list', 'list-item', 'block-quote'].includes(type) || children.some((c) => c.survives),
+    },
+    ...(['paragraph', 'code-block'].includes(type) ? children : []),
+  ];
 }
 /** Raw top-level input of an origin, independent of normalized placement. */
 function top(node: NodeId, ownership: OwnershipResult, root: string): string | undefined {
@@ -33,6 +69,8 @@ function normalizationInputs(
   node: ViewNode,
   ownership: OwnershipResult,
   root: string,
+  ids: readonly string[],
+  positions: ReadonlyMap<string, number>,
 ): readonly string[] {
   const inputs = new Set<string>();
   const visit = (value: ViewNode) => {
@@ -44,22 +82,41 @@ function normalizationInputs(
     for (const child of value.children) visit(child);
   };
   visit(node);
+  // A cleaned/invisible gap can separate origin contributors. Changes there
+  // must also retract the former output, even when the gap has no own origin.
+  const members = [...inputs].map((id) => positions.get(id)!);
+  if (members.length)
+    for (let i = Math.min(...members); i <= Math.max(...members); i++) {
+      inputs.add(ids[i]);
+      countWork('projection.normalizationGapEntriesIndexed');
+    }
   return [...inputs];
 }
 export function indexNormalization(
   root: ViewNode,
   ownership: OwnershipResult,
+  interpretations: Interpretations,
+  visibility: RegionInput['visibility'],
 ): NormalizationDependencies {
   countWork('projection.normalizationIndexesConstructed');
   const inputs = new PersistentMap<readonly string[]>(),
-    outputs = new PersistentMap<readonly string[]>();
+    outputs = new PersistentMap<readonly string[]>(),
+    boundaries = new PersistentMap<readonly Boundary[]>(),
+    raw = ownership.children(root.origin.representative),
+    ids = raw.map(resourceKey),
+    positions = new Map(ids.map((id, i) => [id, i]));
+  for (const node of raw)
+    boundaries.set(
+      resourceKey(node),
+      summarizeBoundary(node, ownership, interpretations, visibility),
+    );
   for (const child of root.children) {
-    const dependencies = normalizationInputs(child, ownership, key(root));
+    const dependencies = normalizationInputs(child, ownership, key(root), ids, positions);
     inputs.set(key(child), dependencies);
     for (const input of dependencies)
       outputs.set(input, [...(outputs.get(input) ?? []), key(child)]);
   }
-  return { inputs, outputs };
+  return { inputs, outputs, boundaries };
 }
 /** Compare complete plain projection data, preserving every equal nested address
  * and origin object. Only records inside the actual normalization region enter. */
@@ -122,20 +179,17 @@ export function projectNormalizationRegion(input: RegionInput) {
     oldRaw = before.ownership.children(rootId),
     oldIds = oldRaw.map(resourceKey),
     oldPositions = new Map(oldIds.map((id, i) => [id, i])),
-    region = new Set<string>();
+    region = new Set<string>(),
+    gaps = new Set<number>();
   countWork('projection.regionRootEntriesInspected', raw.length + oldRaw.length);
   const addTop = (node: NodeId, source: OwnershipResult) => {
     const id = top(node, source, rootKey);
     // Former inputs still retract normalized outputs after moving beneath a
     // newly born wrapper. They need no current root position to be invalidated.
     if (id) region.add(id);
-    if (id) {
-      // A moved-away top-level input still invalidates its former sibling gap.
-      const oldIndex = oldPositions.get(id);
-      if (!positions.has(id) && oldIndex !== undefined)
-        for (const neighbor of [oldIds[oldIndex - 1], oldIds[oldIndex + 1]])
-          if (positions.has(neighbor)) region.add(neighbor);
-    }
+    // A moved-away input may expose a new merge at its former sibling gap.
+    const oldIndex = id ? oldPositions.get(id) : undefined;
+    if (id && oldIndex !== undefined && positions.get(id) !== oldIndex) gaps.add(oldIndex);
   };
   for (const node of input.affected) {
     addTop(node, ownership);
@@ -143,49 +197,130 @@ export function projectNormalizationRegion(input: RegionInput) {
   }
   const type = (id: NodeId) =>
     projectedNodeType(ownership.nodeAllocation(id), interpretations.properties(id));
-  const summary = (id: NodeId): { node: NodeId; type: ViewNode['type'] }[] => {
+  const boundaries = before.dependencies.boundaries.fork();
+  for (const id of oldIds) if (!positions.has(id)) boundaries.delete(id);
+  const summaries = raw.map((node, i) => {
+    const id = ids[i];
     countWork('projection.normalizationBoundarySummariesRead');
-    if (!input.visibility.get(resourceKey(id))?.available) return [];
-    const allocation = ownership.nodeAllocation(id),
-      kind = type(id);
-    if (allocation.flow && resourceKey(ownership.flowBlock(allocation.flow)) !== resourceKey(id))
-      return ownership.children(id).flatMap(summary);
-    return [
-      { node: id, type: kind },
-      ...(['paragraph', 'code-block'].includes(kind)
-        ? ownership.children(id).flatMap(summary)
-        : []),
-    ];
-  };
-  const summaries = raw.map(summary);
-  const wrapper = (id: string) => {
-    const i = positions.get(id);
-    return i !== undefined && summaries[i].some((s) => ['list', 'block-quote'].includes(s.type));
-  };
-  let expanded = true;
-  while (expanded) {
-    const size = region.size;
-    for (const id of region) {
-      for (const output of before.dependencies.outputs.get(id) ?? []) {
-        const members = (before.dependencies.inputs.get(output) ?? []).flatMap((dependency) =>
-          positions.has(dependency) ? [positions.get(dependency)!] : [],
-        );
-        // Invisible raw siblings do not separate a merged projection group.
-        // Keep their gaps in the shared pass; available empty wrappers still
-        // remain real barriers until that pass's cleanup stage.
-        if (members.length)
-          for (let i = Math.min(...members); i <= Math.max(...members); i++) region.add(ids[i]);
-      }
-      const i = positions.get(id)!;
-      for (const neighbor of [ids[i - 1], ids[i + 1]])
-        if (neighbor && wrapper(neighbor)) region.add(neighbor);
+    if (region.has(id) || !boundaries.has(id))
+      boundaries.set(id, summarizeBoundary(node, ownership, interpretations, input.visibility));
+    return boundaries.get(id)!;
+  });
+  // The shared normalizer merges equal wrapper runs BEFORE cleanup. Retain that
+  // boundary schedule, then connect empty groups only to the preceding survivor
+  // whose origins their cleanup can change. Different nonempty wrappers stop
+  // expansion. This schedules raw inputs; the shared pass still computes output.
+  const groups: { type: ViewNode['type']; from: number; to: number; survives: boolean }[] = [];
+  for (const [i, entries] of summaries.entries())
+    for (const entry of entries) {
+      countWork('projection.normalizationBoundaryEntriesInspected');
+      const previous = groups.at(-1);
+      if (previous && wrapper(entry.type) && previous.type === entry.type) {
+        previous.to = i;
+        previous.survives ||= entry.survives;
+      } else groups.push({ type: entry.type, from: i, to: i, survives: entry.survives });
     }
-    // Full section normalization joins root section ranges after moving trailing
-    // blocks. Its true dependency is the suffix from the first root section.
-    const first = summaries.findIndex((nodes) => nodes.some((n) => n.type === 'section'));
-    if (first >= 0 && [...region].some((id) => positions.get(id)! >= first))
-      for (let i = first; i < raw.length; i++) region.add(ids[i]);
-    expanded = size !== region.size;
+  const spans: { from: number; to: number }[] = [];
+  const connect = (from: number, to: number) => {
+    if (from !== to) spans.push({ from, to });
+  };
+  let survivor: (typeof groups)[number] | undefined;
+  for (const group of groups) {
+    connect(group.from, group.to);
+    if (group.survives) survivor = group;
+    else if (survivor && wrapper(group.type) && survivor.type === group.type)
+      connect(survivor.from, group.to);
+  }
+  // An arriving/restored barrier may split a previously merged output without
+  // having belonged to that output before. Locate its current gap between the
+  // old contributors, so their output is retracted as well as the new barrier.
+  for (const output of root.children) {
+    const members = (before.dependencies.inputs.get(key(output)) ?? []).flatMap((id) => {
+      countWork('projection.normalizationPriorBoundaryInputsInspected');
+      return positions.has(id) ? [positions.get(id)!] : [];
+    });
+    if (members.length) connect(Math.min(...members), Math.max(...members));
+  }
+  spans.sort((a, b) => {
+    countWork('projection.normalizationBoundaryOrderComparisons');
+    return a.from - b.from || a.to - b.to;
+  });
+  const ranges: { from: number; to: number }[] = [];
+  for (const span of spans) {
+    const previous = ranges.at(-1);
+    if (previous && previous.to >= span.from) {
+      previous.to = Math.max(previous.to, span.to);
+      countWork('projection.normalizationBoundaryRangesMerged');
+    } else ranges.push({ ...span });
+  }
+  const rangeAt: ({ from: number; to: number } | undefined)[] = [];
+  for (const range of ranges)
+    for (let i = range.from; i <= range.to; i++) {
+      rangeAt[i] = range;
+      countWork('projection.normalizationBoundaryRangeEntriesIndexed');
+    }
+  if (gaps.size) {
+    // A batch can move several adjacent barriers while retaining their root
+    // allocations. Find the former outside neighbors once, skipping the whole
+    // changed band rather than testing each moved node against another mover.
+    const left: (number | undefined)[] = [],
+      right: (number | undefined)[] = [];
+    let previous: number | undefined, next: number | undefined;
+    for (let i = 0; i < oldIds.length; i++) {
+      left[i] = previous;
+      if (positions.has(oldIds[i]) && !region.has(oldIds[i])) previous = i;
+      countWork('projection.normalizationFormerGapEntriesInspected');
+    }
+    for (let i = oldIds.length - 1; i >= 0; i--) {
+      right[i] = next;
+      if (positions.has(oldIds[i]) && !region.has(oldIds[i])) next = i;
+      countWork('projection.normalizationFormerGapEntriesInspected');
+    }
+    for (const gap of gaps) {
+      const a = left[gap] === undefined ? undefined : positions.get(oldIds[left[gap]!]),
+        b = right[gap] === undefined ? undefined : positions.get(oldIds[right[gap]!]);
+      if (a !== undefined && b !== undefined && rangeAt[a] && rangeAt[a] === rangeAt[b])
+        region.add(ids[a]);
+    }
+  }
+  const visitedOutputs = new Set<string>(),
+    visitedRanges = new Set<object>(),
+    firstSection = summaries.findIndex((nodes) => nodes.some((n) => n.type === 'section'));
+  let sectionsExpanded = false;
+  // Set iteration consumes newly added inputs. Each output/range is expanded
+  // once, including negative gap dependencies; a wide merge is not quadratic.
+  for (const id of region) {
+    for (const output of before.dependencies.outputs.get(id) ?? []) {
+      countWork('projection.normalizationOutputEdgesInspected');
+      if (visitedOutputs.has(output)) continue;
+      visitedOutputs.add(output);
+      const members = (before.dependencies.inputs.get(output) ?? []).flatMap((dependency) => {
+        countWork('projection.normalizationInputEdgesInspected');
+        return positions.has(dependency) ? [positions.get(dependency)!] : [];
+      });
+      if (members.length)
+        for (let i = Math.min(...members); i <= Math.max(...members); i++) {
+          region.add(ids[i]);
+          countWork('projection.normalizationRegionEntriesExpanded');
+        }
+    }
+    const i = positions.get(id),
+      range = i === undefined ? undefined : rangeAt[i];
+    if (range && !visitedRanges.has(range)) {
+      visitedRanges.add(range);
+      for (let j = range.from; j <= range.to; j++) {
+        region.add(ids[j]);
+        countWork('projection.normalizationRegionEntriesExpanded');
+      }
+    }
+    // Section normalization owns the suffix from the first root section.
+    if (!sectionsExpanded && firstSection >= 0 && i !== undefined && i >= firstSection) {
+      sectionsExpanded = true;
+      for (let j = firstSection; j < raw.length; j++) {
+        region.add(ids[j]);
+        countWork('projection.normalizationRegionEntriesExpanded');
+      }
+    }
   }
   const oldOutputs = new Set<string>();
   for (const id of region)
@@ -244,15 +379,15 @@ export function projectNormalizationRegion(input: RegionInput) {
     return [{ ...node, children }];
   };
   // Disconnected sibling regions have independent normalization boundaries.
-  const groups: string[][] = [];
+  const regions: string[][] = [];
   for (const id of ids)
     if (region.has(id)) {
-      const last = groups.at(-1);
+      const last = regions.at(-1);
       if (last && positions.get(last.at(-1)!)! + 1 === positions.get(id)) last.push(id);
-      else groups.push([id]);
+      else regions.push([id]);
     }
   const output: ViewNode[] = [];
-  for (const group of groups) {
+  for (const group of regions) {
     const children = group.flatMap((id) => build(raw[positions.get(id)!]));
     // A real preceding non-section sibling controls the first-section rule.
     // Its subtree is outside this connected range and is never normalized here.
@@ -306,6 +441,7 @@ export function projectNormalizationRegion(input: RegionInput) {
     dependencies = {
       inputs: before.dependencies.inputs.fork(),
       outputs: before.dependencies.outputs.fork(),
+      boundaries,
     };
   for (const node of removed) {
     const id = key(node);
@@ -317,7 +453,7 @@ export function projectNormalizationRegion(input: RegionInput) {
     dependencies.inputs.delete(id);
   }
   for (const node of outputs) {
-    const inputs = normalizationInputs(node, ownership, rootKey);
+    const inputs = normalizationInputs(node, ownership, rootKey, ids, positions);
     dependencies.inputs.set(key(node), inputs);
     for (const raw of inputs)
       dependencies.outputs.set(raw, [...(dependencies.outputs.get(raw) ?? []), key(node)]);

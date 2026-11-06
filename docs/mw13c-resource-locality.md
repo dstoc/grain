@@ -78,9 +78,14 @@ context. Other supported changes reconstruct raw inputs in connected normalizati
 regions and call the existing shared one-pass normalizer once. They do not run a
 second normalizer or normalize previously normalized output again.
 
-Region dependencies retain former as well as current raw inputs. Wrapper groups
-expand across actual raw sibling boundaries, including the barriers that exist
-before empty-container cleanup. Section dependencies include the connected root
+Region dependencies retain former as well as current raw inputs. Retained raw boundary summaries distinguish same-type merge runs from different
+nonempty wrappers. A structural change refreshes its affected top-level summaries;
+unrelated wrapper descendants are not traversed. The planner connects actual merge
+runs and cleanup-origin contributors, preserving available empty barriers until
+the shared pass removes them. It also retains invisible/cleaned gap dependencies,
+former departure gaps and new barriers between former output contributors. A batch
+of moved root barriers is handled together. Merged-container child changes use this
+regional schedule because an empty constituent can become a separate output. Section dependencies include the connected root
 section suffix and the real preceding non-section ordering context. Lifting,
 merged constituents, wrapper origins, empty-container cleanup and ordered-list
 numbering use the same shared rules and pass order as full reconstruction.
@@ -105,24 +110,24 @@ Explicit full iteration is separate and charged.
 
 ## Fallback ledger and integration boundary
 
-| Operation/input condition                                                    | Current behavior and remaining gate                                                                                                                                                                                                                                                                                                                                       |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| First open, eviction or no compatible retained source                        | Full provenance/projection/index seed; expected cold path.                                                                                                                                                                                                                                                                                                                |
-| Production structural commands through `prepare()`                           | Guarded full structural projector. The parent must wire reviewed B `StructuralChanges` into the local consumer and verify compatible source pins. C-controlled differences do not establish that gate.                                                                                                                                                                    |
-| Producer declines structural/native refinement                               | Preserve B's suffix/cold fallback and historical-reader guard. C supplies no marker-only exemption.                                                                                                                                                                                                                                                                       |
-| Exact controlled append, earlier arrival or batch                            | Local visibility, interpretation, region/view/address candidate for split/join, text, deletion, transfer, placement, lifting, interpretation, wrappers, sections, numbering and history.                                                                                                                                                                                  |
-| Structural list/item/quote edit beside consecutive nonempty mixed wrappers   | The current planner rebuilds the contiguous wrapper band. Complete output matches, but an ordinary list split also rebuilds a neighboring nonempty quote. Remaining C work: narrow actual merge/cleanup dependencies and preserve invisible gaps, available empty barriers and cleanup-origin dependencies. The bounded failing footprint probe is attached to the issue. |
-| `incompatible-base`                                                          | Base is not the current projection; reject reuse.                                                                                                                                                                                                                                                                                                                         |
-| `missing-exact-addition`                                                     | Missing exact source metadata, no addition/duplicate, withdrawal, replacement or an action outside the certified addition set; reconstruct through the owner.                                                                                                                                                                                                             |
-| `missing-semantic-action`, `missing-control-target`, `missing-packet-member` | Required body is absent from the exact candidate source; decline reuse.                                                                                                                                                                                                                                                                                                   |
-| `missing-birth-coverage`                                                     | New allocations lack complete, unique allocating-closure coverage; decline reuse.                                                                                                                                                                                                                                                                                         |
-| `unknown-resource`, `unknown-native-resource`                                | Supplied node/tape is outside retained candidate resources; decline reuse.                                                                                                                                                                                                                                                                                                |
-| `missing-root-run`, `incompatible-root-run`, `missing-destination-witnesses` | Producer metadata is incomplete or names incompatible flow lineage; decline reuse.                                                                                                                                                                                                                                                                                        |
+| Operation/input condition                                                    | Current behavior and remaining gate                                                                                                                                                                                                                                 |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| First open, eviction or no compatible retained source                        | Full provenance/projection/index seed; expected cold path.                                                                                                                                                                                                          |
+| Production structural commands through `prepare()`                           | Guarded full structural projector. The parent must wire reviewed B `StructuralChanges` into the local consumer and verify compatible source pins. C-controlled differences do not establish that gate.                                                              |
+| Producer declines structural/native refinement                               | Preserve B's suffix/cold fallback and historical-reader guard. C supplies no marker-only exemption.                                                                                                                                                                 |
+| Exact controlled append, earlier arrival or batch                            | Local visibility, interpretation, region/view/address candidate for split/join, text, deletion, transfer, placement, lifting, interpretation, wrappers, sections, numbering and history.                                                                            |
+| Structural list/item/quote edit beside consecutive nonempty mixed wrappers   | Separate regions across different nonempty wrappers. The original failing ordered-list split probe is retained as a passing regression. Quote-growth controls at 8/32/128 paragraphs rebuild seven list-region nodes and inspect seven boundary nodes at each size. |
+| `incompatible-base`                                                          | Base is not the current projection; reject reuse.                                                                                                                                                                                                                   |
+| `missing-exact-addition`                                                     | Missing exact source metadata, no addition/duplicate, withdrawal, replacement or an action outside the certified addition set; reconstruct through the owner.                                                                                                       |
+| `missing-semantic-action`, `missing-control-target`, `missing-packet-member` | Required body is absent from the exact candidate source; decline reuse.                                                                                                                                                                                             |
+| `missing-birth-coverage`                                                     | New allocations lack complete, unique allocating-closure coverage; decline reuse.                                                                                                                                                                                   |
+| `unknown-resource`, `unknown-native-resource`                                | Supplied node/tape is outside retained candidate resources; decline reuse.                                                                                                                                                                                          |
+| `missing-root-run`, `incompatible-root-run`, `missing-destination-witnesses` | Producer metadata is incomplete or names incompatible flow lineage; decline reuse.                                                                                                                                                                                  |
 
 Normalization-boundary diagnostics such as `wrapper-boundary`, `section-range`,
 `child-lifting` and `presentation` now select the shared regional schedule. They
-are not full-projection fallbacks. The mixed-wrapper row is unfinished C locality work. Zero full-projector counters
-do not establish bounded dependency regions or C completion.
+are not full-projection fallbacks. Zero full-projector counters do not establish production integration, end-to-end
+latency or C completion.
 
 ## Verification and remaining acceptance
 
@@ -134,10 +139,11 @@ concurrent births/deletion/splits, transfers and ghost slots, packet winners and
 membership, wrapper cleanup, sections, ordered numbering, paste, indent/outdent,
 all-content deletion, exact batches, earlier arrivals, cancellation and eviction.
 
-Remaining acceptance includes the mixed-wrapper locality correction above,
-consumption of reviewed B output, and production
+Remaining acceptance includes consumption of reviewed B output and production
 managed-command verification at compatible B/C source pins, including exact
-suffix/retraction/earlier-arrival evidence. The parent owns that integration.
+suffix/retraction/earlier-arrival evidence. Fresh broad correctness/static reports
+and any deadline failures remain separately source-scoped; earlier reports do not
+prove later changes. The parent owns that integration.
 Controlled fixtures build complete differences outside C timing and preserve
 independent full comparisons; they do not certify B's producer.
 
@@ -158,3 +164,38 @@ ownership facade. Every reference address still runs the independent full lookup
 no candidate index or retained checkpoint enters that path. This avoids cloning
 the same complete allocation array for each address. Oracle code, traces and test
 deadlines are unchanged.
+
+## Review corrections and work accounting
+
+Command-index refinement reads old removal and sibling-boundary positions from
+its prior publication. A destination visited first cannot overwrite the source's
+removal position. Managed regressions cover both cross-parent traversal directions,
+paragraphs and nonempty subtrees, full enumeration/rank/select, origin handles,
+parents/siblings and held prior indexes.
+
+Property invalidation compares before-state properties with the candidate
+interpretation's properties. Checked-property undo/redo is compared with a
+separately opened reference, including explicit false/true values. Full visibility
+exports use retained semantic action/allocation order for both nodes and tapes.
+Earlier allocating arrivals update ordered roots during preparation; complete
+exports remain lazy and charged. They retain neither a previous ready array nor
+a preparation callback.
+
+Boundary summaries contain raw projected types and cleanup-content witnesses.
+They schedule dependencies, not normalized output. The shared normalizer still
+owns section placement, wrapper merging, cleanup and ordered numbering. Prior
+output spans include negative gaps, and candidate spans detect a restored barrier
+between former contributors. Each dependency range/output is expanded once. The
+boundary schedule's root entries, prior inputs, sort comparisons, expanded ranges
+and affected subtree reads are charged. Old publications retain immutable roots.
+
+Birth-parent arrays have a separate cost: appending one birth under a parent with
+N retained birth siblings copies N entries. `subtree.birthSiblingEntriesCopied`
+charges that actual changed-parent work. The 8/32/128 growth controls assert those
+counts and compare later inherited coverage with the full reducer. This is not a
+constant-work claim and is separate from dense text/deletion interval queries.
+
+The regional schedule also reads/copies root-width ordering data. Its counters do
+not claim those arrays or boundary tables are constant work. Increasing an
+unrelated quote's descendants does not increase regional subtree reconstruction;
+a genuinely wide merge, section suffix or ordered numbering region remains wide.
