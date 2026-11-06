@@ -13,7 +13,7 @@ export type DiagnosticPhase =
   | 'publication'
   | 'overhead';
 export type DiagnosticPurpose = 'author' | 'staging' | 'publication' | 'driver';
-export interface DiagnosticSpan {
+interface DiagnosticSpan {
   readonly phase: DiagnosticPhase;
   readonly purpose: DiagnosticPurpose;
   readonly start: number;
