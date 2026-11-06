@@ -158,9 +158,16 @@ export function projectNormalizationRegion(input: RegionInput) {
   while (expanded) {
     const size = region.size;
     for (const id of region) {
-      for (const output of before.dependencies.outputs.get(id) ?? [])
-        for (const dependency of before.dependencies.inputs.get(output) ?? [])
-          if (positions.has(dependency)) region.add(dependency);
+      for (const output of before.dependencies.outputs.get(id) ?? []) {
+        const members = (before.dependencies.inputs.get(output) ?? []).flatMap((dependency) =>
+          positions.has(dependency) ? [positions.get(dependency)!] : [],
+        );
+        // Invisible raw siblings do not separate a merged projection group.
+        // Keep their gaps in the shared pass; available empty wrappers still
+        // remain real barriers until that pass's cleanup stage.
+        if (members.length)
+          for (let i = Math.min(...members); i <= Math.max(...members); i++) region.add(ids[i]);
+      }
       const i = positions.get(id)!;
       for (const neighbor of [ids[i - 1], ids[i + 1]])
         if (neighbor && wrapper(neighbor)) region.add(neighbor);

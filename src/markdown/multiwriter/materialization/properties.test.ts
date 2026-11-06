@@ -328,3 +328,51 @@ test('held property overlays survive later tree materialization and same-action 
     p.close();
   }
 });
+
+test('properties on a merged constituent stay local and survive wrapper separation', () => {
+  const p = open('> first\n\nseparator\n\n> second\n\ntail'),
+    oracle = createMaterializationOracle(),
+    history = p.editor.session('gap');
+  try {
+    const secondQuote = p.view().root.children[2].origin.representative;
+    expect(history.edit(deleteBlocks, { nodeIds: [p.handle(p.nodes()[1])] }).status).toBe(
+      'applied',
+    );
+    expect(p.view().root.children[0].origin.constituents).toHaveLength(2);
+    const held = p.document.publication.status().publication!,
+      tail = p.nodes().at(-1)!,
+      ready = p.document.store.snapshot().ready;
+    const base = action(undefined, 1n, ready),
+      body = {
+        ...base,
+        documentId: p.genesis.documentId,
+        genesisId: p.genesis.genesisId,
+        effects: [
+          { type: 'SetProperties' as const, node: secondQuote, values: { info: 'private' } },
+        ],
+      };
+    p.document.certifyLocal(body);
+    const full = vi.spyOn(projector, 'projectWithActivity');
+    try {
+      p.document.store.append(body);
+      p.editor.refresh();
+      expect(full).not.toHaveBeenCalled();
+    } finally {
+      full.mockRestore();
+    }
+    expect(
+      p.document.publication.status().publication!.value.interpretations.properties(secondQuote)
+        .info,
+    ).toBe('private');
+    expect(p.view().root.children[0].info).toBeNull();
+    expect(p.nodes().at(-1)).toBe(tail);
+    expect(held.value.interpretations.properties(secondQuote).info).toBeNull();
+    oracle.check(p.document, p.genesis);
+    expect(history.undo().state).toBe('applied');
+    expect(p.view().root.children[2].info).toBe('private');
+    oracle.check(p.document, p.genesis);
+  } finally {
+    oracle.destroy();
+    p.close();
+  }
+});

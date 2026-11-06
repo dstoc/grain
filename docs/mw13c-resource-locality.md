@@ -142,3 +142,17 @@ independent full comparisons; they do not certify B's producer.
 Source-scoped reports accompany the issue artifacts. No full-suite, long retention,
 uninterrupted trace, latency target, storage, browser, 10k workload or parent
 acceptance follows from these local correctness and work-count controls.
+
+Warm text witness updates apply visibility differences to retained tape counts
+when the producer certifies unchanged raw ownership. Permanent run-to-flow and
+flow-root maps avoid repeated layout lookup or lazy complete home-index creation.
+Hidden and merged property constituents also use the shared regional schedule;
+the representative keeps its own properties, while later separation exposes the
+constituent's retained values.
+
+The regional test driver keeps every address assertion. Each fresh reference
+checkpoint supplies its complete detached allocation array once to an unregistered
+ownership facade. Every reference address still runs the independent full lookup;
+no candidate index or retained checkpoint enters that path. This avoids cloning
+the same complete allocation array for each address. Oracle code, traces and test
+deadlines are unchanged.

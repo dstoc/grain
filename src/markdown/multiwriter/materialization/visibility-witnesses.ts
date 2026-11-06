@@ -1,4 +1,4 @@
-import type { NodeId, TapeId } from '../contracts.js';
+import type { NodeId, TapeId, FlowId } from '../contracts.js';
 import type { OwnershipResult } from '../ownership/ownership.js';
 import type { Activity, EffectRef } from '../visibility/activity.js';
 import type { NodeVisibility, TextVisibility, VisibilityNode } from '../visibility/visibility.js';
@@ -18,18 +18,17 @@ interface Record {
 }
 interface Inputs {
   readonly ownership: OwnershipResult;
+  readonly runFlows: { get(id: string): FlowId | undefined };
   readonly activity: Activity;
   birthEnabled(node: NodeId): boolean;
   requirements(node: NodeId): readonly EffectRef[];
 }
-interface Changes extends Inputs {
+interface Changes extends Omit<Inputs, 'runFlows'> {
   /** Changed allocations, raw placements, birth activity, tags or requirements. */
   readonly nodes: readonly NodeId[];
   tags(node: NodeId): readonly NodeVisibility['tags'][number][];
 }
-const ownerKey = (ownership: OwnershipResult, entry: TextVisibility) =>
-  resourceKey(ownership.flowBlock(ownership.runLayout(ownership.owner(entry.token).run).flow));
-const birthActive = (node: VisibilityNode, input: Inputs) =>
+const birthActive = (node: VisibilityNode, input: Omit<Inputs, 'runFlows'>) =>
   (node.id.birth.type === 'genesis' || input.activity.isActive(node.id.birth.action)) &&
   input.birthEnabled(node.id);
 const sameTags = (a: NodeVisibility['tags'], b: NodeVisibility['tags']) =>
@@ -79,7 +78,8 @@ export class VisibilityWitnesses {
       tapes.set(id, list);
     }
     const dirty = new Set(result.records.keys());
-    for (const [id, entries] of tapes) result.replaceText(id, entries, input.ownership, dirty);
+    for (const [id, entries] of tapes)
+      result.replaceText(id, entries, input.ownership, dirty, input.runFlows);
     result.finish(dirty);
     // Keep the full reducer's records (including weak derivation suppression).
     // A separate caller certificate is needed before updating such a derivation.
@@ -187,13 +187,28 @@ export class VisibilityWitnesses {
     entries: readonly TextVisibility[],
     ownership: OwnershipResult,
     dirty: Set<string>,
+    runFlows: Inputs['runFlows'],
+    previous?: ReadonlyMap<string, TextVisibility>,
   ): void {
-    const counts = new Map<string, number>();
+    const counts = previous ? new Map(this.tapeWitnesses.get(tape)) : new Map<string, number>(),
+      owners = new Map<string, string>();
     for (const entry of entries) {
       countWork('witness.textEntriesInspected');
-      if (!entry.visible) continue;
-      const id = ownerKey(ownership, entry);
-      counts.set(id, (counts.get(id) ?? 0) + 1);
+      const old = previous?.get(`${entry.token.native.client}:${entry.token.native.clock}`);
+      const difference = Number(entry.visible) - Number(old?.visible ?? false);
+      if (!difference) continue;
+      const run = resourceKey(ownership.owner(entry.token).run);
+      let id = owners.get(run);
+      if (!id) {
+        const flow = runFlows.get(run);
+        if (!flow) throw new Error('Witness owner lacks a retained run flow');
+        id = resourceKey(ownership.flowBlock(flow));
+        owners.set(run, id);
+      }
+      const count = (counts.get(id) ?? 0) + difference;
+      if (count < 0) throw new Error('Negative retained text witness count');
+      if (count) counts.set(id, count);
+      else counts.delete(id);
     }
     const before = this.tapeWitnesses.get(tape);
     for (const id of new Set([...(before?.keys() ?? []), ...counts.keys()])) {
@@ -259,6 +274,10 @@ export class VisibilityWitnesses {
     text: { get(id: string): { readonly entries: readonly TextVisibility[] } | undefined },
     ownership: OwnershipResult,
     dirty: Set<string>,
+    runFlows: Inputs['runFlows'],
+    previous?: {
+      get(id: string): { readonly byId: ReadonlyMap<string, TextVisibility> } | undefined;
+    },
   ) {
     for (const tape of tapes)
       this.replaceText(
@@ -266,6 +285,8 @@ export class VisibilityWitnesses {
         text.get(resourceKey(tape))?.entries ?? [],
         ownership,
         dirty,
+        runFlows,
+        previous?.get(resourceKey(tape))?.byId,
       );
   }
 }

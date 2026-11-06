@@ -48,6 +48,18 @@ function consume(
   if (result.state !== 'prepared') throw new Error(result.reason);
   const cold = commandReplica(p.genesis, bytes, 'reference'),
     reference = cold.document.publication.status().publication!.value;
+  // This fresh reference checkpoint is immutable. Preserve every full lookup
+  // while avoiding a detached clone of its complete allocation array per address.
+  // The proxy has no registered candidate index and binds all native/ownership
+  // methods to the independent reference. Nothing is retained across checkpoints.
+  const allocations = reference.ownership.nodeAllocations;
+  const addressOwnership = new Proxy(reference.ownership, {
+    get(target, property) {
+      if (property === 'nodeAllocations') return allocations;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
   try {
     expect(result.value.view).toEqual(reference.view);
     expect(result.value.visibility).toEqual(reference.visibility);
@@ -70,7 +82,7 @@ function consume(
       for (const boundary of node.boundaries)
         expect(
           resolveAddress(boundary.address, result.value.ownership, result.value.visibility),
-        ).toEqual(resolveAddress(boundary.address, reference.ownership, reference.visibility));
+        ).toEqual(resolveAddress(boundary.address, addressOwnership, reference.visibility));
       for (const child of node.children) check(child);
     };
     check(result.value.view.root);
