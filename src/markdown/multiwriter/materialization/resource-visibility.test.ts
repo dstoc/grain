@@ -1,5 +1,6 @@
 import { expect, test, vi } from 'vitest';
 import { commandGenesis, commandReplica } from '../../../../test/multiwriter/commands/replica.js';
+import { control } from '../../../../test/multiwriter/commands/control.js';
 import { createMaterializationOracle } from '../../../../test/multiwriter/materialization-oracle.js';
 import { insertText } from '../../../editing/commands/insert-text.js';
 import { insertParagraph } from '../../../editing/commands/insert-paragraph.js';
@@ -110,3 +111,54 @@ test('split/join and their history retain exact contributions without rebuilding
     p.close();
   }
 });
+
+for (const feature of ['suppressed', 'scaffold'] as const)
+  test(`a distant ${feature} birth does not force full projection for real text commands and history`, () => {
+    const p = commandReplica(
+      commandGenesis(Array.from({ length: 10 }, (_, i) => `p${i}abcdef`).join('\n\n')),
+      undefined,
+      'materialized',
+    );
+    const oracle = createMaterializationOracle();
+    try {
+      const split = p.editor.edit({ local: 'setup', group: 1n }, insertParagraph, {
+        nodeId: p.handle(p.nodes()[8]),
+        from: feature === 'scaffold' ? p.nodes()[8].content.length : 3,
+      });
+      if (split.status !== 'applied') throw new Error('Expected split');
+      if (feature === 'scaffold')
+        expect(
+          p.editor.edit({ local: 'peer', group: 1n }, insertText, {
+            nodeId: p.handle(p.nodes()[9]),
+            from: 0,
+            text: 'peer',
+          }).status,
+        ).toBe('applied');
+      control(p, split, false);
+      expect(
+        p.document.publication.status().publication!.value.visibility.nodes.some((n) => n[feature]),
+      ).toBe(true);
+      const tail = p.nodes().at(-1)!,
+        history = p.editor.session('distant');
+      const full = vi.spyOn(projector, 'projectWithActivity');
+      try {
+        expect(
+          history.edit(
+            insertText,
+            { nodeId: p.handle(p.nodes()[0]), from: 2, to: 3, text: '!' },
+            { typing: false },
+          ).status,
+        ).toBe('applied');
+        expect(history.undo().state).toBe('applied');
+        expect(history.redo().state).toBe('applied');
+        expect(full).not.toHaveBeenCalled();
+        expect(p.nodes().at(-1)).toBe(tail);
+      } finally {
+        full.mockRestore();
+      }
+      oracle.check(p.document, p.genesis);
+    } finally {
+      oracle.destroy();
+      p.close();
+    }
+  });

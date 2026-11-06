@@ -101,6 +101,24 @@ export class IndexedCommandView implements CommandViewIndex {
     countWork('command.fullIndexesConstructed');
     return new IndexedCommandView(idOf(root), new PersistentMap()).refine(root);
   }
+  /** Shape-preserving text/property replacement. The projection caller has
+   * already retained every child identity/order and every parent edge. Weighted
+   * sibling roots stay unchanged; only the supplied immutable records change.
+   */
+  replaceRecords(changed: Iterable<ViewNode>): IndexedCommandView {
+    const records = this.records.fork();
+    for (const node of changed) {
+      const id = idOf(node),
+        prior = records.get(id);
+      if (!prior || prior.node.children.length !== node.children.length)
+        throw new Error('Command content replacement changed structure');
+      if (prior.node !== node) {
+        records.set(id, { ...prior, node });
+        countWork('command.viewRecordsIndexed');
+      }
+    }
+    return new IndexedCommandView(this.root, records);
+  }
   refine(root: ViewNode): IndexedCommandView {
     if (idOf(root) !== this.root) throw new Error('Command root identity changed');
     const records = this.records.fork(),

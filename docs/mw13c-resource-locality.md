@@ -63,3 +63,64 @@ native bytes and eviction. Work controls cover a 4,096-declaration tape, one cha
 subtree among 150 paragraphs, and repeated insertion into one sibling gap.
 No canonical write, protocol change, dependency change, oracle change or historical
 reader exemption is part of these foundations.
+
+## Controlled structural consumer
+
+`MaterializedProjection.prepareStructural()` consumes C's narrow adapter of A's
+contract. It requires the exact base projection, a certified ready-source suffix,
+the candidate action/revision, final ownership/native inputs, changed flow readers
+and containers, root runs, affected/native tapes and destination witnesses. It
+returns private roots or a named fallback. The existing owner commits the result;
+preparation emits no canonical writes. Cancellation, another preparation, eviction
+or a changed base invalidates commit. Production wiring is not enabled here.
+
+The controlled slice covers paragraph splits/joins, literal input and their
+controls in unchanged document, quote, list-item and section containers. Raw and
+normalized membership stay separate. Merged quote constituents keep their own
+wrapper boundary origins; changed last-child gaps update the corresponding raw
+wrapper only. Changed normalized parents and ancestor paths are replaced.
+Unchanged subtrees retain their view, address and index identities.
+
+This slice skips the shared normalizer only when paragraph leaves, container
+membership, wrapper constituents and section boundaries prove the region inert.
+It does not normalize a detached section or run normalized output a second time.
+An empty container, a new merge boundary or a split through merged constituents
+requires the next shared normalization patch. Actual list Enter that allocates an
+item and changes markers is not the inert paragraph-only case.
+
+Syntax-mask queries now use persistent tape/client interval roots. They preserve
+full native-range containment, including empty queries. Controlled packet changes
+replace or withdraw their own contributions. Full interpretation changes still
+seed winner/membership selection and the mask index; incremental packet selection
+and eligibility invalidation remain unfinished.
+
+The observed B development contract at PR #94 head
+`2301529fb2466120cb084ac0ade52bf27ba489b1` supplies `StructuralChanges` through
+`prepare().value.changes` and specialized `structuralChanges`. The parent adapter
+must map its exact base/candidate, assignment/run/flow/attachment changes, old/new
+block parents, native tapes and destination-requirement deltas into this consumer.
+The controlled fixture constructs full snapshot differences outside C timing.
+It does not certify B's producer or remove B's reader guard.
+
+### Controlled fallback conditions
+
+Fallbacks return the operation family, affected nodes/tapes and supplied replay
+frontier/reason. Diagnostic work includes attempted candidates. These are interim
+conditions, with C owning the remaining region/visibility work.
+
+| Reason                                                                                                    | Input condition and next work                                                                                                                           |
+| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `incompatible-base`, `missing-exact-suffix`                                                               | No exact current base or single ordered suffix; consume reviewed suffix/retraction evidence before extending reuse.                                     |
+| `semantic-<effect>`, `wrapper-placement`                                                                  | Changed interpretation/properties, subtree deletion, nonempty lifting, transfer or wrapper placement; add that family's explicit semantic dependencies. |
+| `subtree-coverage`, `node-deletion-coverage`, `parent-visibility`, `birth-coverage-region`                | Affected captured/inherited interval, deletion tag, unavailable parent or changed birth region; update interval/tag/witness contributions.              |
+| `unknown-resource`, `unrepresented-container`, `container-kind`, `former-normalization-parent`            | Missing resource or normalized parent membership; retain raw records and expand the actual region.                                                      |
+| `child-lifting`, `normalization-region`, `normalized-constituents`                                        | Changed children, non-paragraph presentation or grouped output; restore the relevant raw constituents and run the shared one-pass rules.                |
+| `wrapper-boundary`, `normalized-constituent-split`, `empty-container-region`                              | A new adjacency, separated merged constituent or empty wrapper requires shared merge/cleanup dependencies.                                              |
+| `section-range`, `changed-normalized-parent`                                                              | Heading-dependent containment or changed projected parent needs the shared section range.                                                               |
+| `presentation`                                                                                            | Affected inline is not a paragraph; add that presentation's dependencies.                                                                               |
+| `missing-root-run`, `incompatible-root-run`, `missing-destination-witnesses`, `missing-normalized-output` | Incomplete/incompatible producer resources; decline rather than invent lineage, availability or output.                                                 |
+
+This is an initial slice for separate review. Subtree contribution updates,
+interpretation winner/membership updates, lifting, wrapper merges, section ranges,
+ordered numbering, retractions/earlier arrivals and reviewed B production
+integration must be completed before grain/104 can be accepted.

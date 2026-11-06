@@ -137,3 +137,25 @@ test('repeated insertions into the same gap keep all preorder ranks and old publ
     p.close();
   }
 });
+
+test('shape-preserving content updates replace only supplied records without inspecting sibling arrays', () => {
+  const p = commandReplica(
+    commandGenesis(Array.from({ length: 150 }, (_, i) => `p${i}`).join('\n\n')),
+  );
+  try {
+    const root = p.view().root,
+      index = IndexedCommandView.create(root),
+      first = { ...root.children[0], content: '!' };
+    const nextRoot = { ...root, children: [first, ...root.children.slice(1)] };
+    const { value: next, report } = captureDiagnostics(() =>
+      index.replaceRecords([first, nextRoot]),
+    );
+    expect(report.work['driver/command.viewRecordsIndexed']).toBe(2);
+    expect(report.work['driver/command.childArrayEntriesInspected'] ?? 0).toBe(0);
+    expect(report.work['driver/command.fullIndexesConstructed'] ?? 0).toBe(0);
+    equalIndex(next, nextRoot);
+    equalIndex(index, root);
+  } finally {
+    p.close();
+  }
+});

@@ -6,6 +6,7 @@ import type { Activity, EffectRef } from '../visibility/activity.js';
 import type { TextToken, OrderedDeletionTag } from '../visibility/visibility.js';
 import { PersistentMap, set, remove } from './map.js';
 import type { MapRoot } from './map.js';
+import { summarizeIntervals, clockIntervalsAt } from './clock-intervals.js';
 
 interface Interval {
   readonly start: number;
@@ -14,33 +15,17 @@ interface Interval {
   readonly order: number;
 }
 type Root<T extends Interval> = MapRoot<T> | undefined;
-const maxima = new WeakMap<object, number>();
 function maximum<T extends Interval>(root: Root<T>): number {
-  if (!root) return -Infinity;
-  let value = maxima.get(root);
-  if (value === undefined) {
-    value = Math.max(root.value.end, maximum(root.left), maximum(root.right));
-    maxima.set(root, value);
-    countWork('deletion.intervalNodesSummarized');
-  }
-  return value;
+  return summarizeIntervals(root, () => countWork('deletion.intervalNodesSummarized'));
 }
 const position = (value: number) => value.toString().padStart(16, '0');
 const pair = (tape: TextToken['tape'], client: number) => `${resourceKey(tape)}:${client}`;
 function query<T extends Interval>(root: Root<T>, clock: number, work: TextDeletionWork): T[] {
   work.exactDeletionQueries++;
-  const found: T[] = [];
-  const visit = (node: Root<T>): void => {
-    if (!node || maximum(node) <= clock) return;
+  return clockIntervalsAt(root, clock, () => {
     countWork('deletion.queryNodesVisited');
     work.exactDeletionNodesVisited++;
-    visit(node.left);
-    if (node.value.start > clock) return;
-    if (clock < node.value.end) found.push(node.value);
-    visit(node.right);
-  };
-  visit(root);
-  return found;
+  });
 }
 function insert<T extends Interval>(root: Root<T>, key: string, value: T): Root<T> {
   const result = set(root, key, value);

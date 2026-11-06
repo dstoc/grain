@@ -1,12 +1,20 @@
-import { countWork, measureWork } from '../diagnostics.js';
+import { countWork, measureWork, touchWork } from '../diagnostics.js';
 import { measure } from '../diagnostics.js';
 import { readySource } from '../authoring/ready-source.js';
 import type { ReadySequence, ReadySource } from '../authoring/ready-source.js';
 import { actionKey } from '../actions/references.js';
-import type { ActionEnvelope, Allocation, NodeId, NativeTextRange, TapeId } from '../contracts.js';
+import type {
+  ActionEnvelope,
+  Allocation,
+  NodeId,
+  RunId,
+  RangeRef,
+  NativeTextRange,
+  TapeId,
+} from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
 import type { ActionSequence, PayloadIndex } from './activity.js';
-import type { Activity } from '../visibility/activity.js';
+import type { Activity, EffectRef } from '../visibility/activity.js';
 import type { TextVisibility } from '../visibility/visibility.js';
 import type { ProjectionInput } from '../projection/project.js';
 import { projectWithActivity } from '../projection/project.js';
@@ -30,6 +38,8 @@ import { ExactTextDeletions } from './text-deletions.js';
 import type { TextDeletionWork } from './text-deletions.js';
 import { reduceVisibilityWithTextTags } from '../visibility/visibility.js';
 import type { reduceVisibility } from '../visibility/visibility.js';
+import type { StructuralProjectionChange } from './projection-changes.js';
+import { ExactSyntaxMasks, withIndexedMasks } from './masks.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
 /** Seed once, then update only exact changed contributions. Until B supplies a
@@ -104,7 +114,13 @@ interface State {
   readonly nodeAllocations: PersistentMap<Extract<Allocation, { type: 'node' }>>;
   readonly flowHomes: PersistentMap<NodeId>;
   readonly tapeNodes: PersistentMap<readonly string[]>;
-  readonly tapes: readonly TapeId[];
+  readonly tapes: PersistentMap<TapeId>;
+  readonly tapeHomes: PersistentMap<RangeRef>;
+  readonly rootOutputs: PersistentMap<readonly string[]>;
+  readonly nodeRequirements: PersistentMap<readonly EffectRef[]>;
+  readonly masks: ExactSyntaxMasks;
+  readonly membership: PersistentMap<string>;
+  readonly inlineCount: number;
   readonly commandIndex: IndexedCommandView;
   readonly propertyBase: Projection['interpretations'];
   readonly properties: PersistentMap<PresentedProperties>;
@@ -146,16 +162,41 @@ function propertyOverlay(
   };
 }
 function textVisibility(
-  tapes: readonly TapeId[],
+  tapes: State['tapes'],
   text: State['text'],
   nodes: Projection['visibility']['nodes'],
 ): Projection['visibility'] {
   let allText: readonly TextVisibility[] | undefined;
   return {
     get text() {
-      return (allText ??= tapes.flatMap((tape) => text.get(resourceKey(tape))?.entries ?? []));
+      if (!allText) {
+        countWork('projection.visibilityTapesExported', tapes.size);
+        allText = [...tapes.values()].flatMap((tape) => text.get(resourceKey(tape))?.entries ?? []);
+      }
+      return allText;
     },
     nodes,
+  };
+}
+/** Publication getters own current roots only, never a preparation context. */
+function resourceVisibility(
+  tapes: State['tapes'],
+  text: State['text'],
+  nodes: State['nodeVisibility'],
+): Projection['visibility'] {
+  const textView = textVisibility(tapes, text, []);
+  let allNodes: Projection['visibility']['nodes'] | undefined;
+  return {
+    get nodes() {
+      if (!allNodes) {
+        countWork('projection.visibilityNodesExported', nodes.size);
+        allNodes = [...nodes.values()];
+      }
+      return allNodes;
+    },
+    get text() {
+      return textView.text;
+    },
   };
 }
 function freeze<T>(value: T): T {
@@ -179,13 +220,19 @@ function indexMeasured(
   deletions: ExactTextDeletions,
   source?: ReadySource,
 ): State {
+  const masks = ExactSyntaxMasks.create(value.interpretations.packets);
+  value = { ...value, interpretations: withIndexedMasks(value.interpretations, masks) };
   const nodes = new PersistentMap<NodeRecord>(),
     text = new PersistentMap<TextTape>(),
-    tapeNodes = new PersistentMap<readonly string[]>();
+    tapeNodes = new PersistentMap<readonly string[]>(),
+    membership = new PersistentMap<string>();
+  let inlineCount = 0;
   countWork('projection.fullIndexesConstructed');
   const visit = (node: ViewNode, depth: number, parent?: string) => {
     countWork('projection.viewRecordsIndexed');
     nodes.set(key(node), { node, depth, parent });
+    for (const id of node.origin.constituents) membership.set(resourceKey(id), key(node));
+    if (['paragraph', 'section', 'code-block'].includes(node.type)) inlineCount++;
     // Ghost traversal slots still contribute addresses after their cells transfer.
     // Index projected readers, not just final cell owners or private-home blocks.
     const tapes = new Set([
@@ -235,6 +282,45 @@ function indexMeasured(
     visibility: nodeVisibility,
     flowHomes,
   });
+  const nodeRequirements = new PersistentMap<readonly EffectRef[]>();
+  for (const allocation of nodeAllocations.values())
+    nodeRequirements.set(resourceKey(allocation.id), []);
+  for (const { nodes: destinations, order } of value.ownership.destinationRequirements)
+    for (const id of new Set(destinations.map(resourceKey)))
+      nodeRequirements.set(id, [
+        ...(nodeRequirements.get(id) ?? []),
+        { action: order.action.id, ordinal: order.ordinal },
+      ]);
+  const tapeHomes = new PersistentMap<RangeRef>();
+  for (const allocation of [
+    ...input.genesis.allocations,
+    ...input.actions.flatMap(({ action }) => action.allocations),
+  ])
+    if (allocation.type === 'tape')
+      tapeHomes.set(resourceKey(allocation.id), {
+        tape: allocation.id,
+        start: allocation.start,
+        end: allocation.end,
+      });
+  const rootOutputs = new PersistentMap<readonly string[]>();
+  const outputGroups = (parent: ViewNode) => {
+    const containers = new Set(parent.origin.constituents.map(resourceKey));
+    for (const child of parent.children) {
+      const tops = new Set<string>();
+      for (const origin of child.origin.constituents) {
+        let node = origin,
+          placement = value.ownership.blockPlacement(node);
+        while (placement && !containers.has(resourceKey(placement.slot.parent))) {
+          node = placement.slot.parent;
+          placement = value.ownership.blockPlacement(node);
+        }
+        if (placement) tops.add(resourceKey(node));
+      }
+      for (const top of tops) rootOutputs.set(top, [...(rootOutputs.get(top) ?? []), key(child)]);
+      outputGroups(child);
+    }
+  };
+  outputGroups(value.view.root);
   const commandIndex = IndexedCommandView.create(value.view.root);
   registerCommandViewIndex(value.view.root, commandIndex);
   return {
@@ -249,12 +335,19 @@ function indexMeasured(
     flowHomes,
     tapeNodes,
     commandIndex,
+    tapeHomes,
+    rootOutputs,
+    nodeRequirements,
+    masks,
+    membership,
+    inlineCount,
     propertyBase: value.interpretations,
     properties: new PersistentMap<PresentedProperties>(),
-    tapes: [
-      ...input.genesis.allocations,
-      ...input.actions.flatMap(({ action }) => action.allocations),
-    ].flatMap((a) => (a.type === 'tape' ? [a.id] : [])),
+    tapes: (() => {
+      const tapes = new PersistentMap<TapeId>();
+      for (const home of tapeHomes.values()) tapes.set(resourceKey(home.tape), home.tape);
+      return tapes;
+    })(),
   };
 }
 /** Rebuild one flow's text projection while keeping its semantic children and origin.
@@ -278,11 +371,13 @@ function projectInline(
   native: NativeView,
   interpretations: Projection['interpretations'],
   visible: (range: NativeTextRange) => boolean,
+  homes: State['tapeHomes'],
+  rootRunOverride?: RunId,
 ): ViewNode {
   const allocation = before.origin.representative;
   // A rendered inline is the home of the effective top-level flow. Its boundary
   // records supply the persistent run; no complete allocation/run scan is needed.
-  const rootRun = before.boundaries[0]?.address.slot.run;
+  const rootRun = rootRunOverride ?? before.boundaries[0]?.address.slot.run;
   if (!rootRun) throw new Error('Inline projection lacks an addressable root');
   const rootLayout = ownership.runLayout(rootRun),
     runs = new Map([[resourceKey(rootRun), rootLayout]]);
@@ -320,9 +415,9 @@ function projectInline(
         id = resourceKey(marker.tape);
       let end = tapeEnds.get(id);
       if (end === undefined) {
-        const home = ownership.homeForTape(marker.tape);
+        const home = homes.get(resourceKey(marker.tape));
         if (!home) throw new Error('Text slot lacks a retained private home');
-        end = native.marker(home.cell.end).index;
+        end = native.marker(home.end).index;
         tapeEnds.set(id, end);
       }
       if (
@@ -399,8 +494,7 @@ function projectInline(
   });
 }
 
-function replaceViews(before: State, changed: Map<string, ViewNode>) {
-  const nodes = before.nodes.fork();
+function replaceViewPaths(nodes: State['nodes'], changed: Map<string, ViewNode>): number {
   let replaced = 0;
   const pending = new Set(changed.keys());
   while (pending.size) {
@@ -424,8 +518,14 @@ function replaceViews(before: State, changed: Map<string, ViewNode>) {
       pending.add(record.parent);
     }
   }
+  countWork('projection.ancestorRecordsReplaced', replaced);
+  return replaced;
+}
+function replaceViews(before: State, changed: Map<string, ViewNode>) {
+  const nodes = before.nodes.fork(),
+    replaced = replaceViewPaths(nodes, changed);
   const root = nodes.get(key(before.value.view.root))!.node;
-  const commandIndex = before.commandIndex.refine(root);
+  const commandIndex = before.commandIndex.replaceRecords(changed.values());
   registerCommandViewIndex(root, commandIndex);
   return { nodes, commandIndex, replaced };
 }
@@ -439,6 +539,7 @@ export class MaterializedProjection {
   private generation = 0;
   private readonly counts = {
     fullProjections: 0,
+    localStructuralProjections: 0,
     localTextProjections: 0,
     projectionRecordsReplaced: 0,
     textTapesRebuilt: 0,
@@ -549,6 +650,400 @@ export class MaterializedProjection {
       },
     };
   }
+  /** Prepare C roots from an exact producer delta. No structural decisions are
+   * replayed here. Closed paragraph gaps retain their real normalized container
+   * and wrapper context. Other regions return a named reconstruction condition.
+   */
+  prepareStructural(change: StructuralProjectionChange) {
+    return measure('visibility-normalization', () => this.prepareStructuralMeasured(change));
+  }
+  private prepareStructuralMeasured(change: StructuralProjectionChange) {
+    const generation = ++this.generation,
+      before = this.state;
+    const fallback = (reason: string) => {
+      countWork(`projection.fallback.${reason}`);
+      for (const node of [...change.nodes, ...change.containers])
+        touchWork('projection.fallbackNodes', resourceKey(node));
+      for (const tape of change.tapes) touchWork('projection.fallbackTapes', resourceKey(tape));
+      return {
+        state: 'fallback' as const,
+        reason,
+        family: change.family,
+        replay: change.replay,
+        nodes: change.nodes,
+        tapes: change.tapes,
+      };
+    };
+    if (!before || before.value !== change.base) return fallback('incompatible-base');
+    const source = readySource(change.actions),
+      additions = source && before.source && source.additions(before.source);
+    if (
+      !additions ||
+      additions.actions.length !== 1 ||
+      additions.actions[0] !== change.action ||
+      change.actions.at(-1) !== change.action
+    )
+      return fallback('missing-exact-suffix');
+    for (const action of change.semanticChanges)
+      for (const effect of action.effects) {
+        if (effect.type === 'SetProperties') {
+          const properties = before.value.interpretations.properties(effect.node);
+          if (
+            Object.entries(effect.values).every(
+              ([name, value]) => properties[name as keyof PresentedProperties] === value,
+            )
+          )
+            continue;
+        }
+        if (effect.type === 'LiftChildren' && !effect.placements.length) continue;
+        if (
+          effect.type === 'MoveBlock' &&
+          change.structure.value.nodeAllocation(effect.node).role !== 'inline'
+        )
+          return fallback('wrapper-placement');
+        if (effect.type === 'JoinFlow' && effect.liftedChildren.length)
+          return fallback('child-lifting');
+        if (
+          !['InsertText', 'DeleteText', 'SplitFlow', 'JoinFlow', 'MoveBlock'].includes(effect.type)
+        )
+          return fallback(`semantic-${effect.type}`);
+      }
+    for (const tape of change.tapes)
+      if (before.unsafeTextTapes.has(resourceKey(tape))) return fallback('subtree-coverage');
+    const ownership = change.structure.value,
+      native = change.native,
+      root = before.value.view.root,
+      rootKey = key(root);
+    const nodeAllocations = before.nodeAllocations.fork(),
+      flowHomes = before.flowHomes.fork(),
+      tapeHomes = before.tapeHomes.fork(),
+      nodeRequirements = before.nodeRequirements.fork();
+    const tapes = before.tapes.fork();
+    for (const allocation of change.action.allocations) {
+      if (allocation.type === 'node') {
+        nodeAllocations.set(resourceKey(allocation.id), allocation);
+        if (allocation.flow && !flowHomes.has(resourceKey(allocation.flow)))
+          flowHomes.set(resourceKey(allocation.flow), allocation.id);
+      } else if (allocation.type === 'tape') {
+        tapeHomes.set(resourceKey(allocation.id), {
+          tape: allocation.id,
+          start: allocation.start,
+          end: allocation.end,
+        });
+        tapes.set(resourceKey(allocation.id), allocation.id);
+      }
+      countWork('projection.changedAllocationsIndexed');
+    }
+    const affected = new Set(change.nodes.map(resourceKey));
+    affected.delete(rootKey);
+    for (const tape of change.tapes)
+      for (const id of before.tapeNodes.get(resourceKey(tape)) ?? []) affected.add(id);
+    const context = { ...before, tapeHomes };
+    const updated = this.updateText(
+      context,
+      change.action,
+      ownership,
+      change.nativeTapes,
+      native,
+      change.activity,
+      change.semanticChanges,
+      change.action.effects[0]?.type === 'SetGroupActive',
+    );
+    for (const id of updated.affected) affected.add(id);
+    const nodes = before.nodes.fork(),
+      nodeVisibility = before.nodeVisibility.fork(),
+      rootOutputs = before.rootOutputs.fork(),
+      tapeNodes = before.tapeNodes.fork(),
+      membership = before.membership.fork();
+    const changedParents = new Map<string, ViewNode>();
+    for (const container of change.containers) {
+      const id = before.membership.get(resourceKey(container)),
+        parent = id && before.nodes.get(id);
+      if (!parent) return fallback('unrepresented-container');
+      changedParents.set(id!, parent.node);
+    }
+    for (const [id, requirements] of change.requirements) nodeRequirements.set(id, requirements);
+    let inlineCount = before.inlineCount;
+    const parentFor = (raw: NodeId) => before.membership.get(resourceKey(raw));
+    const visible = (range: NativeTextRange) =>
+      updated.text.get(resourceKey(range.tape))?.byId.get(tokenKey(range))?.visible === true;
+    const interpretations = before.value.interpretations;
+    const readerTapes = (node: ViewNode) =>
+      new Set([
+        ...node.boundaries.map((b) => resourceKey(b.address.origin.tape)),
+        ...node.fragments.map((f) => resourceKey(f.range.tape)),
+      ]);
+    for (const id of affected) {
+      const allocation = nodeAllocations.get(id),
+        prior = before.nodes.get(id)?.node,
+        oldVisibility = before.nodeVisibility.get(id);
+      if (!allocation) return fallback('unknown-resource');
+      if (!allocation.flow || allocation.role !== 'inline') {
+        const parentId = parentFor(allocation.id),
+          record = parentId && before.nodes.get(parentId);
+        if (!record) return fallback('unrepresented-container');
+        changedParents.set(parentId!, record.node);
+        continue;
+      }
+      if (oldVisibility?.deleted || oldVisibility?.tags.length)
+        return fallback('node-deletion-coverage');
+      const placement = ownership.blockPlacement(allocation.id);
+      const oldPlacement = before.nodeAllocations.has(id)
+        ? before.value.ownership.blockPlacement(allocation.id)
+        : undefined;
+      const parentId = placement && parentFor(placement.slot.parent),
+        oldParentId = oldPlacement && parentFor(oldPlacement.slot.parent);
+      const parent = parentId && before.nodes.get(parentId);
+      if (
+        !parent ||
+        (oldPlacement && (!oldParentId || oldParentId !== before.nodes.get(id)?.parent) && prior)
+      )
+        return fallback('section-range');
+      if (!['document', 'section', 'block-quote', 'list-item'].includes(parent.node.type))
+        return fallback('container-kind');
+      const parentVisibility = before.nodeVisibility.get(resourceKey(placement!.slot.parent));
+      if (!parentVisibility?.available || parentVisibility.deleted || parentVisibility.tags.length)
+        return fallback('parent-visibility');
+      if (
+        !before.nodeAllocations.has(id) &&
+        allocation.birthSlot &&
+        parentFor(allocation.birthSlot.parent) !== parentId
+      )
+        return fallback('birth-coverage-region');
+      if (oldParentId && oldParentId !== parentId) {
+        const oldParent = before.nodes.get(oldParentId);
+        if (!oldParent) return fallback('former-normalization-parent');
+        changedParents.set(oldParentId, oldParent.node);
+      }
+      changedParents.set(parentId!, parent.node);
+      if (
+        ownership.children(allocation.id).length ||
+        (oldPlacement && before.value.ownership.children(allocation.id).length)
+      )
+        return fallback('child-lifting');
+      if (
+        prior &&
+        (prior.type !== 'paragraph' ||
+          prior.children.length ||
+          prior.origin.constituents.length !== 1 ||
+          before.nodes.get(id)?.parent !== oldParentId)
+      )
+        return fallback('normalization-region');
+      const group = before.rootOutputs.get(id);
+      if (group?.length && (group.length !== 1 || group[0] !== id))
+        return fallback('normalized-constituents');
+      const properties = interpretations.properties(allocation.id);
+      if (properties.presentation !== 'paragraph') return fallback('presentation');
+      const rootRun = change.rootRuns.get(id) ?? prior?.boundaries[0]?.address.slot.run;
+      if (!rootRun) return fallback('missing-root-run');
+      const flow = ownership.runLayout(rootRun).flow;
+      if (resourceKey(flow) !== resourceKey(allocation.flow))
+        return fallback('incompatible-root-run');
+      const absorbed = resourceKey(ownership.flowBlock(flow)) !== id;
+      const birth =
+        (allocation.id.birth.type === 'genesis' ||
+          change.activity.isActive(allocation.id.birth.action)) &&
+        interpretations.birthEnabled(allocation.id);
+      let output: ViewNode | undefined;
+      if (!absorbed) {
+        const seed: ViewNode = {
+          ...(prior ?? {
+            origin: freeze({
+              type: 'node' as const,
+              representative: allocation.id,
+              constituents: [allocation.id],
+            }),
+            type: 'paragraph',
+            marker: properties.marker,
+            info: properties.info,
+            checked: properties.checked,
+            children: Object.freeze([]),
+            content: '',
+            boundaries: [],
+            fragments: [],
+            wrappers: Object.freeze([]),
+          }),
+          edge: freeze({ type: 'edge' as const, child: allocation.id, slot: placement!.slot }),
+        };
+        output = projectInline(
+          seed,
+          ownership,
+          native,
+          interpretations,
+          visible,
+          tapeHomes,
+          rootRun,
+        );
+      }
+      const requirements = change.requirements.get(id) ?? before.nodeRequirements.get(id);
+      if (!requirements) return fallback('missing-destination-witnesses');
+      nodeRequirements.set(id, requirements);
+      const kept =
+        birth ||
+        requirements.some(change.activity.isEffectActive) ||
+        output?.fragments.some((f) => visible(f.range)) === true;
+      nodeVisibility.set(
+        id,
+        freeze({
+          node: allocation.id,
+          tags: [],
+          deleted: false,
+          suppressed: !birth && !kept,
+          scaffold: !birth && kept,
+          available: kept,
+        }),
+      );
+      for (const tape of prior ? readerTapes(prior) : [])
+        tapeNodes.set(
+          tape,
+          (tapeNodes.get(tape) ?? []).filter((node) => node !== id),
+        );
+      if (output && kept) {
+        nodes.set(id, { node: output, parent: parentId!, depth: parent.depth + 1 });
+        membership.set(id, id);
+        rootOutputs.set(id, [id]);
+        for (const tape of readerTapes(output))
+          tapeNodes.set(tape, [...(tapeNodes.get(tape) ?? []), id]);
+      } else {
+        nodes.delete(id);
+        membership.delete(id);
+        rootOutputs.set(id, []);
+      }
+      inlineCount += Number(!!output && kept) - Number(!!prior);
+      countWork('projection.rawFlowRecordsBuilt');
+      touchWork('projection.rawFlowRecords', id);
+    }
+    for (const [parentId, parent] of changedParents) {
+      const children: ViewNode[] = [],
+        seen = new Set<string>(),
+        rawChildren = new Map<string, readonly NodeId[]>();
+      for (const container of parent.origin.constituents) {
+        const ordered = ownership.children(container);
+        rawChildren.set(resourceKey(container), ordered);
+        for (const raw of ordered)
+          for (const id of rootOutputs.get(resourceKey(raw)) ?? []) {
+            if (seen.has(id)) {
+              if (key(children.at(-1)!) !== id) return fallback('normalized-constituent-split');
+              continue;
+            }
+            const record = nodes.get(id);
+            if (!record) return fallback('missing-normalized-output');
+            children.push(record.node);
+            seen.add(id);
+          }
+      }
+      countWork('projection.parentChildEntriesCopied', children.length);
+      countWork('projection.parentChildEntriesInspected', parent.children.length + children.length);
+      const oldEdges = new Set(
+        parent.children.slice(1).map((n, i) => `${key(parent.children[i])}|${key(n)}`),
+      );
+      for (let i = 1; i < children.length; i++)
+        if (
+          children[i].type === children[i - 1].type &&
+          ['list', 'block-quote'].includes(children[i].type) &&
+          !oldEdges.has(`${key(children[i - 1])}|${key(children[i])}`)
+        )
+          return fallback('wrapper-boundary');
+      if (children[0]?.type === 'section' && children[0] !== parent.children[0])
+        return fallback('section-range');
+      let sectionSeen = false;
+      for (const child of children) {
+        if (child.type === 'section') sectionSeen = true;
+        else if (sectionSeen && affected.has(key(child))) return fallback('section-range');
+      }
+      if (!children.length && ['block-quote', 'list-item', 'list'].includes(parent.type))
+        return fallback('empty-container-region');
+      // Paragraph leaves do not trigger any shared one-pass rule. Wrapper
+      // constituents and section boundaries outside this closed gap are fixed.
+      const wrappers = parent.wrappers.map((wrapper) => {
+        const last = rawChildren.get(resourceKey(wrapper.node))?.at(-1);
+        const predecessor = last ? ownership.blockPlacement(last)!.occurrence : null;
+        if (
+          (!predecessor && !wrapper.end.predecessor) ||
+          (predecessor &&
+            wrapper.end.predecessor &&
+            resourceKey(predecessor) === resourceKey(wrapper.end.predecessor))
+        )
+          return wrapper;
+        return freeze({ ...wrapper, end: { ...wrapper.end, predecessor } });
+      });
+      changedParents.set(
+        parentId,
+        Object.freeze({
+          ...parent,
+          children: Object.freeze(children),
+          wrappers: Object.freeze(wrappers),
+        }),
+      );
+      for (const child of children) {
+        const record = nodes.get(key(child))!;
+        if (record.parent !== parentId) return fallback('changed-normalized-parent');
+      }
+      countWork('projection.normalizationInertRegions');
+    }
+    replaceViewPaths(nodes, changedParents);
+    const nextRoot = nodes.get(rootKey)!.node;
+    const commandIndex = before.commandIndex.refine(nextRoot);
+    registerCommandViewIndex(nextRoot, commandIndex);
+    const visibility = resourceVisibility(tapes, updated.text, nodeVisibility);
+    const value: Projection = {
+      view: Object.freeze({
+        root: nextRoot,
+        emptyRoot: inlineCount
+          ? null
+          : freeze({
+              type: 'empty-root' as const,
+              slot: { parent: root.origin.representative, predecessor: null },
+            }),
+      }),
+      ownership,
+      activity: projectedActivity(change.activity, interpretations),
+      interpretations,
+      visibility,
+    };
+    registerAddressIndex(ownership, visibility, {
+      allocations: nodeAllocations,
+      visibility: nodeVisibility,
+      flowHomes,
+    });
+    const state: State = {
+      ...before,
+      value,
+      nodes,
+      nodeVisibility,
+      nodeAllocations,
+      flowHomes,
+      tapeHomes,
+      rootOutputs,
+      tapeNodes,
+      nodeRequirements,
+      membership,
+      inlineCount,
+      text: updated.text,
+      deletions: updated.deletions,
+      tapes,
+      source,
+      commandIndex,
+    };
+    countWork('projection.localStructuralCandidates');
+    let committed = false;
+    return {
+      state: 'prepared' as const,
+      value,
+      revision: change.revision,
+      commit: () => {
+        if (committed || generation !== this.generation || this.state !== before)
+          throw new Error('Projection candidate is no longer current');
+        change.structure.commit();
+        committed = true;
+        this.state = state;
+        this.counts.localStructuralProjections++;
+        // The caller owns the supplied structural branch. Never reuse this module's
+        // unrelated old replay cache after externally prepared structure is committed.
+        this.ownership.evict();
+      },
+    };
+  }
   private localText(before: State, changes: readonly ActionEnvelope[]): boolean {
     const tapes = new Set<string>();
     for (const action of changes) {
@@ -652,7 +1147,9 @@ export class MaterializedProjection {
     control: boolean,
   ): State | undefined {
     const changed = new Map<string, ViewNode>();
-    const propertyBase = control ? selectInterpretations(activity, initial) : before.propertyBase,
+    const propertyBase = control
+        ? withIndexedMasks(selectInterpretations(activity, initial), before.masks)
+        : before.propertyBase,
       properties = control ? new PersistentMap<PresentedProperties>() : before.properties.fork();
     if (!control)
       for (const action of changes)
@@ -753,47 +1250,23 @@ export class MaterializedProjection {
       branch.cancel();
     }
   }
-  private append(
+  private updateText(
     before: State,
     action: ActionEnvelope,
     ownership: OwnershipResult,
     touched: readonly TapeId[],
     native: NativeView,
     groupActivity: Activity,
-    changes: readonly ActionEnvelope[] = [action],
-    control = false,
-  ): State {
-    return measure('visibility-normalization', () =>
-      this.appendMeasured(
-        before,
-        action,
-        ownership,
-        touched,
-        native,
-        groupActivity,
-        changes,
-        control,
-      ),
-    );
-  }
-  private appendMeasured(
-    before: State,
-    action: ActionEnvelope,
-    ownership: OwnershipResult,
-    touched: readonly TapeId[],
-    native: NativeView,
-    groupActivity: Activity,
-    changes: readonly ActionEnvelope[] = [action],
-    control = false,
-  ): State {
+    changes: readonly ActionEnvelope[],
+    control: boolean,
+  ) {
     const text = before.text.fork(),
       deletions = before.deletions.update(
         changes,
         (ref) =>
           groupActivity.isEffectActive(ref) && before.value.interpretations.effectEligible(ref),
         this.counts,
-      ),
-      changed = new Map<string, ViewNode>();
+      );
     const affected = new Set<string>();
     const nativeTapes = new Set(touched.map(resourceKey));
     const semanticTapes = new Map(touched.map((tape) => [resourceKey(tape), tape]));
@@ -867,13 +1340,13 @@ export class MaterializedProjection {
           visible: insertionActive && !tags.length && !entry.deletedDestination,
         });
       }
-      const home = nativeTapes.has(id) && ownership.homeForTape(tape);
+      const home = nativeTapes.has(id) && before.tapeHomes.get(id);
       if (nativeTapes.has(id) && !home)
         throw new Error('Text change lacks a retained private home');
       // Ordering still visits retained text on the affected tape. Read its open
       // home interval without exporting/cloning a complete marker snapshot.
       const entries = home
-        ? native.range(home.cell).flatMap((part) =>
+        ? native.range(home).flatMap((part) =>
             Array.from({ length: part.text.length }, (_, i) => {
               const entry = old.get(
                 tokenKey({ client: part.range.client, clock: part.range.clock + i }),
@@ -886,6 +1359,52 @@ export class MaterializedProjection {
       text.set(id, { entries, byId: old });
       this.counts.textTapesRebuilt++;
     }
+    return { text, deletions, affected };
+  }
+  private append(
+    before: State,
+    action: ActionEnvelope,
+    ownership: OwnershipResult,
+    touched: readonly TapeId[],
+    native: NativeView,
+    groupActivity: Activity,
+    changes: readonly ActionEnvelope[] = [action],
+    control = false,
+  ): State {
+    return measure('visibility-normalization', () =>
+      this.appendMeasured(
+        before,
+        action,
+        ownership,
+        touched,
+        native,
+        groupActivity,
+        changes,
+        control,
+      ),
+    );
+  }
+  private appendMeasured(
+    before: State,
+    action: ActionEnvelope,
+    ownership: OwnershipResult,
+    touched: readonly TapeId[],
+    native: NativeView,
+    groupActivity: Activity,
+    changes: readonly ActionEnvelope[] = [action],
+    control = false,
+  ): State {
+    const { text, deletions, affected } = this.updateText(
+      before,
+      action,
+      ownership,
+      touched,
+      native,
+      groupActivity,
+      changes,
+      control,
+    );
+    const changed = new Map<string, ViewNode>();
     const visible = (range: NativeTextRange) =>
       text.get(resourceKey(range.tape))?.byId.get(tokenKey(range))?.visible === true;
     for (const id of affected) {
@@ -893,7 +1412,14 @@ export class MaterializedProjection {
       if (!record) throw new Error('Text change changed an unavailable projected owner');
       changed.set(
         id,
-        projectInline(record.node, ownership, native, before.value.interpretations, visible),
+        projectInline(
+          record.node,
+          ownership,
+          native,
+          before.value.interpretations,
+          visible,
+          before.tapeHomes,
+        ),
       );
     }
     const { nodes, commandIndex, replaced } = replaceViews(before, changed);
