@@ -216,7 +216,9 @@ run, occurrence, root, attachment, cohort and requirement deltas. Selected flow
 ancestry retains private-home headers and effective destinations. A work queue
 expands participating tapes through C's existing reverse readers, including ghosts.
 Destination contributions remove old effect references and add new references to
-complete retained per-node witness arrays. Semantically equal entries recreated
+complete retained per-node witness arrays. Controls also visit their exact target
+allocations and manifests, including allocations with no semantic effects. Birth
+activity can change without a placement or ownership delta. Semantically equal entries recreated
 by historical replay do not dirty C; visits to those delta entries remain charged.
 
 Text/property publications advance the same checkpoint binding. C's private state
@@ -243,3 +245,11 @@ remain separate. D's full pre-append staging and exact-author work are unchanged
 A history control can require B's genuine historical suffix replay, including a
 replay from zero before the first periodic checkpoint. This does not imply full
 C provenance/projection/index reconstruction.
+
+Production regression checks extend the existing regional and refinement corpus.
+They compare the actual managed publication, in addition to the controlled C
+candidate, against independent normalized output, visibility, packet decisions,
+properties, raw ownership and addresses. Indexed-ready controls forbid prefix
+iteration, check fresh-batch coverage, verify removal-only address retraction and
+same-B fallback/reseed, and forbid ready reads or checkpoint work at installation.
+These controls do not change deadlines, warm fixtures, CI partitions or workers.

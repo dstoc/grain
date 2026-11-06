@@ -61,6 +61,8 @@ for (const direction of ['earlier', 'later'] as const)
         const cold = commandReplica(p.genesis, p.document.store.encodeUpdate(), 'reference');
         try {
           expect(candidate.value.view).toEqual(cold.view());
+          expect(p.view()).toEqual(cold.view());
+          equalIndex(commandViewIndex(p.view().root), cold.view().root);
           equalIndex(commandViewIndex(candidate.value.view.root), cold.view().root);
           equalIndex(heldIndex, held.root);
           candidate.commit();
@@ -100,9 +102,13 @@ test('checked-property undo and redo publish candidate values against an indepen
       const cold = commandReplica(p.genesis, p.document.store.encodeUpdate(), 'reference');
       try {
         expect(cold.view().root.children[0].children[0].checked).toBe(checked);
+        expect(p.view()).toEqual(cold.view());
         expect(candidate.value.view).toEqual(cold.view());
         const reference = cold.document.publication.status().publication!.value;
         expect(candidate.value.visibility).toEqual(reference.visibility);
+        expect(p.document.publication.status().publication!.value.visibility).toEqual(
+          reference.visibility,
+        );
         expect(candidate.value.interpretations.properties(item.origin.representative)).toEqual(
           reference.interpretations.properties(item.origin.representative),
         );
@@ -167,6 +173,9 @@ test('earlier concurrent allocation preserves complete visibility export order w
       const reference = cold.document.publication.status().publication!.value;
       expect(candidate.value.view).toEqual(reference.view);
       expect(candidate.value.visibility).toEqual(reference.visibility);
+      expect(p.document.publication.status().publication!.value.visibility).toEqual(
+        reference.visibility,
+      );
       equalIndex(commandViewIndex(candidate.value.view.root), reference.view.root);
       candidate.commit();
       expect(value.visibility).toEqual(heldVisibility);

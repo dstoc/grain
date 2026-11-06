@@ -29,7 +29,11 @@ interface AdapterBase {
   readonly flowHomes: Readers<NodeId>;
 }
 const sameIds = <T>(a: readonly T[], b: readonly T[], equal: (a: T, b: T) => boolean) =>
-  a.length === b.length && a.every((value, i) => equal(value, b[i]));
+  a.length === b.length &&
+  a.every((value, i) => {
+    countWork('projection.adapterSequenceEntriesCompared');
+    return equal(value, b[i]);
+  });
 const sameOrigin = (a: { run: RunId; occurrence: Parameters<typeof sameId>[0] }, b: typeof a) =>
   sameId(a.run, b.run) && sameId(a.occurrence, b.occurrence);
 const effectKey = (ref: EffectRef) => `${actionKey(ref.action)}:${ref.ordinal}`;
@@ -139,6 +143,15 @@ export function projectionChange(
       tape(native.marker(value.boundary).tape);
     }
   };
+  for (const change of changes.subdivisions) {
+    tape(change.before.tape);
+    for (const [side, ranges] of [[change.before], change.after].entries())
+      for (const range of ranges)
+        for (const assignment of sides[side].cells(range)) {
+          countWork('projection.adapterSubdivisionCells');
+          run(assignment.run, side);
+        }
+  }
   for (const change of changes.assignments) {
     countWork('projection.adapterAssignmentDeltas');
     if (
@@ -289,9 +302,14 @@ export function projectionChange(
   // Birth activity is independent of raw placement/ownership. A controlled
   // allocation can have no effects, so B's decision strings alone do not name it.
   for (const action of semantic.values()) {
-    for (const birth of action.nativeManifest) tape(birth.tape);
-    for (const allocation of action.allocations)
+    for (const birth of action.nativeManifest) {
+      countWork('projection.adapterManifestEntries');
+      tape(birth.tape);
+    }
+    for (const allocation of action.allocations) {
+      countWork('projection.adapterSemanticAllocations');
       if (allocation.type === 'node') node(allocation.id);
+    }
   }
   for (const id of changes.tapes) tape(id);
   let nextTape = 0,
@@ -299,8 +317,10 @@ export function projectionChange(
   while (nextTape < tapeQueue.length || nextNode < nodeQueue.length) {
     while (nextTape < tapeQueue.length) {
       const id = tapeQueue[nextTape++];
-      for (const key of before.tapeNodes.get(resourceKey(id)) ?? [])
+      for (const key of before.tapeNodes.get(resourceKey(id)) ?? []) {
+        countWork('projection.adapterReverseReaders');
         node(before.nodeAllocations.get(key)!.id);
+      }
       for (const [side, owner] of sides.entries())
         if (exists(id, side)) {
           const home = owner.homeForTape(id);
@@ -326,15 +346,19 @@ export function projectionChange(
     }
   }
   for (const id of [...nodes.values(), ...containers.values()]) refs(id);
-  for (const [id, values] of requirements)
+  for (const [id, values] of requirements) {
+    countWork('projection.adapterWitnessEntriesCopied', values.length);
     requirements.set(
       id,
       [...values].sort(
-        (a, b) =>
+        (a, b) => (
+          countWork('projection.adapterWitnessComparisons'),
           compareActions(source!.get(actionKey(a.action))!, source!.get(actionKey(b.action))!) ||
-          a.ordinal - b.ordinal,
+            a.ordinal - b.ordinal
+        ),
       ),
     );
+  }
   const effects = changes.actions.flatMap((action) => action.effects);
   return {
     state: 'adapted',

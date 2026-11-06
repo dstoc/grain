@@ -325,6 +325,7 @@ export class MaterializedOwnership {
       undefined,
       input.actions,
       indexed,
+      { source, additions },
     );
     return {
       ...prepared,
@@ -355,12 +356,16 @@ export class MaterializedOwnership {
     stagedTapes?: readonly TapeId[],
     sequence?: ActionSequence,
     indexed?: LayoutSequence,
+    ready?: {
+      readonly source: ReadySource | undefined;
+      readonly additions: ReturnType<ReadySource['additions']>;
+    },
   ) {
     let length = indexed?.length ?? input.actions.length;
     const generation = ++this.generation,
       count = this.state?.count ?? 0;
-    const source = sequence && readySource(sequence),
-      additions = source && this.source && source.additions(this.source);
+    const source = ready ? ready.source : sequence && readySource(sequence),
+      additions = ready ? ready.additions : source && this.source && source.additions(this.source);
     this.counts.readyIndexNodesVisited += additions?.nodesVisited ?? 0;
     // The ordered ready root certifies exact retained payloads. An appended
     // control names its affected prior actions; packet selection still uses the

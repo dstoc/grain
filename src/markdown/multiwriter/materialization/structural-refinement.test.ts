@@ -38,6 +38,9 @@ function compare(p: CommandReplica, prior: ReturnType<typeof replay>) {
   });
   try {
     const expected = independent.document.publication.status().publication!;
+    const production = p.document.publication.status().publication!.value;
+    expect(production.view).toEqual(expected.value.view);
+    expect(production.visibility).toEqual(expected.value.visibility);
     expect(rawObservation(candidate.value)).toEqual(rawObservation(expected.value.ownership));
     const input = {
       genesis: p.genesis.layout,

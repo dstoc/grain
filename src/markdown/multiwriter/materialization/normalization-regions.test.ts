@@ -67,6 +67,17 @@ function consume(
     },
   });
   try {
+    const production = p.document.publication.status().publication!.value;
+    if (!('projectionDiagnostics' in p.document)) throw new Error('Expected materialized document');
+    expect(p.document.projectionDiagnostics().fullProjections).toBe(1);
+    expect(production.view).toEqual(reference.view);
+    expect(production.visibility).toEqual(reference.visibility);
+    expect(production.interpretations.packets).toEqual(reference.interpretations.packets);
+    expect(production.interpretations.masks).toEqual(reference.interpretations.masks);
+    expect(production.ownership.assignments).toEqual(reference.ownership.assignments);
+    expect(production.ownership.destinationRequirements).toEqual(
+      reference.ownership.destinationRequirements,
+    );
     expect(result.value.view).toEqual(reference.view);
     expect(isImmutableData(result.value.view, new WeakSet())).toBe(true);
     expect(result.value.visibility).toEqual(reference.visibility);
@@ -81,15 +92,24 @@ function consume(
     }
     expect(result.value.interpretations.packets).toEqual(reference.interpretations.packets);
     expect(result.value.interpretations.masks).toEqual(reference.interpretations.masks);
-    for (const node of reference.ownership.nodeAllocations)
+    for (const node of reference.ownership.nodeAllocations) {
       expect(result.value.interpretations.properties(node.id)).toEqual(
         reference.interpretations.properties(node.id),
       );
+      expect(production.interpretations.properties(node.id)).toEqual(
+        reference.interpretations.properties(node.id),
+      );
+    }
     const check = (node: ViewNode) => {
-      for (const boundary of node.boundaries)
+      for (const boundary of node.boundaries) {
+        const expected = resolveAddress(boundary.address, addressOwnership, reference.visibility);
         expect(
           resolveAddress(boundary.address, result.value.ownership, result.value.visibility),
-        ).toEqual(resolveAddress(boundary.address, addressOwnership, reference.visibility));
+        ).toEqual(expected);
+        expect(
+          resolveAddress(boundary.address, production.ownership, production.visibility),
+        ).toEqual(expected);
+      }
       for (const child of node.children) check(child);
     };
     check(result.value.view.root);
