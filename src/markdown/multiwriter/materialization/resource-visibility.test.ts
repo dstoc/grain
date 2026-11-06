@@ -162,3 +162,67 @@ for (const feature of ['suppressed', 'scaffold'] as const)
       p.close();
     }
   });
+
+for (const size of [10, 150])
+  test(`captured sibling intervals on the same native tape keep text and history local (${size})`, () => {
+    const p = commandReplica(
+      commandGenesis(
+        ['abcdef', ...Array.from({ length: size - 1 }, (_, i) => `tail${i}`)].join('\n\n'),
+      ),
+      undefined,
+      'materialized',
+    );
+    const oracle = createMaterializationOracle();
+    try {
+      expect(
+        p.editor.edit({ local: 'split', group: 1n }, insertParagraph, {
+          nodeId: p.handle(p.nodes()[0]),
+          from: 3,
+        }).status,
+      ).toBe('applied');
+      expect(
+        p.editor.edit({ local: 'delete', group: 1n }, deleteBlocks, {
+          nodeIds: [p.handle(p.nodes()[1])],
+        }).status,
+      ).toBe('applied');
+      const held = p.document.publication.status().publication!,
+        tail = p.nodes().at(-1)!,
+        heldView = structuredClone(held.value.view);
+      const tailAddress = textPoint(tail, 1, 'right').address,
+        history = p.editor.session('covered-tape');
+      const full = vi.spyOn(projector, 'projectWithActivity');
+      try {
+        const { report } = captureDiagnostics(() => {
+          expect(
+            history.edit(
+              insertText,
+              { nodeId: p.handle(p.nodes()[0]), from: 1, to: 2, text: '!' },
+              { typing: false },
+            ).status,
+          ).toBe('applied');
+          expect(history.undo().state).toBe('applied');
+          expect(history.redo().state).toBe('applied');
+        });
+        expect(full).not.toHaveBeenCalled();
+        expect(report.work['publication/subtree.fullIndexesConstructed'] ?? 0).toBe(0);
+        expect(report.work['publication/subtree.tagGroupsUpdated'] ?? 0).toBe(0);
+        expect(report.work['publication/subtree.tapeGroupsQueried']).toBeGreaterThan(0);
+        expect(p.nodes()[0].content).toBe('a!c');
+        expect(p.nodes().at(-1)).toBe(tail);
+      } finally {
+        full.mockRestore();
+      }
+      oracle.check(p.document, p.genesis);
+      expect(held.value.view).toEqual(heldView);
+      expect(
+        resolveAddress(
+          tailAddress,
+          p.document.publication.status().publication!.value.ownership,
+          p.document.publication.status().publication!.value.visibility,
+        ).state,
+      ).toBe('available');
+    } finally {
+      oracle.destroy();
+      p.close();
+    }
+  });

@@ -4,6 +4,7 @@ import type { NativeView } from '../ingest/publication.js';
 import type { OwnershipResult } from '../ownership/ownership.js';
 import type { Activity, EffectRef } from '../visibility/activity.js';
 import type { projectWithActivity } from '../projection/project.js';
+import type { BirthContent } from '../projection/types.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
 /** C's narrow consumer of A's resource contract. Only an exact, already
@@ -31,4 +32,6 @@ export interface StructuralProjectionChange {
   readonly nativeTapes: readonly TapeId[];
   /** Complete final destination witnesses for every changed node. */
   readonly requirements: ReadonlyMap<string, readonly EffectRef[]>;
+  /** Exact allocating-closure coverage for newly retained nodes. */
+  readonly birthContent: readonly BirthContent[];
 }

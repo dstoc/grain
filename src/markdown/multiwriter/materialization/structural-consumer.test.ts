@@ -19,6 +19,7 @@ import type { NodeId, RunId, TapeId } from '../contracts.js';
 import type { EffectRef } from '../visibility/activity.js';
 import { captureDiagnostics } from '../diagnostics.js';
 import { MaterializedProjection } from './projection.js';
+import { reconstructProvenance } from '../reference/provenance.js';
 import type { StructuralProjectionChange } from './projection-changes.js';
 
 type Projection = ReturnType<typeof full.projectWithActivity>;
@@ -137,6 +138,9 @@ function change(p: CommandReplica, base: Projection): StructuralProjectionChange
       ...new Map(action.nativeManifest.map((b) => [resourceKey(b.tape), b.tape])).values(),
     ],
     requirements,
+    birthContent: reconstructProvenance(p.genesis.layout, [...actions]).birthContent.filter(
+      (entry) => !old.has(resourceKey(entry.node)),
+    ),
   };
 }
 function applied<T extends { status: string }>(result: T): T {
@@ -538,6 +542,61 @@ test('joining paragraphs within one list item preserves wrapper gaps and numberi
       candidate.commit();
       value = candidate.value;
     };
+    applied(history.edit(joinWithPrevious, { nodeId: p.handle(p.nodes()[1]) }));
+    consume();
+    expect(history.undo().state).toBe('applied');
+    consume();
+    expect(history.redo().state).toBe('applied');
+    consume();
+  } finally {
+    p.close();
+  }
+});
+
+test('captured sibling intervals on a participating split tape remain resource-local', () => {
+  const p = commandReplica(commandGenesis('abcdef\n\nother\n\ntail'), undefined, 'materialized');
+  try {
+    applied(
+      p.editor.edit({ local: 'setup', group: 1n }, insertParagraph, {
+        nodeId: p.handle(p.nodes()[0]),
+        from: 3,
+      }),
+    );
+    applied(
+      p.editor.edit({ local: 'delete', group: 1n }, deleteBlocks, {
+        nodeIds: [p.handle(p.nodes()[1])],
+      }),
+    );
+    const seeded = seed(p),
+      tail = seeded.value.view.root.children.at(-1)!;
+    let value = seeded.value;
+    const consume = () => {
+      const input = change(p, value),
+        bytes = p.document.store.encodeUpdate();
+      const { value: result, report } = captureDiagnostics(() =>
+        seeded.consumer.prepareStructural(input),
+      );
+      expect(result.state, result.state === 'fallback' ? result.reason : '').toBe('prepared');
+      if (result.state !== 'prepared') throw new Error(result.reason);
+      const cold = commandReplica(p.genesis, bytes, 'reference');
+      try {
+        expect(result.value.view).toEqual(cold.view());
+        expect(result.value.visibility).toEqual(
+          cold.document.publication.status().publication!.value.visibility,
+        );
+        expect(result.value.view.root.children.at(-1)).toBe(tail);
+        expect(report.work['driver/subtree.fullIndexesConstructed'] ?? 0).toBe(0);
+        expect(report.work['driver/projection.fullProjectors'] ?? 0).toBe(0);
+        expect(compareBytes(bytes, p.document.store.encodeUpdate())).toBe(0);
+        result.commit();
+        value = result.value;
+      } finally {
+        cold.close();
+      }
+    };
+    const history = p.editor.session('covered-split');
+    applied(history.edit(insertParagraph, { nodeId: p.handle(p.nodes()[0]), from: 1 }));
+    consume();
     applied(history.edit(joinWithPrevious, { nodeId: p.handle(p.nodes()[1]) }));
     consume();
     expect(history.undo().state).toBe('applied');

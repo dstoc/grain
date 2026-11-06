@@ -15,8 +15,13 @@ active-effect ranks exist only in the full projection adapter, never in retained
 roots. The full visibility reducer remains independent.
 
 Text eligibility depends on the edited tapes and their projected readers. Captured
-subtree intervals and birth-content tapes with direct/inherited tags exclude only
-those resources. Empty captured intervals are included. Unavailable, suppressed or
+subtree intervals and inherited birth-content intervals now have retained
+declaration and tag-group contributions. Coverage follows birth parents and exact
+concurrency, including dormant declarations and new descendants. A reused tag's
+last active subtree declaration supplies its inherited text coverage; direct node
+tags still accumulate covering declarations in semantic order. Queries inspect
+the edited tape's groups, never all document deletion declarations. Contributions
+retain permanent intervals, including empty intervals. Unavailable, suppressed or
 scaffold readers require visibility-witness maintenance before local text can use
 them. Other tapes remain eligible. Property-only checked/info updates retain their
 existing restriction to represented, unmerged origins.
@@ -42,7 +47,7 @@ These conditions remain explicit. An intermediate patch is not issue acceptance.
 | First open or eviction                                                                              | Full provenance, projection and index seed               | Expected cold path                                                                                             |
 | Exact ready-source additions, including ordinary structural actions                                 | Reuse deletion roots; full structural projection remains | B supplies reviewed resource delta; C consumes it                                                              |
 | Text insertion/replacement/control on tapes outside subtree coverage, with available active readers | Local visibility/text/view/address projection            | Covered by focused tests                                                                                       |
-| Text touching captured/inherited subtree tapes, including empty intervals                           | Full visibility/projection                               | C interval and availability-witness updates                                                                    |
+| Text touching captured/inherited subtree tapes with represented available readers                   | Local text/tag queries on affected tapes                 | Covered by same-tape sibling deletion, text/history and controlled split/join tests                            |
 | Text touching an unavailable/suppressed/scaffold reader or a tape without projected readers         | Full visibility/projection                               | C witness additions/removals and ghost-reader updates                                                          |
 | Checked/info updates on a represented single-origin node                                            | Local view replacement                                   | Covered by existing and extended tests                                                                         |
 | Checked/info updates on a hidden or merged constituent                                              | Full projection                                          | C raw/normalized constituent records                                                                           |
@@ -108,19 +113,37 @@ Fallbacks return the operation family, affected nodes/tapes and supplied replay
 frontier/reason. Diagnostic work includes attempted candidates. These are interim
 conditions, with C owning the remaining region/visibility work.
 
-| Reason                                                                                                    | Input condition and next work                                                                                                                           |
-| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `incompatible-base`, `missing-exact-suffix`                                                               | No exact current base or single ordered suffix; consume reviewed suffix/retraction evidence before extending reuse.                                     |
-| `semantic-<effect>`, `wrapper-placement`                                                                  | Changed interpretation/properties, subtree deletion, nonempty lifting, transfer or wrapper placement; add that family's explicit semantic dependencies. |
-| `subtree-coverage`, `node-deletion-coverage`, `parent-visibility`, `birth-coverage-region`                | Affected captured/inherited interval, deletion tag, unavailable parent or changed birth region; update interval/tag/witness contributions.              |
-| `unknown-resource`, `unrepresented-container`, `container-kind`, `former-normalization-parent`            | Missing resource or normalized parent membership; retain raw records and expand the actual region.                                                      |
-| `child-lifting`, `normalization-region`, `normalized-constituents`                                        | Changed children, non-paragraph presentation or grouped output; restore the relevant raw constituents and run the shared one-pass rules.                |
-| `wrapper-boundary`, `normalized-constituent-split`, `empty-container-region`                              | A new adjacency, separated merged constituent or empty wrapper requires shared merge/cleanup dependencies.                                              |
-| `section-range`, `changed-normalized-parent`                                                              | Heading-dependent containment or changed projected parent needs the shared section range.                                                               |
-| `presentation`                                                                                            | Affected inline is not a paragraph; add that presentation's dependencies.                                                                               |
-| `missing-root-run`, `incompatible-root-run`, `missing-destination-witnesses`, `missing-normalized-output` | Incomplete/incompatible producer resources; decline rather than invent lineage, availability or output.                                                 |
+| Reason                                                                                                    | Input condition and next work                                                                                                                                                                           |
+| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `incompatible-base`, `missing-exact-suffix`                                                               | No exact current base or single ordered suffix; consume reviewed suffix/retraction evidence before extending reuse.                                                                                     |
+| `semantic-<effect>`, `wrapper-placement`                                                                  | Changed interpretation/properties, subtree deletion, nonempty lifting, transfer or wrapper placement; add that family's explicit semantic dependencies.                                                 |
+| `node-deletion-coverage`, `parent-visibility`, `birth-coverage-region`                                    | Changed node deletion, unavailable parent or changed birth region still needs availability-witness updates. Directly deleted ghost readers with unchanged coverage have no projected header to rebuild. |
+| `unknown-resource`, `unrepresented-container`, `container-kind`, `former-normalization-parent`            | Missing resource or normalized parent membership; retain raw records and expand the actual region.                                                                                                      |
+| `child-lifting`, `normalization-region`, `normalized-constituents`                                        | Changed children, non-paragraph presentation or grouped output; restore the relevant raw constituents and run the shared one-pass rules.                                                                |
+| `wrapper-boundary`, `normalized-constituent-split`, `empty-container-region`                              | A new adjacency, separated merged constituent or empty wrapper requires shared merge/cleanup dependencies.                                                                                              |
+| `section-range`, `changed-normalized-parent`                                                              | Heading-dependent containment or changed projected parent needs the shared section range.                                                                                                               |
+| `presentation`                                                                                            | Affected inline is not a paragraph; add that presentation's dependencies.                                                                                                                               |
+| `missing-root-run`, `incompatible-root-run`, `missing-destination-witnesses`, `missing-normalized-output` | Incomplete/incompatible producer resources; decline rather than invent lineage, availability or output.                                                                                                 |
 
-This is an initial slice for separate review. Subtree contribution updates,
+This is an initial slice for separate review. Availability-witness updates,
 interpretation winner/membership updates, lifting, wrapper merges, section ranges,
 ordered numbering, retractions/earlier arrivals and reviewed B production
 integration must be completed before grain/104 can be accepted.
+
+## Continuation: captured and inherited contributions
+
+`SubtreeDeletions` retains birth-parent reverse edges, per-declaration node
+coverage, reused-tag groups and tape readers. Compatible ready additions update
+only new births and named effects/controls. First open, incompatible sources and
+interpretation eligibility changes still use a named cold seed. Retraction and
+reactivation controls preserve held roots. Text queries combine subtree and exact
+declarations before first-covering tag deduplication.
+
+Real managed replacements and undo/redo remain local when a deleted sibling
+shares the edited paragraph's native tape (10/150 nodes). The controlled
+split/join/undo/redo trace on that tape also remains local. Complete view and
+visibility, native retention, unrelated view identity and held reads are compared
+with independent reconstruction. This adds coverage; it does not establish
+subtree-deletion mutation locality, availability maintenance, normalization or
+reviewed B integration. Tape-local group queries still inspect that tape's
+relevant interval contributions; dense same-tape coverage is charged explicitly.
