@@ -147,3 +147,23 @@ with independent reconstruction. This adds coverage; it does not establish
 subtree-deletion mutation locality, availability maintenance, normalization or
 reviewed B integration. Tape-local group queries still inspect that tape's
 relevant interval contributions; dense same-tape coverage is charged explicitly.
+
+## Continuation: availability and weak split witnesses
+
+`VisibilityWitnesses` retains birth/destination/content witnesses, raw parent
+edges, per-tape visible-content counts and subtree totals. A structural candidate
+updates changed raw paths and child summaries; it does not reconstruct unrelated
+subtrees to decide scaffold or suppression state. Text publication keeps the
+counts current. Visibility remains separate from normalized membership.
+
+`SplitVisibility` retains source-to-split readers and hidden derivations. A tag or
+raw-parent change expands through its actual source descendants. Only their split
+readers are checked for concurrent deletion. Reused tags use every active
+subtree declaration for concurrency, as the full projector does. Hidden split
+births and effective destination requirements feed the availability index.
+
+Controlled paragraph deletion, undo/redo, and subsequent editing at 10/150 nodes
+now use local candidates. A concurrent deletion/weak-split trace also passes
+complete independent view, visibility, saved-address and held-publication checks.
+Wrapper/section/lifting normalization remains a separate unfinished patch. The
+production structural path and B integration gate remain unchanged.

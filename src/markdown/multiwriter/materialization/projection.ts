@@ -42,6 +42,9 @@ import type { StructuralProjectionChange } from './projection-changes.js';
 import { ExactSyntaxMasks, withIndexedMasks } from './masks.js';
 import { SubtreeDeletions } from './subtree-deletions.js';
 import { compareEffects } from '../contracts.js';
+import { VisibilityWitnesses } from './visibility-witnesses.js';
+import { SplitVisibility } from './split-visibility.js';
+import { deletionEffectKey } from './subtree-deletions.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
 /** Seed once, then update only exact changed contributions. Until B supplies a
@@ -139,6 +142,9 @@ interface State {
   readonly tapeHomes: PersistentMap<RangeRef>;
   readonly rootOutputs: PersistentMap<readonly string[]>;
   readonly nodeRequirements: PersistentMap<readonly EffectRef[]>;
+  readonly requirementReaders: PersistentMap<readonly NodeId[]>;
+  readonly witnesses: VisibilityWitnesses;
+  readonly splitVisibility: SplitVisibility;
   readonly masks: ExactSyntaxMasks;
   readonly membership: PersistentMap<string>;
   readonly inlineCount: number;
@@ -354,6 +360,30 @@ function indexMeasured(
           input.birthContent,
           value.activity,
         );
+  const requirementReaders = new PersistentMap<readonly NodeId[]>();
+  for (const [id, refs] of nodeRequirements)
+    for (const ref of refs) {
+      const key = deletionEffectKey(ref);
+      requirementReaders.set(key, [
+        ...(requirementReaders.get(key) ?? []),
+        nodeAllocations.get(id)!.id,
+      ]);
+    }
+  const splitVisibility = SplitVisibility.create(
+    value.activity.actions,
+    value.ownership,
+    flowHomes,
+    value.activity,
+    subtrees,
+  );
+  const witnesses = VisibilityWitnesses.create(nodeAllocations.values(), value.visibility, {
+    ownership: value.ownership,
+    activity: value.activity,
+    birthEnabled: (node) =>
+      value.interpretations.birthEnabled(node) && !splitVisibility.hidden(node),
+    requirements: (node) =>
+      (nodeRequirements.get(resourceKey(node)) ?? []).filter((ref) => splitVisibility.permits(ref)),
+  });
   return {
     value,
     nodes,
@@ -369,6 +399,9 @@ function indexMeasured(
     tapeHomes,
     rootOutputs,
     nodeRequirements,
+    requirementReaders,
+    witnesses,
+    splitVisibility,
     masks,
     membership,
     inlineCount,
@@ -735,7 +768,14 @@ export class MaterializedProjection {
         if (effect.type === 'JoinFlow' && effect.liftedChildren.length)
           return fallback('child-lifting');
         if (
-          !['InsertText', 'DeleteText', 'SplitFlow', 'JoinFlow', 'MoveBlock'].includes(effect.type)
+          ![
+            'InsertText',
+            'DeleteText',
+            'DeleteSubtree',
+            'SplitFlow',
+            'JoinFlow',
+            'MoveBlock',
+          ].includes(effect.type)
         )
           return fallback(`semantic-${effect.type}`);
       }
@@ -746,7 +786,8 @@ export class MaterializedProjection {
     const nodeAllocations = before.nodeAllocations.fork(),
       flowHomes = before.flowHomes.fork(),
       tapeHomes = before.tapeHomes.fork(),
-      nodeRequirements = before.nodeRequirements.fork();
+      nodeRequirements = before.nodeRequirements.fork(),
+      requirementReaders = before.requirementReaders.fork();
     const tapes = before.tapes.fork();
     for (const allocation of change.action.allocations) {
       if (allocation.type === 'node') {
@@ -773,6 +814,72 @@ export class MaterializedProjection {
       change.birthContent,
       projectedActivity(change.activity, before.value.interpretations),
     );
+    const activity = projectedActivity(change.activity, before.value.interpretations);
+    const requirementNodes = new Set<string>();
+    for (const [id, refs] of change.requirements) {
+      const node = nodeAllocations.get(id)!.id;
+      for (const old of nodeRequirements.get(id) ?? []) {
+        const key = deletionEffectKey(old);
+        requirementReaders.set(
+          key,
+          (requirementReaders.get(key) ?? []).filter((n) => resourceKey(n) !== id),
+        );
+      }
+      for (const ref of refs) {
+        const key = deletionEffectKey(ref);
+        requirementReaders.set(key, [...(requirementReaders.get(key) ?? []), node]);
+      }
+      nodeRequirements.set(id, refs);
+      requirementNodes.add(id);
+    }
+    const sources = new Map<string, NodeId>();
+    const descendants = (node: NodeId) => {
+      const id = resourceKey(node);
+      if (sources.has(id)) return;
+      sources.set(id, node);
+      countWork('projection.visibilitySourceEdgesVisited');
+      for (const child of ownership.children(node)) descendants(child);
+    };
+    for (const id of coverage.nodes) descendants(nodeAllocations.get(id)!.id);
+    for (const node of change.nodes) {
+      const old =
+          before.nodeAllocations.has(resourceKey(node)) &&
+          before.value.ownership.blockPlacement(node)?.slot.parent,
+        after = ownership.blockPlacement(node)?.slot.parent;
+      if ((old ? resourceKey(old) : null) !== (after ? resourceKey(after) : null))
+        descendants(node);
+    }
+    const splitChange = before.splitVisibility.update(
+        change.semanticChanges,
+        sources.values(),
+        ownership,
+        flowHomes,
+        activity,
+        coverage.index,
+      ),
+      splitVisibility = splitChange.index;
+    for (const node of splitChange.nodes) affected.add(resourceKey(node));
+    for (const ref of splitChange.effects)
+      for (const node of [
+        ...(before.requirementReaders.get(deletionEffectKey(ref)) ?? []),
+        ...(requirementReaders.get(deletionEffectKey(ref)) ?? []),
+      ])
+        requirementNodes.add(resourceKey(node));
+    for (const id of coverage.nodes) affected.add(id);
+    const visibilityDraft = before.witnesses.prepare({
+      nodes: [...new Set([...affected, ...requirementNodes])].map(
+        (id) => nodeAllocations.get(id)!.id,
+      ),
+      ownership,
+      activity,
+      birthEnabled: (node) =>
+        before.value.interpretations.birthEnabled(node) && !splitVisibility.hidden(node),
+      requirements: (node) =>
+        (nodeRequirements.get(resourceKey(node)) ?? []).filter((ref) =>
+          splitVisibility.permits(ref),
+        ),
+      tags: (node) => coverage.index.nodeTags(node),
+    });
     const context = { ...before, tapeHomes, subtrees: coverage.index };
     const updated = this.updateText(
       context,
@@ -783,10 +890,22 @@ export class MaterializedProjection {
       change.activity,
       change.semanticChanges,
       change.action.effects[0]?.type === 'SetGroupActive',
+      {
+        tapes: [...change.tapes, ...coverage.tapes],
+        deleted: (node) => visibilityDraft.draft.deleted(node),
+      },
     );
+    visibilityDraft.draft.replaceTapes(
+      updated.tapes,
+      updated.text,
+      ownership,
+      visibilityDraft.dirty,
+    );
+    for (const id of visibilityDraft.draft.finish(visibilityDraft.dirty)) affected.add(id);
+    const witnesses = visibilityDraft.draft;
     for (const id of updated.affected) affected.add(id);
     const nodes = before.nodes.fork(),
-      nodeVisibility = before.nodeVisibility.fork(),
+      nodeVisibility = witnesses.nodes,
       rootOutputs = before.rootOutputs.fork(),
       tapeNodes = before.tapeNodes.fork(),
       membership = before.membership.fork();
@@ -797,7 +916,6 @@ export class MaterializedProjection {
       if (!parent) return fallback('unrepresented-container');
       changedParents.set(id!, parent.node);
     }
-    for (const [id, requirements] of change.requirements) nodeRequirements.set(id, requirements);
     let inlineCount = before.inlineCount;
     const parentFor = (raw: NodeId) => before.membership.get(resourceKey(raw));
     const visible = (range: NativeTextRange) =>
@@ -810,8 +928,7 @@ export class MaterializedProjection {
       ]);
     for (const id of affected) {
       const allocation = nodeAllocations.get(id),
-        prior = before.nodes.get(id)?.node,
-        oldVisibility = before.nodeVisibility.get(id);
+        prior = before.nodes.get(id)?.node;
       if (!allocation) return fallback('unknown-resource');
       if (!allocation.flow || allocation.role !== 'inline') {
         const parentId = parentFor(allocation.id),
@@ -823,9 +940,7 @@ export class MaterializedProjection {
       // Marker subdivision can touch a directly deleted flow's retained ghost
       // slots. Its declaration still hides this header regardless of placement;
       // it has no projected record or availability witness to rebuild.
-      if (oldVisibility?.deleted && oldVisibility.tags.length && !prior) continue;
-      if (oldVisibility?.deleted || oldVisibility?.tags.length)
-        return fallback('node-deletion-coverage');
+      if (nodeVisibility.get(id)?.deleted && !prior) continue;
       const placement = ownership.blockPlacement(allocation.id);
       const oldPlacement = before.nodeAllocations.has(id)
         ? before.value.ownership.blockPlacement(allocation.id)
@@ -879,10 +994,6 @@ export class MaterializedProjection {
       if (resourceKey(flow) !== resourceKey(allocation.flow))
         return fallback('incompatible-root-run');
       const absorbed = resourceKey(ownership.flowBlock(flow)) !== id;
-      const birth =
-        (allocation.id.birth.type === 'genesis' ||
-          change.activity.isActive(allocation.id.birth.action)) &&
-        interpretations.birthEnabled(allocation.id);
       let output: ViewNode | undefined;
       if (!absorbed) {
         const seed: ViewNode = {
@@ -917,21 +1028,7 @@ export class MaterializedProjection {
       const requirements = change.requirements.get(id) ?? before.nodeRequirements.get(id);
       if (!requirements) return fallback('missing-destination-witnesses');
       nodeRequirements.set(id, requirements);
-      const kept =
-        birth ||
-        requirements.some(change.activity.isEffectActive) ||
-        output?.fragments.some((f) => visible(f.range)) === true;
-      nodeVisibility.set(
-        id,
-        freeze({
-          node: allocation.id,
-          tags: [],
-          deleted: false,
-          suppressed: !birth && !kept,
-          scaffold: !birth && kept,
-          available: kept,
-        }),
-      );
+      const kept = nodeVisibility.get(id)!.available;
       for (const tape of prior ? readerTapes(prior) : [])
         tapeNodes.set(
           tape,
@@ -1056,6 +1153,9 @@ export class MaterializedProjection {
       rootOutputs,
       tapeNodes,
       nodeRequirements,
+      requirementReaders,
+      witnesses,
+      splitVisibility,
       membership,
       inlineCount,
       text: updated.text,
@@ -1298,6 +1398,7 @@ export class MaterializedProjection {
     groupActivity: Activity,
     changes: readonly ActionEnvelope[],
     control: boolean,
+    destination?: { readonly tapes: readonly TapeId[]; deleted(node: NodeId): boolean },
   ) {
     const text = before.text.fork(),
       coverage = before.subtrees.update(
@@ -1316,6 +1417,7 @@ export class MaterializedProjection {
     const affected = new Set<string>();
     const nativeTapes = new Set(touched.map(resourceKey));
     const semanticTapes = new Map(touched.map((tape) => [resourceKey(tape), tape]));
+    for (const tape of destination?.tapes ?? []) semanticTapes.set(resourceKey(tape), tape);
     for (const tape of coverage.tapes) semanticTapes.set(resourceKey(tape), tape);
     for (const changed of changes) {
       for (const effect of changed.effects)
@@ -1378,6 +1480,7 @@ export class MaterializedProjection {
       );
       for (const [key, entry] of old) {
         if (
+          !destination &&
           !control &&
           !coverage.tapes.length &&
           !newTokens.has(key) &&
@@ -1393,8 +1496,14 @@ export class MaterializedProjection {
           control && entry.token.birth !== null
             ? groupActivity.isActive(entry.token.birth)
             : entry.insertionActive;
+        const deletedDestination = destination
+          ? destination.deleted(
+              ownership.flowBlock(ownership.runLayout(ownership.owner(entry.token).run).flow),
+            )
+          : entry.deletedDestination;
         if (
           entry.insertionActive === insertionActive &&
+          entry.deletedDestination === deletedDestination &&
           entry.tags.length === tags.length &&
           entry.tags.every((tag, i) => resourceKey(tag) === resourceKey(tags[i]))
         )
@@ -1403,7 +1512,8 @@ export class MaterializedProjection {
           ...entry,
           insertionActive,
           tags,
-          visible: insertionActive && !tags.length && !entry.deletedDestination,
+          deletedDestination,
+          visible: insertionActive && !tags.length && !deletedDestination,
         });
       }
       const home = nativeTapes.has(id) && before.tapeHomes.get(id);
@@ -1425,7 +1535,7 @@ export class MaterializedProjection {
       text.set(id, { entries, byId: old });
       this.counts.textTapesRebuilt++;
     }
-    return { text, deletions, subtrees, affected };
+    return { text, deletions, subtrees, affected, tapes: [...semanticTapes.values()] };
   }
   private append(
     before: State,
@@ -1460,7 +1570,7 @@ export class MaterializedProjection {
     changes: readonly ActionEnvelope[] = [action],
     control = false,
   ): State {
-    const { text, deletions, subtrees, affected } = this.updateText(
+    const updated = this.updateText(
       before,
       action,
       ownership,
@@ -1470,6 +1580,22 @@ export class MaterializedProjection {
       changes,
       control,
     );
+    const { text, deletions, subtrees, affected } = updated;
+    const visibilityDraft = before.witnesses.prepare({
+      nodes: [...affected].map((id) => before.nodeAllocations.get(id)!.id),
+      ownership,
+      activity: projectedActivity(groupActivity, before.value.interpretations),
+      birthEnabled: (node) =>
+        before.value.interpretations.birthEnabled(node) && !before.splitVisibility.hidden(node),
+      requirements: (node) =>
+        (before.nodeRequirements.get(resourceKey(node)) ?? []).filter((ref) =>
+          before.splitVisibility.permits(ref),
+        ),
+      tags: (node) => subtrees.nodeTags(node),
+    });
+    visibilityDraft.draft.replaceTapes(updated.tapes, text, ownership, visibilityDraft.dirty);
+    visibilityDraft.draft.finish(visibilityDraft.dirty);
+    const witnesses = visibilityDraft.draft;
     const changed = new Map<string, ViewNode>();
     const visible = (range: NativeTextRange) =>
       text.get(resourceKey(range.tape))?.byId.get(tokenKey(range))?.visible === true;
@@ -1506,7 +1632,7 @@ export class MaterializedProjection {
       visibility: before.nodeVisibility,
       flowHomes: before.flowHomes,
     });
-    return { ...before, value, nodes, text, deletions, subtrees, commandIndex };
+    return { ...before, value, nodes, text, deletions, subtrees, witnesses, commandIndex };
   }
   cancel(): void {
     this.generation++;

@@ -61,10 +61,14 @@ function change(p: CommandReplica, base: Projection): StructuralProjectionChange
       raw: allocation.flow && ownership.raw(allocation.flow),
     });
   };
+  const oldVisibility = new Map(base.visibility.nodes.map((n) => [resourceKey(n.node), n]));
+  const nextVisibility = new Map(next.value.visibility.nodes.map((n) => [resourceKey(n.node), n]));
   const nodes = next.value.ownership.nodeAllocations
     .filter(
       (n) =>
         !old.has(resourceKey(n.id)) ||
+        json(oldVisibility.get(resourceKey(n.id))) !==
+          json(nextVisibility.get(resourceKey(n.id))) ||
         signature(base.ownership, n.id) !== signature(next.value.ownership, n.id) ||
         (n.id.birth.type === 'action' &&
           base.activity.isActive(n.id.birth.action) !== activity.isActive(n.id.birth.action)),
@@ -604,6 +608,146 @@ test('captured sibling intervals on a participating split tape remain resource-l
     expect(history.redo().state).toBe('applied');
     consume();
   } finally {
+    p.close();
+  }
+});
+
+for (const size of [10, 150])
+  describe(`controlled deletion witnesses (${size})`, () => {
+    let p: CommandReplica,
+      seeded: ReturnType<typeof seed>,
+      value: Projection,
+      tail: Projection['view']['root']['children'][number];
+    let history: ReturnType<CommandReplica['editor']['session']>;
+    beforeAll(() => {
+      p = commandReplica(
+        commandGenesis(Array.from({ length: size }, (_, i) => `p${i}abcdef`).join('\n\n')),
+        undefined,
+        'materialized',
+      );
+      seeded = seed(p);
+      value = seeded.value;
+      tail = value.view.root.children.at(-1)!;
+      history = p.editor.session('deletion-witness');
+    });
+    afterAll(() => p.close());
+    const consume = () => {
+      const input = change(p, value),
+        bytes = p.document.store.encodeUpdate(),
+        held = value.view;
+      const { value: result, report } = captureDiagnostics(() =>
+        seeded.consumer.prepareStructural(input),
+      );
+      expect(result.state, result.state === 'fallback' ? result.reason : '').toBe('prepared');
+      if (result.state !== 'prepared') throw new Error(result.reason);
+      const cold = commandReplica(p.genesis, bytes, 'reference');
+      try {
+        expect(result.value.view).toEqual(cold.view());
+        expect(result.value.visibility).toEqual(
+          cold.document.publication.status().publication!.value.visibility,
+        );
+        expect(result.value.view.root.children.at(-1)).toBe(tail);
+        expect(report.work['driver/projection.fullProjectors'] ?? 0).toBe(0);
+        expect(report.work['driver/witness.fullIndexesConstructed'] ?? 0).toBe(0);
+        expect(report.work['driver/subtree.fullIndexesConstructed'] ?? 0).toBe(0);
+        expect(report.resources['witness.records'] ?? []).not.toContain(
+          resourceKey(tail.origin.representative),
+        );
+        result.commit();
+        value = result.value;
+        expect(compareBytes(bytes, p.document.store.encodeUpdate())).toBe(0);
+        expect(held.root.children.at(-1)).toBe(tail);
+      } finally {
+        cold.close();
+      }
+    };
+    test('delete one paragraph', () => {
+      applied(history.edit(deleteBlocks, { nodeIds: [p.handle(p.nodes()[0])] }));
+      consume();
+    });
+    test('undo deletion', () => {
+      expect(history.undo().state).toBe('applied');
+      consume();
+    });
+    test('redo deletion', () => {
+      expect(history.redo().state).toBe('applied');
+      consume();
+    });
+    test('edit after deletion', () => {
+      applied(history.edit(insertText, { nodeId: p.handle(p.nodes()[0]), from: 1, text: '!' }));
+      consume();
+    });
+  });
+
+test('concurrent subtree deletion updates weak split birth and destination witnesses without changing distant records', () => {
+  const genesis = commandGenesis('abcdef\n\nother\n\ntail'),
+    p = commandReplica(genesis, undefined, 'materialized'),
+    peer = commandReplica(genesis);
+  try {
+    applied(
+      p.editor.edit({ local: 'split', group: 1n }, insertParagraph, {
+        nodeId: p.handle(p.nodes()[0]),
+        from: 3,
+      }),
+    );
+    applied(
+      peer.editor.edit({ local: 'prior', group: 1n }, insertText, {
+        nodeId: peer.handle(peer.nodes()[1]),
+        from: 1,
+        text: '!',
+      }),
+    );
+    p.receive(peer.document.store.encodeUpdate());
+    const seeded = seed(p),
+      held = seeded.value,
+      tail = held.view.root.children.at(-1)!,
+      saved = textPoint(held.view.root.children[1], 1, 'right').address;
+    let value = held;
+    const consume = () => {
+      const input = change(p, value),
+        bytes = p.document.store.encodeUpdate();
+      const { value: result, report } = captureDiagnostics(() =>
+        seeded.consumer.prepareStructural(input),
+      );
+      expect(result.state, result.state === 'fallback' ? result.reason : '').toBe('prepared');
+      if (result.state !== 'prepared') throw new Error(result.reason);
+      const cold = commandReplica(genesis, bytes, 'reference');
+      try {
+        expect(result.value.view).toEqual(cold.view());
+        expect(result.value.visibility).toEqual(
+          cold.document.publication.status().publication!.value.visibility,
+        );
+        expect(resolveAddress(saved, result.value.ownership, result.value.visibility)).toEqual(
+          resolveAddress(
+            saved,
+            cold.document.publication.status().publication!.value.ownership,
+            cold.document.publication.status().publication!.value.visibility,
+          ),
+        );
+        expect(result.value.view.root.children.at(-1)).toBe(tail);
+        expect(report.work['driver/projection.fullProjectors'] ?? 0).toBe(0);
+        expect(report.work['driver/splitVisibility.fullIndexesConstructed'] ?? 0).toBe(0);
+        result.commit();
+        value = result.value;
+      } finally {
+        cold.close();
+      }
+    };
+    const deletion = peer.editor.session('delete');
+    applied(deletion.edit(deleteBlocks, { nodeIds: [peer.handle(peer.nodes()[0])] }));
+    p.receive(peer.document.store.encodeUpdate());
+    consume();
+    expect(value.visibility.nodes.some((n) => n.suppressed && !n.deleted)).toBe(true);
+    peer.receive(p.document.store.encodeUpdate());
+    expect(deletion.undo().state).toBe('applied');
+    p.receive(peer.document.store.encodeUpdate());
+    consume();
+    expect(deletion.redo().state).toBe('applied');
+    p.receive(peer.document.store.encodeUpdate());
+    consume();
+    expect(held.view.root.children[1].content).toBe('def');
+  } finally {
+    peer.close();
     p.close();
   }
 });

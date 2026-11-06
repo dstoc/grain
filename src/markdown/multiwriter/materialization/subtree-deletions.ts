@@ -1,5 +1,12 @@
 import { compareEffects } from '../contracts.js';
-import type { ActionEnvelope, DeletionId, NodeId, RangeRef, TapeId } from '../contracts.js';
+import type {
+  ActionEnvelope,
+  ActionId,
+  DeletionId,
+  NodeId,
+  RangeRef,
+  TapeId,
+} from '../contracts.js';
 import type { BirthContent } from '../projection/types.js';
 import type { Activity, EffectRef } from '../visibility/activity.js';
 import type { TextToken, VisibilityNode } from '../visibility/visibility.js';
@@ -216,6 +223,30 @@ export class SubtreeDeletions {
       .filter((d) => d.active)
       .sort(compareEffects);
     return [...new Map(entries.map((d) => [resourceKey(d.effect.tag), d.effect.tag])).values()];
+  }
+  /** The full projector tests concurrency against ANY active declaration of a
+   * tag present on the source's current raw path, including reused tags. */
+  hidesSplit(
+    source: NodeId,
+    action: ActionId,
+    parent: (node: NodeId) => NodeId | null,
+    activity: Activity,
+  ): boolean {
+    const seen = new Set<string>();
+    for (let node: NodeId | null = source; node; node = parent(node)) {
+      const id = resourceKey(node);
+      if (seen.has(id)) throw new Error('Raw visibility placement contains a cycle');
+      seen.add(id);
+      countWork('subtree.splitAncestorEdgesVisited');
+      for (const tag of this.nodeTags(node))
+        if (
+          this.groups
+            .get(resourceKey(tag))
+            ?.declarations.some((entry) => activity.concurrent(action, entry.action.id))
+        )
+          return true;
+    }
+    return false;
   }
   matches(
     token: TextToken,
