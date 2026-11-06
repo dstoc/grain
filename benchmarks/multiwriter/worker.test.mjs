@@ -446,11 +446,15 @@ test('short structural runner uses real managed history, independent checks, exc
     assert.equal(split['publication/ownership.fullInputEnumerated'] ?? 0, 0);
     assert.equal(split['publication/ownership.sortInputs'] ?? 0, 0);
     assert.equal(split['publication/ownership.suffixActions'], 1);
-    assert.equal(split['publication/deletion.fullIndexesConstructed'], 1);
-    assert(split['publication/deletion.retainedEffectsInspected'] > 0);
+    assert.equal(split['publication/deletion.fullIndexesConstructed'] ?? 0, 0);
+    assert.equal(split['publication/projection.localStructuralCandidates'], 1);
+    assert.equal(split['publication/deletion.retainedEffectsInspected'] ?? 0, 0);
+    assert(split['publication/deletion.changedEffectsInspected'] > 0);
     assert(split['publication/coupled.candidatesCommitted'] > 0);
     const edit = report.trace.find((s) => s.name === 'unrelated-edit').exclusive.work;
-    assert.equal(edit['publication/projection.fullProjectors'], 1);
+    assert.equal(edit['publication/projection.fullProjectors'] ?? 0, 0);
+    assert.equal(edit['publication/provenance.fullReconstructions'] ?? 0, 0);
+    assert.equal(edit['publication/coupled.candidatesCommitted'], 1);
     assert(readFileSync(output + '.bin').byteLength > 0);
     const coldOutput = join(directory, 'cold');
     execFileSync(

@@ -268,3 +268,10 @@ The GC controls also cancel 16 fully constructed production candidates, evict th
 cache and verify that candidate projection/ownership roots can be collected while
 the prior published tuple remains held and readable. The controls use weak
 references and non-retaining wrappers rather than mock call logs.
+
+Visibility exports retain the reference `text`, then `nodes` field order. This
+keeps existing exact-carrier observation hashes valid. The hash oracle and
+captured expectations are unchanged. Worker controls now require zero warm full
+projector/deletion-index construction and a real local structural candidate,
+while retaining their complete independent observations, history and cold-reopen
+assertions.

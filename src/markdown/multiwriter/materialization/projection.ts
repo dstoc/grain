@@ -285,15 +285,16 @@ function resourceVisibility(
   const textView = textVisibility(order, text, []);
   let allNodes: Projection['visibility']['nodes'] | undefined;
   return {
+    // Retain the reference export order for existing exact-carrier hashes.
+    get text() {
+      return textView.text;
+    },
     get nodes() {
       if (!allNodes) {
         countWork('projection.visibilityNodesExported', nodes.size);
         allNodes = [...order.nodes()].map((node) => nodes.get(resourceKey(node))!);
       }
       return allNodes;
-    },
-    get text() {
-      return textView.text;
     },
   };
 }
