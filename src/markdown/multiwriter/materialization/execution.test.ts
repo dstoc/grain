@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import { commandGenesis, commandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import type { CommandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import { createMaterializationOracle } from '../../../../test/multiwriter/materialization-oracle.js';
@@ -16,11 +16,80 @@ import { captureDiagnostics } from '../diagnostics.js';
 import { finish } from '../ingest/work.js';
 import { MaterializedOwnership } from './coupled.js';
 import { resourceKey } from '../layout/index.js';
+import { MaterializedLayout } from './layout.js';
 
 function applied(result: ReturnType<CommandReplica['editor']['edit']>) {
   if (result.status !== 'applied') throw new Error('Expected applied edit');
   return result;
 }
+
+let splitBirthAncestorWork: number | undefined;
+for (const depth of [0, 8, 32])
+  test(`split preparation forbids resource inventories after ${depth} unrelated split births`, () => {
+    const p = commandReplica(commandGenesis('abcdef\n\nxyz'), undefined, 'materialized'),
+      owner = new MaterializedOwnership(),
+      oracle = createMaterializationOracle();
+    try {
+      const target = p.nodes()[0].origin.representative,
+        other = p.nodes()[1].origin.representative;
+      const node = (origin: typeof target) =>
+        p.nodes().find((node) => resourceKey(node.origin.representative) === resourceKey(origin))!;
+      for (let i = 0; i < depth; i++)
+        applied(
+          p.editor
+            .session('births')
+            .edit(insertParagraph, { nodeId: p.handle(node(other)), from: 1 }),
+        );
+      expect(node(target).content).toBe('abcdef');
+      prepare(p, owner).value.commit();
+      applied(
+        p.editor
+          .session('target')
+          .edit(insertParagraph, { nodeId: p.handle(node(target)), from: 2 }),
+      );
+      const nodes = vi
+        .spyOn(MaterializedLayout.prototype, 'nodeAllocations', 'get')
+        .mockImplementation(() => {
+          throw new Error('Full node inventory exported');
+        });
+      const flows = vi
+        .spyOn(MaterializedLayout.prototype, 'flowPlacements', 'get')
+        .mockImplementation(() => {
+          throw new Error('Full flow inventory exported');
+        });
+      let prepared: ReturnType<typeof prepare>;
+      try {
+        prepared = prepare(p, owner, depth);
+      } finally {
+        nodes.mockRestore();
+        flows.mockRestore();
+      }
+      const work = prepared.report.work;
+      expect(work['driver/coupled.actionsCompared']).toBe(1);
+      expect(work['driver/ownership.suffixActions']).toBe(1);
+      expect(work['driver/ownership.retainedStructuralCandidates']).toBe(1);
+      expect(work['driver/layout.nodesExported'] ?? 0).toBe(0);
+      expect(work['driver/layout.flowsExported'] ?? 0).toBe(0);
+      splitBirthAncestorWork ??= work['driver/ownership.flowAncestorVisits'];
+      expect(work['driver/ownership.flowAncestorVisits']).toBe(splitBirthAncestorWork);
+      expect(prepared.value.value.changes).toMatchObject({
+        replayFrom: depth,
+        replayTo: depth + 1,
+      });
+      prepared.value.commit();
+      oracle.check(p.document, p.genesis);
+      expect(
+        p
+          .nodes()
+          .slice(0, 2)
+          .map((node) => node.content),
+      ).toEqual(['ab', 'cdef']);
+    } finally {
+      owner.evict();
+      oracle.destroy();
+      p.close();
+    }
+  });
 /** Prepare provenance/reference activity outside the B work interval. C and D
  * own those callers. The production B API must not enumerate the retained input
  * again, even if its caller has already materialized a complete projection input.

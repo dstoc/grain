@@ -130,8 +130,11 @@ function replayOwnershipSuffixMeasured(
   const coverage = resume?.coverage.fork() ?? new OwnershipCoverage();
   function component(flow: FlowId): FlowId {
     let placement = layout.flowPlacement(flow);
-    while (placement.parent.type === 'flow')
+    countWork('ownership.flowAncestorVisits');
+    while (placement.parent.type === 'flow') {
       placement = layout.flowPlacement(layout.runLayout(placement.parent.slot.run).flow);
+      countWork('ownership.flowAncestorVisits');
+    }
     return placement.flow;
   }
   function dirtyRun(run: RunId): void {
@@ -305,11 +308,7 @@ function replayOwnershipSuffixMeasured(
           if (!reference) throw new Error('Split needs an addressable basis cell');
           const referenceOwner = owners.get(cellKey(reference.range));
           if (!referenceOwner) throw new Error('Split basis uses an unavailable tape');
-          const block = layout.flowBlock(layout.runLayout(referenceOwner.run).flow);
-          const flow = layout.flowPlacements.find(
-            (placement) =>
-              placement.parent.type === 'block' && sameId(placement.parent.node, block),
-          )!.flow;
+          const flow = component(layout.runLayout(referenceOwner.run).flow);
           const current = rawCells(flow, reader).filter(
             (assignment) => !homeIndex.isReserved(assignment.cell),
           );
@@ -338,7 +337,7 @@ function replayOwnershipSuffixMeasured(
           assign(selected, effect.newRun, effect.occurrence);
         }
         const run = layout.runLayout(effect.newRun);
-        const node = layout.nodeAllocations.find((node) => sameId(node.id, effect.newNode));
+        const node = layout.nodeAllocation(effect.newNode);
         const birth = layout.blockPlacement(effect.newNode);
         if (
           !node?.flow ||

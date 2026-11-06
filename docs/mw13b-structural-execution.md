@@ -68,6 +68,14 @@ for the same node/flow; a split elsewhere does not visit them. Requirements and
 cohort exports are lazy, cached reads. The independent reducer still reconstructs
 them from all original facts.
 
+Split replay resolves the reference owner's top-level flow through indexed
+placement ancestry and reads the newborn node directly by ID. It never exports
+the complete node/flow inventories to find either record. Inventory exports and
+affected flow-ancestor visits have explicit work counters. The bounded regression
+grows unrelated split births at depths 0, 8, and 32 and forbids both inventory
+getters during isolated B preparation. Full projector callers still export
+inventories; those costs remain visible outside the isolated replay gate.
+
 ## Candidate output and publication
 
 General `MaterializedOwnership.prepare()` returns `value.changes`. The specialized

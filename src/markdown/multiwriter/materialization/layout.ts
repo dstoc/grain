@@ -127,12 +127,15 @@ export class MaterializedLayout {
     return this.node(id);
   }
   get nodeAllocations(): readonly NodeAllocation[] {
+    countWork('layout.nodesExported', this.nodes.size);
     return [...this.nodes.values()];
   }
   get runLayouts(): readonly RunLayout[] {
+    countWork('layout.runsExported', this.runs.size);
     return [...this.runs.values()];
   }
   get flowPlacements(): readonly FlowPlacement[] {
+    countWork('layout.flowsExported', this.flows.size);
     return [...this.flows.keys()].map((key) => this.inline.get(key)!.value!);
   }
   blockPlacement(node: NodeId): BlockPlacement | null {
