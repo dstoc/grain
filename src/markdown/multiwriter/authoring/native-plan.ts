@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import type {
   Allocation,
   MarkerId,
@@ -54,11 +55,14 @@ export class NativePlan implements NativeView {
     for (const s of structuredClone(snapshots)) this.install(s);
   }
   all() {
+    countWork('plan.allTapeExports', this.source?.tapes.length ?? 0);
     const result = new Map(this.source?.tapes.map((id) => [resourceKey(id), this.snapshot(id)]));
     for (const [key, snapshot] of this.tapes) result.set(key, structuredClone(snapshot));
     return [...result.values()];
   }
   private install(snapshot: TapeSnapshot): void {
+    countWork('plan.tapesInstalled');
+    countWork('plan.partsInstalled', snapshot.parts.length);
     this.tapes.set(resourceKey(snapshot.tape), snapshot);
     for (const part of snapshot.parts)
       if (part.type === 'marker')
@@ -101,6 +105,7 @@ export class NativePlan implements NativeView {
     const source = this.untouched(tape);
     if (source) return source.locate(tape, id);
     for (const part of this.readTape(tape).parts) {
+      countWork('plan.partsTraversed');
       const size = part.type === 'text' ? part.text.length : 1;
       if (
         part.native.client === id.client &&

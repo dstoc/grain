@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import type { NodeId as OriginId } from '../contracts.js';
 import type { ViewNode } from '../projection/types.js';
 import { resourceKey } from '../layout/index.js';
@@ -24,12 +25,14 @@ export function registerCommandViewIndex(root: ViewNode, index: CommandViewIndex
 export function commandViewIndex(root: ViewNode): CommandViewIndex {
   const cached = indexes.get(root);
   if (cached) return cached;
+  countWork('command.fullIndexesConstructed');
   const origins = new Map<NodeId, ViewNode>(),
     byOrigin = new Map<string, NodeId>();
   const parents = new Map<NodeId, NodeId>(),
     siblings = new Map<NodeId, { previous?: NodeId; next?: NodeId }>();
   let ordinal = 0;
   const visit = (view: ViewNode, parent?: NodeId) => {
+    countWork('command.viewRecordsIndexed');
     const id = `construction:${ordinal++}`;
     origins.set(id, view);
     byOrigin.set(resourceKey(view.origin.representative), id);

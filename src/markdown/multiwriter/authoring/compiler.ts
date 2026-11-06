@@ -1,3 +1,4 @@
+import { measure } from '../diagnostics.js';
 import type { ReadySequence } from './ready-source.js';
 import { convertedFocus } from './parser-focus.js';
 import { prepareParserConversion, bindParserConversion } from '../projection/parser-plan.js';
@@ -1051,6 +1052,9 @@ export class CommandCompiler {
   }
 
   run(): void {
+    return measure('draft-query', () => this.runMeasured());
+  }
+  private runMeasured(): void {
     if (this.intents.every((i) => i.type === 'splice')) {
       for (const handle of new Set(this.intents.map((i) => (i.type === 'splice' ? i.id : '')))) {
         const original = this.pieces(handle),
@@ -1245,6 +1249,12 @@ export class CommandCompiler {
     if (this.fragments.size) throw new Error('Uninserted move-only fragment');
   }
   bind(
+    native: NativeView,
+    body: Pick<ActionEnvelope, 'allocations' | 'nativeInsertUpdates' | 'nativeManifest'>,
+  ): ActionEnvelope {
+    return measure('draft-query', () => this.bindMeasured(native, body));
+  }
+  private bindMeasured(
     native: NativeView,
     body: Pick<ActionEnvelope, 'allocations' | 'nativeInsertUpdates' | 'nativeManifest'>,
   ): ActionEnvelope {

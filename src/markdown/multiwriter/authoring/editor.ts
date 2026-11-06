@@ -1,3 +1,4 @@
+import { measure } from '../diagnostics.js';
 import type { ReadySequence } from './ready-source.js';
 import { decodeUpdate, Item } from 'yjs';
 import { encodeEnvelope } from '../actions/codec.js';
@@ -131,6 +132,9 @@ export class LocalEditor {
     return status.publication;
   }
   private captureSelection(options: LocalEditOptions): StableSelection | undefined {
+    return measure('selection-address', () => this.captureSelectionMeasured(options));
+  }
+  private captureSelectionMeasured(options: LocalEditOptions): StableSelection | undefined {
     const selection = options.selectionBefore;
     if (!selection) return undefined;
     const p = this.current(),
@@ -205,6 +209,13 @@ export class LocalEditor {
     prepared: PreparedNativeBody | undefined,
     register: () => void,
   ): void {
+    return measure('canonical-append', () => this.appendMeasured(envelope, prepared, register));
+  }
+  private appendMeasured(
+    envelope: ActionEnvelope,
+    prepared: PreparedNativeBody | undefined,
+    register: () => void,
+  ): void {
     let appended = false;
     const retain = () => {
       prepared?.commit();
@@ -233,6 +244,17 @@ export class LocalEditor {
     retain();
   }
   private performControl(
+    session: AuthorSession,
+    effect: Extract<ActionEnvelope['effects'][number], { type: 'SetGroupActive' }>,
+    register: (id: ActionId) => void,
+  ) {
+    return measure(
+      'draft-query',
+      () => this.performControlMeasured(session, effect, register),
+      'author',
+    );
+  }
+  private performControlMeasured(
     session: AuthorSession,
     effect: Extract<ActionEnvelope['effects'][number], { type: 'SetGroupActive' }>,
     register: (id: ActionId) => void,
@@ -337,6 +359,19 @@ export class LocalEditor {
     return this.performEdit(session, command, input, options);
   }
   private performEdit<Input>(
+    session: AuthorSession,
+    command: Edit<Input>,
+    input: Input,
+    options: LocalEditOptions = {},
+    register?: (edit: RetainedEdit) => void,
+  ): LocalEditResult {
+    return measure(
+      'draft-query',
+      () => this.performEditMeasured(session, command, input, options, register),
+      'author',
+    );
+  }
+  private performEditMeasured<Input>(
     session: AuthorSession,
     command: Edit<Input>,
     input: Input,
@@ -563,7 +598,12 @@ export class LocalEditor {
     } catch (error) {
       if (retained) throw new RetainedEditError(retained, error);
       if (error instanceof ConversionDeclined)
-        return { status: 'declined', applied: false, reason: error.reason, message: error.message };
+        return {
+          status: 'declined',
+          applied: false,
+          reason: error.reason,
+          message: error.message,
+        };
       throw error;
     } finally {
       this.editing = false;
@@ -571,9 +611,15 @@ export class LocalEditor {
   }
   /** Complete reference replay synchronously; decode/capacity failures still propagate. */
   refresh() {
-    let result = this.document.publication.refresh();
-    while (result.state === 'deferred') result = result.continuation.resume();
-    return result.value;
+    return measure(
+      'publication',
+      () => {
+        let result = this.document.publication.refresh();
+        while (result.state === 'deferred') result = result.continuation.resume();
+        return result.value;
+      },
+      'publication',
+    );
   }
   editEmptyRoot(session: AuthorSession, text: string): LocalEditResult {
     if (this.sessions.has(session.local))

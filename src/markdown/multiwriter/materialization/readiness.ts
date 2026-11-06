@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import { ActionStore } from '../actions/store.js';
 import { compareBytes } from '../actions/cbor.js';
 import { encodeEnvelope } from '../actions/codec.js';
@@ -286,6 +287,8 @@ export class IndexedActionStore extends ActionStore {
     variant: ActionVariant,
   ): Work<{ readonly certificate: Certificate; readonly context: ActionValidationContext }> {
     const action = variant.envelope!;
+    countWork('readiness.dependenciesVisited', action.dependencies.length);
+    countWork('readiness.candidateAllocationsIndexed', action.allocations.length);
     const dependencies = action.dependencies.map((id) => this.certified.get(actionKey(id))!);
     let past: MapRoot<Certificate> | undefined, seals: MapRoot<boolean> | undefined;
     for (const dependency of dependencies) {
@@ -362,6 +365,7 @@ export class IndexedActionStore extends ActionStore {
     const ancestors = [...dependencies];
     while (ancestors.length) {
       yield;
+      countWork('readiness.authorCausalEdgesVisited');
       this.counts.closureEdges++;
       const certificate = ancestors.pop()!,
         ancestor = certificate.variant.envelope!;
@@ -370,7 +374,12 @@ export class IndexedActionStore extends ActionStore {
       closure.set(key, ancestor);
       ancestors.push(...certificate.dependencies);
     }
-    return [...closure.values()].sort(compareActions);
+    countWork('readiness.authorClosureMaterialized', closure.size);
+    countWork('readiness.authorClosureCloned', closure.size);
+    countWork('readiness.authorClosureSortInputs', closure.size);
+    return [...closure.values()].sort(
+      (a, b) => (countWork('readiness.authorClosureComparisons'), compareActions(a, b)),
+    );
   }
   private *calculateReady(version: number): Work<ReadyState> {
     yield* this.decodePending();

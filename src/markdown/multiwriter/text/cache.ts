@@ -1,3 +1,5 @@
+import { countWork } from '../diagnostics.js';
+import { measure } from '../diagnostics.js';
 import { DEFAULT_INGEST_LIMITS, assertLimit, finish } from '../ingest/work.js';
 import type { Work } from '../ingest/work.js';
 import * as Y from 'yjs';
@@ -60,6 +62,9 @@ export class NativeTapeCache {
    * the next write. This synchronous publication boundary is not a session admission lock.
    */
   prepare(key: string, insertions: readonly NativeInsertion[]): PreparedNativeBody {
+    return measure('native-preparation', () => this.prepareMeasured(key, insertions));
+  }
+  private prepareMeasured(key: string, insertions: readonly NativeInsertion[]): PreparedNativeBody {
     this.#idle();
     if (!key || this.#retained.has(key))
       throw new Error('Native body key already published/invalid');
@@ -178,7 +183,9 @@ export class NativeTapeCache {
 
   /** Apply a complete ready body. An identical repeat is idempotent; changed bytes are an error. */
   apply(key: string, input: NativeBody): void {
-    finish(this.applySteps(key, input));
+    return measure('native-preparation', () => {
+      finish(this.applySteps(key, input));
+    });
   }
 
   /** Stages validation across slices; no native mutation occurs until inspection completes. */
@@ -253,6 +260,7 @@ export class NativeTapeCache {
     const parts: TapePart[] = [];
     let index = 0;
     for (let item = text._start; item; item = item.right) {
+      countWork('native.snapshotItemsTraversed');
       yield;
       const native = { client: item.id.client, clock: item.id.clock };
       if (item.content instanceof Y.ContentString)
@@ -265,6 +273,7 @@ export class NativeTapeCache {
       }
       index += item.length;
     }
+    countWork('native.snapshotPartsCloned', parts.length);
     return structuredClone({ tape, length: index, parts });
   }
 

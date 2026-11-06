@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import type {
   ActionId,
   Allocation,
@@ -119,6 +120,8 @@ function reduce(
   birthEnabled: (node: NodeId) => boolean,
   exactTextTags?: (token: TextToken) => readonly OrderedDeletionTag[],
 ): Visibility {
+  countWork('visibility.fullReducers');
+  countWork('visibility.nodesIndexed', layout.nodes.length);
   const nodes = new Map(layout.nodes.map((node) => [resourceKey(node.id), node]));
   if (nodes.size !== layout.nodes.length) throw new Error('Duplicate node allocation');
   const tags = new Map<string, Map<string, DeletionId>>();
@@ -134,6 +137,7 @@ function reduce(
     const seen = new Set<string>();
     let current: NodeId | null = id;
     while (current) {
+      countWork('visibility.ancestorEdgesVisited');
       const key = resourceKey(current);
       if (seen.has(key)) throw new Error('Raw block placement contains a cycle');
       seen.add(key);
@@ -144,6 +148,7 @@ function reduce(
   }
 
   const effects = activity.effects;
+  countWork('visibility.effectsInspected', effects.length);
   const deletes = effects.filter(
     (entry) => entry.effect.type === 'DeleteText' || entry.effect.type === 'DeleteSubtree',
   );
@@ -166,6 +171,7 @@ function reduce(
     while (changed) {
       changed = false;
       for (const node of layout.nodes) {
+        countWork('visibility.inheritedNodesVisited');
         const key = resourceKey(node.id);
         if (
           !covered.has(key) &&
@@ -197,12 +203,14 @@ function reduce(
       .map((node) => resourceKey(node.id)),
   );
   const text = tokens.map((token): TextVisibility => {
+    countWork('visibility.entriesRebuilt');
     const owner = layout.owner(token);
     requireNode(owner);
     const insertionActive = token.birth === null || activity.isActive(token.birth);
     const tokenTags = new Map<string, DeletionId>();
     const matches = exactTextTags ? [...exactTextTags(token)] : undefined;
     for (const deletion of tokenDeletes) {
+      countWork('visibility.tokenDeletionEntriesInspected');
       const { effect } = deletion;
       if (effect.type !== 'DeleteText' && effect.type !== 'DeleteSubtree') continue;
       const covered =

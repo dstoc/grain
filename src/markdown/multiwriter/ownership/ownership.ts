@@ -1,3 +1,5 @@
+import { measure } from '../diagnostics.js';
+import { countWork } from '../diagnostics.js';
 import { compareActions } from '../contracts.js';
 import type {
   ActionId,
@@ -203,17 +205,26 @@ export function reduceOwnership(input: OwnershipInput): OwnershipResult {
 
 /** Exact author closure only; concurrent merge must never re-run these author-local checks. */
 export function certifyOwnership(input: OwnershipInput, author: ActionId): void {
-  if (
-    !input.actions.some(
-      (entry) =>
-        entry.action.id.actor === author.actor && entry.action.id.sequence === author.sequence,
+  return measure('exact-author', () => {
+    if (
+      !input.actions.some(
+        (entry) =>
+          entry.action.id.actor === author.actor && entry.action.id.sequence === author.sequence,
+      )
     )
-  )
-    throw new Error('Certification requires the candidate action');
-  replayOwnership(input, author);
+      throw new Error('Certification requires the candidate action');
+    replayOwnership(input, author);
+  });
 }
 
 function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipResult {
+  return measure('coupled-replay', () => replayOwnershipMeasured(input, author));
+}
+function replayOwnershipMeasured(input: OwnershipInput, author?: ActionId): OwnershipResult {
+  countWork('referenceOwnership.fullReconstructions');
+  countWork('referenceOwnership.actionsEnumerated', input.actions.length);
+  countWork('referenceOwnership.actionsCloned', input.actions.length);
+  countWork('referenceOwnership.sortInputs', input.actions.length);
   const genesis = structuredClone(input.genesis);
   const actions = [
     ...new Map(
@@ -225,7 +236,9 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
         },
       ]),
     ).values(),
-  ].sort((a, b) => compareActions(a.action, b.action));
+  ].sort(
+    (a, b) => (countWork('referenceOwnership.sortComparisons'), compareActions(a.action, b.action)),
+  );
   const homes = [
     ...deriveHomes(genesis),
     ...actions.flatMap((entry) =>
@@ -277,6 +290,7 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
     )
       throw new Error('Snapshot does not match retained tape endpoints');
     for (const marker of markers) {
+      countWork('referenceOwnership.markerBindingsVisited');
       const allocation = markerById.get(resourceKey(marker.marker));
       if (
         !allocation ||
@@ -308,6 +322,7 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
     if (allocation.type === 'run' && !runById.has(resourceKey(allocation.id)))
       runById.set(resourceKey(allocation.id), allocation);
   for (const allocation of allAllocations) {
+    countWork('referenceOwnership.allocationsInspected');
     if (allocation.type !== 'run') continue;
     const home = homesByRun.get(resourceKey(allocation.id));
     const captures = home ? allocation.skeleton.slice(0, -1) : allocation.skeleton;
@@ -453,6 +468,7 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
     )
       assertCoverage();
     for (const [ordinal, effect] of entry.action.effects.entries()) {
+      countWork('referenceOwnership.effectsInspected');
       const order = { action: { id: entry.action.id, lamport: entry.action.lamport }, ordinal };
       const active = input.isActive(order);
       const certifying =

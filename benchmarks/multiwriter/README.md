@@ -132,3 +132,23 @@ then copies the original binary and capture metadata unchanged. Both timed
 implementations replay that same input. The report records the earlier fixture
 source separately from the current candidate source. `--steps` cannot change the
 retained schedule.
+
+## MW-13A structural locality diagnostic
+
+Run the short managed split/type/join/unrelated-edit/undo/redo sequence, both
+deletion variants, restored exact 100/1,000-action inputs, and native refinement
+classification with:
+
+```sh
+node benchmarks/multiwriter/structural-locality.mjs --output /tmp/mw13a-results
+```
+
+Use `--case root`, `tasks`, `100`, or `1000` for one input. Each worker stops after
+five minutes. Only a report with `complete: true` passes. The runner keeps exclusive
+phase spans and retained-work counts separate from wall-only public command
+samples, nested public API durations, cold/reference setup, and unmeasured
+persistence. Fresh writers have different identities; original input bytes and
+all new carriers are retained. See the [refinement decision and shared execution
+contract](../../docs/mw13a-structural-locality.md) before using these profiles to
+choose a production optimization. The original prefix captures have unknown source
+SHAs and different actors. They are diagnostic restores, not uninterrupted runs.

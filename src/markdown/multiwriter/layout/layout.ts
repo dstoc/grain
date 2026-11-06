@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import { compareActions } from '../contracts.js';
 import type {
   ActionEnvelope,
@@ -45,6 +46,10 @@ export function copyLayoutAction({
   allocations,
   effects,
 }: LayoutAction): LayoutAction {
+  countWork('layout.actionsCloned');
+  countWork('layout.allocationsCloned', allocations.length);
+  countWork('layout.effectsCloned', effects.length);
+  countWork('layout.causalEdgesCloned', dependencies.length);
   return structuredClone({ id, lamport, dependencies, allocations, effects });
 }
 export interface LayoutActionInput {

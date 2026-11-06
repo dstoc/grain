@@ -1,3 +1,5 @@
+import { countWork } from '../diagnostics.js';
+import { measure } from '../diagnostics.js';
 import { serializeToString } from '../../block-serializer.js';
 import type { DocumentNode, MarkdownNode } from '../../node.js';
 import { isAllowedSemanticChild } from '../../semantic/types.js';
@@ -71,14 +73,18 @@ export function projectWithActivity(
   groupActivity: Activity,
   structure?: PreparedStructure,
 ) {
-  try {
-    return project(input, groupActivity, structure);
-  } catch (error) {
-    if (error instanceof NativeValidationError) throw new ProjectionError(error.message);
-    throw error;
-  }
+  return measure('visibility-normalization', () => {
+    try {
+      return project(input, groupActivity, structure);
+    } catch (error) {
+      if (error instanceof NativeValidationError) throw new ProjectionError(error.message);
+      throw error;
+    }
+  });
 }
 function project(input: ProjectionInput, groupActivity: Activity, structure?: PreparedStructure) {
+  countWork('projection.fullProjectors');
+  countWork('projection.actionsInspected', input.actions.length);
   const interpretations = selectInterpretations(groupActivity, input.initialProperties);
   const effectActive = (ref: Parameters<typeof groupActivity.isEffectActive>[0]) =>
     groupActivity.isEffectActive(ref) && interpretations.effectEligible(ref);
@@ -306,6 +312,7 @@ function project(input: ProjectionInput, groupActivity: Activity, structure?: Pr
     snapshots.map((snapshot) => [resourceKey(snapshot.tape), snapshot]),
   );
   function build(id: NodeId): MutableViewNode[] {
+    countWork('projection.nodesBuilt');
     const allocation = nodes.get(resourceKey(id));
     if (!allocation) throw new ProjectionError('Unknown raw child');
     if (!available.has(resourceKey(id))) return [];
@@ -462,6 +469,7 @@ function deepFreeze(value: object): void {
 /** Export delimiters/numbering are presentation only; content already has native origins. */
 export function projectionDocument(view: ProjectionView): DocumentNode {
   function convert(node: ViewNode): MarkdownNode {
+    countWork('projection.semanticNodesConstructed');
     const children = node.children.map(convert);
     switch (node.type) {
       case 'document':

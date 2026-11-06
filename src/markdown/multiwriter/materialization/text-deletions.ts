@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import type { DeletionId } from '../contracts.js';
 import { resourceKey } from '../visibility/identity.js';
 import type { Activity } from '../visibility/activity.js';
@@ -44,8 +45,10 @@ export class ExactTextDeletions {
     activity: Pick<Activity, 'effects'>,
     private readonly work: TextDeletionWork,
   ) {
+    countWork('deletion.fullIndexesConstructed');
     const tapes = new Map<string, Map<number, Interval[]>>();
     for (const [order, { effect }] of activity.effects.entries()) {
+      countWork('deletion.retainedEffectsInspected');
       if (effect.type !== 'DeleteText') continue;
       for (const range of effect.observed) {
         const key = resourceKey(range.tape);
@@ -59,6 +62,7 @@ export class ExactTextDeletions {
           tag: effect.tag,
           order,
         });
+        countWork('deletion.rangesIndexed');
         work.exactDeletionRangesIndexed++;
       }
     }
@@ -75,6 +79,7 @@ export class ExactTextDeletions {
       clock = token.native.clock;
     const visit = (root: Root | undefined): void => {
       if (!root || root.maximum <= clock) return;
+      countWork('deletion.queryNodesVisited');
       this.work.exactDeletionNodesVisited++;
       visit(root.left);
       if (root.start > clock) return;

@@ -1,3 +1,4 @@
+import { countWork, touchWork } from '../diagnostics.js';
 import { CellIndex } from '../ownership/cells.js';
 import type { NativeCell } from '../ownership/cells.js';
 import type { MarkerId, NativeId, NativeTextRange, RangeRef, TapeId } from '../contracts.js';
@@ -77,8 +78,12 @@ export class MaterializedCells {
   }
   private install(snapshots: readonly TapeSnapshot[]): void {
     for (const snapshot of snapshots) {
+      countWork('cells.tapesRebuilt');
+      touchWork('tapes.rebuilt', resourceKey(snapshot.tape));
+      countWork('cells.partsTraversed', snapshot.parts.length);
       const index = new CellIndex([snapshot]),
         cells = index.cells;
+      countWork('cells.cellsRebuilt', cells.length);
       this.tapes.set(resourceKey(snapshot.tape), index);
       this.reused.delete(resourceKey(snapshot.tape));
       if (cells[0])
@@ -132,6 +137,7 @@ export class MaterializedCells {
   }
   range(range: RangeRef): readonly NativeCell[] {
     const cells = this.index(range.tape).range(range);
+    countWork('cells.rangeCellsTraversed', cells.length);
     this.onRead?.(range);
     return this.cellsFor(cells);
   }

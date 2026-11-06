@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import type { ParserConversionPlan } from '../../block-parser/types.js';
 import { isInlineNode } from '../../node.js';
 import type { MarkdownNode } from '../../node.js';
@@ -216,6 +217,7 @@ export class MultiwriterCommandDraft implements CommandDraft {
   /** Structural commands keep the established isolated tree. Text and checked/info edits stay in an overlay. */
   get tree(): ConstructionTree {
     if (!this.tree_) {
+      countWork('draft.fullConstructionTrees');
       const tree = new ConstructionTree(projectionDocument({ root: this.root, emptyRoot: null }));
       for (const [id, content] of this.contents) {
         const before = tree.draft.node(id).content!;

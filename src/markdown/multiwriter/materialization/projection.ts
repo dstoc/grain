@@ -1,3 +1,5 @@
+import { countWork, measureWork } from '../diagnostics.js';
+import { measure } from '../diagnostics.js';
 import type { ReadySequence } from '../authoring/ready-source.js';
 import type {
   ActionEnvelope,
@@ -144,11 +146,16 @@ function freeze<T>(value: T): T {
   return value;
 }
 function index(value: Projection, input: ProjectionInput): State {
+  return measure('visibility-normalization', () => indexMeasured(value, input));
+}
+function indexMeasured(value: Projection, input: ProjectionInput): State {
   const nodes = new PersistentMap<NodeRecord>(),
     text = new PersistentMap<TextTape>(),
     deletions = new PersistentMap<readonly TextDeletion[]>(),
     tapeNodes = new PersistentMap<readonly string[]>();
+  countWork('projection.fullIndexesConstructed');
   const visit = (node: ViewNode, depth: number, parent?: string) => {
+    countWork('projection.viewRecordsIndexed');
     nodes.set(key(node), { node, depth, parent });
     // Ghost traversal slots still contribute addresses after their cells transfer.
     // Index projected readers, not just final cell owners or private-home blocks.
@@ -162,6 +169,7 @@ function index(value: Projection, input: ProjectionInput): State {
   visit(value.view.root, 0);
   const entries = new Map<string, TextVisibility[]>();
   for (const entry of value.visibility.text) {
+    countWork('projection.visibilityEntriesIndexed');
     const id = resourceKey(entry.token.tape),
       list = entries.get(id) ?? [];
     list.push(entry);
@@ -461,7 +469,10 @@ export class MaterializedProjection {
         ...reconstructProvenance(genesis.layout, [...actions]),
         native,
       };
-      const prepared = yield* this.ownership.prepare(input, activity, variants, undefined, actions);
+      const prepared = yield* measureWork(
+        'coupled-replay',
+        this.ownership.prepare(input, activity, variants, undefined, actions),
+      );
       yield;
       const value = projectWithActivity(input, activity, {
         ...prepared.value,
@@ -549,6 +560,18 @@ export class MaterializedProjection {
     initial: ProjectionInput['initialProperties'],
     control: boolean,
   ): State | undefined {
+    return measure('visibility-normalization', () =>
+      this.appendPropertiesMeasured(before, changes, ownership, activity, initial, control),
+    );
+  }
+  private appendPropertiesMeasured(
+    before: State,
+    changes: readonly ActionEnvelope[],
+    ownership: OwnershipResult,
+    activity: Activity,
+    initial: ProjectionInput['initialProperties'],
+    control: boolean,
+  ): State | undefined {
     const changed = new Map<string, ViewNode>();
     const propertyBase = control ? selectInterpretations(activity, initial) : before.propertyBase,
       properties = control ? new PersistentMap<PresentedProperties>() : before.properties.fork();
@@ -603,6 +626,18 @@ export class MaterializedProjection {
     variants: PayloadIndex,
     sequence?: ActionSequence,
   ): Projection | undefined {
+    return measure(
+      'visibility-normalization',
+      () => this.stageStructureMeasured(input, activity, variants, sequence),
+      'staging',
+    );
+  }
+  private stageStructureMeasured(
+    input: ProjectionInput,
+    activity: Activity,
+    variants: PayloadIndex,
+    sequence?: ActionSequence,
+  ): Projection | undefined {
     const branch = this.ownership.fork();
     if (!branch) return undefined;
     const action = input.actions.at(-1)!.action;
@@ -612,7 +647,9 @@ export class MaterializedProjection {
       ).values(),
     ];
     try {
-      const structure = finish(branch.prepare(input, activity, variants, touched, sequence));
+      const structure = finish(
+        measureWork('coupled-replay', branch.prepare(input, activity, variants, touched, sequence)),
+      );
       const value = projectWithActivity(input, activity, {
         ...structure.value,
         visibility: indexedVisibility(this.counts),
@@ -627,6 +664,29 @@ export class MaterializedProjection {
     }
   }
   private append(
+    before: State,
+    action: ActionEnvelope,
+    ownership: OwnershipResult,
+    touched: readonly TapeId[],
+    native: NativeView,
+    groupActivity: Activity,
+    changes: readonly ActionEnvelope[] = [action],
+    control = false,
+  ): State {
+    return measure('visibility-normalization', () =>
+      this.appendMeasured(
+        before,
+        action,
+        ownership,
+        touched,
+        native,
+        groupActivity,
+        changes,
+        control,
+      ),
+    );
+  }
+  private appendMeasured(
     before: State,
     action: ActionEnvelope,
     ownership: OwnershipResult,
