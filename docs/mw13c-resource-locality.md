@@ -228,7 +228,10 @@ after an external commit. A C decline uses the same prepared B result for full
 projection/indexing and installs a coherent binding; it never prepares a second B.
 
 Adapter declines are `incompatible-producer-base`, `incompatible-producer-candidate`,
-`incompatible-producer-source` and `missing-exact-addition`. Cold open/eviction and
+`incompatible-producer-source`, `changed-genesis` and `missing-exact-addition`.
+Both base and candidate carry their own genesis identity. A changed genesis
+bypasses text/property reuse and seeds interpretation, deletion and view indexes
+from the new input. Cold open/eviction and
 C's exact metadata declines retain named full reconstruction. Required ordinary
 commands producing incomplete metadata remain integration defects.
 
@@ -253,3 +256,15 @@ properties, raw ownership and addresses. Indexed-ready controls forbid prefix
 iteration, check fresh-batch coverage, verify removal-only address retraction and
 same-B fallback/reseed, and forbid ready reads or checkpoint work at installation.
 These controls do not change deadlines, warm fixtures, CI partitions or workers.
+
+Inherited deletion resolves final parent paths before scheduling descendants.
+A changed child can wait for a changed parent without creating a false cycle.
+Descendants enter the existing work queue; parent recursion retains cycle checks
+and charges `witness.deletionAncestorsChecked`. A managed concurrent birth/delete
+control supplies the child before its parent and checks complete independent
+output and visibility.
+
+The GC controls also cancel 16 fully constructed production candidates, evict the
+cache and verify that candidate projection/ownership roots can be collected while
+the prior published tuple remains held and readable. The controls use weak
+references and non-retaining wrappers rather than mock call logs.

@@ -478,3 +478,68 @@ test('short structural runner uses real managed history, independent checks, exc
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('cancelled production adapter candidates release roots while the prior tuple stays held', () => {
+  const result = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [
+        '--expose-gc',
+        '--import',
+        './benchmarks/multiwriter/resolve-ts.mjs',
+        '--input-type=module',
+        '--eval',
+        String.raw`
+          import assert from 'node:assert/strict';
+          import { commandGenesis, commandReplica } from './test/multiwriter/commands/replica.ts';
+          import { insertParagraph } from './src/editing/commands/insert-paragraph.ts';
+          import { MaterializedProjection } from './src/markdown/multiwriter/materialization/projection.ts';
+          const genesis = commandGenesis('abcdef\n\ntail');
+          const source = commandReplica(genesis), target = commandReplica(genesis, undefined, 'materialized');
+          const held = target.document.publication.status().publication;
+          const heldNative = held.native.encodeState(), heldView = JSON.stringify(held.value.view);
+          assert.equal(source.editor.session('source').edit(insertParagraph, {nodeId: source.handle(source.nodes()[0]), from: 2}).status, 'applied');
+          target.document.store.applyUpdate(source.document.store.encodeUpdate());
+          const retired = [];
+          const prepare = MaterializedProjection.prototype.prepare;
+          let built = false;
+          // A non-retaining wrapper records only weak identities. Mock call logs
+          // would themselves retain the candidate and invalidate this control.
+          MaterializedProjection.prototype.prepare = function* (...args) {
+            const candidate = yield* prepare.apply(this, args);
+            retired.push(new WeakRef(candidate.value), new WeakRef(candidate.value.view.root), new WeakRef(candidate.value.ownership));
+            built = true;
+            yield;
+            return candidate;
+          };
+          for (let trial = 0; trial < 16; trial++) {
+            built = false;
+            let work = target.document.publication.refresh(0);
+            while (!built) {
+              assert.equal(work.state, 'deferred');
+              work = work.continuation.resume(1);
+            }
+            assert.equal(work.state, 'deferred');
+            work.continuation.cancel();
+            assert.equal(target.document.publication.status().publication, held);
+            assert.equal(target.document.activityDiagnostics().retainedActions, 0);
+          }
+          MaterializedProjection.prototype.prepare = prepare;
+          target.document.publication.evict();
+          const turn = () => new Promise(resolve => setImmediate(resolve));
+          let released = false;
+          for (let i = 0; i < 10; i++) {
+            await turn(); global.gc(); global.gc();
+            if (retired.every(ref => ref.deref() === undefined)) { released = true; break; }
+          }
+          assert.equal(JSON.stringify(held.value.view), heldView);
+          assert(Buffer.from(held.native.encodeState()).equals(heldNative));
+          console.log(JSON.stringify({released, candidates: retired.length / 3, retainedPrior: true}));
+          target.close(); source.close();
+        `,
+      ],
+      { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ),
+  );
+  assert.deepEqual(result, { released: true, candidates: 16, retainedPrior: true });
+});

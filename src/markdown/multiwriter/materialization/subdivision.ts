@@ -54,6 +54,7 @@ export interface StructuralChanges {
     readonly checkpoint?: object;
   };
   readonly candidate: {
+    readonly genesis: object;
     readonly native: object;
     readonly ready?: object;
     readonly revision: number;

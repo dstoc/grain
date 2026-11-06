@@ -1,4 +1,5 @@
 import { expect, test, vi } from 'vitest';
+import type { ActionEnvelope } from '../contracts.js';
 import { commandGenesis, commandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import type { CommandReplica } from '../../../../test/multiwriter/commands/replica.js';
 import { markers, firstTape } from '../../../../benchmarks/multiwriter/structural-refinement.js';
@@ -15,6 +16,7 @@ import { compareBytes } from '../actions/cbor.js';
 import { resourceKey } from '../layout/index.js';
 import { resolveAddress } from '../projection/addresses.js';
 import { MaterializedOwnership } from './coupled.js';
+import { seed } from '../../../../test/multiwriter/projection-consumer.js';
 
 function input(p: CommandReplica) {
   if (!('readyActions' in p.document)) throw new Error('Expected materialized document');
@@ -78,7 +80,7 @@ test('indexed production B input never enumerates a certified retained prefix', 
         if (i < length - 1) throw new Error('Retained prefix read');
         return sequence.at(i);
       },
-      *[Symbol.iterator]() {
+      [Symbol.iterator](): IterableIterator<ActionEnvelope> {
         throw new Error('Complete ready iteration');
       },
     };
@@ -242,6 +244,55 @@ test('marker refinement finishes checkpoint work and ready reads before installa
     equal(p);
   } finally {
     owner.evict();
+    p.close();
+  }
+});
+
+test('a changed genesis seed bypasses text reuse and rebuilds coherent projection indexes', () => {
+  const p = commandReplica(commandGenesis('```js\nabcdef\n```\n\ntail'), undefined, 'materialized');
+  try {
+    const seeded = seed(p),
+      before = seeded.consumer.diagnostics();
+    expect(
+      p.editor.session('text').edit(insertText, {
+        nodeId: p.handle(p.nodes()[0]),
+        from: 1,
+        text: 'X',
+      }).status,
+    ).toBe('applied');
+    const next = input(p),
+      changed = structuredClone(p.genesis),
+      code = p.nodes()[0].origin.representative;
+    const genesis = {
+      ...changed,
+      initialProperties: changed.initialProperties!.map((entry) =>
+        resourceKey(entry.node) === resourceKey(code)
+          ? { ...entry, values: { ...entry.values, info: 'reseeded' } }
+          : entry,
+      ),
+    };
+    const candidate = finish(
+      seeded.consumer.prepare(
+        genesis,
+        next.input.actions,
+        next.input.native,
+        next.activity,
+        next.variants,
+      ),
+    );
+    expect(candidate.value.view.root.children[0].info).toBe('reseeded');
+    expect(seeded.consumer.diagnostics().fullProjections).toBe(before.fullProjections + 1);
+    expect(seeded.consumer.diagnostics().localTextProjections).toBe(before.localTextProjections);
+    const cold = commandReplica(genesis, p.document.store.encodeUpdate(), 'reference');
+    try {
+      const expected = cold.document.publication.status().publication!.value;
+      expect(candidate.value.view).toEqual(expected.view);
+      expect(candidate.value.visibility).toEqual(expected.visibility);
+      candidate.commit();
+    } finally {
+      cold.close();
+    }
+  } finally {
     p.close();
   }
 });

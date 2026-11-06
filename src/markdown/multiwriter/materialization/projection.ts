@@ -732,7 +732,8 @@ export class MaterializedProjection {
   ) {
     const generation = ++this.generation,
       before = this.state;
-    let suffix = before
+    const compatibleBefore = before?.producerBase?.genesis === genesis.layout ? before : undefined;
+    let suffix = compatibleBefore
       ? this.ownership.prepareText(actions, native, activity, variants)
       : undefined;
     if (suffix && before && !this.localText(before, suffix.changes)) {
@@ -740,7 +741,7 @@ export class MaterializedProjection {
       suffix = undefined;
     }
     const properties =
-      !suffix && before
+      !suffix && compatibleBefore
         ? this.ownership.prepareProperties(actions, native, activity, variants)
         : undefined;
     const propertyState =
@@ -755,10 +756,7 @@ export class MaterializedProjection {
       state = propertyState;
       commitStructure = properties.commit;
       assertStructure = properties.assertCurrent;
-      producerBase = {
-        genesis: properties.structuralChanges.base.genesis,
-        ...properties.structuralChanges.candidate,
-      };
+      producerBase = properties.structuralChanges.candidate;
       this.counts.localPropertyProjections++;
     } else if (suffix && before) {
       yield;
@@ -775,10 +773,7 @@ export class MaterializedProjection {
       if (suffix.control) this.counts.localTextControls++;
       commitStructure = suffix.commit;
       assertStructure = suffix.assertCurrent;
-      producerBase = {
-        genesis: suffix.structuralChanges.base.genesis,
-        ...suffix.structuralChanges.candidate,
-      };
+      producerBase = suffix.structuralChanges.candidate;
       this.counts.localTextProjections++;
     } else {
       const prepared = yield* measureWork(
@@ -822,14 +817,14 @@ export class MaterializedProjection {
           native,
         };
         const selection = interpretationCandidate(
-          before,
+          compatibleBefore,
           actions,
           readySource(actions),
           activity,
           genesis.initialProperties,
         );
         const visibility = indexedVisibility(
-          before,
+          compatibleBefore,
           actions,
           readySource(actions),
           this.counts,
@@ -847,17 +842,14 @@ export class MaterializedProjection {
           visibility.root(),
           selection.index,
           readySource(actions),
-          before,
+          compatibleBefore,
           selection.delta,
         );
         this.counts.fullProjections++;
       }
       commitStructure = prepared.commit;
       assertStructure = prepared.assertCurrent;
-      producerBase = {
-        genesis: prepared.value.changes.base.genesis,
-        ...prepared.value.changes.candidate,
-      };
+      producerBase = prepared.value.changes.candidate;
     }
     state = { ...state, source: readySource(actions), producerBase };
     let committed = false;

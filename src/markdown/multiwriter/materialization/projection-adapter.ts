@@ -68,6 +68,8 @@ export function projectionChange(
     binding.checkpoint !== changes.base.checkpoint
   )
     return { state: 'fallback', reason: 'incompatible-producer-base' };
+  if (changes.candidate.genesis !== changes.base.genesis)
+    return { state: 'fallback', reason: 'changed-genesis' };
   const source = readySource(actions);
   if (changes.candidate.native !== native || changes.candidate.ready !== source)
     return { state: 'fallback', reason: 'incompatible-producer-candidate' };

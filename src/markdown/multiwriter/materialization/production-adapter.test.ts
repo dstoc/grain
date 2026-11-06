@@ -9,6 +9,7 @@ import { captureDiagnostics } from '../diagnostics.js';
 import { compareBytes } from '../actions/cbor.js';
 import { textPoint, resolveAddress } from '../projection/addresses.js';
 import { resourceKey } from '../layout/index.js';
+import { seed, change } from '../../../../test/multiwriter/projection-consumer.js';
 
 function fixture(size: number, difficult: 'plain' | 'deleted' | 'suppressed' | 'scaffold') {
   const p = commandReplica(
@@ -215,3 +216,56 @@ for (const content of ['', 'abc'])
       p.close();
     }
   });
+
+test('concurrent inherited deletion accepts changed children before their parent', () => {
+  const genesis = commandGenesis('> parent\n\ntail'),
+    p = commandReplica(genesis, undefined, 'materialized'),
+    peer = commandReplica(genesis);
+  try {
+    const parent = p.handle(p.view().root.children[0]);
+    expect(
+      p.editor.session('birth').edit((ctx) => {
+        const child = ctx.draft.create({ type: 'paragraph', content: 'child' });
+        ctx.draft.place(child, parent, null);
+        return { status: 'handled' };
+      }, undefined).status,
+    ).toBe('applied');
+    const seeded = seed(p),
+      child = p.nodes().find((node) => node.content === 'child')!.origin.representative;
+    expect(
+      peer.editor.session('delete').edit((ctx) => {
+        ctx.draft.deleteSubtree(peer.handle(peer.view().root.children[0]));
+        return { status: 'handled' };
+      }, undefined).status,
+    ).toBe('applied');
+    const { report } = captureDiagnostics(() => p.receive(peer.document.store.encodeUpdate()));
+    expect(report.work['publication/provenance.fullReconstructions'] ?? 0).toBe(0);
+    const input = change(p, seeded.value),
+      candidate = seeded.consumer.prepareStructural({
+        ...input,
+        nodes: [child, ...input.nodes.filter((n) => resourceKey(n) !== resourceKey(child))],
+      });
+    expect(candidate.state, candidate.state === 'fallback' ? candidate.reason : '').toBe(
+      'prepared',
+    );
+    if (candidate.state !== 'prepared') throw new Error(candidate.reason);
+    const cold = commandReplica(genesis, p.document.store.encodeUpdate(), 'reference');
+    try {
+      const expected = cold.document.publication.status().publication!.value;
+      expect(candidate.value.view).toEqual(expected.view);
+      expect(candidate.value.visibility).toEqual(expected.visibility);
+      expect(p.view()).toEqual(expected.view);
+      expect(p.document.publication.status().publication!.value.visibility).toEqual(
+        expected.visibility,
+      );
+      expect(
+        expected.visibility.nodes.find((n) => resourceKey(n.node) === resourceKey(child))!.deleted,
+      ).toBe(true);
+    } finally {
+      cold.close();
+    }
+  } finally {
+    peer.close();
+    p.close();
+  }
+});

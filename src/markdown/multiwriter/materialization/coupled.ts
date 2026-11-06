@@ -647,6 +647,7 @@ export class MaterializedOwnership {
             checkpoint: this.state,
           },
           candidate: {
+            genesis: input.genesis,
             native: input.native,
             ready: source,
             revision: generation,
@@ -889,7 +890,13 @@ export class MaterializedOwnership {
     payloadChanges.push({ position: prior.count, after: payload });
     const structuralChanges: StructuralChanges = {
       base: { genesis: this.genesis!, native: this.native, ready: this.source, checkpoint: prior },
-      candidate: { native, ready: source, revision: generation, checkpoint: finalState },
+      candidate: {
+        genesis: this.genesis!,
+        native,
+        ready: source,
+        revision: generation,
+        checkpoint: finalState,
+      },
       subdivisions,
       tapes: touched,
       payloads: payloadChanges,
