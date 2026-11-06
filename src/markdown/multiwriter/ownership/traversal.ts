@@ -1,3 +1,4 @@
+import { countWork, touchWork } from '../diagnostics.js';
 import type { CellAssignment, FlowId, InlineSlot, OccurrenceId, RunId } from '../contracts.js';
 import type { LayoutPrefix } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
@@ -43,12 +44,15 @@ export function traverse(
   const emitted = new Set<string>();
   const flows = layout.flowsAt ? [] : layout.flowPlacements;
   function walkFlow(id: FlowId): void {
+    countWork('traversal.flowsVisited');
+    touchWork('flows.read', resourceKey(id));
     const key = resourceKey(id);
     if (visited.has(key)) throw new Error('Repeated or cyclic inline flow traversal');
     visited.add(key);
     for (const root of roots.get(key) ?? []) walkRun(root);
   }
   function walkRun(origin: RunOrigin): void {
+    countWork('traversal.runsVisited');
     const key = resourceKey(origin.run);
     if (visited.has(key)) throw new Error('Repeated or cyclic run traversal');
     visited.add(key);
@@ -62,6 +66,7 @@ export function traverse(
         slots.add(slotKey);
         result.push({ type: 'slot', slot });
         for (const occurrence of layout.occurrenceOrder(slot)) {
+          countWork('traversal.occurrencesVisited');
           const attachment = attachments.get(resourceKey(occurrence.id));
           if (attachment) {
             result.push({ type: 'attachment', occurrence: occurrence.id, target: attachment.run });
@@ -91,6 +96,7 @@ export function traverse(
     for (const range of run.skeleton) {
       const cells = index.range(range);
       for (const cell of cells) {
+        countWork('traversal.cellsVisited');
         boundary(cell.range.start);
         const cellId = cellKey(cell.range);
         const assignment = assignments.get(cellId);

@@ -1,3 +1,5 @@
+import { countWork } from '../diagnostics.js';
+import { measure } from '../diagnostics.js';
 import { compareActions } from '../contracts.js';
 import type {
   CellAssignment,
@@ -57,6 +59,7 @@ export function orderedOwners(
     *values(): Generator<CellAssignment, undefined, unknown> {
       for (const home of homes)
         for (const cell of index.range(home.cell)) {
+          countWork('ownership.cellsInstalled');
           const owner = owners.get(cellKey(cell.range));
           if (!owner) throw new Error('Native cell lacks a refined assignment');
           yield owner;
@@ -81,10 +84,27 @@ export function replayOwnershipSuffix(
   resources: OwnershipResources,
   work: { coverageFlowsTraversed: number; coverageCellsVisited: number },
 ) {
+  return measure('coupled-replay', () =>
+    replayOwnershipSuffixMeasured(input, activity, resume, save, nativeIndex, resources, work),
+  );
+}
+function replayOwnershipSuffixMeasured(
+  input: OwnershipInput,
+  activity: Activity,
+  resume: OwnershipCheckpoint | undefined,
+  save: (checkpoint: OwnershipCheckpoint) => void,
+  nativeIndex: MaterializedCells,
+  resources: OwnershipResources,
+  work: { coverageFlowsTraversed: number; coverageCellsVisited: number },
+) {
+  countWork('ownership.fullInputEnumerated', input.actions.length);
+  countWork('ownership.fullInputMaterialized', input.actions.length);
+  countWork('ownership.fullInputDeduplicated', input.actions.length);
+  countWork('ownership.sortInputs', input.actions.length);
   const genesis = input.genesis;
   const actions = [
     ...new Map(input.actions.map((entry) => [actionKey(entry), entry])).values(),
-  ].sort((a, b) => compareActions(a.action, b.action));
+  ].sort((a, b) => (countWork('ownership.sortComparisons'), compareActions(a.action, b.action)));
   const homes = resources.homes;
   if (input.homes) resources.assertHomes(input.homes);
   const index = nativeIndex;
@@ -112,6 +132,7 @@ export function replayOwnershipSuffix(
   }
   function install(batch: LayoutGenesis, effects: readonly SemanticEffect[]): void {
     for (const allocation of batch.allocations) {
+      countWork('ownership.allocationsInspected');
       if (allocation.type === 'flow') coverage.invalidate(component(allocation.id));
       else if (allocation.type === 'run') dirtyRun(allocation.id);
       else if (allocation.type === 'occurrence' && !('parent' in allocation.slot))
@@ -155,6 +176,7 @@ export function replayOwnershipSuffix(
     }
   }
   function rawCells(flow: FlowId, cells = index) {
+    countWork('ownership.flowTraversals');
     return traverse(flow, layout, cells, owners, roots, attachments).flatMap((entry) =>
       entry.type === 'cell' ? [entry.assignment] : [],
     );
@@ -223,6 +245,7 @@ export function replayOwnershipSuffix(
     coverage: coverage.fork(),
   });
   for (const entry of actions.slice(count)) {
+    countWork('ownership.suffixActions');
     layout.beginAction(entry, (prior) => activity.observes(entry.action.id, prior));
     install({ allocations: entry.action.allocations, births: entry.births }, entry.action.effects);
     if (
@@ -233,6 +256,7 @@ export function replayOwnershipSuffix(
     )
       assertCoverage();
     for (const [ordinal, effect] of entry.action.effects.entries()) {
+      countWork('ownership.effectsInspected');
       const order = { action: { id: entry.action.id, lamport: entry.action.lamport }, ordinal };
       const active = input.isActive(order);
       if (active && effect.type === 'TransferRange') {
@@ -364,6 +388,7 @@ export function replayOwnershipSuffix(
   const flowHome = (flow: FlowId): NodeId => resources.flowHome(flow);
   const requirements: DestinationRequirement[] = [];
   for (const { order, effect } of candidates) {
+    countWork('ownership.retainedStructuralCandidates');
     const nodes: NodeId[] = [];
     switch (effect.type) {
       case 'TransferRange':

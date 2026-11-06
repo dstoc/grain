@@ -1,0 +1,122 @@
+{
+  "issue": "grain/102",
+  "purpose": "proposal baseline and exact input preservation; no new benchmark",
+  "inspectedFeatureHead": "b8b965439fe41868fafb3737e80c37afc3138937",
+  "combinedEvidenceHead": "f461f2f4588675a2688e96f813e4f1284eb8ff71",
+  "proposalCommit": "dd1070f",
+  "runtime": "v26.13.0",
+  "yjs": "13.6.33",
+  "files": [
+    {
+      "path": "reports/measurements/structural/fixture-150.bin",
+      "bytes": 560489,
+      "sha256": "539a15b5ae5a26471bddba9b6bb2b0018c1826a2903526b4535048d5bbd914f1",
+      "sourceArtifact": {
+        "issue": "grain/94",
+        "name": "structural-visibility-stage-measurements",
+        "version": 1,
+        "path": "reports/measurements/structural/fixture-150.bin"
+      },
+      "captureSourceSha": null,
+      "kind": "old-captured-input",
+      "genesisV8sha256": "539a15b5ae5a26471bddba9b6bb2b0018c1826a2903526b4535048d5bbd914f1"
+    },
+    {
+      "path": "reports/inputs/fixture-150-tasks.bin",
+      "bytes": 678615,
+      "sha256": "ef32258c31e23f3c78a68ed5d0dee7e8d2386d9b082935c0fa257b20d9ae8776",
+      "sourceArtifact": {
+        "issue": "grain/94",
+        "name": "structural-visibility-stage-measurements",
+        "version": 1,
+        "path": "reports/inputs/fixture-150-tasks.bin"
+      },
+      "captureSourceSha": null,
+      "kind": "old-captured-input",
+      "genesisV8sha256": "ef32258c31e23f3c78a68ed5d0dee7e8d2386d9b082935c0fa257b20d9ae8776"
+    },
+    {
+      "path": "reports/inputs/prefix-100.bin",
+      "bytes": 761219,
+      "sha256": "3899bbff6054f0e64573b6a9509c4f69c8b9ff121a4e3f94b45dae886246488a",
+      "sourceArtifact": {
+        "issue": "grain/94",
+        "name": "structural-visibility-stage-measurements",
+        "version": 1,
+        "path": "reports/inputs/prefix-100.bin"
+      },
+      "captureSourceSha": null,
+      "kind": "old-captured-input",
+      "genesisV8sha256": "ef32258c31e23f3c78a68ed5d0dee7e8d2386d9b082935c0fa257b20d9ae8776",
+      "carrierFrames": 100,
+      "carrierPayloadBytes": 82176,
+      "envelopes": 100,
+      "actors": ["b18f165601445af51673d2eef7602e27"],
+      "effects": {
+        "DeleteText": 80,
+        "InsertText": 80,
+        "SetProperties": 19,
+        "SplitFlow": 1,
+        "JoinFlow": 1,
+        "SetGroupActive": 2
+      },
+      "pendingOuterStructs": false,
+      "pendingOuterDeleteSet": false
+    },
+    {
+      "path": "reports/inputs/prefix-1000.bin",
+      "bytes": 1568062,
+      "sha256": "23385dcb9c5c5513c8cd64e49727ffe756201722f49bfa18ed1dd78c0e69aa6b",
+      "sourceArtifact": {
+        "issue": "grain/94",
+        "name": "structural-visibility-stage-measurements",
+        "version": 1,
+        "path": "reports/inputs/prefix-1000.bin"
+      },
+      "captureSourceSha": null,
+      "kind": "old-captured-input",
+      "genesisV8sha256": "ef32258c31e23f3c78a68ed5d0dee7e8d2386d9b082935c0fa257b20d9ae8776",
+      "carrierFrames": 1000,
+      "carrierPayloadBytes": 885415,
+      "envelopes": 1000,
+      "actors": ["9ed0f0e1ec8d28587f6f459be6f3c6da"],
+      "effects": {
+        "DeleteText": 800,
+        "InsertText": 800,
+        "SetProperties": 187,
+        "SplitFlow": 10,
+        "JoinFlow": 10,
+        "SetGroupActive": 20
+      },
+      "pendingOuterStructs": false,
+      "pendingOuterDeleteSet": false
+    }
+  ],
+  "frames": {
+    "path": "reports/inputs/prefix-1000.frames.bin",
+    "bytes": 889415,
+    "sha256": "498eadd1c96973702bbc911bd0296d554d9d39eeda3d5e67638061b1d574cb46",
+    "sourceArtifact": {
+      "issue": "grain/94",
+      "name": "native-interval-stage-measurements",
+      "version": 1,
+      "path": "reports/prefix-1000.frames.bin"
+    },
+    "all1000FramesMatch": true
+  },
+  "schedule": {
+    "index": "zero-based within each 100 actions",
+    "replacements": [0, 79],
+    "task": [
+      [80, 89],
+      [94, 99]
+    ],
+    "split": 90,
+    "join": 91,
+    "undoJoin": 92,
+    "redoJoin": 93
+  },
+  "separateCaptureActors": true,
+  "originalCaptureSourceStatus": "unverified",
+  "newBenchmarkRun": false
+}

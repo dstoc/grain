@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import { finish } from '../ingest/work.js';
 import type { Work } from '../ingest/work.js';
 
@@ -38,7 +39,11 @@ export function reduceActivity(input: readonly ActionEnvelope[]): Activity {
 }
 
 export function* reduceActivitySteps(input: readonly ActionEnvelope[]): Work<Activity> {
-  const actions = [...input].sort(compareActions);
+  countWork('activity.actionsCloned', input.length);
+  countWork('activity.sortInputs', input.length);
+  const actions = [...input].sort(
+    (a, b) => (countWork('activity.sortComparisons'), compareActions(a, b)),
+  );
   const byId = new Map<string, ActionEnvelope>();
   // A fresh full causal matrix for this reduction. This shares no indexed-reader
   // certificates or checkpoint state. Word unions avoid copying string sets for
@@ -66,6 +71,7 @@ export function* reduceActivitySteps(input: readonly ActionEnvelope[]): Work<Act
     byId.set(key, action);
     const closure = new Uint32Array(Math.ceil(ordinal / 32));
     for (const dependency of action.dependencies) {
+      countWork('activity.causalEdgesVisited');
       yield;
       const dependencyKey = actionKey(dependency);
       const ancestors = past.get(dependencyKey);
@@ -74,6 +80,7 @@ export function* reduceActivitySteps(input: readonly ActionEnvelope[]): Work<Act
       closure[ancestors.ordinal >>> 5] |= 1 << (ancestors.ordinal & 31);
       for (let word = 0; word < ancestors.bits.length; word++) {
         yield;
+        countWork('activity.causalWordsVisited');
         closure[word] |= ancestors.bits[word];
       }
     }

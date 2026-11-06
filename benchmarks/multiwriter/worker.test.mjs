@@ -390,3 +390,88 @@ test('discarded publication roots are collectable while held publications remain
     ),
   );
 });
+
+test('structural locality command validates arguments before writing and documents its work limit', () => {
+  const run = (args) =>
+    spawnSync(process.execPath, ['benchmarks/multiwriter/structural-locality.mjs', ...args], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+  const help = run(['--help']);
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /five minutes/);
+  assert.equal(help.stderr, '');
+  const invalid = run(['--output', '/unused', '--case', '10000']);
+  assert.equal(invalid.status, 2);
+  assert.equal(invalid.stdout, '');
+  assert.match(invalid.stderr, /invalid --case/);
+});
+
+test('short structural runner uses real managed history, independent checks, exclusive spans and retained work', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'grain-mw13a-'));
+  try {
+    const output = join(directory, 'sample');
+    execFileSync(
+      process.execPath,
+      [
+        '--import',
+        './benchmarks/multiwriter/resolve-ts.mjs',
+        'benchmarks/multiwriter/structural-locality-worker.mjs',
+        '--fixture',
+        'test/multiwriter/fixtures/structural-locality/fixture-150.bin',
+        '--output',
+        output,
+        '--instrumented',
+        '--deleted',
+      ],
+      { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], timeout: 300_000 },
+    );
+    const report = JSON.parse(readFileSync(output + '.json'));
+    assert.equal(report.complete, true);
+    assert.equal(report.trace.length, 8);
+    assert.equal(report.prefixActions, 0);
+    assert.equal(report.persistence.measured, false);
+    for (const row of report.trace) {
+      assert(row.oracleMs > 0);
+      assert(row.exclusive.wallMs <= row.wallMs);
+      const exclusive = row.exclusive.spans.reduce((n, s) => n + s.end - s.start, 0);
+      assert(Math.abs(exclusive - row.exclusive.wallMs) < 0.000001, 'exclusive spans reconcile');
+      for (let i = 1; i < row.exclusive.spans.length; i++)
+        assert.equal(row.exclusive.spans[i].start, row.exclusive.spans[i - 1].end);
+    }
+    const split = report.trace.find((s) => s.name === 'split').exclusive.work;
+    assert.equal(split['author/draft.fullConstructionTrees'], 1);
+    assert(split['publication/ownership.fullInputEnumerated'] > 0);
+    assert(split['publication/ownership.sortInputs'] > 0);
+    assert.equal(split['publication/deletion.fullIndexesConstructed'], 1);
+    assert(split['publication/deletion.retainedEffectsInspected'] > 0);
+    assert(split['publication/coupled.candidatesCommitted'] > 0);
+    const edit = report.trace.find((s) => s.name === 'unrelated-edit').exclusive.work;
+    assert.equal(edit['publication/projection.fullProjectors'], 1);
+    assert(readFileSync(output + '.bin').byteLength > 0);
+    const coldOutput = join(directory, 'cold');
+    execFileSync(
+      process.execPath,
+      [
+        '--import',
+        './benchmarks/multiwriter/resolve-ts.mjs',
+        'benchmarks/multiwriter/structural-cold-worker.mjs',
+        '--fixture',
+        output + '.bin',
+        '--output',
+        coldOutput,
+      ],
+      { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], timeout: 300_000 },
+    );
+    const cold = JSON.parse(readFileSync(coldOutput + '.json'));
+    assert.equal(cold.complete, true);
+    assert(cold.evictionReopenMs > 0);
+    assert.equal(cold.startedWithEmptyHistory, true);
+    assert.equal(cold.history.undo, 1);
+    assert.equal(cold.history.redo, 0);
+    assert.equal(cold.undoRestoration, 'exact');
+    assert.equal(cold.redoRestoration, 'exact');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

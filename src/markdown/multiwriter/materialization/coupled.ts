@@ -1,3 +1,5 @@
+import { countWork } from '../diagnostics.js';
+import { measure } from '../diagnostics.js';
 import { OwnershipResult } from '../ownership/ownership.js';
 import { isTextRefinement, textControlTargets } from '../ownership/text-validation.js';
 import { cellKey } from '../ownership/cells.js';
@@ -76,25 +78,37 @@ function markerRefinement(before: TapeSnapshot, after: TapeSnapshot): boolean {
 }
 /** Refine each prefix's own assignments. A later prefix can have transferred or
  * split cells that an older checkpoint still assigns to their private home. */
-function refineCheckpoint(
+export function refineCheckpoint(
+  prior: OwnershipCheckpoint,
+  snapshots: readonly TapeSnapshot[],
+  index = prior.index.refine(snapshots),
+): OwnershipCheckpoint {
+  return measure('coupled-replay', () => refineCheckpointMeasured(prior, snapshots, index));
+}
+function refineCheckpointMeasured(
   prior: OwnershipCheckpoint,
   snapshots: readonly TapeSnapshot[],
   index = prior.index.refine(snapshots),
 ): OwnershipCheckpoint {
   if (!snapshots.length) return prior;
+  countWork('refinement.checkpoints');
   const owners = prior.owners.fork();
   const coverage = prior.coverage.fork();
   const replacements = new Map<string, readonly string[]>();
   for (const snapshot of snapshots) {
     if (!prior.installedTapes.has(resourceKey(snapshot.tape))) continue;
     for (const cell of prior.index.tape(snapshot.tape)) {
+      countWork('refinement.oldCells');
       const key = cellKey(cell.range),
         owner = owners.get(key);
       if (!owner) throw new Error('Refined native cell has no prior owner');
       const refined = index.range(cell.range);
       if (refined.length === 1 && cellKey(refined[0].range) === key) continue;
       owners.delete(key);
-      for (const next of refined) owners.set(cellKey(next.range), { ...owner, cell: next.range });
+      for (const next of refined) {
+        countWork('refinement.assignmentsCloned');
+        owners.set(cellKey(next.range), { ...owner, cell: next.range });
+      }
       replacements.set(
         key,
         refined.map((cell) => cellKey(cell.range)),
@@ -279,6 +293,7 @@ export class MaterializedOwnership {
     let retainedPrefix = input.actions.length >= count;
     for (let i = append ? count : 0; i < input.actions.length; i++) {
       yield;
+      countWork('coupled.actionsCompared');
       const action = input.actions[i].action,
         key = actionKey(action.id),
         bytes = variants.get(key);
@@ -378,6 +393,7 @@ export class MaterializedOwnership {
     if (!resume) this.counts.coldReplays++;
     yield;
     const from = resume?.count ?? 0;
+    countWork('coupled.candidatesPrepared');
     const result = replayOwnershipSuffix(
       {
         genesis: input.genesis,
@@ -422,6 +438,8 @@ export class MaterializedOwnership {
         this.markers = markers;
         this.snapshots = snapshotCache;
         this.checkpoints = checkpoints;
+        countWork('coupled.committedActionsReplayed', input.actions.length - from);
+        countWork('coupled.candidatesCommitted');
         this.counts.lastReplayFrom = from;
         this.counts.lastReplayLength = input.actions.length - from;
       },
@@ -434,7 +452,9 @@ export class MaterializedOwnership {
     variants: PayloadIndex,
     stagedTapes?: readonly TapeId[],
   ) {
-    return this.prepareRefinement('text', actions, native, activity, variants, stagedTapes);
+    return measure('coupled-replay', () => {
+      return this.prepareRefinement('text', actions, native, activity, variants, stagedTapes);
+    });
   }
   prepareProperties(
     actions: ActionSequence,
@@ -443,7 +463,9 @@ export class MaterializedOwnership {
     variants: PayloadIndex,
     stagedTapes?: readonly TapeId[],
   ) {
-    return this.prepareRefinement('properties', actions, native, activity, variants, stagedTapes);
+    return measure('coupled-replay', () => {
+      return this.prepareRefinement('properties', actions, native, activity, variants, stagedTapes);
+    });
   }
   private prepareRefinement(
     kind: 'text' | 'properties',
@@ -553,6 +575,7 @@ export class MaterializedOwnership {
       decisions,
     };
     let committed = false;
+    countWork('coupled.candidatesPrepared');
     this.counts.actionsReplayed++;
     this.counts.effectsReplayed += action.effects.length;
     return {
@@ -593,6 +616,8 @@ export class MaterializedOwnership {
             refineCheckpoint(checkpoint, snapshots, index),
           );
         if (state.count % 128 === 0) this.checkpoints = [...this.checkpoints, state].slice(-8);
+        countWork('coupled.committedActionsReplayed');
+        countWork('coupled.candidatesCommitted');
         this.counts.lastReplayFrom = actions.length - 1;
         this.counts.lastReplayLength = 1;
       },

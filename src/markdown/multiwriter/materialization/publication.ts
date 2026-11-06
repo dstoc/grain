@@ -1,3 +1,4 @@
+import { countWork, measureWork } from '../diagnostics.js';
 import type { ActionStore } from '../actions/store.js';
 import { IndexedActionStore, readySequence } from './readiness.js';
 import type { ReadySequence } from '../authoring/ready-source.js';
@@ -114,7 +115,7 @@ export class MaterializedPublication<T> {
       this.counts.unchangedRefreshes++;
       return { state: 'complete', value: this.published };
     }
-    this.active = this.build(version, generation);
+    this.active = measureWork('publication', this.build(version, generation), 'publication');
     return compute(
       this.active,
       operations,
@@ -186,6 +187,7 @@ export class MaterializedPublication<T> {
       this.published = publication;
       this.publishedVersion = version;
       committed = true;
+      countWork('publication.committed');
       return publication;
     } finally {
       if (!committed) this.reduction.cancel?.();
@@ -255,7 +257,7 @@ export class MaterializedPublication<T> {
     const before = { ...native.work };
     let complete = false;
     try {
-      yield* native.apply(key, body);
+      yield* measureWork('native-preparation', native.apply(key, body));
       complete = true;
     } finally {
       this.counts.nativeBodiesIntegrated += native.work.bodiesIntegrated - before.bodiesIntegrated;

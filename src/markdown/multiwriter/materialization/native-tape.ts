@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import type { MarkerId, NativeId, RangeRef, TapeId } from '../contracts.js';
 import type { TapePart, TapeSnapshot } from '../text/types.js';
 import {
@@ -46,6 +47,8 @@ export class NativeTapeIndex {
     parts: readonly TapePart[],
     private readonly work: NativeTapeWork,
   ) {
+    countWork('nativeTape.indexesConstructed');
+    countWork('nativeTape.partsInput', parts.length);
     let offset = 0;
     for (const part of parts) {
       if (part.index !== offset || !size(part)) throw new Error('Invalid native tape parts');
@@ -80,6 +83,7 @@ export class NativeTapeIndex {
           left?.firstMarker ?? (part.type === 'marker' ? part.marker : right?.firstMarker),
         lastMarker: right?.lastMarker ?? (part.type === 'marker' ? part.marker : left?.lastMarker),
       };
+    countWork('nativeTape.nativeIndexNodesCopied');
     this.work.nativeIndexNodesCopied++;
     this.nodes = set(this.nodes, key, root);
     if (left) this.parents = set(this.parents, left.key, key);
@@ -244,6 +248,7 @@ export class NativeTapeIndex {
       key = root.key,
       parent = get(this.parents, key);
     while (parent !== null) {
+      countWork('nativeTape.nativePositionNodesVisited');
       this.work.nativePositionNodesVisited++;
       if (parent === undefined) throw new Error('Native index lost a parent');
       const above = get(this.nodes, parent)!;
@@ -269,6 +274,7 @@ export class NativeTapeIndex {
       start: MarkerId | undefined,
       end: MarkerId | undefined;
     while (root) {
+      countWork('nativeTape.nativePositionNodesVisited');
       this.work.nativePositionNodesVisited++;
       const index = base + length(root.left);
       if (index <= at) {
@@ -325,6 +331,7 @@ export class NativeTapeIndex {
   }
   snapshot(tape: TapeId): TapeSnapshot {
     const parts = [...this.range(0, Infinity, false)];
+    countWork('nativeTape.snapshotsExported');
     this.work.snapshotsExported++;
     this.work.snapshotPartsExported += parts.length;
     return structuredClone({

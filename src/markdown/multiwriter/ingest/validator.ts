@@ -1,3 +1,4 @@
+import { measureWork } from '../diagnostics.js';
 import { ActivityValidationError, reduceActivitySteps } from '../visibility/activity.js';
 import { groupKey } from '../visibility/identity.js';
 import { slotSequence } from '../layout/occurrences.js';
@@ -194,18 +195,21 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
         discard();
         cache = new NativeTapeCache(decodeOperations);
         // Genesis is trusted host configuration; failures must propagate.
-        yield* cache.applySteps('genesis', genesis);
+        yield* measureWork('native-preparation', cache.applySteps('genesis', genesis));
         for (const dependency of context.dependencies) {
           yield;
           const key = actionKey(dependency.id);
-          yield* cache.applySteps(key, dependency);
+          yield* measureWork('native-preparation', cache.applySteps(key, dependency));
           branchFacts.set(key, encodeEnvelope(dependency));
           addedFacts.add(key);
         }
       }
       const native = cache!;
       try {
-        yield* native.applySteps(`candidate:${actionKey(action.id)}`, action);
+        yield* measureWork(
+          'native-preparation',
+          native.applySteps(`candidate:${actionKey(action.id)}`, action),
+        );
         yield* checkNativeReferences(action, native);
       } catch (error) {
         if (!(error instanceof IngestDataError) || error.stage !== 'native') throw error;
@@ -264,63 +268,68 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
     retainedView = ready;
     addedFacts.clear();
   }
-  return Object.assign(validate, {
-    evict: () => {
-      if (busy) throw new Error('Cancel ingest computation before evicting its validator');
-      discard();
-      certificates.clear();
-    },
-    cacheDiagnostics: () => ({
-      nativeBranch: cache !== undefined,
-      busy,
-      certificates: certificates.size,
-      preimages: certificates.size,
-      encodedBytes: [...certificates.values()].reduce(
-        (sum, certificate) => sum + certificate.bytes.byteLength,
-        0,
-      ),
-      preimageNativeBytes: [...certificates.values()].reduce(
-        (sum, certificate) =>
-          sum +
-          certificate.envelope.nativeInsertUpdates.reduce(
-            (bytes, update) => bytes + update.byteLength,
-            0,
-          ),
-        0,
-      ),
-      retainedFactsCompared,
-      retainedIndexNodesVisited,
-    }),
-    encodeNativeState: () => cache?.encodeState() ?? Uint8Array.of(0, 0),
-    retainReadyFacts,
-    retainReady: (actions: readonly ActionEnvelope[]) => {
-      retainReadyFacts(
-        new Map(
-          actions.map((action) => {
-            const key = actionKey(action.id),
-              certificate = certificates.get(key);
-            return [
-              key,
-              certificate && sameEnvelopeData(action, certificate.envelope)
-                ? certificate.bytes
-                : encodeEnvelope(action),
-            ];
-          }),
+  return Object.assign(
+    (action: ActionEnvelope, context: ActionValidationContext) =>
+      measureWork('exact-author', validate(action, context), 'author'),
+    {
+      evict: () => {
+        if (busy) throw new Error('Cancel ingest computation before evicting its validator');
+        discard();
+        certificates.clear();
+      },
+      cacheDiagnostics: () => ({
+        nativeBranch: cache !== undefined,
+        busy,
+        certificates: certificates.size,
+        preimages: certificates.size,
+        encodedBytes: [...certificates.values()].reduce(
+          (sum, certificate) => sum + certificate.bytes.byteLength,
+          0,
         ),
-      );
+        preimageNativeBytes: [...certificates.values()].reduce(
+          (sum, certificate) =>
+            sum +
+            certificate.envelope.nativeInsertUpdates.reduce(
+              (bytes, update) => bytes + update.byteLength,
+              0,
+            ),
+          0,
+        ),
+        retainedFactsCompared,
+        retainedIndexNodesVisited,
+      }),
+      encodeNativeState: () => cache?.encodeState() ?? Uint8Array.of(0, 0),
+      retainReadyFacts,
+      retainReady: (actions: readonly ActionEnvelope[]) => {
+        retainReadyFacts(
+          new Map(
+            actions.map((action) => {
+              const key = actionKey(action.id),
+                certificate = certificates.get(key);
+              return [
+                key,
+                certificate && sameEnvelopeData(action, certificate.envelope)
+                  ? certificate.bytes
+                  : encodeEnvelope(action),
+              ];
+            }),
+          ),
+        );
+      },
+      setDecodeLimit: (operations: number) => {
+        if (busy)
+          throw new Error('Cancel ingest computation before changing native decode capacity');
+        assertLimit(operations);
+        decodeOperations = operations;
+        discard();
+      },
+      destroy: () => {
+        if (busy) throw new Error('Cancel ingest computation before destroying its validator');
+        discard();
+        certificates.clear();
+      },
     },
-    setDecodeLimit: (operations: number) => {
-      if (busy) throw new Error('Cancel ingest computation before changing native decode capacity');
-      assertLimit(operations);
-      decodeOperations = operations;
-      discard();
-    },
-    destroy: () => {
-      if (busy) throw new Error('Cancel ingest computation before destroying its validator');
-      discard();
-      certificates.clear();
-    },
-  });
+  );
 }
 
 /** Native identity/membership checks complement existence checks in actions/references.ts. */

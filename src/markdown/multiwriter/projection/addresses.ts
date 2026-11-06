@@ -1,3 +1,4 @@
+import { measure } from '../diagnostics.js';
 import { assertTextRange, assertWellFormedText } from '../../semantic/types.js';
 import type {
   Affinity,
@@ -43,6 +44,9 @@ export function selectionRanges(
 }
 
 export function textPoint(node: ViewNode, offset: number, affinity: Affinity): TextPoint {
+  return measure('selection-address', () => textPointMeasured(node, offset, affinity));
+}
+function textPointMeasured(node: ViewNode, offset: number, affinity: Affinity): TextPoint {
   assertTextRange(node.content, offset, offset, 'Projected caret');
   const visible: { fragment: TextFragment; start: number; end: number }[] = [];
   let cursor = 0;
@@ -106,6 +110,13 @@ export type AddressResolution =
   | { readonly state: 'unavailable'; readonly address: ProjectionAddress };
 /** Return the captured address unchanged. A stale lineage never redirects to its new owner. */
 export function resolveAddress(
+  address: ProjectionAddress,
+  ownership: OwnershipResult,
+  visibility: Visibility,
+): AddressResolution {
+  return measure('selection-address', () => resolveAddressMeasured(address, ownership, visibility));
+}
+function resolveAddressMeasured(
   address: ProjectionAddress,
   ownership: OwnershipResult,
   visibility: Visibility,

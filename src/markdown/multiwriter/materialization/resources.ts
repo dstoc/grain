@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import type { Allocation, FlowId, RunId, SemanticEffect } from '../contracts.js';
 import type { LayoutActionInput, LayoutGenesis } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
@@ -37,6 +38,7 @@ export class OwnershipResources {
   }
   snapshots(cache: PersistentMap<TapeSnapshot>): readonly TapeSnapshot[] {
     return [...this.tapes.values()].map((tape) => {
+      countWork('resources.tapesEnumerated');
       const snapshot = cache.get(resourceKey(tape.id));
       if (!snapshot) throw new Error('Missing retained tape snapshot');
       return snapshot;
@@ -60,6 +62,8 @@ export class OwnershipResources {
     index: MaterializedCells,
     work: ResourceWork,
   ): OwnershipResources {
+    countWork('resources.fullRebuilds');
+    countWork('resources.actionsMaterialized', actions.length);
     work.resourceRebuilds++;
     return new OwnershipResources().extend(
       [
@@ -99,6 +103,7 @@ export class OwnershipResources {
     index: MaterializedCells,
     work: ResourceWork,
   ): OwnershipResources {
+    countWork('resources.indexesConstructed', 5);
     const next = new OwnershipResources();
     next.allocations = this.allocations.fork();
     next.tapes = this.tapes.fork();
@@ -123,6 +128,7 @@ export class OwnershipResources {
           next.markers.set(key, allocation);
           markerTapes.add(resourceKey(allocation.tape));
         }
+        countWork('resources.allocationsIndexed');
         work.allocationsIndexed++;
       }
     const seenTapes = new Set<string>();
@@ -152,6 +158,7 @@ export class OwnershipResources {
           allocation.native.clock !== marker.native.clock
         )
           throw new Error('Snapshot marker does not match retained allocation');
+        countWork('resources.markerBindingsValidated');
         work.snapshotMarkersValidated++;
       }
       next.markerCount += markers.length - (next.snapshotMarkers.get(key) ?? 0);
@@ -182,12 +189,14 @@ export class OwnershipResources {
             const key = cellKey(cell.range);
             if (seen.has(key)) throw new Error('Overlapping retained run skeleton');
             seen.add(key);
+            countWork('resources.skeletonCellsVisited');
             work.skeletonCellsValidated++;
           }
         for (const range of captures) next.homeDomain.assertCapture(range);
       }
     for (const { effects } of batches)
       for (const effect of effects) {
+        countWork('resources.effectsInspected');
         if (effect.type === 'SplitFlow') {
           for (const member of effect.basis.ranges) next.homeDomain.assertCapture(member.range);
           const newHome = next.homeDomain.home(effect.newRun);

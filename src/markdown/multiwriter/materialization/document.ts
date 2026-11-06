@@ -1,3 +1,5 @@
+import { measureWork } from '../diagnostics.js';
+import { measure } from '../diagnostics.js';
 import { IndexedActionStore, readySequence } from './readiness.js';
 import type { ReferenceGenesis } from '../reference/document.js';
 import { createIngestValidator } from '../ingest/validator.js';
@@ -72,12 +74,9 @@ export function openMaterializedDocument(
     function* (actions, native, variants) {
       prepared = yield* activity.prepare(actions, variants);
       yield;
-      preparedProjection = yield* projection.prepare(
-        genesis,
-        actions,
-        native,
-        prepared.value,
-        variants,
+      preparedProjection = yield* measureWork(
+        'visibility-normalization',
+        projection.prepare(genesis, actions, native, prepared.value, variants),
       );
       return preparedProjection.value;
     },
@@ -137,19 +136,22 @@ export function openMaterializedDocument(
         try {
           const prepared = finish(commandActivity.prepare(actions, variants));
           return finish(
-            branch.prepare(
-              {
-                genesis: genesis.layout,
-                genesisManifest: genesis.body.nativeManifest,
-                initialProperties: genesis.initialProperties,
-                actions: actions.map((action) => ({ action, births: reconstructBirths(action) })),
-                birthContent: [],
-                native,
-              },
-              prepared.value,
-              variants,
-              touched,
-              actions,
+            measureWork(
+              'coupled-replay',
+              branch.prepare(
+                {
+                  genesis: genesis.layout,
+                  genesisManifest: genesis.body.nativeManifest,
+                  initialProperties: genesis.initialProperties,
+                  actions: actions.map((action) => ({ action, births: reconstructBirths(action) })),
+                  birthContent: [],
+                  native,
+                },
+                prepared.value,
+                variants,
+                touched,
+                actions,
+              ),
             ),
           ).value.ownership;
         } finally {
@@ -187,55 +189,67 @@ export function openMaterializedDocument(
       validate.setDecodeLimit(operations);
     },
     stageLocalAction(action: ActionEnvelope, native: NativeView) {
-      const status = publication.status();
-      if (status.stale || !status.canAuthor) return undefined;
-      const ready = store.readReady();
-      const length = readySequence(ready).length + 1,
-        key = actionKey(action.id),
-        bytes = encodeEnvelope(action);
-      const sequence = {
-        length,
-        at: (index: number) => {
-          index = Math.trunc(index) || 0;
-          const at = index < 0 ? length + index : index;
-          if (at < 0 || at >= length) return undefined;
-          return at === readySequence(ready).length ? action : readySequence(ready).at(at);
+      return measure(
+        'visibility-normalization',
+        () => {
+          const status = publication.status();
+          if (status.stale || !status.canAuthor) return undefined;
+          const ready = store.readReady();
+          const length = readySequence(ready).length + 1,
+            key = actionKey(action.id),
+            bytes = encodeEnvelope(action);
+          const sequence = {
+            length,
+            at: (index: number) => {
+              index = Math.trunc(index) || 0;
+              const at = index < 0 ? length + index : index;
+              if (at < 0 || at >= length) return undefined;
+              return at === readySequence(ready).length ? action : readySequence(ready).at(at);
+            },
+          };
+          registerReadyAppend(sequence, readySequence(ready), action);
+          const variants = { get: (id: string) => (id === key ? bytes : ready.variants.get(id)) };
+          try {
+            const prepared = finish(activity.prepare(sequence, variants));
+            const value = projection.canStageText(action)
+              ? projection.stageText(sequence, native, prepared.value, variants)
+              : projection.canStageProperties(action)
+                ? projection.stageProperties(
+                    sequence,
+                    native,
+                    prepared.value,
+                    variants,
+                    genesis.initialProperties,
+                  )
+                : projection.stageStructure(
+                    {
+                      genesis: genesis.layout,
+                      genesisManifest: genesis.body.nativeManifest,
+                      initialProperties: genesis.initialProperties,
+                      ...reconstructProvenance(genesis.layout, [...readySequence(ready), action]),
+                      native,
+                    },
+                    prepared.value,
+                    variants,
+                    sequence,
+                  );
+            return value ? { heads: [action.id], native, value } : undefined;
+          } finally {
+            activity.cancel();
+          }
         },
-      };
-      registerReadyAppend(sequence, readySequence(ready), action);
-      const variants = { get: (id: string) => (id === key ? bytes : ready.variants.get(id)) };
-      try {
-        const prepared = finish(activity.prepare(sequence, variants));
-        const value = projection.canStageText(action)
-          ? projection.stageText(sequence, native, prepared.value, variants)
-          : projection.canStageProperties(action)
-            ? projection.stageProperties(
-                sequence,
-                native,
-                prepared.value,
-                variants,
-                genesis.initialProperties,
-              )
-            : projection.stageStructure(
-                {
-                  genesis: genesis.layout,
-                  genesisManifest: genesis.body.nativeManifest,
-                  initialProperties: genesis.initialProperties,
-                  ...reconstructProvenance(genesis.layout, [...readySequence(ready), action]),
-                  native,
-                },
-                prepared.value,
-                variants,
-                sequence,
-              );
-        return value ? { heads: [action.id], native, value } : undefined;
-      } finally {
-        activity.cancel();
-      }
+        'staging',
+      );
     },
     certifyLocal(action: ActionEnvelope): void {
-      const reason = store.checkLocal(action);
-      if (reason) throw new Error(`Local materialized action failed certification: ${reason}`);
+      return measure(
+        'exact-author',
+        () => {
+          const reason = store.checkLocal(action);
+          if (reason) throw new Error(`Local materialized action failed certification: ${reason}`);
+        },
+        'author',
+      );
     },
     nativeStates(): readonly Uint8Array[] {
       const current = publication.status().publication;

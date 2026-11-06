@@ -1,3 +1,4 @@
+import { countWork, touchWork } from '../diagnostics.js';
 import { compareActions } from '../contracts.js';
 import type {
   Allocation,
@@ -353,6 +354,7 @@ export class MaterializedLayout {
     }
     // Register all resources before following same-batch references.
     for (const allocation of batch.allocations) {
+      countWork('layout.allocationsInspected');
       const key = resourceKey(allocation.id);
       if (allocation.id.kind !== allocation.type) throw new Error('Allocation kind mismatch');
       if (
@@ -469,6 +471,8 @@ export class MaterializedLayout {
     // Only new occurrences can change an immutable sequence. Validate the whole
     // affected sequence, including retained inactive/ineffective anchors.
     for (const sequence of changedSequences) {
+      countWork('layout.containersRebuilt');
+      touchWork('containers.rebuilt', sequence);
       const entries: OrderedOccurrence[] = [];
       for (let link = this.sequences.get(sequence); link; link = link.previous)
         entries.push(link.occurrence);
