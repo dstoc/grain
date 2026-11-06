@@ -1,5 +1,12 @@
 import { countWork, touchWork } from '../diagnostics.js';
-import type { CellAssignment, FlowId, InlineSlot, OccurrenceId, RunId } from '../contracts.js';
+import type {
+  CellAssignment,
+  FlowId,
+  InlineSlot,
+  OccurrenceId,
+  RangeRef,
+  RunId,
+} from '../contracts.js';
 import type { LayoutPrefix } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
 import type { LocatedText } from '../text/types.js';
@@ -12,6 +19,31 @@ export interface RunOrigin {
 }
 export interface RunAttachment extends RunOrigin {
   readonly destination: InlineSlot;
+}
+
+/** String computations only, for one synchronous coverage audit over owned data.
+ * Never retain across audits or pass to a traversal with foreign/mutable readers.
+ */
+export class CoverageKeys {
+  private readonly cells = new Map<RangeRef, string>();
+  private readonly assignments = new Map<RunOrigin, string>();
+
+  cell(range: RangeRef): string {
+    let key = this.cells.get(range);
+    if (key === undefined) {
+      key = cellKey(range);
+      this.cells.set(range, key);
+    }
+    return key;
+  }
+  assignment(origin: RunOrigin): string {
+    let key = this.assignments.get(origin);
+    if (key === undefined) {
+      key = assignmentKey(origin);
+      this.assignments.set(origin, key);
+    }
+    return key;
+  }
 }
 export type RawInlineEntry =
   | { readonly type: 'slot'; readonly slot: InlineSlot }
@@ -38,6 +70,7 @@ export function traverse(
   assignments: Pick<ReadonlyMap<string, CellAssignment>, 'get' | 'values'>,
   roots: Pick<ReadonlyMap<string, readonly RunOrigin[]>, 'get'>,
   attachments: Pick<ReadonlyMap<string, RunAttachment>, 'get'>,
+  keys?: CoverageKeys,
 ): readonly RawInlineEntry[] {
   const result: RawInlineEntry[] = [];
   const visited = new Set<string>();
@@ -98,9 +131,13 @@ export function traverse(
       for (const cell of cells) {
         countWork('traversal.cellsVisited');
         boundary(cell.range.start);
-        const cellId = cellKey(cell.range);
+        const cellId = keys ? keys.cell(cell.range) : cellKey(cell.range);
         const assignment = assignments.get(cellId);
-        if (assignment && assignmentKey(assignment) === assignmentKey(origin)) {
+        if (
+          assignment &&
+          (keys ? keys.assignment(assignment) : assignmentKey(assignment)) ===
+            (keys ? keys.assignment(origin) : assignmentKey(origin))
+        ) {
           if (emitted.has(cellId)) throw new Error('Duplicate cell in run skeleton');
           emitted.add(cellId);
           result.push({ type: 'cell', assignment, fragments: cell.fragments });

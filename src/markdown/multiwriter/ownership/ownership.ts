@@ -30,7 +30,7 @@ import { deriveHomes, HomeIndex } from './homes.js';
 import type { HomeBinding } from './homes.js';
 export type { HomeBinding } from './homes.js';
 import type { SplitBirth } from './cohorts.js';
-import { traverse } from './traversal.js';
+import { CoverageKeys, traverse } from './traversal.js';
 import type { RawInlineEntry, RunAttachment, RunOrigin } from './traversal.js';
 
 export interface OwnershipInput {
@@ -423,17 +423,20 @@ function replayOwnershipMeasured(input: OwnershipInput, author?: ActionId): Owne
       }
     }
   }
-  function rawCells(flow: FlowId) {
-    return traverse(flow, layout, index, owners, roots, attachments).flatMap((entry) =>
+  function rawCells(flow: FlowId, keys?: CoverageKeys) {
+    return traverse(flow, layout, index, owners, roots, attachments, keys).flatMap((entry) =>
       entry.type === 'cell' ? [entry.assignment] : [],
     );
   }
   function assertCoverage(): void {
+    // Layout, cells, homes and owners are detached replay data. This audit does
+    // not yield or invoke activity/eligibility callbacks; keys cannot escape it.
+    const keys = new CoverageKeys();
     const visited = new Set<string>();
     for (const placement of layout.flowPlacements) {
       if (placement.parent.type !== 'block') continue;
-      for (const assignment of rawCells(placement.flow)) {
-        const key = cellKey(assignment.cell);
+      for (const assignment of rawCells(placement.flow, keys)) {
+        const key = keys.cell(assignment.cell);
         if (visited.has(key)) throw new Error('Cell emitted more than once');
         visited.add(key);
       }
@@ -443,8 +446,8 @@ function replayOwnershipMeasured(input: OwnershipInput, author?: ActionId): Owne
       if (!installedTapes.has(resourceKey(home.cell.tape))) continue;
       for (const cell of index.range(home.cell)) {
         if (!homeIndex.isReserved(cell.range)) continue;
-        const owner = owners.get(cellKey(cell.range));
-        if (!owner || assignmentKey(owner) !== assignmentKey(home))
+        const owner = owners.get(keys.cell(cell.range));
+        if (!owner || keys.assignment(owner) !== keys.assignment(home))
           throw new Error('Reserved home cell lost its root assignment');
       }
     }
