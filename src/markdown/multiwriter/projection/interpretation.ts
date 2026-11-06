@@ -22,6 +22,12 @@ const defaults: PresentedProperties = {
   info: null,
   checked: null,
 };
+/** Shared property defaults; selection schedules remain independent. */
+export function presentedProperties(
+  values: Partial<PresentedProperties> = {},
+): PresentedProperties {
+  return { ...defaults, ...values };
+}
 const refKey = (ref: EffectRef) => `${ref.action.actor}:${ref.action.sequence}:${ref.ordinal}`;
 
 /** Property-only updates cannot change raw placement, ownership or packet membership. */

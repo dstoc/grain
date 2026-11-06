@@ -10,8 +10,11 @@ export type OriginMap = Pick<
 >;
 export interface CommandViewIndex {
   readonly origins: OriginMap;
-  readonly parents: ReadonlyMap<NodeId, NodeId>;
-  readonly siblings: ReadonlyMap<NodeId, { readonly previous?: NodeId; readonly next?: NodeId }>;
+  readonly parents: Pick<ReadonlyMap<NodeId, NodeId>, 'get'>;
+  readonly siblings: Pick<
+    ReadonlyMap<NodeId, { readonly previous?: NodeId; readonly next?: NodeId }>,
+    'get'
+  >;
   handle(view: ViewNode): NodeId | undefined;
   handleOrigin(id: OriginId): NodeId | undefined;
 }

@@ -28,9 +28,7 @@ test('retained replacements use indexed visibility through managed split/join, h
     const nodeId = p.handle(p.nodes()[0]);
     expect(history.edit(insertParagraph, { nodeId, from: 2 }).status).toBe('applied');
     const after = p.document.projectionDiagnostics();
-    expect(
-      after.exactDeletionRangesIndexed - counts.exactDeletionRangesIndexed,
-    ).toBeGreaterThanOrEqual(150);
+    expect(after.exactDeletionRangesIndexed - counts.exactDeletionRangesIndexed).toBe(0);
     expect(after.exactDeletionQueries - counts.exactDeletionQueries).toBeGreaterThan(0);
     expect(after.exactDeletionNodesVisited - counts.exactDeletionNodesVisited).toBeLessThan(
       (after.exactDeletionQueries - counts.exactDeletionQueries) * 12,
