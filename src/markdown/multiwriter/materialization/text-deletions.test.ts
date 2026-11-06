@@ -7,6 +7,7 @@ import { reduceVisibility, reduceVisibilityWithTextTags } from '../visibility/vi
 import type { TextToken, VisibilityLayout } from '../visibility/visibility.js';
 import { resourceKey } from '../visibility/identity.js';
 import { ExactTextDeletions } from './text-deletions.js';
+import { captureDiagnostics } from '../diagnostics.js';
 
 const counts = () => ({
   exactDeletionRangesIndexed: 0,
@@ -16,7 +17,7 @@ const counts = () => ({
 const indexedVisibility =
   (work: ReturnType<typeof counts>) =>
   (activity: Activity, layout: VisibilityLayout, tokens: readonly TextToken[]) => {
-    const index = new ExactTextDeletions(activity, work);
+    const index = ExactTextDeletions.fromEffects(activity, work);
     return reduceVisibilityWithTextTags(
       activity,
       layout,
@@ -54,7 +55,7 @@ test('exact interval queries match an independent scan across overlaps, clients 
     },
   }));
   const work = counts(),
-    index = new ExactTextDeletions({ effects }, work);
+    index = ExactTextDeletions.fromEffects({ effects }, work);
   for (const source of [tape, otherTape])
     for (const client of [7, 8, 9])
       for (let clock = 0; clock < 241; clock++) {
@@ -92,7 +93,7 @@ test('disjoint retained deletion intervals need logarithmic query work, includin
     },
   }));
   const work = counts(),
-    index = new ExactTextDeletions({ effects }, work);
+    index = ExactTextDeletions.fromEffects({ effects }, work);
   for (const clock of [0, 1, 2, 8191, 8192, 8193, 8194, 16380, 16381, 16382]) {
     const before = work.exactDeletionNodesVisited;
     expect(index.matches(token(clock)).map((match) => match.tag)).toEqual(
@@ -237,3 +238,81 @@ for (const finalKind of ['exact', 'subtree'] as const)
       reduceVisibility(activity, layout, [token(1)]),
     );
   });
+
+// Controlled semantic deltas exercise C without claiming a B producer.
+test('persistent contributions preserve first-covering order through earlier arrival, retraction and reactivation', () => {
+  const early = action(A),
+    late = action(B);
+  const first = resource('deletion', 0, early.id),
+    second = resource('deletion', 0, late.id);
+  const range = (clock: number) => ({ tape, client: 7, clock, length: 1 });
+  const a = {
+    ...early,
+    effects: [
+      { type: 'DeleteText' as const, tag: first, observed: [range(0)] },
+      { type: 'DeleteText' as const, tag: second, observed: [range(1)] },
+    ],
+  };
+  const b = {
+    ...late,
+    effects: [{ type: 'DeleteText' as const, tag: first, observed: [range(1)] }],
+  };
+  const work = counts();
+  const held = ExactTextDeletions.create([b], () => true, work);
+  const inserted = held.update([a], () => true, work);
+  expect(held.tags(token(1), work)).toEqual([first]);
+  expect(inserted.tags(token(1), work)).toEqual([second, first]);
+  const inactive = inserted.update([a], () => false, work);
+  expect(inactive.tags(token(1), work)).toEqual([first]);
+  expect(inactive.update([a], () => true, work).tags(token(1), work)).toEqual([second, first]);
+  const withdrawn = inserted.update([], () => true, work, [{ action: a.id, ordinal: 1 }]);
+  expect(withdrawn.tags(token(1), work)).toEqual([first]);
+  expect(inserted.tags(token(1), work)).toEqual([second, first]);
+  // The full reducer derives order independently from original envelopes.
+  const root = resource('node', 0);
+  const layout: VisibilityLayout = {
+    nodes: [{ type: 'node', id: root, role: 'root', flow: null, birthSlot: null }],
+    parent: () => null,
+    owner: () => root,
+    requirements: () => [],
+    contains: () => false,
+    containsBirthContent: () => false,
+  };
+  expect(inserted.tags(token(1), work)).toEqual(
+    reduceVisibility(reduceActivity([b, a]), layout, [token(1)]).text[0].tags,
+  );
+});
+
+test('one contribution update on a long tape copies logarithmic paths and leaves held roots unchanged', () => {
+  const a = action(A),
+    work = counts();
+  const body = {
+    ...a,
+    effects: Array.from({ length: 4096 }, (_, ordinal) => ({
+      type: 'DeleteText' as const,
+      tag: resource('deletion', ordinal),
+      observed: [{ tape, client: 7, clock: ordinal * 4, length: 2 }],
+    })),
+  };
+  const held = ExactTextDeletions.create([body], () => true, work);
+  const update = {
+    ...action(B),
+    effects: [
+      {
+        type: 'DeleteText' as const,
+        tag: resource('deletion', 0, action(B).id),
+        observed: [{ tape, client: 7, clock: 3, length: 1 }],
+      },
+    ],
+  };
+  const { value: next, report } = captureDiagnostics(() => held.update([update], () => true, work));
+  expect(report.work['driver/deletion.changedEffectsInspected']).toBe(1);
+  expect(report.work['driver/deletion.rangesIndexed']).toBe(1);
+  expect(report.work['driver/deletion.intervalNodesSummarized']).toBeLessThan(30);
+  expect(report.work['driver/deletion.fullIndexesConstructed'] ?? 0).toBe(0);
+  expect(held.tags(token(3), work)).toEqual([]);
+  expect(next.tags(token(3), work)).toEqual([update.effects[0].tag]);
+  const removed = next.update([], () => true, work, [{ action: update.id, ordinal: 0 }]);
+  expect(removed.tags(token(3), work)).toEqual([]);
+  expect(next.tags(token(3), work)).toEqual([update.effects[0].tag]);
+});
