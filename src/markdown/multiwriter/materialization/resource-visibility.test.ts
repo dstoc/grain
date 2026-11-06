@@ -6,6 +6,7 @@ import { insertText } from '../../../editing/commands/insert-text.js';
 import { insertParagraph } from '../../../editing/commands/insert-paragraph.js';
 import { joinWithPrevious } from '../../../editing/commands/join-with-previous.js';
 import { deleteBlocks } from '../../../editing/commands/delete-blocks.js';
+import { resourceKey } from '../layout/index.js';
 import { resolveAddress, textPoint } from '../projection/addresses.js';
 import { OwnershipResult } from '../ownership/ownership.js';
 import { compareBytes } from '../actions/cbor.js';
@@ -206,7 +207,7 @@ for (const size of [10, 150])
         expect(full).not.toHaveBeenCalled();
         expect(report.work['publication/subtree.fullIndexesConstructed'] ?? 0).toBe(0);
         expect(report.work['publication/subtree.tagGroupsUpdated'] ?? 0).toBe(0);
-        expect(report.work['publication/subtree.tapeGroupsQueried']).toBeGreaterThan(0);
+        expect(report.work['publication/subtree.intervalQueryNodesVisited']).toBeGreaterThan(0);
         expect(p.nodes()[0].content).toBe('a!c');
         expect(p.nodes().at(-1)).toBe(tail);
       } finally {
@@ -226,3 +227,67 @@ for (const size of [10, 150])
       p.close();
     }
   });
+
+test('text deletion removes the final scaffold witness and undo restores its original addresses locally', () => {
+  const p = commandReplica(commandGenesis('abcdef\n\nother\n\ntail'), undefined, 'materialized'),
+    oracle = createMaterializationOracle();
+  try {
+    const split = p.editor.edit({ local: 'setup', group: 1n }, insertParagraph, {
+      nodeId: p.handle(p.nodes()[0]),
+      from: 6,
+    });
+    expect(split.status).toBe('applied');
+    expect(
+      p.editor.edit({ local: 'peer-content', group: 1n }, insertText, {
+        nodeId: p.handle(p.nodes()[1]),
+        from: 0,
+        text: 'peer',
+      }).status,
+    ).toBe('applied');
+    control(p, split, false);
+    const held = p.document.publication.status().publication!,
+      scaffold = p.nodes()[1],
+      tail = p.nodes().at(-1)!;
+    expect(
+      held.value.visibility.nodes.find(
+        (n) => resourceKey(n.node) === resourceKey(scaffold.origin.representative),
+      )?.scaffold,
+    ).toBe(true);
+    const saved = textPoint(scaffold, 1, 'right').address,
+      history = p.editor.session('remove-witness'),
+      full = vi.spyOn(projector, 'projectWithActivity');
+    try {
+      expect(
+        history.edit(
+          insertText,
+          { nodeId: p.handle(scaffold), from: 0, to: 4, text: '' },
+          { typing: false },
+        ).status,
+      ).toBe('applied');
+      expect(
+        p
+          .nodes()
+          .some(
+            (n) =>
+              resourceKey(n.origin.representative) === resourceKey(scaffold.origin.representative),
+          ),
+      ).toBe(false);
+      expect(history.undo().state).toBe('applied');
+      expect(p.nodes()[1].content).toBe('peer');
+      const current = p.document.publication.status().publication!;
+      expect(resolveAddress(saved, current.value.ownership, current.value.visibility).state).toBe(
+        'available',
+      );
+      expect(history.redo().state).toBe('applied');
+      expect(full).not.toHaveBeenCalled();
+      expect(p.nodes().at(-1)).toBe(tail);
+    } finally {
+      full.mockRestore();
+    }
+    expect(held.value.view.root.children[1]).toBe(scaffold);
+    oracle.check(p.document, p.genesis);
+  } finally {
+    oracle.destroy();
+    p.close();
+  }
+});

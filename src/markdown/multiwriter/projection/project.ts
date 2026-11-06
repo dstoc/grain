@@ -5,7 +5,6 @@ import type { DocumentNode, MarkdownNode } from '../../node.js';
 import { isAllowedSemanticChild } from '../../semantic/types.js';
 import type {
   ActionEnvelope,
-  Allocation,
   DeletionId,
   NativeResourceBirth,
   NativeTextRange,
@@ -26,8 +25,9 @@ import {
   validatePacket,
   validateMembership,
 } from './interpretation.js';
-import type { PresentedProperties } from './interpretation.js';
 import { normalizeProjection } from './normalize.js';
+import type { PresentedProperties } from './interpretation.js';
+import { rawProjectionNode } from './raw-node.js';
 import type { BirthContent, MutableViewNode, ProjectionView, ViewNode } from './types.js';
 import { textOrigin } from './types.js';
 
@@ -67,6 +67,8 @@ export interface PreparedStructure {
   readonly snapshots: readonly TapeSnapshot[];
   /** Optional derived text index; reference projection always uses the full scan. */
   readonly visibility?: typeof reduceVisibility;
+  /** Derived selection at this exact ready set; reference projection selects independently. */
+  readonly interpretations?: ReturnType<typeof selectInterpretations>;
 }
 export function projectWithActivity(
   input: ProjectionInput,
@@ -85,7 +87,8 @@ export function projectWithActivity(
 function project(input: ProjectionInput, groupActivity: Activity, structure?: PreparedStructure) {
   countWork('projection.fullProjectors');
   countWork('projection.actionsInspected', input.actions.length);
-  const interpretations = selectInterpretations(groupActivity, input.initialProperties);
+  const interpretations =
+    structure?.interpretations ?? selectInterpretations(groupActivity, input.initialProperties);
   const effectActive = (ref: Parameters<typeof groupActivity.isEffectActive>[0]) =>
     groupActivity.isEffectActive(ref) && interpretations.effectEligible(ref);
   const activity = {
@@ -317,30 +320,10 @@ function project(input: ProjectionInput, groupActivity: Activity, structure?: Pr
     if (!allocation) throw new ProjectionError('Unknown raw child');
     if (!available.has(resourceKey(id))) return [];
     const properties = interpretations.properties(id);
-    const type = nodeType(allocation, properties);
     const placement = ownership.blockPlacement(id);
     const edge = placement ? { type: 'edge' as const, child: id, slot: placement.slot } : null;
-    const result: MutableViewNode = {
-      origin: { type: 'node', representative: id, constituents: [id] },
-      edge,
-      type,
-      marker:
-        properties.marker ??
-        (type === 'section'
-          ? '#'
-          : type === 'list-item'
-            ? '- '
-            : type === 'block-quote'
-              ? '> '
-              : null),
-      info: properties.info,
-      checked: properties.checked,
-      content: '',
-      children: [],
-      fragments: [],
-      boundaries: [],
-      wrappers: [],
-    };
+    const result = rawProjectionNode(allocation, properties, edge),
+      type = result.type;
     const children = ownership.children(id).flatMap(build);
     const absorbed =
       allocation.flow !== null &&
@@ -443,23 +426,6 @@ function project(input: ProjectionInput, groupActivity: Activity, structure?: Pr
   };
   deepFreeze(view);
   return { view, ownership, activity, interpretations, visibility };
-}
-function nodeType(
-  allocation: Extract<Allocation, { type: 'node' }>,
-  properties: PresentedProperties,
-): MarkdownNode['type'] {
-  switch (allocation.role) {
-    case 'root':
-      return 'document';
-    case 'quote':
-      return 'block-quote';
-    case 'list':
-      return 'list';
-    case 'list-item':
-      return 'list-item';
-    case 'inline':
-      return properties.presentation === 'code' ? 'code-block' : properties.presentation;
-  }
 }
 function deepFreeze(value: object): void {
   Object.freeze(value);

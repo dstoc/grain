@@ -6,147 +6,15 @@ import { insertText } from '../../../editing/commands/insert-text.js';
 import { insertParagraph } from '../../../editing/commands/insert-paragraph.js';
 import { joinWithPrevious } from '../../../editing/commands/join-with-previous.js';
 import { deleteBlocks } from '../../../editing/commands/delete-blocks.js';
-import { encodeEnvelope } from '../actions/codec.js';
 import { compareBytes } from '../actions/cbor.js';
-import { actionKey } from '../actions/references.js';
 import { resourceKey } from '../layout/index.js';
-import { reduceActivity } from '../visibility/activity.js';
-import { finish } from '../ingest/work.js';
 import { resolveAddress, textPoint } from '../projection/addresses.js';
 import * as full from '../projection/project.js';
-import type { OwnershipResult } from '../ownership/ownership.js';
-import type { NodeId, RunId, TapeId } from '../contracts.js';
-import type { EffectRef } from '../visibility/activity.js';
 import { captureDiagnostics } from '../diagnostics.js';
-import { MaterializedProjection } from './projection.js';
-import { reconstructProvenance } from '../reference/provenance.js';
-import type { StructuralProjectionChange } from './projection-changes.js';
 
-type Projection = ReturnType<typeof full.projectWithActivity>;
-const json = (value: unknown) =>
-  JSON.stringify(value, (_, v) => (typeof v === 'bigint' ? `${v}n` : v));
-function sequence(p: CommandReplica) {
-  if (!('readyActions' in p.document)) throw new Error('Expected indexed source');
-  return p.document.readyActions();
-}
-function seed(p: CommandReplica) {
-  const consumer = new MaterializedProjection(),
-    actions = sequence(p),
-    publication = p.document.publication.status().publication!;
-  const prepared = finish(
-    consumer.prepare(
-      p.genesis,
-      actions,
-      publication.native,
-      reduceActivity([...actions]),
-      new Map([...actions].map((a) => [actionKey(a.id), encodeEnvelope(a)])),
-    ),
-  );
-  prepared.commit();
-  return { consumer, value: prepared.value };
-}
-/** Controlled, deliberately full snapshot comparison outside C timing. This is
- * test input construction, not B's producer or a structural-refinement proof.
- */
-function change(p: CommandReplica, base: Projection): StructuralProjectionChange {
-  const next = p.document.publication.status().publication!,
-    actions = sequence(p),
-    activity = reduceActivity([...actions]);
-  const old = new Map(base.ownership.nodeAllocations.map((n) => [resourceKey(n.id), n]));
-  const signature = (ownership: OwnershipResult, node: NodeId) => {
-    const allocation = ownership.nodeAllocation(node);
-    return json({
-      placement: ownership.blockPlacement(node),
-      flow: allocation.flow && ownership.flowBlock(allocation.flow),
-      raw: allocation.flow && ownership.raw(allocation.flow),
-    });
-  };
-  const oldVisibility = new Map(base.visibility.nodes.map((n) => [resourceKey(n.node), n]));
-  const nextVisibility = new Map(next.value.visibility.nodes.map((n) => [resourceKey(n.node), n]));
-  const nodes = next.value.ownership.nodeAllocations
-    .filter(
-      (n) =>
-        !old.has(resourceKey(n.id)) ||
-        json(oldVisibility.get(resourceKey(n.id))) !==
-          json(nextVisibility.get(resourceKey(n.id))) ||
-        signature(base.ownership, n.id) !== signature(next.value.ownership, n.id) ||
-        (n.id.birth.type === 'action' &&
-          base.activity.isActive(n.id.birth.action) !== activity.isActive(n.id.birth.action)),
-    )
-    .map((n) => n.id);
-  const containers = next.value.ownership.nodeAllocations
-    .filter(
-      (n) =>
-        old.has(resourceKey(n.id)) &&
-        json(base.ownership.children(n.id)) !== json(next.value.ownership.children(n.id)),
-    )
-    .map((n) => n.id);
-  const roots = new Map<string, RunId>(),
-    tapes = new Map<string, TapeId>();
-  for (const id of nodes) {
-    const allocation = next.value.ownership.nodeAllocation(id);
-    if (!allocation.flow) continue;
-    roots.set(resourceKey(id), next.value.ownership.homeForFlow(allocation.flow)!.run);
-    for (const ownership of [base.ownership, next.value.ownership]) {
-      if (ownership === base.ownership && !old.has(resourceKey(id))) continue;
-      for (const entry of ownership.raw(allocation.flow)) {
-        const tape =
-          entry.type === 'cell'
-            ? entry.assignment.cell.tape
-            : entry.type === 'slot'
-              ? next.native.marker(entry.slot.boundary).tape
-              : undefined;
-        if (tape) tapes.set(resourceKey(tape), tape);
-      }
-    }
-  }
-  const beforeActions = new Set(base.activity.actions.map((a) => actionKey(a.id)));
-  const semanticChanges = [...actions].filter(
-    (a) =>
-      !a.effects.some((e) => e.type === 'SetGroupActive') &&
-      (!beforeActions.has(actionKey(a.id)) ||
-        base.activity.isActive(a.id) !== activity.isActive(a.id)),
-  );
-  const requirements = new Map<string, EffectRef[]>(
-    [...nodes, ...containers].map((n) => [resourceKey(n), []]),
-  );
-  for (const entry of next.value.ownership.destinationRequirements)
-    for (const id of entry.nodes)
-      requirements
-        .get(resourceKey(id))
-        ?.push({ action: entry.order.action.id, ordinal: entry.order.ordinal });
-  const action = actions.at(-1)!;
-  return {
-    base,
-    family:
-      action.effects[0]?.type === 'SetGroupActive'
-        ? 'control'
-        : semanticChanges.some((a) => a.effects.some((e) => e.type === 'SplitFlow'))
-          ? 'split'
-          : semanticChanges.some((a) => a.effects.some((e) => e.type === 'JoinFlow'))
-            ? 'join'
-            : 'text',
-    replay: { from: 0, to: actions.length, reason: 'controlled-snapshot' },
-    action,
-    revision: {},
-    actions,
-    semanticChanges,
-    native: next.native,
-    activity,
-    structure: { value: next.value.ownership, commit() {} },
-    nodes,
-    containers,
-    rootRuns: roots,
-    tapes: [...tapes.values()],
-    nativeTapes: [
-      ...new Map(action.nativeManifest.map((b) => [resourceKey(b.tape), b.tape])).values(),
-    ],
-    requirements,
-    birthContent: reconstructProvenance(p.genesis.layout, [...actions]).birthContent.filter(
-      (entry) => !old.has(resourceKey(entry.node)),
-    ),
-  };
-}
+import { seed, change } from '../../../../test/multiwriter/projection-consumer.js';
+import type { Projection } from '../../../../test/multiwriter/projection-consumer.js';
+
 function applied<T extends { status: string }>(result: T): T {
   expect(result.status).toBe('applied');
   return result;
@@ -401,7 +269,7 @@ test('an unchanged one-pass wrapper boundary is not normalized a second time', (
 });
 
 for (const markdown of ['- abcdef\n\ntail', '# abcdef\n\ntail'])
-  test(`nested or heading-dependent split returns its exact region fallback: ${markdown}`, () => {
+  test(`nested or heading-dependent split uses shared normalization: ${markdown}`, () => {
     const p = commandReplica(commandGenesis(markdown), undefined, 'materialized');
     try {
       const { consumer, value } = seed(p);
@@ -412,11 +280,17 @@ for (const markdown of ['- abcdef\n\ntail', '# abcdef\n\ntail'])
         }),
       );
       const result = consumer.prepareStructural(change(p, value));
-      expect(result.state).toBe('fallback');
-      if (result.state === 'fallback')
-        expect(result.reason).toBe(
-          markdown.startsWith('-') ? 'semantic-SetProperties' : 'child-lifting',
+      expect(result.state, result.state === 'fallback' ? result.reason : '').toBe('prepared');
+      if (result.state !== 'prepared') throw new Error(result.reason);
+      const cold = commandReplica(p.genesis, p.document.store.encodeUpdate(), 'reference');
+      try {
+        expect(result.value.view).toEqual(cold.view());
+        expect(result.value.visibility).toEqual(
+          cold.document.publication.status().publication!.value.visibility,
         );
+      } finally {
+        cold.close();
+      }
     } finally {
       p.close();
     }

@@ -6,6 +6,7 @@ import type {
   NodeId,
   RangeRef,
   TapeId,
+  MarkerId,
 } from '../contracts.js';
 import type { BirthContent } from '../projection/types.js';
 import type { Activity, EffectRef } from '../visibility/activity.js';
@@ -13,6 +14,8 @@ import type { TextToken, VisibilityNode } from '../visibility/visibility.js';
 import { resourceKey } from '../layout/index.js';
 import { countWork } from '../diagnostics.js';
 import { PersistentMap } from './map.js';
+import { MarkerIntervals } from './marker-intervals.js';
+import type { MarkerInterval } from './marker-intervals.js';
 
 export const deletionEffectKey = (ref: EffectRef) =>
   `${ref.action.actor}:${ref.action.sequence}:${ref.ordinal}`;
@@ -28,6 +31,7 @@ interface Group {
   readonly declarations: readonly Declaration[];
   readonly inherited: readonly RangeRef[];
   readonly tapes: readonly TapeId[];
+  readonly intervals: readonly MarkerInterval<SubtreeMatch>[];
 }
 export interface SubtreeMatch {
   readonly action: Pick<ActionEnvelope, 'id' | 'lamport'>;
@@ -48,15 +52,19 @@ export class SubtreeDeletions {
     private readonly coveredBy = new PersistentMap<readonly string[]>(),
     private readonly groups = new PersistentMap<Group>(),
     private readonly tapeGroups = new PersistentMap<readonly string[]>(),
+    private readonly intervals = new PersistentMap<MarkerIntervals<SubtreeMatch>>(),
+    private readonly indexed = false,
   ) {}
   static create(
     actions: Iterable<ActionEnvelope>,
     nodes: Iterable<VisibilityNode>,
     birthContent: readonly BirthContent[],
     activity: Activity,
+    position?: (marker: MarkerId) => number,
   ): SubtreeDeletions {
     countWork('subtree.fullIndexesConstructed');
-    return new SubtreeDeletions().update(actions, nodes, birthContent, activity).index;
+    return new SubtreeDeletions().update(actions, nodes, birthContent, activity, [], position)
+      .index;
   }
   update(
     actions: Iterable<ActionEnvelope>,
@@ -64,16 +72,21 @@ export class SubtreeDeletions {
     content: readonly BirthContent[],
     activity: Activity,
     withdrawn: readonly EffectRef[] = [],
+    position?: (marker: MarkerId) => number,
   ) {
+    if (!this.indexed && this.groups.size && position)
+      throw new Error('Retained subtree intervals require a cold seed');
     const nodes = this.nodes.fork(),
       children = this.children.fork(),
       birthContent = this.birthContent.fork(),
       declarations = this.declarations.fork(),
       coveredBy = this.coveredBy.fork(),
       groups = this.groups.fork(),
-      tapeGroups = this.tapeGroups.fork();
+      tapeGroups = this.tapeGroups.fork(),
+      intervals = this.intervals.fork();
     const dirty = new Set<string>(),
       tags = new Set<string>(),
+      changedGroups = new Map<string, Set<string>>(),
       affectedNodes = new Set<string>(),
       tapes = new Map<string, TapeId>();
     for (const entry of content) {
@@ -95,6 +108,13 @@ export class SubtreeDeletions {
       }
       countWork('subtree.birthsIndexed');
     }
+    const markTag = (tag: DeletionId, id: string) => {
+      const key = resourceKey(tag),
+        refs = changedGroups.get(key) ?? new Set<string>();
+      refs.add(id);
+      changedGroups.set(key, refs);
+      tags.add(key);
+    };
     const replace = (id: string, after?: Declaration) => {
       const before = declarations.get(id);
       for (const [entry, adding] of [
@@ -102,7 +122,7 @@ export class SubtreeDeletions {
         [after, true],
       ] as const) {
         if (!entry) continue;
-        tags.add(resourceKey(entry.effect.tag));
+        markTag(entry.effect.tag, id);
         for (const node of entry.covered) {
           const prior = coveredBy.get(node) ?? [];
           coveredBy.set(node, adding ? [...prior, id] : prior.filter((d) => d !== id));
@@ -132,8 +152,8 @@ export class SubtreeDeletions {
           inherited: prior?.inherited ?? [],
         });
         dirty.add(id);
-        tags.add(resourceKey(effect.tag));
-        if (prior) tags.add(resourceKey(prior.effect.tag));
+        markTag(effect.tag, id);
+        if (prior) markTag(prior.effect.tag, id);
       }
     for (const id of dirty) {
       const entry = declarations.get(id);
@@ -169,10 +189,7 @@ export class SubtreeDeletions {
         ids = new Set<string>();
       for (const declaration of old?.declarations ?? [])
         ids.add(deletionEffectKey({ action: declaration.action.id, ordinal: declaration.ordinal }));
-      for (const id of dirty) {
-        const entry = declarations.get(id);
-        if (entry && resourceKey(entry.effect.tag) === tag) ids.add(id);
-      }
+      for (const id of changedGroups.get(tag) ?? []) ids.add(id);
       const entries = [...ids]
         .flatMap((id) => {
           const d = declarations.get(id);
@@ -198,8 +215,48 @@ export class SubtreeDeletions {
         tapeGroups.set(key, [...(tapeGroups.get(key) ?? []), tag]);
         tapes.set(key, tape);
       }
+      const contribution = (
+        d: Declaration,
+        range: RangeRef,
+        id: string,
+      ): MarkerInterval<SubtreeMatch> => ({
+        id,
+        range,
+        value: { action: d.action, ordinal: d.ordinal, tag: d.effect.tag },
+      });
+      const newIntervals = [
+        ...entries.flatMap((d) =>
+          d.effect.scope.ownedIntervals.map((range, i) =>
+            contribution(
+              d,
+              range,
+              `${deletionEffectKey({ action: d.action.id, ordinal: d.ordinal })}:captured:${i}`,
+            ),
+          ),
+        ),
+        ...inherited.map((range, i) => contribution(entries[0], range, `${tag}:inherited:${i}`)),
+      ];
+      if (this.indexed || position) {
+        if (!position) throw new Error('Visibility interval update lacks native marker order');
+        for (const [ranges, adding] of [
+          [old?.intervals ?? [], false],
+          [newIntervals, true],
+        ] as const)
+          for (const entry of ranges) {
+            const key = resourceKey(entry.range.tape),
+              root = intervals.get(key) ?? new MarkerIntervals<SubtreeMatch>();
+            const next = adding ? root.add(entry, position) : root.remove(entry, position);
+            if (next.empty) intervals.delete(key);
+            else intervals.set(key, next);
+          }
+      }
       if (entries.length)
-        groups.set(tag, { declarations: entries, inherited, tapes: [...afterTapes.values()] });
+        groups.set(tag, {
+          declarations: entries,
+          inherited,
+          tapes: [...afterTapes.values()],
+          intervals: newIntervals,
+        });
       else groups.delete(tag);
       countWork('subtree.tagGroupsUpdated');
     }
@@ -212,6 +269,8 @@ export class SubtreeDeletions {
         coveredBy,
         groups,
         tapeGroups,
+        intervals,
+        this.indexed || !!position,
       ),
       nodes: affectedNodes,
       tapes: [...tapes.values()],
@@ -251,7 +310,21 @@ export class SubtreeDeletions {
   matches(
     token: TextToken,
     contains: (range: RangeRef, token: TextToken) => boolean,
+    query?: { gap(): number; position(marker: MarkerId): number },
   ): readonly SubtreeMatch[] {
+    if (this.indexed && query) {
+      const root = this.intervals.get(resourceKey(token.tape));
+      if (!root) return [];
+      const matches = root.at(query.gap(), query.position).toSorted(compareEffects),
+        seen = new Set<string>();
+      return matches.filter((entry) => {
+        const tag = resourceKey(entry.tag);
+        if (seen.has(tag)) return false;
+        seen.add(tag);
+        return true;
+      });
+    }
+    countWork('subtree.unindexedQueries');
     const matches: SubtreeMatch[] = [];
     for (const tag of this.tapeGroups.get(resourceKey(token.tape)) ?? []) {
       const group = this.groups.get(tag)!;
