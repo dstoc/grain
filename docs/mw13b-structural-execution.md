@@ -76,6 +76,13 @@ grows unrelated split births at depths 0, 8, and 32 and forbids both inventory
 getters during isolated B preparation. Full projector callers still export
 inventories; those costs remain visible outside the isolated replay gate.
 
+Occurrence allocation validates only fresh predecessor edges and follower
+priorities against a persistent certificate, including ghost anchors. Retained
+edges cannot refer to fresh IDs; cycle checks therefore traverse new edges only.
+Genesis and complete ordered reads retain the full independent sequence audit.
+The split-birth regression also checks sequence-entry and comparison work;
+invalid predecessors, priority ties, ghosts, and cycles have reference controls.
+
 ## Candidate output and publication
 
 General `MaterializedOwnership.prepare()` returns `value.changes`. The specialized

@@ -24,6 +24,8 @@ function applied(result: ReturnType<CommandReplica['editor']['edit']>) {
 }
 
 let splitBirthAncestorWork: number | undefined;
+let splitBirthSequenceWork: number | undefined;
+let splitBirthComparisonWork: number | undefined;
 for (const depth of [0, 8, 32])
   test(`split preparation forbids resource inventories after ${depth} unrelated split births`, () => {
     const p = commandReplica(commandGenesis('abcdef\n\nxyz'), undefined, 'materialized'),
@@ -72,6 +74,11 @@ for (const depth of [0, 8, 32])
       expect(work['driver/layout.flowsExported'] ?? 0).toBe(0);
       splitBirthAncestorWork ??= work['driver/ownership.flowAncestorVisits'];
       expect(work['driver/ownership.flowAncestorVisits']).toBe(splitBirthAncestorWork);
+      splitBirthSequenceWork ??= work['driver/layout.sequenceEntriesValidated'];
+      splitBirthComparisonWork ??= work['driver/layout.orderingComparisons'] ?? 0;
+      expect(work['driver/layout.sequenceEntriesValidated']).toBe(splitBirthSequenceWork);
+      expect(work['driver/layout.orderingComparisons'] ?? 0).toBe(splitBirthComparisonWork);
+      expect(work['driver/layout.sequenceAuditEntries'] ?? 0).toBe(0);
       expect(prepared.value.value.changes).toMatchObject({
         replayFrom: depth,
         replayTo: depth + 1,
