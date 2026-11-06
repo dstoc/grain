@@ -1,14 +1,14 @@
-# Native materialization and command overlays
+# Incremental materialization
 
-The opt-in materializer reuses ready native bodies and keeps old publications
-readable while preparing the next view. It also avoids building an isolated
-command tree for literal input. This is the first implementation stage of
-[grain/94](https://tines.tbuckley.dev/issues/prj_L8Cva7P0y96K81kq/94), not completed
-MW-13 acceptance. Readiness uses a dirty dependency index; author closure
-construction, detached snapshot exports and semantic projection retain full-state
-costs.
+The opt-in materializer reuses native bodies, readiness certificates and document
+state between edits. It preserves readable old publications while preparing the
+next one. It remains an unfinished implementation of
+[grain/94](https://tines.tbuckley.dev/issues/prj_L8Cva7P0y96K81kq/94). The reference
+reader remains the default, and browser cutover requires separate acceptance.
 
-Open through the existing bootstrap API with a local implementation choice:
+## Open a replica
+
+Choose the implementation through the existing bootstrap API:
 
 ```ts
 const replica = await openBootstrap({
@@ -20,104 +20,13 @@ const replica = await openBootstrap({
 });
 ```
 
-The default remains `reference`. Unknown implementation names fail before journal attachment. The choice is absent from genesis, action
-envelopes, bundles and provider settings. Both implementations certify against
-exact author closures. `openReferenceDocument()` and `projectMarkdown()` remain
-independent full-replay oracles.
+Keep and distribute the exact genesis bytes. The local implementation choice is
+absent from genesis, action envelopes, bundles and provider settings. Unknown
+implementation names fail before journal attachment. Both readers certify actions
+against their exact author closures. `openReferenceDocument()` and
+`projectMarkdown()` retain independent full reconstruction.
 
-## Readiness
-
-The optimized document uses `IndexedActionStore`. It shares the private decoded
-fact collection with `ActionStore`, whose full readiness calculation remains the
-independent reference. New payload variants invalidate their identity and the
-transitive reverse dependency closure. Missing identities retain waiters. A later
-arrival can release pending descendants; a later fork withdraws ready descendants.
-Independent branches retain their successful exact-fact certificates. Duplicate
-payloads do not trigger readiness evaluation.
-
-Intrinsic failures and known noncausal edges are established before dependency
-propagation. Candidates then use the same semantic order and failure precedence
-as the reference. Cancellation retains the dirty closure until evaluation finishes;
-no partial ready result escapes. Changing decoder limits cancels suspended work.
-Public snapshots and validator arguments remain detached from retained facts.
-
-`store.readinessDiagnostics()` reports changed facts, evaluated entries,
-dependency and closure edges, author checks and full snapshot builds. Unchanged
-facts reuse the existing exact-version snapshot memo; public reads still clone it.
-Author-check counts cover indexed readiness evaluation, excluding `checkLocal()`
-certification. Full snapshot builds exclude clones served by the memo.
-A causal suffix append evaluates one new entry; an exact duplicate evaluates none.
-This does not eliminate full closure construction for a new author check, full
-snapshot export or full semantic projection. Those costs remain acceptance gaps.
-
-## Activity replay
-
-The materializer keeps immutable activity roots for ready actions, actor causal
-frontiers, group membership, controls and active flags. A causal append adds only
-its suffix. It does not copy ancestor sets. Late semantic arrivals and withdrawals
-restore a compatible private activity checkpoint and replay the suffix in order.
-The cache saves a checkpoint every 128 actions and retains eight historical roots.
-Exact retained payload bytes determine prefix compatibility. Eviction discards
-these roots; the next changed publication replays activity cold.
-
-This cache receives only the MW-01-certified ready set. Contiguous actor chains
-make the per-actor observed sequence frontier equivalent to ancestor membership.
-The independent `reduceActivity()` oracle still constructs full ancestor sets.
-`projectMarkdown()` always calls that oracle. The materializer supplies its own
-activity through an internal projector seam; ownership, visibility and legal view
-construction still run in full. These are activity checkpoints, not completed
-coupled layout/ownership checkpoints.
-
-`activityDiagnostics()` reports payload comparisons, replayed actions, frontier
-entries, checkpoint restores, cold replays and the latest committed suffix.
-Counters include attempted candidate work. `coldReplays` counts nonempty replays
-from genesis, including after eviction. Retained checkpoint/action counts describe
-cache structure, not heap bytes.
-Payload-prefix comparison and public activity arrays still enumerate the ready
-sequence. A new control updates the older target's activity, while the full
-ownership replay remains responsible for its structural effect.
-
-Activity candidates commit only with the complete publication. Failure,
-cancellation, replacement work and cache eviction cannot publish partial roots.
-Prior publications retain their old action, activity and native reads.
-
-## Publication and cancellation
-
-`MaterializedPublication` applies each newly ready native body once. It does not
-require the new ready sequence to extend the old semantic-order array: an earlier
-concurrent arrival can integrate without reapplying old bodies. If an integrated
-payload is withdrawn or replaced, it rebuilds the private native cache from the
-remaining exact ready set. Conflicting variants remain in canonical storage.
-
-A publication owns immutable AVL roots for tape snapshots and marker bindings.
-Updating a touched tape copies map paths and rebuilds that tape's native-ID index.
-Old numeric, range, lookup, marker and snapshot reads retain their old meaning.
-`encodeState()` reconstructs the exact published native bytes on explicit request;
-that diagnostic is outside ordinary editing work.
-
-Cancellation during native indexing discards the private integration cache. It
-leaves the previous publication intact. Cancellation after indexing can retain
-complete unpublished native bodies for the next refresh. The readiness check
-removes any subsequently withdrawn bodies before reuse. A deferred or failed
-publication does not grant authoring from partial state.
-
-An unchanged refresh returns the same complete tuple. Duplicate receipts and
-unrelated pending branches can retain authoring after readiness confirms that the
-published exact ready set is unchanged. Status reads do not replace an in-flight
-readiness calculation.
-
-## Commands and maintenance
-
-`LocalEditor` accepts a narrow `AuthoringDocument` interface. The opt-in document
-requests command overlays; the reference document keeps the existing command
-path. Literal drafts keep touched text in an action-local overlay. Native planning
-loads tapes on demand and uses the published base projection before the first
-change. A structural operation constructs the established isolated tree and
-replays earlier overlay text before continuing. Intermediate semantic changes
-still use full projection when needed.
-
-Large callers can supply a local native decode capacity when constructing
-`LocalEditor`:
+Large callers can set native decode capacity when constructing an editor:
 
 ```ts
 const editor = new LocalEditor(document, genesis, {
@@ -125,35 +34,85 @@ const editor = new LocalEditor(document, genesis, {
 });
 ```
 
-`MaterializedPublication.evict()` releases private native integration state. The
-active publication stays readable and current; subsequent growth reconstructs its
-native integration cache. Eviction writes no canonical data or journal entries.
-It does not consolidate storage. MW-18 consolidation remains a separate API and
-integration gate.
+## Reuse and fallback behavior
 
-## Work counters and limits
+`IndexedActionStore` evaluates changed facts and their reverse dependency closure.
+Missing dependencies retain waiters. Late variants can withdraw ready descendants;
+independent branches retain their exact-fact certificates. Public readiness
+snapshots remain detached exports. Private ready roots let ordinary commands avoid
+exporting those arrays and cloning complete closures.
 
-`diagnostics()` returns cumulative counts. They include attempted work, including
-tape indexes completed before a later cancellation:
+Activity, placement and ownership use persistent roots. Each reducer saves a
+checkpoint every 128 actions and retains up to eight historical checkpoints.
+Exact payloads and prior decisions determine compatibility. Controls invalidate
+older targets; changed native read intervals can invalidate earlier splits.
+Placement and ownership resume together in semantic order. Unknown compatibility,
+marker withdrawal and reordering retain conservative replay.
 
-- `nativeBodiesIntegrated`: completed native-body/index applications, including
-  genesis and new empty native bodies; old ready bodies are skipped.
-- `tapesIndexed` and `partsIndexed`: complete touched tapes and their Yjs parts.
-  Long tapes are still rebuilt as a whole.
-- `nativeRebuilds`: rebuilds caused by ready-payload withdrawal or replacement.
-- `discardedNativeCandidates`: interrupted or failed native/index applications.
-- `fullProjections`: calls to the full semantic projection fallback.
-- `unchangedRefreshes`: refreshes that reused the complete publication.
+Newly ready native bodies integrate once. Immutable native indexes copy paths for
+the affected final Yjs items, including retained text merged into those items.
+Marker-stable text can reuse cell topology. Native position discovery, marker
+refinement and affected-tape text ordering can still traverse retained data.
+Explicit snapshot exports and `encodeState()` diagnostics pay for detached full
+results; they are outside the intended ordinary-input path.
 
-This stage does not meet the complete ordinary-input work gate. Detached readiness exports
-and certification still enumerate or clone closures; semantic projection still
-rebuilds the view. Command preparation still indexes projected handles and scans
-allocation/manifest metadata. Coupled structural suffix replay, complete reducer checkpoints,
-affected-container projection and stable unaffected view/address identity remain
-required by the approved proposal. No 10,000-action, production-history or
-consolidation performance pass follows from these counters.
+Literal input, exact deletion/replacement and checked/info changes have local
+projection paths under their eligibility checks. Unchanged fragments, addresses
+and unaffected view records can retain identity. General structural, subtree
+visibility and interpretation changes retain full projection fallbacks over the
+coupled ownership result. Materialized structural visibility indexes active exact
+text-deletion ranges; the reference path scans those declarations independently.
+Subtree coverage, tag order and normalization keep their shared semantic rules.
 
-The next implementation steps and full acceptance requirements are in the
-[approved proposal](proposals/2026-11-05-mw13-incremental-materialization.md).
-[The benchmark runner](../benchmarks/multiwriter/README.md) retains exact fixtures
-and separates complete replay checks from timing.
+Commands use action-local text overlays. Registered immutable native publications
+answer untouched planned reads directly; the first write loads that tape's
+snapshot. Arbitrary native facades keep snapshot behavior. Structural commands
+still construct the isolated command tree when needed. Private command queries
+fork committed activity/ownership roots, and managed selection is staged before
+append. Structural drafts and general affected projection remain acceptance gaps.
+
+## Publication and maintenance
+
+A publication contains one coherent ready set, native view, ownership result,
+legal view and editing addresses. Candidate roots commit together. Failure,
+cancellation or changed receipts leave the prior tuple intact. Deferred work does
+not authorize editing from partial state. Duplicate receipts and unrelated
+pending branches can preserve authoring after readiness confirms the same ready
+set.
+
+`MaterializedPublication.evict()` releases rebuildable readiness, certification,
+native and reducer caches. The active immutable publication stays readable.
+Subsequent growth rebuilds the required caches. Cache eviction writes no canonical
+data or journal entries. If an integrated payload leaves readiness, the native
+cache rebuilds from the remaining exact ready set; canonical variants remain.
+
+MW-18 lossless journal consolidation is a separate provider operation. It does not
+prune actions, replace genesis, expire an offline replica or reset a live writer.
+Its integration evidence does not replace dependency review and merge.
+
+## Inspect work
+
+Diagnostics are cumulative and include attempted work from cancelled candidates.
+They report work and retained counts, not heap or persistence sizes:
+
+- `store.readinessDiagnostics()` reports changed facts, evaluated entries,
+  dependency/closure work and detached exports.
+- `document.activityDiagnostics()` reports payload comparisons, replayed actions,
+  causal-frontier work and checkpoint reuse.
+- `document.ownershipDiagnostics()` reports coupled suffix length, checkpoint
+  restores, native-reader invalidations, tape reads and resource/coverage work.
+- `document.projectionDiagnostics()` reports full/local projection counts, replaced
+  records, text-tape work and exact-deletion index/query work.
+- `document.commandOwnershipDiagnostics()` reports unpublished command-query work.
+- `document.publication.diagnostics()` reports newly integrated bodies, affected
+  tape/item indexing, exceptional rebuilds and unchanged refreshes. An affected
+  final Yjs item can contain retained text.
+
+Full snapshots, explicit native exports and public inventories can be expensive.
+Counters do not establish latency targets, total/shared/peak cache memory or a
+completed 10,000-action trace. See the
+[implementation status](mw13-materialization-status.md) for exact tested sources,
+measurements and outstanding gates. The
+[approved proposal](proposals/2026-11-05-mw13-incremental-materialization.md) defines
+acceptance, and the [benchmark guide](../benchmarks/multiwriter/README.md) explains
+fixture reuse and measurement scope.

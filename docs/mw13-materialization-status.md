@@ -651,6 +651,34 @@ scoped to their original sources; the completed 5,000-paragraph report still
 belongs only to 17cab90. PR #79 still needs normal conflict resolution,
 independent review and merge. Keep PR #88 draft.
 
+## Structural visibility and retained native reads
+
+Final engine/test source is `ba5ddc8`; combined MW-10/MW-18 source is `838eea2`.
+
+Structural and pre-append selection projection index exact-text deletion ranges by native tape/client clock. A query returns each covering declaration's position in the selected activity sequence. Exact/subtree matches merge before tag deduplication. This preserves first-covering order when a tag is reused; its first global declaration can cover another character. The independent reference still scans the declarations. A real admitted-action regression and exact/mixed-subtree controls retain this contract.
+
+Registered immutable NativePlan roots answer untouched reads directly. The first write loads that tape; arbitrary facades keep snapshot behavior. Local projection reads native ending markers and home text intervals without full marker-snapshot exports, and reads each run layout once. History uses direct, cached run lookups. Affected-tape text ordering still traverses retained text. Native-reader invalidation and coupled replay gates remain unchanged.
+
+All 2,377 ordinary runnable Node cases pass across the broad run and two isolated semantic retention runs. Every incoming occurrence and the original 194 source skips remain, with eleven additive cases. The unchanged materialization/reference cases pass alone in 275.324/228.663 seconds. Both opt-in wide-bootstrap cases pass separately. Build/web/lint/format/boundaries/both Knip modes and all seven benchmark/GC controls pass.
+
+Combined integration passes 416 checks in 43 files and build. Its occurrence audit preserves all prior 405 cases/39 files. Real managed 501 groups take 36.308 seconds; frozen checkpoint/history takes 124.960 seconds. All 48 existing IndexedDB provider/checkpoint tests pass on installed headless Chromium 156.0.8078.73 at the combined source.
+
+This is partitioned evidence, not one unfiltered invocation. Earlier f10199d/cdd8db3 reports precede the shared-tag correction; the production-Knip failure and corrected development controls remain archived separately.
+
+Three alternating fresh-process structural triples reuse the original 150-paragraph fixture. Candidate split/join median per-process p50 is 522.255/397.893 ms versus 530.412/409.020 ms incoming. No material structural whole-command improvement or 15 ms target pass is established. Undo/Redo is 281.834/288.167 ms.
+
+Three current/reference replacement pairs give candidate p50/p95 4.739/5.166 ms versus 433.290/468.892 ms. Three shallow task pairs give 0.958/1.239 ms versus 1.033/1.512 ms incoming. These are whole-command observations; public phase envelopes overlap and do not establish exclusive core budgets.
+
+The corrected 100-action profile cold-matches replacement/split/join/Undo/Redo. Replacement replays one action; split/join still replay 102/103 from genesis. Undo/Redo replay 104/105 from genesis at this depth. The separate pre-fix 1,000-action profiles are not final-source measurements.
+
+The supplemental XFS-backed Chromium IndexedDB probe completes three alternating fresh browser-process pairs. It records strict transaction completion, logical journal payloads and separate IndexedDB directory logical/allocated file bytes at history/cache/consolidation barriers. Pending original outer carriers survive checkpoint and fresh-connection restore; old prerequisites unlock them. Independent cold reconstruction and browser-process reopen pass. The workload is 24 managed replacements with four warm-up edits; candidate-only cache eviction is outside matched timing. JSON navigation size is not heap. This does not close 501-group physical storage, broad mixed history or total/shared/peak cache acceptance.
+
+The cdd8db3 long attempt was cancelled for the ordering correction (exit 130), before its unchanged 2,100-second guard. The last saved source/control comparison is action 1,300; 1,391 complete original frames remain with no truncated tail. Outer reconstruction has 1,391 records, 1,240,854 envelope payload bytes including 34,684 embedded native bytes, and 1,254,656 actionDoc bytes. This is not semantic readiness, full projection, storage-journal size or heap acceptance. It is separate from the historical v11 3,000-frame attempt; neither prefix can be stitched into an uninterrupted result.
+
+No fresh 10,000-action attempt starts at the corrected source: its unchanged 2,100-second guard plus handoff time cannot fit the remaining supervisor window. The unchanged separate 100-action smoke completes all final one-way/retransmission, maintenance, cache/history eviction, same-instance catch-up, restart and independent cold checks.
+
+Artifacts `structural-visibility-stage-verification` and `structural-visibility-stage-measurements` retain exact sources, raw samples, inputs, scripts, negatives and verified catalogs. PR #88 remains draft. Required structural/native/draft, remaining scale/fragmentation, mixed-10k, memory, physical-storage breadth and dependency/browser-cutover gates remain open. No completed CI or browser editor/physical IME acceptance is claimed.
+
 ## Evidence and outstanding gates
 
 Focused checks cover detached exports, concurrent-resource exclusion, exact
