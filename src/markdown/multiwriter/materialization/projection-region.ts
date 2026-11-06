@@ -63,11 +63,19 @@ export function indexNormalization(
 }
 /** Compare complete plain projection data, preserving every equal nested address
  * and origin object. Only records inside the actual normalization region enter. */
+function freezeNew<T>(value: T): T {
+  if (value && typeof value === 'object' && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freezeNew(child);
+    Object.freeze(value);
+  }
+  return value;
+}
 function retain<T>(before: T, after: T): T {
   countWork('projection.regionDataValuesCompared');
   if (Object.is(before, after)) return before;
-  if (!before || !after || typeof before !== 'object' || typeof after !== 'object') return after;
-  if (Array.isArray(before) !== Array.isArray(after)) return after;
+  if (!before || !after || typeof before !== 'object' || typeof after !== 'object')
+    return freezeNew(after);
+  if (Array.isArray(before) !== Array.isArray(after)) return freezeNew(after);
   const old = before as Record<string, unknown>,
     value = after as Record<string, unknown>,
     keys = Object.keys(value);
@@ -271,7 +279,7 @@ export function projectNormalizationRegion(input: RegionInput) {
   }
   const reconcile = (node: ViewNode): ViewNode => {
     const prior = before.node(key(node)),
-      children = node.children.map(reconcile);
+      children = Object.freeze(node.children.map(reconcile));
     if (!prior) return retain(undefined as unknown as ViewNode, { ...node, children });
     const fields = {
       ...node,

@@ -13,6 +13,7 @@ import { insertMarkdown } from '../../../editing/commands/insert-markdown.js';
 import { indent } from '../../../editing/commands/indent.js';
 import { outdent } from '../../../editing/commands/outdent.js';
 import { parseBlocks } from '../../block-parser/api.js';
+import { isImmutableData } from '../../../../test/multiwriter/immutable.js';
 import { captureDiagnostics } from '../diagnostics.js';
 import { resolveAddress, textPoint } from '../projection/addresses.js';
 import { compareBytes } from '../actions/cbor.js';
@@ -62,6 +63,7 @@ function consume(
   });
   try {
     expect(result.value.view).toEqual(reference.view);
+    expect(isImmutableData(result.value.view, new WeakSet())).toBe(true);
     expect(result.value.visibility).toEqual(reference.visibility);
     const actualIndex = commandViewIndex(result.value.view.root),
       referenceIndex = commandViewIndex(reference.view.root);
