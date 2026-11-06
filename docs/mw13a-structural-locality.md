@@ -245,7 +245,11 @@ coupled replay, visibility/normalization, selection/address resolution, canonica
 append, publication, and uncategorized driver overhead. Purpose is author, staging,
 publication, or driver. Exact-author certification excludes nested replay/native
 work in the exclusive report. `inclusive` retains existing public API durations;
-these can nest and must never be summed into an exclusive total.
+these can nest and must never be summed into an exclusive total. The raw
+spans sum to `exclusive.wallMs`. The summary adds the measured difference
+`wallMs - exclusive.wallMs` to driver overhead, accounting for recorder setup
+and report export outside its interval. Its phase totals therefore reconcile
+with the outer attribution wall time without inventing span boundaries.
 
 Work counts include attempted computations. Separate commit counters and the
 existing last-committed frontier identify publication results. The ledger exposes:
@@ -275,3 +279,33 @@ Final source-scoped results and command output are attached to grain/102. Report
 must identify their exact tested source, current parent heads and input hashes.
 No upper percentile is inferred from this handful of operations. Review the raw
 short samples, exclusive totals, full-input work and fallback reasons together.
+
+### Source-scoped short results
+
+Measured engine/driver source: `7cc76f9ee53e5fde4102f48bca5c73db070991c3`. Separate cold harness: `2d338be659ffbd345c38899579224e82500e39a8`. The engine files are unchanged between these commits; the latter adds cold checks and a recorder cleanup test. Node v26.13.0, Yjs 13.6.33. The raw main report and separate cold report are complete. All 16 main workers and eight cold workers stayed below 300 seconds. The slowest main worker took 298.80 seconds. The earlier exploratory timeout is incomplete and is excluded.
+
+These are single raw samples, not percentiles. `split`, `join`, and unrelated-edit wall times below have diagnostics disabled. Their fresh attribution peers use different new native identities.
+
+| Input         | Split ms | Join ms | Unrelated edit ms | Unrelated pub replay / sort inputs / deletion ranges indexed |
+| ------------- | -------: | ------: | ----------------: | -----------------------------------------------------------: |
+| root-plain    |   381.82 |  318.92 |              5.60 |                                                    1 / 0 / 0 |
+| root-deleted  |   310.26 |  310.87 |            175.41 |                                                    1 / 6 / 0 |
+| tasks-plain   |   442.87 |  391.83 |              6.63 |                                                    1 / 0 / 0 |
+| tasks-deleted |   362.13 |  379.59 |            225.61 |                                                    1 / 6 / 0 |
+| 100-plain     |   529.97 |  405.38 |              5.74 |                                                    1 / 0 / 0 |
+| 100-deleted   |   538.47 |  413.39 |            225.47 |                                                 1 / 106 / 80 |
+| 1000-plain    |  1398.08 | 1099.23 |              5.46 |                                                    1 / 0 / 0 |
+| 1000-deleted  |  1383.22 | 1173.79 |            387.66 |                                               1 / 1006 / 800 |
+
+The 1,000-action plain split replays 1,001 actions from genesis. Its author queries sort 2,002 input entries, selection staging sorts another 1,001, and publication sorts another 1,001. Exact-author reference reconstruction is counted separately. The unrelated deletion variant demonstrates the other cause: one action replays while publication still sorts 1,006 actions and rebuilds 800 deletion ranges. Staging repeats that work. Low suffix-replay counts do not imply bounded work.
+
+Representative exclusive phase rows below are from the attribution workers. The overhead column includes the measured recorder-boundary difference; each row sums to attribution wall time. They are not added to the independent wall-only samples.
+
+| Input / edit                  |  Draft | Native | Author | Coupled |   View | Selection | Append | Publish | Overhead | Attribution wall |
+| ----------------------------- | -----: | -----: | -----: | ------: | -----: | --------: | -----: | ------: | -------: | ---------------: |
+| 1000-plain / split            | 140.61 |  94.33 |  70.84 |  816.83 | 400.42 |      1.72 |   4.95 |   11.38 |     0.88 |          1541.96 |
+| 1000-deleted / unrelated-edit |   1.14 |   0.69 |   0.62 |    3.45 | 359.71 |      0.63 |   0.48 |    0.69 |     0.26 |           367.67 |
+
+Cold/reference setup remains outside edit timers. The two 1,000-action final cold-open/continued-authoring workers passed in 265.30 and 261.55 seconds. Each opened fresh independent and materialized documents, then verified one new managed edit, exact Undo/Redo, empty initial local history, old-publication reads, and full canonical retention. Persistence is unmeasured.
+
+[Compact results](../benchmarks/multiwriter/results/structural-locality-short.json) retain phase/work numbers and source pins. The issue evidence contains all raw spans, invocation counts, resource IDs, exact inputs and new carriers. The original remote diagnostic description used the phrase “causally earlier”; the actions are concurrent, with the join ordered earlier by Lamport order. The harness wording is corrected; no causal ancestry or semantic result was changed.

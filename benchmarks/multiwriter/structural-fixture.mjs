@@ -166,6 +166,12 @@ export function runStructuralFixture(
       const current = p.document.publication.status().publication.value;
       const ordinal = deletion.envelope.effects.indexOf(effect);
       assert(current.activity.isEffectActive({ action: deletion.action, ordinal }));
+      const tagged = current.visibility.nodes.find(
+        (entry) => resourceKey(entry.node) === resourceKey(targetId),
+      );
+      assert(tagged?.deleted);
+      assert(tagged.tags.some((tag) => resourceKey(tag) === resourceKey(effect.tag)));
+
       assert(!p.nodes().some((n) => identity(n) === removed));
       check();
     }

@@ -162,4 +162,5 @@ copyFileSync(
   join(root, 'test/multiwriter/fixtures/structural-locality/provenance.json'),
   join(output, 'input-provenance.json'),
 );
+child('summary', ['benchmarks/multiwriter/summarize-structural.mjs', output]);
 process.stdout.write(join(output, 'report.json') + '\n');

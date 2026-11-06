@@ -33,11 +33,15 @@ for (const sample of manifest.samples) {
       phaseMs[span.phase] = (phaseMs[span.phase] ?? 0) + elapsed;
     }
     assert(Math.abs(total - row.exclusive.wallMs) < 1e-6, 'exclusive reconciliation');
+    const recorderBoundaryMs = row.wallMs - row.exclusive.wallMs;
+    assert(recorderBoundaryMs >= 0, 'recorder boundary time');
+    phaseMs.overhead = (phaseMs.overhead ?? 0) + recorderBoundaryMs;
     return {
       name: row.name,
       wallMs: wall.trace.find((s) => s.name === row.name).wallMs,
       attributionWallMs: row.wallMs,
       exclusiveMs: row.exclusive.wallMs,
+      recorderBoundaryMs,
       phaseMs,
       work: row.exclusive.work,
       resources: row.exclusive.resources,
@@ -64,9 +68,28 @@ for (const sample of manifest.samples) {
 const classification = existsSync(join(directory, 'classification.json'))
   ? JSON.parse(readFileSync(join(directory, 'classification.json')))
   : null;
+const coldManifest = manifest.coldSamples
+  ? { source: manifest.source, complete: manifest.complete, samples: manifest.coldSamples }
+  : existsSync(join(directory, 'cold-report.json'))
+    ? JSON.parse(readFileSync(join(directory, 'cold-report.json')))
+    : null;
+const coldCases =
+  coldManifest?.samples.map((sample) => ({
+    label: sample.label,
+    workerWallMs: sample.workerWallMs,
+    ...JSON.parse(readFileSync(join(directory, sample.report))),
+  })) ?? [];
+const coldComplete =
+  !!coldManifest?.complete &&
+  coldCases.length === cases.length &&
+  coldCases.every((c) => c.complete);
 const result = {
   source: manifest.source,
-  complete: manifest.complete,
+  complete: manifest.complete && coldComplete,
+  mainComplete: manifest.complete,
+  coldComplete,
+  coldSource: coldManifest?.source ?? null,
+  coldCases,
   failure: manifest.failure ?? null,
   method:
     'raw single samples; wall and attribution workers have different new identities; no percentile, uninterrupted trace, persistence or browser claim',
@@ -77,7 +100,7 @@ writeFileSync(join(directory, 'summary.json'), JSON.stringify(result, null, 2));
 const lines = [
   '# MW-13A short measurements',
   '',
-  `Measured source: \`${manifest.source}\`. Complete: ${manifest.complete}.`,
+  `Measured source: \`${manifest.source}\`. Complete: ${result.complete}.`,
   '',
   result.method + '.',
   '',
@@ -93,7 +116,7 @@ lines.push(
   '',
   '## Exclusive spans, milliseconds',
   '',
-  'Every row includes driver overhead and reconciles with its attribution interval. Public API durations are separate and can nest.',
+  'Raw spans reconcile with the recorder interval. Overhead also includes the measured difference between outer wall time and that interval, so each phase row reconciles with attribution wall time. Public API durations are separate and can nest.',
   '',
   '| Input | Edit | Draft/query | Native | Exact author | Coupled replay | Visibility/normalization | Selection/address | Append | Publication | Overhead |',
   '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
@@ -132,5 +155,23 @@ if (manifest.failure)
     '',
     `Incomplete workload: ${JSON.stringify(manifest.failure)}. A protective stop does not pass this case.`,
   );
+
+lines.push(
+  '',
+  '## Separate final cold reopen and continued authoring',
+  '',
+  'Fresh materialized and full reference documents reopen the exact final canonical bytes. Each new managed session starts empty, then edits, undoes and redoes once.',
+  '',
+  '| Input | Whole worker seconds | Materialized cold ms | Reference cold ms | New edit ms |',
+  '| --- | ---: | ---: | ---: | ---: |',
+);
+for (const c of coldCases)
+  lines.push(
+    `| ${c.label} | ${(c.workerWallMs / 1000).toFixed(2)} | ${c.candidateColdMs.toFixed(2)} | ${c.referenceColdMs.toFixed(2)} | ${c.continuedEditMs.toFixed(2)} |`,
+  );
+lines.push(
+  '',
+  `Cold checks complete: ${coldComplete}. Cold harness source: ${coldManifest?.source ?? 'not run'}.`,
+);
 writeFileSync(join(directory, 'summary.md'), lines.join('\n') + '\n');
 process.stdout.write(join(directory, 'summary.md') + '\n');
