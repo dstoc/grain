@@ -65,35 +65,46 @@ export class OwnershipResult {
     private readonly owners: Pick<ReadonlyMap<string, CellAssignment>, 'get' | 'values'>,
     private readonly roots: Pick<ReadonlyMap<string, readonly RunOrigin[]>, 'get'>,
     private readonly attachments: Pick<ReadonlyMap<string, RunAttachment>, 'get'>,
-    private readonly cohorts: readonly OccurrenceBucket[],
-    private readonly requirements: readonly DestinationRequirement[],
-    private readonly homes: readonly HomeBinding[],
+    private readonly cohorts: readonly OccurrenceBucket[] | (() => readonly OccurrenceBucket[]),
+    private readonly requirements:
+      | readonly DestinationRequirement[]
+      | (() => readonly DestinationRequirement[]),
+    private readonly homes: readonly HomeBinding[] | (() => readonly HomeBinding[]),
+    private readonly homeLookup?: {
+      readonly tape: (tape: TapeId) => HomeBinding | undefined;
+      readonly flow: (flow: FlowId) => HomeBinding | undefined;
+    },
   ) {}
   private homeIndex() {
-    let index = homeIndexes.get(this.homes);
+    const homes = typeof this.homes === 'function' ? this.homes() : this.homes;
+    let index = homeIndexes.get(homes);
     if (!index) {
       const tapes = new Map<string, HomeBinding>(),
         flows = new Map<string, HomeBinding>();
-      for (const home of this.homes) {
+      for (const home of homes) {
         tapes.set(resourceKey(home.cell.tape), home);
         flows.set(resourceKey(this.layout.runLayout(home.run).flow), home);
       }
       index = { tapes, flows };
-      homeIndexes.set(this.homes, index);
+      homeIndexes.set(homes, index);
     }
     return index;
   }
   homeForTape(tape: TapeId): HomeBinding | undefined {
-    return structuredClone(this.homeIndex().tapes.get(resourceKey(tape)));
+    return structuredClone(
+      this.homeLookup ? this.homeLookup.tape(tape) : this.homeIndex().tapes.get(resourceKey(tape)),
+    );
   }
   homeForFlow(flow: FlowId): HomeBinding | undefined {
-    return structuredClone(this.homeIndex().flows.get(resourceKey(flow)));
+    return structuredClone(
+      this.homeLookup ? this.homeLookup.flow(flow) : this.homeIndex().flows.get(resourceKey(flow)),
+    );
   }
   nodeAllocation(node: NodeId) {
     return structuredClone(this.layout.nodeAllocation(node));
   }
   get homeBindings(): readonly HomeBinding[] {
-    return structuredClone(this.homes);
+    return structuredClone(typeof this.homes === 'function' ? this.homes() : this.homes);
   }
   get assignments(): readonly CellAssignment[] {
     return structuredClone([...this.owners.values()]);
@@ -110,11 +121,16 @@ export class OwnershipResult {
   get nodeAllocations() {
     return structuredClone(this.layout.nodeAllocations);
   }
+  private cohortValues(): readonly OccurrenceBucket[] {
+    return typeof this.cohorts === 'function' ? this.cohorts() : this.cohorts;
+  }
   get buckets(): readonly OccurrenceBucket[] {
-    return structuredClone(this.cohorts);
+    return structuredClone(this.cohortValues());
   }
   get destinationRequirements(): readonly DestinationRequirement[] {
-    return structuredClone(this.requirements);
+    return structuredClone(
+      typeof this.requirements === 'function' ? this.requirements() : this.requirements,
+    );
   }
   blockPlacement(node: NodeId) {
     return structuredClone(this.layout.blockPlacement(node));
@@ -124,7 +140,7 @@ export class OwnershipResult {
   }
   children(parent: NodeId): readonly NodeId[] {
     // Layout orders one parent at a time; buckets for other sequences must not enter it.
-    const buckets = this.cohorts.filter((bucket) => {
+    const buckets = this.cohortValues().filter((bucket) => {
       const slot = this.layout.occurrence(bucket.roots[0]).slot;
       return 'parent' in slot && sameId(slot.parent, parent);
     });
@@ -134,7 +150,7 @@ export class OwnershipResult {
     return structuredClone(
       this.layout.occurrenceOrder(
         slot,
-        this.cohorts.filter((bucket) => {
+        this.cohortValues().filter((bucket) => {
           const root = this.layout.occurrence(bucket.roots[0]).slot;
           return 'parent' in root && sameId(root.parent, slot.parent);
         }),

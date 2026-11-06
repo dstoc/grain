@@ -99,6 +99,27 @@ export class MaterializedLayout {
   fork(): MaterializedLayout {
     return new MaterializedLayout({ allocations: [], births: [] }, this);
   }
+  /** Exact root differences, including withdrawals and former locations. This
+   * does not traverse an unchanged container or export the complete layout. */
+  changes(before?: MaterializedLayout) {
+    const visit = () => countWork('layout.changeIndexNodes');
+    const changes = <T>(after: PersistentMap<T>, prior?: PersistentMap<T>) => [
+      ...after.changes(prior ?? new PersistentMap<T>(), visit),
+    ];
+    return {
+      nodes: changes(this.nodes, before?.nodes),
+      runs: changes(this.runs, before?.runs),
+      occurrences: changes(this.occurrences, before?.occurrences),
+      blocks: changes(this.blocks, before?.blocks).map(({ key, before, after }) => ({
+        key,
+        before: before?.value,
+        after: after?.value,
+      })),
+      flows: changes(this.inline, before?.inline)
+        .filter(({ before, after }) => before?.value || after?.value)
+        .map(({ key, before, after }) => ({ key, before: before?.value, after: after?.value })),
+    };
+  }
   get root(): NodeId {
     return this.rootId!;
   }

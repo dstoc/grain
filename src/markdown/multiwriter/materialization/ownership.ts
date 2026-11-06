@@ -5,7 +5,6 @@ import type {
   CellAssignment,
   FlowId,
   InlineSlot,
-  NodeId,
   RangeRef,
   RunId,
   SemanticEffect,
@@ -13,14 +12,13 @@ import type {
 import { resourceKey } from '../layout/index.js';
 import type { EffectOrder, LayoutActionInput, LayoutGenesis } from '../layout/index.js';
 import { assignmentKey, cellKey, sameId } from '../ownership/cells.js';
-import { cutPosition, splitBuckets } from '../ownership/cohorts.js';
+import { cutPosition } from '../ownership/cohorts.js';
 import type { HomeBinding } from '../ownership/homes.js';
-import type { SplitBirth } from '../ownership/cohorts.js';
 import { traverse } from '../ownership/traversal.js';
 import type { RunAttachment, RunOrigin } from '../ownership/traversal.js';
 
 import { OwnershipResult } from '../ownership/ownership.js';
-import type { OwnershipInput, DestinationRequirement } from '../ownership/ownership.js';
+import type { OwnershipInput } from '../ownership/ownership.js';
 import type { Activity } from '../visibility/activity.js';
 import { PersistentMap } from './map.js';
 import { MaterializedLayout } from './layout.js';
@@ -28,6 +26,7 @@ import { MaterializedCells } from './cells.js';
 import { OwnershipResources } from './resources.js';
 import { NativeReadIntervals } from './intervals.js';
 import { OwnershipCoverage } from './coverage.js';
+import { StructuralIndex, structuralReads } from './structural.js';
 export interface OwnershipCheckpoint {
   readonly count: number;
   readonly index: MaterializedCells;
@@ -35,8 +34,8 @@ export interface OwnershipCheckpoint {
   readonly owners: PersistentMap<CellAssignment>;
   readonly roots: PersistentMap<readonly RunOrigin[]>;
   readonly attachments: PersistentMap<RunAttachment>;
-  readonly splits: readonly SplitBirth[];
-  readonly candidates: readonly { readonly order: EffectOrder; readonly effect: SemanticEffect }[];
+  readonly structural: StructuralIndex;
+  readonly assignmentCounts: PersistentMap<number>;
   readonly flowIntentions: PersistentMap<EffectOrder>;
   readonly installedTapes: PersistentMap<true>;
   /** First active split whose result depends on each native tape's cell topology. */
@@ -52,12 +51,12 @@ export interface OwnershipCheckpoint {
 export function orderedOwners(
   index: MaterializedCells,
   owners: PersistentMap<CellAssignment>,
-  homes: readonly HomeBinding[],
+  homes: () => readonly HomeBinding[],
 ) {
   return {
     get: (key: string) => owners.get(key),
     *values(): Generator<CellAssignment, undefined, unknown> {
-      for (const home of homes)
+      for (const home of homes())
         for (const cell of index.range(home.cell)) {
           countWork('ownership.cellsInstalled');
           const owner = owners.get(cellKey(cell.range));
@@ -83,9 +82,21 @@ export function replayOwnershipSuffix(
   nativeIndex: MaterializedCells,
   resources: OwnershipResources,
   work: { coverageFlowsTraversed: number; coverageCellsVisited: number },
+  /** The caller certified the exact ordered prefix and suffix. The reference
+   * audit seam omits this and still deduplicates/sorts its complete input. */
+  ordered?: { readonly length: number; at(index: number): LayoutActionInput },
 ) {
   return measure('coupled-replay', () =>
-    replayOwnershipSuffixMeasured(input, activity, resume, save, nativeIndex, resources, work),
+    replayOwnershipSuffixMeasured(
+      input,
+      activity,
+      resume,
+      save,
+      nativeIndex,
+      resources,
+      work,
+      ordered,
+    ),
   );
 }
 function replayOwnershipSuffixMeasured(
@@ -96,16 +107,10 @@ function replayOwnershipSuffixMeasured(
   nativeIndex: MaterializedCells,
   resources: OwnershipResources,
   work: { coverageFlowsTraversed: number; coverageCellsVisited: number },
+  ordered: { readonly length: number; at(index: number): LayoutActionInput } | undefined,
 ) {
-  countWork('ownership.fullInputEnumerated', input.actions.length);
-  countWork('ownership.fullInputMaterialized', input.actions.length);
-  countWork('ownership.fullInputDeduplicated', input.actions.length);
-  countWork('ownership.sortInputs', input.actions.length);
   const genesis = input.genesis;
-  const actions = [
-    ...new Map(input.actions.map((entry) => [actionKey(entry), entry])).values(),
-  ].sort((a, b) => (countWork('ownership.sortComparisons'), compareActions(a.action, b.action)));
-  const homes = resources.homes;
+  const actions = ordered ?? orderedInput(input.actions);
   if (input.homes) resources.assertHomes(input.homes);
   const index = nativeIndex;
   const nativeReaders = resume?.nativeReaders.fork() ?? new PersistentMap<number>();
@@ -115,8 +120,8 @@ function replayOwnershipSuffixMeasured(
   const owners = resume?.owners.fork() ?? new PersistentMap<CellAssignment>();
   const roots = resume?.roots.fork() ?? new PersistentMap<readonly RunOrigin[]>();
   const attachments = resume?.attachments.fork() ?? new PersistentMap<RunAttachment>();
-  let splits = resume?.splits ?? [];
-  let candidates = resume?.candidates ?? [];
+  const structural = resume?.structural.fork() ?? new StructuralIndex();
+  const assignmentCounts = resume?.assignmentCounts.fork() ?? new PersistentMap<number>();
   const flowIntentions = resume?.flowIntentions.fork() ?? new PersistentMap<EffectOrder>();
   const installedTapes = resume?.installedTapes.fork() ?? new PersistentMap<true>();
   const homeIndex = resources.homeDomain;
@@ -172,6 +177,7 @@ function replayOwnershipSuffixMeasured(
         const key = cellKey(cell.range);
         if (owners.has(key)) throw new Error('Conflicting home coverage');
         owners.set(key, { cell: cell.range, run: home.run, occurrence: home.occurrence });
+        countAssignment(home, 1);
       }
     }
   }
@@ -199,6 +205,11 @@ function replayOwnershipSuffixMeasured(
       () => work.coverageFlowsTraversed++,
     );
   }
+  function countAssignment(owner: Pick<CellAssignment, 'run' | 'occurrence'>, delta: number): void {
+    const key = assignmentKey(owner);
+    assignmentCounts.set(key, (assignmentCounts.get(key) ?? 0) + delta);
+    structural.changedAssignment(owner);
+  }
   function assign(
     ranges: readonly RangeRef[],
     run: RunId,
@@ -221,6 +232,8 @@ function replayOwnershipSuffixMeasured(
         selected.add(key);
         dirtyRun(before.run);
         dirtyRun(run);
+        countAssignment(before, -1);
+        countAssignment({ run, occurrence }, 1);
         owners.set(key, { cell: cell.range, run, occurrence });
       }
   }
@@ -229,22 +242,26 @@ function replayOwnershipSuffixMeasured(
     assertCoverage();
   }
   let count = resume?.count ?? 0;
-  const checkpoint = (): OwnershipCheckpoint => ({
-    count,
-    index,
-    layout: layout.fork(),
-    owners: owners.fork(),
-    roots: roots.fork(),
-    attachments: attachments.fork(),
-    splits,
-    candidates,
-    flowIntentions: flowIntentions.fork(),
-    installedTapes: installedTapes.fork(),
-    nativeReaders: nativeReaders.fork(),
-    nativeIntervals: nativeIntervals.fork(),
-    coverage: coverage.fork(),
-  });
-  for (const entry of actions.slice(count)) {
+  const checkpoint = (): OwnershipCheckpoint => {
+    structural.refresh(layout, index, resources, assignmentCounts, flowIntentions);
+    return {
+      count,
+      index,
+      layout: layout.fork(),
+      owners: owners.fork(),
+      roots: roots.fork(),
+      attachments: attachments.fork(),
+      structural: structural.fork(),
+      assignmentCounts: assignmentCounts.fork(),
+      flowIntentions: flowIntentions.fork(),
+      installedTapes: installedTapes.fork(),
+      nativeReaders: nativeReaders.fork(),
+      nativeIntervals: nativeIntervals.fork(),
+      coverage: coverage.fork(),
+    };
+  };
+  for (let at = count; at < actions.length; at++) {
+    const entry = actions.at(at)!;
     countWork('ownership.suffixActions');
     layout.beginAction(entry, (prior) => activity.observes(entry.action.id, prior));
     install({ allocations: entry.action.allocations, births: entry.births }, entry.action.effects);
@@ -334,7 +351,6 @@ function replayOwnershipSuffixMeasured(
           !sameNullableId(birth.slot.predecessor, effect.outerSlot.predecessor)
         )
           throw new Error('Split outer slot differs from retained birth');
-        splits = [...splits, { effect, order }];
       }
       const eligible = effect.type !== 'Interpret' || !!input.interpretationEligible?.(order);
       const changedFlow =
@@ -358,9 +374,14 @@ function replayOwnershipSuffixMeasured(
           'LiftChildren',
         ].includes(effect.type)
       )
-        candidates = [...candidates, { order, effect }];
+        structural.add({ order, effect }, resources);
       for (const changed of result.flows)
-        if (changed.result === 'applied') flowIntentions.set(resourceKey(changed.flow), order);
+        if (changed.result === 'applied') {
+          flowIntentions.set(resourceKey(changed.flow), order);
+          structural.changedFlow(changed.flow);
+        }
+      for (const changed of result.blocks)
+        if (changed.result === 'applied') structural.changedBlock(changed.node);
       // Native refinement is already installed in the initial cell index. Text,
       // visibility, properties and controls cannot change these raw assignments.
       // Recheck the invariant at structural births and after layout/ownership edits.
@@ -385,62 +406,7 @@ function replayOwnershipSuffixMeasured(
   const final = checkpoint();
   if (installedTapes.size !== resources.tapeCount)
     throw new Error('Home binding references an unavailable tape');
-  const flowHome = (flow: FlowId): NodeId => resources.flowHome(flow);
-  const requirements: DestinationRequirement[] = [];
-  for (const { order, effect } of candidates) {
-    countWork('ownership.retainedStructuralCandidates');
-    const nodes: NodeId[] = [];
-    switch (effect.type) {
-      case 'TransferRange':
-        if (
-          [...owners.values()].some(
-            (owner) => sameId(owner.run, effect.run) && sameId(owner.occurrence, effect.occurrence),
-          )
-        )
-          nodes.push(flowHome(layout.runLayout(effect.destination.run).flow));
-        break;
-      case 'JoinFlow': {
-        const placement = layout.flowPlacement(effect.source);
-        if (
-          placement.parent.type === 'flow' &&
-          sameId(placement.parent.occurrence, effect.occurrence)
-        )
-          nodes.push(flowHome(layout.runLayout(effect.destination.run).flow));
-        break;
-      }
-      case 'SplitFlow': {
-        nodes.push(effect.newNode);
-        if (sameId(layout.blockPlacement(effect.newNode)!.occurrence, effect.occurrence))
-          nodes.push(effect.outerSlot.parent);
-        break;
-      }
-      case 'MoveBlock':
-        if (sameId(layout.blockPlacement(effect.node)!.occurrence, effect.occurrence))
-          nodes.push(effect.slot.parent);
-        if (
-          effect.standaloneFlow &&
-          flowIntentions.get(resourceKey(effect.standaloneFlow)) === order
-        )
-          nodes.push(flowHome(effect.standaloneFlow));
-        break;
-      case 'Interpret':
-      case 'LiftChildren':
-        for (const placement of effect.type === 'Interpret'
-          ? effect.packet.placements
-          : effect.placements)
-          if (sameId(layout.blockPlacement(placement.node)!.occurrence, placement.occurrence))
-            nodes.push(placement.slot.parent);
-        break;
-      default:
-        break;
-    }
-    if (nodes.length)
-      requirements.push({
-        order,
-        nodes: [...new Map(nodes.map((node) => [resourceKey(node), node])).values()],
-      });
-  }
-  const cohorts = splitBuckets(splits, layout, index, homeIndex);
+  const { requirements, cohorts, homes, homeLookup } = structuralReads(final.structural, resources);
   return {
     state: final,
     retained: resources,
@@ -456,8 +422,18 @@ function replayOwnershipSuffixMeasured(
       cohorts,
       requirements,
       homes,
+      homeLookup,
     ),
   };
+}
+function orderedInput(input: readonly LayoutActionInput[]) {
+  countWork('ownership.fullInputEnumerated', input.length);
+  countWork('ownership.fullInputMaterialized', input.length);
+  countWork('ownership.fullInputDeduplicated', input.length);
+  countWork('ownership.sortInputs', input.length);
+  return [...new Map(input.map((entry) => [actionKey(entry), entry])).values()].sort(
+    (a, b) => (countWork('ownership.sortComparisons'), compareActions(a.action, b.action)),
+  );
 }
 function sameNullableId(a: InlineSlot['predecessor'], b: InlineSlot['predecessor']): boolean {
   return a === null ? b === null : b !== null && sameId(a, b);
