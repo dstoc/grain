@@ -126,6 +126,9 @@ for (const history of ['text', 'layout'] as const)
           expect(work['driver/ownership.retainedStructuralCandidates'] ?? 0).toBeLessThanOrEqual(
             expectedCandidates,
           );
+          expect(prepared.value.value.changes.derived.requirements.length).toBeLessThanOrEqual(
+            expectedCandidates,
+          );
           const independent = commandReplica(
             p.genesis,
             p.document.store.encodeUpdate(),
@@ -284,6 +287,11 @@ test('a changed component visits its retained placement readers while unrelated 
     expect(changed.report.work['driver/ownership.retainedStructuralCandidates']).toBe(relevant);
     expect(changed.value.value.changes.layout.blocks).toHaveLength(1);
     expect(changed.value.value.changes.payloads).toHaveLength(1);
+    expect(
+      changed.value.value.changes.derived.requirements.some(
+        (entry) => entry.before && !entry.after,
+      ),
+    ).toBe(true);
     changed.value.commit();
     oracle.check(p.document, p.genesis);
   } finally {

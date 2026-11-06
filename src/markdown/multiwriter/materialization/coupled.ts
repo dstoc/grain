@@ -543,6 +543,7 @@ export class MaterializedOwnership {
             ),
           ],
           layout: result.state.layout.changes(this.state?.layout),
+          derived: result.state.structural.changes(this.state?.structural),
           attachments: [
             ...result.state.attachments.changes(
               this.state?.attachments ?? new PersistentMap(),
@@ -784,6 +785,7 @@ export class MaterializedOwnership {
       actions: directAction ? [action] : [...changes, action],
       assignments: [...owners.changes(prior.owners, () => countWork('ownership.changeIndexNodes'))],
       layout: layout.changes(prior.layout),
+      derived: structural.changes(prior.structural),
       roots: [],
       attachments: [],
       replayFrom: prior.count,

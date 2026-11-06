@@ -6,6 +6,7 @@ import { cellKey } from '../ownership/cells.js';
 import type { TapeSnapshot } from '../text/types.js';
 import type { MaterializedCells } from './cells.js';
 import type { MaterializedHomes } from './homes.js';
+import type { StructuralIndex } from './structural.js';
 
 export interface CellSubdivision {
   readonly before: RangeRef;
@@ -80,6 +81,7 @@ export interface StructuralChanges {
     readonly after?: CellAssignment;
   }[];
   readonly layout: ReturnType<MaterializedLayout['changes']>;
+  readonly derived: ReturnType<StructuralIndex['changes']>;
   readonly attachments: readonly {
     readonly key: string;
     readonly before?: RunAttachment;

@@ -216,6 +216,17 @@ export class StructuralIndex {
       entry ? [entry] : [],
     ));
   }
+  /** Projection can consume exact changed requirements/cohorts without forcing
+   * either complete export. Null and missing values preserve retractions. */
+  changes(before?: StructuralIndex) {
+    const visit = () => countWork('ownership.derivedChangeIndexNodes');
+    return {
+      requirements: [
+        ...this.requirements.changes(before?.requirements ?? new PersistentMap(), visit),
+      ],
+      cohorts: [...this.buckets.changes(before?.buckets ?? new PersistentMap(), visit)],
+    };
+  }
   exportBuckets(): readonly OccurrenceBucket[] {
     if (this.exportedBuckets) return this.exportedBuckets;
     countWork('ownership.cohortsExported', this.buckets.size);

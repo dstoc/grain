@@ -82,6 +82,8 @@ field continues to mean the affected text/property actions. Both use
   removals, plus the affected original actions.
 - Ordered cell subdivisions with old/new reserved classification, assignment
   differences, block/flow/occurrence/run changes, roots, and ghost attachments.
+- Exact before/after destination requirements and cohort entries, including
+  withdrawals, so projection need not force their complete lazy exports.
 - Changed native tapes and an explicit replay frontier/reason.
 
 The changes describe raw structural resources and semantic inputs. C derives
