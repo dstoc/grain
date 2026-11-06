@@ -100,8 +100,10 @@ export class SubtreeDeletions {
       if (!birthContent.has(id)) throw new Error('Missing birth-causal visibility coverage');
       nodes.set(id, node);
       if (node.birthSlot) {
-        const parent = resourceKey(node.birthSlot.parent);
-        children.set(parent, [...(children.get(parent) ?? []), id]);
+        const parent = resourceKey(node.birthSlot.parent),
+          siblings = children.get(parent) ?? [];
+        countWork('subtree.birthSiblingEntriesCopied', siblings.length);
+        children.set(parent, [...siblings, id]);
         // Direct parent coverage is enough to find every declaration which can
         // inherit this new birth. Recompute after all same-action births exist.
         for (const declaration of coveredBy.get(parent) ?? []) dirty.add(declaration);

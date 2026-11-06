@@ -87,6 +87,7 @@ function check(
   actions: readonly ActionEnvelope[],
   allocations = nodes,
   coverage = content,
+  textTokens = tokens,
 ) {
   const activity = reduceActivity(actions);
   const layout: VisibilityLayout = {
@@ -101,7 +102,7 @@ function check(
         .find((c) => resourceKey(c.node) === resourceKey(node))!
         .intervals.some((range) => contains(range, token)),
   };
-  const full = reduceVisibility(activity, layout, tokens);
+  const full = reduceVisibility(activity, layout, textTokens);
   for (const entry of full.nodes) expect(index.nodeTags(entry.node)).toEqual(entry.tags);
   for (const entry of full.text)
     expect(index.matches(entry.token, contains).map((d) => d.tag)).toEqual(entry.tags);
@@ -197,3 +198,32 @@ test('earlier arrivals retain first-covering declaration order and inspect only 
   expect(report.work['driver/subtree.fullIndexesConstructed'] ?? 0).toBe(0);
   expect(report.work['driver/subtree.tagGroupsUpdated']).toBe(1);
 });
+
+for (const size of [8, 32, 128])
+  test(`birth append charges ${size} retained siblings in its changed parent`, () => {
+    const siblings = Array.from({ length: size }, (_, i) => node(resource('node', 100 + i), root)),
+      allocations = [node(root, null), ...siblings],
+      coverage = allocations.map((n) => ({ node: n.id, intervals: [] })),
+      index = SubtreeDeletions.create([], allocations, coverage, reduceActivity([])),
+      addition = node(child, root);
+    const { value, report } = captureDiagnostics(() =>
+      index.update([birth], [addition], [{ node: child, intervals: [] }], reduceActivity([birth])),
+    );
+    expect(report.work['driver/subtree.birthsIndexed']).toBe(1);
+    expect(report.work['driver/subtree.birthSiblingEntriesCopied']).toBe(size);
+    expect(report.work['driver/subtree.birthEdgesVisited'] ?? 0).toBe(0);
+    // The copy is real changed-parent work; it neither mutates the held graph
+    // nor changes the captured/inherited semantics of a subsequent deletion.
+    const d = deletion(action(B), root, []),
+      updatedNodes = [...allocations, addition],
+      updatedContent = [...coverage, { node: child, intervals: [] }];
+    check(
+      value.index.update([d], [], [], reduceActivity([birth, d])).index,
+      [birth, d],
+      updatedNodes,
+      updatedContent,
+      [],
+    );
+    expect(index.nodeTags(child)).toEqual([]);
+    for (const sibling of siblings) expect(index.nodeTags(sibling.id)).toEqual([]);
+  });
