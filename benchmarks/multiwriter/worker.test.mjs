@@ -428,7 +428,7 @@ test('short structural runner uses real managed history, independent checks, exc
     );
     const report = JSON.parse(readFileSync(output + '.json'));
     assert.equal(report.complete, true);
-    assert.equal(report.trace.length, 9);
+    assert.equal(report.trace.length, 8);
     assert.equal(report.prefixActions, 0);
     assert.equal(report.persistence.measured, false);
     for (const row of report.trace) {
@@ -465,6 +465,7 @@ test('short structural runner uses real managed history, independent checks, exc
     );
     const cold = JSON.parse(readFileSync(coldOutput + '.json'));
     assert.equal(cold.complete, true);
+    assert(cold.evictionReopenMs > 0);
     assert.equal(cold.startedWithEmptyHistory, true);
     assert.equal(cold.history.undo, 1);
     assert.equal(cold.history.redo, 0);

@@ -230,11 +230,11 @@ export function runStructuralFixture(
       'applied',
     );
     const bytes = p.document.store.encodeUpdate();
+    const finalMarkdown = p.markdown(),
+      finalHistory = structural.status();
     const evictStart = performance.now();
     p.document.publication.evict();
-    p.editor.refresh();
-    const evictionReopenMs = performance.now() - evictStart;
-    check();
+    const evictionReadMs = performance.now() - evictStart;
     assert.equal(compareBytes(bytes, p.document.store.encodeUpdate()), 0);
     assert.equal(compareBytes(priorNative, prior.native.encodeState()), 0);
     assert.equal(
@@ -248,25 +248,19 @@ export function runStructuralFixture(
       priorState,
     );
     if (deleted) assert(!p.nodes().some((n) => identity(n) === removed));
-    assert.equal(
-      step('post-eviction-typing', () =>
-        edit(structural, insertText, find(first), { from: 0, text: '?' }),
-      ).status,
-      'applied',
-    );
     return {
       complete: true,
       coldLoadMs,
       oracleColdMs,
       initialHeads,
       initialSchedule,
-      evictionReopenMs,
+      evictionReadMs,
       trace,
       carriers,
-      canonical: p.document.store.encodeUpdate(),
-      markdown: p.markdown(),
+      canonical: bytes,
+      markdown: finalMarkdown,
       persistence: { measured: false, reason: 'no journal attached' },
-      history: structural.status(),
+      history: finalHistory,
     };
   } finally {
     phases?.restore();

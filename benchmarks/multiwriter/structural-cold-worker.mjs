@@ -44,6 +44,11 @@ try {
   assert.equal(edit.status, 'applied');
   independentCheck(p, reference);
   const after = p.markdown();
+  const evictStart = performance.now();
+  p.document.publication.evict();
+  p.editor.refresh();
+  const evictionReopenMs = performance.now() - evictStart;
+  independentCheck(p, reference);
   const undo = history.undo();
   assert.equal(undo.state, 'applied');
   assert.equal(undo.restoration.state, 'exact');
@@ -74,6 +79,7 @@ try {
       candidateColdMs,
       referenceColdMs,
       continuedEditMs,
+      evictionReopenMs,
       startedWithEmptyHistory: true,
       history: history.status(),
       undoRestoration: undo.restoration.state,

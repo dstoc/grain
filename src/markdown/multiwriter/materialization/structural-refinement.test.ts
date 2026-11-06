@@ -232,6 +232,37 @@ for (const markerCount of [1, 2])
         expect(expected.owner({ tape: c.tape, native: c.native }).run).not.toEqual(
           splitFlow.newRun,
         );
+        const oldInline = viewNodes(before.publication.value.view.root).find(
+          (node) => node.content === 'bc',
+        )!;
+        const point = capturePoint(before.publication, oldInline, 1, 'right');
+        const saved = { anchor: point, focus: point };
+        const publication = p.document.publication.status().publication!;
+        const input = {
+          genesis: p.genesis.layout,
+          genesisManifest: p.genesis.body.nativeManifest,
+          initialProperties: p.genesis.initialProperties,
+          ...reconstructProvenance(p.genesis.layout, p.document.store.snapshot().ready),
+          native: publication.native,
+        };
+        const refinedProjection = projectWithActivity(input, publication.value.activity, {
+          ownership: candidate.value,
+          snapshots: candidate.snapshots,
+        });
+        expect(
+          resolveAddress(point.address, candidate.value, refinedProjection.visibility).state,
+        ).toBe('available');
+        expect(resolveAddress(point.address, expected, publication.value.visibility).state).toBe(
+          'available',
+        );
+        const actualCaret = resolveSelection(publication, saved);
+        const refinedCaret = resolveSelection({ ...publication, value: refinedProjection }, saved);
+        expect(actualCaret.state).toBe('exact');
+        expect(refinedCaret.state).toBe('exact');
+        if (actualCaret.state !== 'exact' || refinedCaret.state !== 'exact')
+          throw new Error('Missing old caret');
+        expect(actualCaret.anchor.origin.representative).toEqual(source.id);
+        expect(refinedCaret.anchor.origin.representative).toEqual(splitFlow.newNode);
       }
     } finally {
       oracle.destroy();

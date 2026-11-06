@@ -39,12 +39,12 @@ types again. The deletion variant first deletes a distant paragraph through
 `deleteBlocks`. It asserts the exact target and active `DeleteSubtree`; the task
 wrapper remains canonical. Target lookup uses retained origins. The runner
 checks exact selection restoration, the unrelated edit/deletion, prior-publication
-reads, canonical/native retention, eviction, and continued typing after eviction.
+reads, canonical/native retention, eviction, and retained reads after eviction.
 
 The final canonical output of each attribution case also enters a separate
 five-minute cold worker. That worker opens fresh materialized and independent
 reference documents, compares complete state, and authors one new managed edit
-with undo/redo. Its new session starts with empty history; old facts remain
+with undo/redo across cache eviction and reconstruction. Its new session starts with empty history; old facts remain
 canonical. These cold and continued-authoring costs are separate from the main
 sequence timings.
 
@@ -186,6 +186,9 @@ meaning; a module can retain existing types that express it exactly.
 | Retractions        | Removed/withdrawn facts or resources, former and new locations, invalidated readers, negative dependencies, changed ghost addresses, and withdrawn slot availability. Absence is observable state.              |
 | Prepared result    | Immutable candidate roots, exact validation evidence, change set, resolved managed selection, attempted/committed work ledger, and explicit fallback/frontier reason.                                           |
 
+Retractions remove readiness or derived-root contributions; they do not delete
+canonical envelopes or permanent native identities.
+
 A candidate has one lifecycle:
 
 1. **Prepare privately.** Queries can return immutable intermediate roots. They
@@ -237,7 +240,9 @@ own reference. The runner preserves those carriers and hashes.
 and resource IDs. A stack charges only the innermost phase. Generator resumes and
 return cleanup execute inside their phase; suspension time belongs to the driver.
 The injected-clock tests cover nesting, observer reentry, throws, suspension,
-cleanup and disabled diagnostics. Disabled execution performs no clock reads and
+cleanup and disabled diagnostics. Start capture before creating generator
+work. To attribute existing deferred work, wrap its iterator or resume boundary
+inside capture. Disabled work instrumentation returns the original iterator. Disabled execution performs no clock reads and
 retains no recorder, trace, counters, or resource sets.
 
 The phases are draft/query, native preparation, exact-author certification,
