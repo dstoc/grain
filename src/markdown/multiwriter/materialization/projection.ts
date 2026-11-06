@@ -46,6 +46,7 @@ import { compareEffects } from '../contracts.js';
 import { VisibilityWitnesses } from './visibility-witnesses.js';
 import { SplitVisibility } from './split-visibility.js';
 import { deletionEffectKey } from './subtree-deletions.js';
+import { ProjectionOrder } from './projection-order.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
 /** Seed once, then update only exact changed contributions. Until B supplies a
@@ -154,6 +155,7 @@ interface State {
   readonly inlineCount: number;
   readonly commandIndex: IndexedCommandView;
   readonly interpretationIndex: MaterializedInterpretations;
+  readonly order: ProjectionOrder;
 }
 const key = (node: ViewNode) => resourceKey(node.origin.representative);
 const tokenKey = (range: { readonly client: number; readonly clock: number }) =>
@@ -254,7 +256,7 @@ function projectedActivity(
   };
 }
 function textVisibility(
-  tapes: State['tapes'],
+  order: ProjectionOrder,
   text: State['text'],
   nodes: Projection['visibility']['nodes'],
 ): Projection['visibility'] {
@@ -262,8 +264,9 @@ function textVisibility(
   return {
     get text() {
       if (!allText) {
-        countWork('projection.visibilityTapesExported', tapes.size);
-        allText = [...tapes.values()].flatMap((tape) => text.get(resourceKey(tape))?.entries ?? []);
+        const tapes = [...order.tapes()];
+        countWork('projection.visibilityTapesExported', tapes.length);
+        allText = tapes.flatMap((tape) => text.get(resourceKey(tape))?.entries ?? []);
       }
       return allText;
     },
@@ -272,17 +275,17 @@ function textVisibility(
 }
 /** Publication getters own current roots only, never a preparation context. */
 function resourceVisibility(
-  tapes: State['tapes'],
+  order: ProjectionOrder,
   text: State['text'],
   nodes: State['nodeVisibility'],
 ): Projection['visibility'] {
-  const textView = textVisibility(tapes, text, []);
+  const textView = textVisibility(order, text, []);
   let allNodes: Projection['visibility']['nodes'] | undefined;
   return {
     get nodes() {
       if (!allNodes) {
         countWork('projection.visibilityNodesExported', nodes.size);
-        allNodes = [...nodes.values()];
+        allNodes = [...order.nodes()].map((node) => nodes.get(resourceKey(node))!);
       }
       return allNodes;
     },
@@ -485,6 +488,13 @@ function indexMeasured(
     membership,
     inlineCount,
     interpretationIndex,
+    order:
+      before && delta
+        ? before.order.add(delta.actions)
+        : ProjectionOrder.create(
+            input.genesis.allocations,
+            input.actions.map((a) => a.action),
+          ),
     tapes: (() => {
       const tapes = new PersistentMap<TapeId>();
       for (const home of tapeHomes.values()) tapes.set(resourceKey(home.tape), home.tape);
@@ -838,6 +848,7 @@ export class MaterializedProjection {
     if (!additions?.actions.length || !additions.actions.includes(change.action))
       return fallback('missing-exact-addition');
     const fresh = additions.actions,
+      order = before.order.add(fresh),
       changedActions = new Map(fresh.map((a) => [actionKey(a.id), a]));
     for (const changed of change.semanticChanges) {
       const action = source!.get(actionKey(changed.id));
@@ -865,10 +876,13 @@ export class MaterializedProjection {
     for (const action of semanticChanges)
       for (const effect of action.effects) {
         if (effect.type === 'SetProperties') {
-          const properties = before.value.interpretations.properties(effect.node);
+          const properties = before.value.interpretations.properties(effect.node),
+            candidate = interpretations.properties(effect.node);
           if (
-            Object.entries(effect.values).every(
-              ([name, value]) => properties[name as keyof PresentedProperties] === value,
+            [...new Set([...Object.keys(properties), ...Object.keys(candidate)])].every(
+              (name) =>
+                properties[name as keyof PresentedProperties] ===
+                candidate[name as keyof PresentedProperties],
             )
           )
             continue;
@@ -1099,7 +1113,7 @@ export class MaterializedProjection {
       const nextRoot = nodes.get(rootKey)!.node;
       const commandIndex = before.commandIndex.refine(nextRoot);
       registerCommandViewIndex(nextRoot, commandIndex);
-      const visibility = resourceVisibility(tapes, updated.text, nodeVisibility);
+      const visibility = resourceVisibility(order, updated.text, nodeVisibility);
       const value: Projection = {
         view: Object.freeze({
           root: nextRoot,
@@ -1137,6 +1151,7 @@ export class MaterializedProjection {
         witnesses,
         splitVisibility,
         interpretationIndex,
+        order,
         membership,
         inlineCount,
         text: updated.text,
@@ -1943,7 +1958,7 @@ export class MaterializedProjection {
       const roots = replaceRegionRecords(before, result, ownership),
         commandIndex = before.commandIndex.refine(result.root);
       registerCommandViewIndex(result.root, commandIndex);
-      const visibility = resourceVisibility(before.tapes, text, witnesses.nodes);
+      const visibility = resourceVisibility(before.order, text, witnesses.nodes);
       const value: Projection = {
         ownership,
         interpretations,
@@ -2003,7 +2018,7 @@ export class MaterializedProjection {
       ownership,
       activity: projectedActivity(groupActivity, interpretations),
       interpretations,
-      visibility: resourceVisibility(before.tapes, text, witnesses.nodes),
+      visibility: resourceVisibility(before.order, text, witnesses.nodes),
     };
     registerAddressIndex(ownership, value.visibility, {
       allocations: before.nodeAllocations,

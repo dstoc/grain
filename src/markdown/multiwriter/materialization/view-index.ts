@@ -109,7 +109,7 @@ export class IndexedCommandView implements CommandViewIndex {
     const records = this.records.fork();
     for (const node of changed) {
       const id = idOf(node),
-        prior = records.get(id);
+        prior = this.records.get(id);
       if (!prior || prior.node.children.length !== node.children.length)
         throw new Error('Command content replacement changed structure');
       if (prior.node !== node) {
@@ -126,7 +126,7 @@ export class IndexedCommandView implements CommandViewIndex {
       removed = new Set<string>();
     const visit = (node: ViewNode, parent?: string, position?: string): number => {
       const id = idOf(node),
-        prior = records.get(id);
+        prior = this.records.get(id);
       if (visited.has(id)) throw new Error('Duplicate command view origin');
       visited.add(id);
       if (prior?.node === node) {
@@ -154,19 +154,21 @@ export class IndexedCommandView implements CommandViewIndex {
       )
         suffix++;
       for (let i = prefix; i < old.length - suffix; i++) {
+        // An earlier destination may already have installed this child's new
+        // position. Removal belongs to the immutable previous publication.
         const child = idOf(old[i]),
-          key = records.get(child)!.position!;
+          key = this.records.get(child)!.position!;
         order = remove(order, key);
         removed.add(child);
       }
-      let left = prefix ? records.get(idOf(next[prefix - 1]))!.position : undefined;
-      const right = suffix ? records.get(idOf(old[old.length - suffix]))!.position : undefined;
+      let left = prefix ? this.records.get(idOf(next[prefix - 1]))!.position : undefined;
+      const right = suffix ? this.records.get(idOf(old[old.length - suffix]))!.position : undefined;
       for (let i = 0; i < next.length; i++) {
         const child = next[i],
           childId = idOf(child);
         const key =
           i < prefix || i >= next.length - suffix
-            ? records.get(childId)!.position!
+            ? this.records.get(childId)!.position!
             : between(left, right);
         const size = visit(child, id, key);
         const previous = records.get(childId);
