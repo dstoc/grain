@@ -846,7 +846,10 @@ export class MaterializedOwnership {
     const structural = refined.structural.fork();
     structural.refresh(layout, index, retained, refined.assignmentCounts, refined.flowIntentions);
     const finalState = { ...state, structural };
-    const { cohorts, requirements, homes, homeLookup } = structuralReads(structural, retained);
+    const { cohorts, requirements, homes, homeLookup, cohortLookup } = structuralReads(
+      structural,
+      retained,
+    );
     const value = new OwnershipResult(
       layout,
       index,
@@ -857,6 +860,7 @@ export class MaterializedOwnership {
       requirements,
       homes,
       homeLookup,
+      cohortLookup,
     );
     const decisions = action.effects
       .map((_, ordinal) => `${Number(activity.isEffectActive({ action: action.id, ordinal }))}10`)

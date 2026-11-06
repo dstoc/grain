@@ -75,6 +75,7 @@ export class OwnershipResult {
       readonly tape: (tape: TapeId) => HomeBinding | undefined;
       readonly flow: (flow: FlowId) => HomeBinding | undefined;
     },
+    private readonly cohortLookup?: (parent: NodeId) => readonly OccurrenceBucket[],
   ) {}
   private homeIndex() {
     const homes = typeof this.homes === 'function' ? this.homes() : this.homes;
@@ -132,7 +133,11 @@ export class OwnershipResult {
     return typeof this.cohorts === 'function' ? this.cohorts() : this.cohorts;
   }
   get buckets(): readonly OccurrenceBucket[] {
-    return structuredClone(this.cohortValues());
+    const buckets = this.cohortValues();
+    countWork('ownership.cohortExportBucketsCopied', buckets.length);
+    for (const bucket of buckets)
+      countWork('ownership.cohortExportRootsCopied', bucket.roots.length);
+    return structuredClone(buckets);
   }
   get destinationRequirements(): readonly DestinationRequirement[] {
     return structuredClone(
@@ -145,24 +150,19 @@ export class OwnershipResult {
   flowBlock(flow: FlowId): NodeId {
     return structuredClone(this.layout.flowBlock(flow));
   }
-  children(parent: NodeId): readonly NodeId[] {
-    // Layout orders one parent at a time; buckets for other sequences must not enter it.
-    const buckets = this.cohortValues().filter((bucket) => {
+  private parentCohorts(parent: NodeId): readonly OccurrenceBucket[] {
+    if (this.cohortLookup) return this.cohortLookup(parent);
+    // Keep the independent reference's complete-array selection path.
+    return this.cohortValues().filter((bucket) => {
       const slot = this.layout.occurrence(bucket.roots[0]).slot;
       return 'parent' in slot && sameId(slot.parent, parent);
     });
-    return structuredClone(this.layout.children(parent, buckets));
+  }
+  children(parent: NodeId): readonly NodeId[] {
+    return structuredClone(this.layout.children(parent, this.parentCohorts(parent)));
   }
   occurrenceOrder(slot: BlockSlot) {
-    return structuredClone(
-      this.layout.occurrenceOrder(
-        slot,
-        this.cohortValues().filter((bucket) => {
-          const root = this.layout.occurrence(bucket.roots[0]).slot;
-          return 'parent' in root && sameId(root.parent, slot.parent);
-        }),
-      ),
-    );
+    return structuredClone(this.layout.occurrenceOrder(slot, this.parentCohorts(slot.parent)));
   }
   resolveBlockSlot(slot: BlockSlot): BlockSlot {
     return this.layout.resolveBlockSlot(slot);

@@ -407,7 +407,10 @@ function replayOwnershipSuffixMeasured(
   const final = checkpoint();
   if (installedTapes.size !== resources.tapeCount)
     throw new Error('Home binding references an unavailable tape');
-  const { requirements, cohorts, homes, homeLookup } = structuralReads(final.structural, resources);
+  const { requirements, cohorts, homes, homeLookup, cohortLookup } = structuralReads(
+    final.structural,
+    resources,
+  );
   return {
     state: final,
     retained: resources,
@@ -424,6 +427,7 @@ function replayOwnershipSuffixMeasured(
       requirements,
       homes,
       homeLookup,
+      cohortLookup,
     ),
   };
 }

@@ -275,3 +275,41 @@ captured expectations are unchanged. Worker controls now require zero warm full
 projector/deletion-index construction and a real local structural candidate,
 while retaining their complete independent observations, history and cold-reopen
 assertions.
+
+## Selected cohort readers
+
+The producer retains a persistent parent-to-group membership root alongside its
+complete cohort map. Each nonnull entry records the first root's immutable block
+parent. Dirty-group refresh retracts the old membership and installs the newly
+ranked bucket before exposing a candidate. Null groups remain in the independent
+complete map and have no selected membership. Forks and checkpoints share roots;
+changed inner maps are forked before mutation. The eight-checkpoint bound is
+unchanged.
+
+Both production `OwnershipResult` constructors supply a selected callback built
+outside the preparation scope. That callback captures only a completed fork of
+the parent membership root. It sorts the selected parent's entries by the existing
+first-effect order and copies their bucket/root arrays. It retains no producer,
+activity callback, candidate, prior State or query cache. Missing membership means
+an empty selection. The reference constructor still filters its independent full
+array; explicit production `.buckets` exports still traverse the complete map.
+
+| Counter (`ownership.` prefix)                                                           | Unit                                                                                                 |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `cohortParentLookups`                                                                   | Selected parent queries, including empty parents.                                                    |
+| `cohortMembershipInserts`, `cohortMembershipRemovals`                                   | Keyed membership updates during dirty-group refresh.                                                 |
+| `cohortSelectedEntriesVisited`, `cohortSelectedSortInputs`, `cohortSelectedComparisons` | Selected nonnull entries visited, sort inputs and comparator calls.                                  |
+| `cohortSelectedBucketsCopied`, `cohortSelectedRootsCopied`                              | Bucket arrays and root entries copied by selected reads.                                             |
+| `cohortExportCalls`                                                                     | Complete export calls, including cached calls.                                                       |
+| `cohortsExported`                                                                       | Retained group entries traversed on uncached full exports, including nulls; unchanged unit.          |
+| `cohortExportSortInputs`, `cohortExportComparisons`                                     | Nonnull full-export sort inputs and comparator calls.                                                |
+| `cohortExportBucketsCopied`, `cohortExportRootsCopied`                                  | Bucket arrays and root entries detached by explicit public `.buckets` reads, including cached reads. |
+
+Keyed counters count operations; persistent-map search/path copying remains
+logarithmic. Actual cohorts and occurrences under the selected parent remain real
+dependencies. Fixed-root controls grow unrelated null and nonnull quote cohorts,
+keep selected root visits/copies at zero, and require quote-selected work to grow
+with its own nonempty cohorts. Independent full exports, both delivery orders,
+cross-parent retraction, undo/redo, native refinement, old readers and cold
+reseeding remain separate checks. These work counts establish no whole-command
+latency or parent acceptance.

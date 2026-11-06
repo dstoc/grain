@@ -77,6 +77,8 @@ function fixture(size: number, difficult: 'plain' | 'deleted' | 'suppressed' | '
       'command.fullIndexesConstructed',
       'deletion.fullIndexesConstructed',
       'coupled.readyAuditEntries',
+      'ownership.cohortExportCalls',
+      'ownership.cohortsExported',
     ])
       expect(report.work[`publication/${name}`] ?? 0, name).toBe(0);
     expect(report.work['publication/coupled.candidatesCommitted']).toBe(1);

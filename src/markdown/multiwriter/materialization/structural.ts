@@ -1,4 +1,4 @@
-import type { CellAssignment, SemanticEffect, TapeId } from '../contracts.js';
+import type { CellAssignment, NodeId, SemanticEffect, TapeId } from '../contracts.js';
 import type { EffectOrder, OccurrenceBucket } from '../layout/index.js';
 import { compareEffects } from '../contracts.js';
 import { resourceKey } from '../layout/index.js';
@@ -12,6 +12,34 @@ import type { MaterializedLayout } from './layout.js';
 import type { MaterializedCells } from './cells.js';
 import type { OwnershipResources } from './resources.js';
 import { PersistentMap } from './map.js';
+
+interface CohortEntry {
+  readonly bucket: OccurrenceBucket;
+  readonly first: EffectOrder;
+  readonly parent: string;
+}
+
+/** The escaping reader captures only a completed persistent root. */
+function cohortReader(parents: PersistentMap<PersistentMap<CohortEntry>>) {
+  return (parent: NodeId): readonly OccurrenceBucket[] => {
+    countWork('ownership.cohortParentLookups');
+    const entries: CohortEntry[] = [];
+    for (const entry of parents.get(resourceKey(parent))?.values() ?? []) {
+      countWork('ownership.cohortSelectedEntriesVisited');
+      entries.push(entry);
+    }
+    countWork('ownership.cohortSelectedSortInputs', entries.length);
+    entries.sort((a, b) => {
+      countWork('ownership.cohortSelectedComparisons');
+      return compareEffects(a.first, b.first);
+    });
+    return entries.map(({ bucket }) => {
+      countWork('ownership.cohortSelectedBucketsCopied');
+      countWork('ownership.cohortSelectedRootsCopied', bucket.roots.length);
+      return { roots: [...bucket.roots] };
+    });
+  };
+}
 
 interface Candidate {
   readonly order: EffectOrder;
@@ -46,10 +74,8 @@ export class StructuralIndex {
   private requirements = new PersistentMap<DestinationRequirement | null>();
   private groups = new PersistentMap<readonly SplitBirth[]>();
   private groupReaders = new PersistentMap<PersistentMap<true>>();
-  private buckets = new PersistentMap<{
-    readonly bucket: OccurrenceBucket;
-    readonly first: EffectOrder;
-  } | null>();
+  private buckets = new PersistentMap<CohortEntry | null>();
+  private parents = new PersistentMap<PersistentMap<CohortEntry>>();
   private dirty = new Set<string>();
   private dirtyGroups = new Set<string>();
   private exportedRequirements?: readonly DestinationRequirement[];
@@ -62,6 +88,7 @@ export class StructuralIndex {
     next.groups = this.groups.fork();
     next.groupReaders = this.groupReaders.fork();
     next.buckets = this.buckets.fork();
+    next.parents = this.parents.fork();
     next.dirty = new Set(this.dirty);
     next.dirtyGroups = new Set(this.dirtyGroups);
     next.exportedRequirements = this.exportedRequirements;
@@ -204,7 +231,26 @@ export class StructuralIndex {
       const first = group.find(({ effect }) =>
         sameId(layout.blockPlacement(effect.newNode)!.occurrence, effect.occurrence),
       )?.order;
-      this.buckets.set(key, bucket && first ? { bucket, first } : null);
+      const previous = this.buckets.get(key);
+      if (previous) {
+        const members = this.parents.get(previous.parent)!.fork();
+        members.delete(key);
+        countWork('ownership.cohortMembershipRemovals');
+        if (members.size) this.parents.set(previous.parent, members);
+        else this.parents.delete(previous.parent);
+      }
+      let next: CohortEntry | null = null;
+      if (bucket && first) {
+        const slot = layout.occurrence(bucket.roots[0]).slot;
+        if (!('parent' in slot)) throw new Error('Split cohort lacks a block parent');
+        const parent = resourceKey(slot.parent);
+        next = { bucket, first, parent };
+        const members = this.parents.get(parent)?.fork() ?? new PersistentMap<CohortEntry>();
+        members.set(key, next);
+        this.parents.set(parent, members);
+        countWork('ownership.cohortMembershipInserts');
+      }
+      this.buckets.set(key, next);
     }
     this.dirty.clear();
     this.dirtyGroups.clear();
@@ -227,13 +273,23 @@ export class StructuralIndex {
       cohorts: [...this.buckets.changes(before?.buckets ?? new PersistentMap(), visit)],
     };
   }
+  selectedCohorts(): (parent: NodeId) => readonly OccurrenceBucket[] {
+    return cohortReader(this.parents.fork());
+  }
   exportBuckets(): readonly OccurrenceBucket[] {
+    countWork('ownership.cohortExportCalls');
     if (this.exportedBuckets) return this.exportedBuckets;
-    countWork('ownership.cohortsExported', this.buckets.size);
-    return (this.exportedBuckets = [...this.buckets.values()]
-      .flatMap((entry) => (entry ? [entry] : []))
-      .sort((a, b) => compareEffects(a.first, b.first))
-      .map((entry) => entry.bucket));
+    const entries: CohortEntry[] = [];
+    for (const entry of this.buckets.values()) {
+      countWork('ownership.cohortsExported'); // Includes retained null groups.
+      if (entry) entries.push(entry);
+    }
+    countWork('ownership.cohortExportSortInputs', entries.length);
+    entries.sort((a, b) => {
+      countWork('ownership.cohortExportComparisons');
+      return compareEffects(a.first, b.first);
+    });
+    return (this.exportedBuckets = entries.map((entry) => entry.bucket));
   }
 }
 
@@ -243,6 +299,7 @@ export class StructuralIndex {
 export function structuralReads(structural: StructuralIndex, resources: OwnershipResources) {
   return {
     cohorts: () => structural.exportBuckets(),
+    cohortLookup: structural.selectedCohorts(),
     requirements: () => structural.exportRequirements(),
     homes: () => resources.homes,
     homeLookup: {
