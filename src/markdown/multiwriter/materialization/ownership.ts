@@ -84,7 +84,7 @@ export function replayOwnershipSuffix(
   work: { coverageFlowsTraversed: number; coverageCellsVisited: number },
   /** The caller certified the exact ordered prefix and suffix. The reference
    * audit seam omits this and still deduplicates/sorts its complete input. */
-  ordered?: { readonly length: number; at(index: number): LayoutActionInput },
+  ordered?: { readonly length: number; at(index: number): LayoutActionInput | undefined },
 ) {
   return measure('coupled-replay', () =>
     replayOwnershipSuffixMeasured(
@@ -107,10 +107,12 @@ function replayOwnershipSuffixMeasured(
   nativeIndex: MaterializedCells,
   resources: OwnershipResources,
   work: { coverageFlowsTraversed: number; coverageCellsVisited: number },
-  ordered: { readonly length: number; at(index: number): LayoutActionInput } | undefined,
+  ordered:
+    | { readonly length: number; at(index: number): LayoutActionInput | undefined }
+    | undefined,
 ) {
   const genesis = input.genesis;
-  const actions = ordered ?? orderedInput(input.actions);
+  const actions = ordered ?? orderedLayoutInputs(input.actions);
   if (input.homes) resources.assertHomes(input.homes);
   const index = nativeIndex;
   const nativeReaders = resume?.nativeReaders.fork() ?? new PersistentMap<number>();
@@ -426,7 +428,7 @@ function replayOwnershipSuffixMeasured(
     ),
   };
 }
-function orderedInput(input: readonly LayoutActionInput[]) {
+export function orderedLayoutInputs(input: readonly LayoutActionInput[]) {
   countWork('ownership.fullInputEnumerated', input.length);
   countWork('ownership.fullInputMaterialized', input.length);
   countWork('ownership.fullInputDeduplicated', input.length);

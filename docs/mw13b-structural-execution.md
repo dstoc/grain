@@ -45,6 +45,11 @@ log. Appended packet selection and controls of packets retain full selection
 validation. Earlier arrivals and replaced/withdrawn payloads retain the audit
 comparison and fallback.
 
+A supplied suffix must match the ready root's action order and exact bodies.
+Detached bodies are compared with their encoded payloads. Inputs without a
+compatible ordered certificate take the complete ordering audit before B builds
+its position, resource, or replay tables; those tables cannot disagree on order.
+
 Ordinary text/property activity does not change the raw coupled graph. Its
 activity delta still reaches projection. Marker allocations and all permanent
 births enter resource validation at their actual action; an outer text command

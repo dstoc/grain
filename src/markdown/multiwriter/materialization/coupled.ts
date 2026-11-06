@@ -24,7 +24,7 @@ import { OwnershipResources } from './resources.js';
 import { isPropertyRefinement, propertyControlTargets } from './properties.js';
 import type { ResourceWork } from './resources.js';
 import type { ActionSequence, PayloadIndex } from './activity.js';
-import { replayOwnershipSuffix, orderedOwners } from './ownership.js';
+import { replayOwnershipSuffix, orderedOwners, orderedLayoutInputs } from './ownership.js';
 import { readySource } from '../authoring/ready-source.js';
 import type { ReadySource } from '../authoring/ready-source.js';
 
@@ -295,6 +295,9 @@ export class MaterializedOwnership {
         !additions.actions.length ||
         compareActions(sequence!.at(count - 1)!, additions.actions[0]) < 0)
     );
+    // Unknown/earlier inventories take the complete ordering audit. All tables
+    // and replay then use that same order, including callers without ready metadata.
+    if (!exactAppend) input = { ...input, actions: orderedLayoutInputs(input.actions) };
     const controls = exactAppend
       ? additions!.actions.flatMap((action) =>
           action.effects.flatMap((effect) =>
@@ -338,12 +341,18 @@ export class MaterializedOwnership {
         key = actionKey(action.id),
         bytes = variants.get(key);
       if (!bytes) throw new Error('Coupled replay requires exact ready payloads');
-      if (
-        exactAppend &&
-        action !== sequence!.at(i) &&
-        compareBytes(encodeEnvelope(action), bytes) !== 0
-      )
-        throw new Error('Coupled suffix differs from its exact ready payload');
+      if (source && !source.has(key)) throw new Error('Coupled action is outside its ready root');
+      if (source?.get(key) !== action) {
+        const encoded = encodeEnvelope(action);
+        countWork('coupled.payloadBytesEncoded', encoded.length);
+        if (compareBytes(encoded, bytes) !== 0)
+          throw new Error('Coupled action differs from its exact ready payload');
+      }
+      if (exactAppend && action !== sequence!.at(i)) {
+        const expected = sequence!.at(i)!;
+        if (key !== actionKey(expected.id))
+          throw new Error('Coupled suffix differs from its exact ready payload');
+      }
       const decisions = action.effects
         .map((_, ordinal) => {
           const ref = { action: action.id, ordinal };
@@ -500,7 +509,7 @@ export class MaterializedOwnership {
       this.counts,
       exactAppend
         ? { length: input.actions.length, at: (i) => get(order, String(i))!.entry }
-        : undefined,
+        : input.actions,
     );
     this.counts.actionsReplayed += input.actions.length - from;
     for (let i = from; i < input.actions.length; i++)

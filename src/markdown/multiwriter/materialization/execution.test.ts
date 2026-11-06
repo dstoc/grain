@@ -25,7 +25,16 @@ function applied(result: ReturnType<CommandReplica['editor']['edit']>) {
  * own those callers. The production B API must not enumerate the retained input
  * again, even if its caller has already materialized a complete projection input.
  */
-function prepare(p: CommandReplica, owner: MaterializedOwnership, forbidBefore = 0) {
+function prepare(
+  p: CommandReplica,
+  owner: MaterializedOwnership,
+  forbidBefore = 0,
+  options: {
+    readonly reverse?: boolean;
+    readonly unindexed?: boolean;
+    readonly changedBody?: boolean;
+  } = {},
+) {
   if (!('readyActions' in p.document)) throw new Error('Expected indexed ready source');
   const sequence = p.document.readyActions(),
     actions = [...sequence],
@@ -33,7 +42,16 @@ function prepare(p: CommandReplica, owner: MaterializedOwnership, forbidBefore =
     provenance = reconstructProvenance(p.genesis.layout, actions),
     activity = reduceActivity(actions),
     variants = new Map(actions.map((action) => [actionKey(action.id), encodeEnvelope(action)]));
-  const guarded = new Proxy(provenance.actions, {
+  const entries = options.changedBody
+    ? provenance.actions.map((entry) => ({
+        ...entry,
+        action: {
+          ...entry.action,
+          groupId: { ...entry.action.groupId, sequence: entry.action.groupId.sequence + 100n },
+        },
+      }))
+    : provenance.actions;
+  const guarded = new Proxy(options.reverse ? [...entries].reverse() : entries, {
     get(target, key, receiver) {
       if (typeof key === 'string' && /^\d+$/.test(key) && Number(key) < forbidBefore)
         throw new Error(`Enumerated retained action ${key}`);
@@ -54,7 +72,7 @@ function prepare(p: CommandReplica, owner: MaterializedOwnership, forbidBefore =
         activity,
         variants,
         undefined,
-        sequence,
+        options.unindexed ? undefined : sequence,
       ),
     ),
   );
@@ -168,6 +186,36 @@ test('a private candidate cannot commit after cancellation or a competing prepar
     expect(() => current.commit()).toThrow('no longer current');
     later.commit();
     expect(() => later.commit()).toThrow('no longer current');
+  } finally {
+    owner.evict();
+    p.close();
+  }
+});
+
+test('a known suffix must match its certified order; unknown permutations use the full ordering audit', () => {
+  const p = commandReplica(commandGenesis(), undefined, 'materialized'),
+    owner = new MaterializedOwnership();
+  try {
+    prepare(p, owner).value.commit();
+    for (let i = 0; i < 2; i++)
+      applied(
+        p.editor.session('ordered').edit(insertText, {
+          nodeId: p.handle(p.nodes()[0]),
+          from: 1,
+          text: String(i),
+        }),
+      );
+    expect(() => prepare(p, owner, 0, { reverse: true })).toThrow('exact ready payload');
+    expect(() => prepare(p, owner, 0, { changedBody: true })).toThrow('exact ready payload');
+    expect(() => prepare(p, owner, 0, { changedBody: true, unindexed: true })).toThrow(
+      'exact ready payload',
+    );
+    const audited = prepare(p, owner, 0, { reverse: true, unindexed: true });
+    expect(audited.report.work['driver/ownership.sortInputs']).toBe(2);
+    expect(rawObservation(audited.value.value.ownership)).toEqual(
+      rawObservation(p.document.publication.status().publication!.value.ownership),
+    );
+    audited.value.commit();
   } finally {
     owner.evict();
     p.close();
