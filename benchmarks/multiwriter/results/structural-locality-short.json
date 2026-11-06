@@ -1,6 +1,20 @@
 {
-  "source": "7cc76f9ee53e5fde4102f48bca5c73db070991c3",
-  "coldSource": "2d338be659ffbd345c38899579224e82500e39a8",
+  "source": "661ba2809048c91e9d6355b5eb3c14327c90ca6e",
+  "driverSources": [
+    "661ba2809048c91e9d6355b5eb3c14327c90ca6e",
+    "89cf9053f942b365dcbbf7a59a7d3d59e4254b98"
+  ],
+  "incompleteAttempts": [
+    {
+      "source": "661ba2809048c91e9d6355b5eb3c14327c90ca6e",
+      "label": "1000-deleted-wall",
+      "status": null,
+      "signal": "SIGTERM",
+      "error": "spawnSync /usr/local/bin/node ETIMEDOUT",
+      "evidence": "incomplete-attempts/1000-deleted-wall-661ba28"
+    }
+  ],
+  "coldSource": "89cf9053f942b365dcbbf7a59a7d3d59e4254b98",
   "runtime": "v26.13.0",
   "yjs": "13.6.33",
   "integrationHead": "b8b965439fe41868fafb3737e80c37afc3138937",
@@ -11,31 +25,32 @@
   "cases": [
     {
       "label": "root-plain",
+      "source": "661ba2809048c91e9d6355b5eb3c14327c90ca6e",
       "prefixActions": 0,
       "deleted": false,
       "cold": {
-        "wall": 373.06189099999995,
-        "attribution": 373.73327199999994,
-        "referenceWall": 237.70971399999996,
-        "referenceAttribution": 240.58727199999998
+        "wall": 391.713453,
+        "attribution": 390.13052700000003,
+        "referenceWall": 240.86136800000008,
+        "referenceAttribution": 240.68786699999998
       },
       "rows": [
         {
           "name": "split",
-          "wallMs": 381.820025,
-          "attributionWallMs": 447.43558299999984,
-          "exclusiveMs": 447.34648100000015,
-          "recorderBoundaryMs": 0.08910199999968427,
+          "wallMs": 367.12087299999996,
+          "attributionWallMs": 458.4353980000001,
+          "exclusiveMs": 458.3372069999999,
+          "recorderBoundaryMs": 0.09819100000015624,
           "phaseMs": {
-            "overhead": 0.5334579999998823,
-            "selection-address": 1.1864410000001726,
-            "draft-query": 37.202844999999684,
-            "visibility-normalization": 185.22248800000057,
-            "coupled-replay": 66.43918599999995,
-            "native-preparation": 74.20076599998265,
-            "canonical-append": 2.7219740000001593,
-            "exact-author": 73.67336500001613,
-            "publication": 6.25506000000064
+            "overhead": 0.5602879999999004,
+            "selection-address": 1.2517320000001746,
+            "draft-query": 38.05732699999987,
+            "visibility-normalization": 191.20764299999973,
+            "coupled-replay": 71.28934100000038,
+            "native-preparation": 76.2331479999915,
+            "canonical-append": 2.824804999999742,
+            "exact-author": 70.06873400000791,
+            "publication": 6.942380000000867
           },
           "work": {
             "author/draft.fullConstructionTrees": 1,
@@ -218,24 +233,24 @@
             "from": 0,
             "length": 1
           },
-          "oracleMs": 424.3375859999999
+          "oracleMs": 418.13844199999994
         },
         {
           "name": "join",
-          "wallMs": 318.91833899999983,
-          "attributionWallMs": 330.1528629999998,
-          "exclusiveMs": 330.124632,
-          "recorderBoundaryMs": 0.02823099999977785,
+          "wallMs": 313.79869400000007,
+          "attributionWallMs": 334.4151320000001,
+          "exclusiveMs": 334.3847499999997,
+          "recorderBoundaryMs": 0.0303820000003725,
           "phaseMs": {
-            "overhead": 0.1555529999995997,
-            "selection-address": 0.6416819999999461,
-            "draft-query": 2.872947000000295,
-            "native-preparation": 1.1553189999985989,
-            "visibility-normalization": 179.52885799999967,
-            "coupled-replay": 119.55616899999995,
-            "canonical-append": 0.6827899999998408,
-            "exact-author": 24.09535299999925,
-            "publication": 1.4641920000026403
+            "overhead": 0.20385399999986475,
+            "selection-address": 0.5171669999995174,
+            "draft-query": 2.7911870000007184,
+            "native-preparation": 1.089949000002889,
+            "visibility-normalization": 182.82935299999917,
+            "coupled-replay": 122.35978199999954,
+            "canonical-append": 0.6991410000005089,
+            "exact-author": 22.749551999998857,
+            "publication": 1.175146999999015
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 8,
@@ -401,24 +416,24 @@
             "from": 0,
             "length": 4
           },
-          "oracleMs": 340.69582400000036
+          "oracleMs": 352.1313690000002
         },
         {
           "name": "unrelated-edit",
-          "wallMs": 5.60207199999968,
-          "attributionWallMs": 5.751702999999907,
-          "exclusiveMs": 5.738652999999886,
-          "recorderBoundaryMs": 0.0130500000000211,
+          "wallMs": 5.377837999999883,
+          "attributionWallMs": 6.09793800000034,
+          "exclusiveMs": 6.080207999999857,
+          "recorderBoundaryMs": 0.017730000000483415,
           "phaseMs": {
-            "overhead": 0.2533840000000964,
-            "selection-address": 0.4576270000002296,
-            "draft-query": 0.6939029999989543,
-            "native-preparation": 0.717101000000639,
-            "visibility-normalization": 1.56083499999977,
-            "coupled-replay": 0.412485999999717,
-            "canonical-append": 0.3175139999998464,
-            "exact-author": 0.6559710000015002,
-            "publication": 0.6828819999991538
+            "overhead": 0.2812840000005963,
+            "selection-address": 0.5158489999998892,
+            "draft-query": 0.7167179999996733,
+            "native-preparation": 0.7773509999997259,
+            "visibility-normalization": 1.7533589999998185,
+            "coupled-replay": 0.401857000000291,
+            "canonical-append": 0.34522400000014386,
+            "exact-author": 0.6554429999996501,
+            "publication": 0.6508530000005521
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 6,
@@ -478,37 +493,38 @@
             "from": 4,
             "length": 1
           },
-          "oracleMs": 323.36448100000007
+          "oracleMs": 344.40330300000005
         }
       ]
     },
     {
       "label": "root-deleted",
+      "source": "661ba2809048c91e9d6355b5eb3c14327c90ca6e",
       "prefixActions": 0,
       "deleted": true,
       "cold": {
-        "wall": 379.695339,
-        "attribution": 385.94083,
-        "referenceWall": 231.04563700000006,
-        "referenceAttribution": 232.576731
+        "wall": 373.16138,
+        "attribution": 388.59534199999996,
+        "referenceWall": 230.66802300000006,
+        "referenceAttribution": 245.2601800000001
       },
       "rows": [
         {
           "name": "split",
-          "wallMs": 310.2557669999999,
-          "attributionWallMs": 311.2699040000002,
-          "exclusiveMs": 311.1770929999998,
-          "recorderBoundaryMs": 0.09281100000043807,
+          "wallMs": 318.0117329999998,
+          "attributionWallMs": 319.90104399999996,
+          "exclusiveMs": 319.78861299999994,
+          "recorderBoundaryMs": 0.11243100000001505,
           "phaseMs": {
-            "overhead": 0.3310950000002322,
-            "selection-address": 0.775923000000148,
-            "draft-query": 31.81073599999945,
-            "visibility-normalization": 181.25087299999996,
-            "coupled-replay": 62.20197600000074,
-            "native-preparation": 3.077762000001485,
-            "canonical-append": 2.007583000000068,
-            "exact-author": 24.79130499999974,
-            "publication": 5.022650999998405
+            "overhead": 0.3504950000001372,
+            "selection-address": 0.7749009999999998,
+            "draft-query": 34.08619499999986,
+            "visibility-normalization": 184.9825420000002,
+            "coupled-replay": 62.55590399999983,
+            "native-preparation": 3.12011400000074,
+            "canonical-append": 2.04811299999983,
+            "exact-author": 26.411920999999893,
+            "publication": 5.570858999999473
           },
           "work": {
             "author/draft.fullConstructionTrees": 1,
@@ -702,24 +718,24 @@
             "from": 1,
             "length": 1
           },
-          "oracleMs": 322.23595199999977
+          "oracleMs": 327.34098500000005
         },
         {
           "name": "join",
-          "wallMs": 310.8664060000001,
-          "attributionWallMs": 318.9430989999996,
-          "exclusiveMs": 318.90817800000013,
-          "recorderBoundaryMs": 0.0349209999994855,
+          "wallMs": 320.3262020000002,
+          "attributionWallMs": 337.12751500000013,
+          "exclusiveMs": 337.08967399999983,
+          "recorderBoundaryMs": 0.037841000000298664,
           "phaseMs": {
-            "overhead": 0.2403639999997722,
-            "selection-address": 0.634248999999727,
-            "draft-query": 2.6863650000000234,
-            "native-preparation": 1.1003680000012537,
-            "visibility-normalization": 176.8201839999988,
-            "coupled-replay": 114.34610300000077,
-            "canonical-append": 0.6945219999997789,
-            "exact-author": 21.12107300000025,
-            "publication": 1.299870999999257
+            "overhead": 0.18138300000009622,
+            "selection-address": 0.6719100000004801,
+            "draft-query": 2.7175149999989117,
+            "native-preparation": 1.0851239999992686,
+            "visibility-normalization": 185.62564899999916,
+            "coupled-replay": 122.65456500000028,
+            "canonical-append": 0.6957809999998972,
+            "exact-author": 22.22177199999942,
+            "publication": 1.2738160000026255
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 8,
@@ -889,24 +905,24 @@
             "from": 0,
             "length": 5
           },
-          "oracleMs": 329.6678939999997
+          "oracleMs": 340.2079349999999
         },
         {
           "name": "unrelated-edit",
-          "wallMs": 175.40656899999976,
-          "attributionWallMs": 173.72543199999973,
-          "exclusiveMs": 173.70727099999976,
-          "recorderBoundaryMs": 0.01816099999996368,
+          "wallMs": 200.8039560000002,
+          "attributionWallMs": 193.7339020000004,
+          "exclusiveMs": 193.71356199999946,
+          "recorderBoundaryMs": 0.020340000000942382,
           "phaseMs": {
-            "overhead": 0.2764549999992596,
-            "selection-address": 0.4714280000002873,
-            "draft-query": 0.89683500000001,
-            "native-preparation": 0.7574450000033721,
-            "visibility-normalization": 168.6205490000002,
-            "coupled-replay": 0.887934000000314,
-            "canonical-append": 0.3367849999999635,
-            "exact-author": 0.8302339999986543,
-            "publication": 0.647766999997657
+            "overhead": 0.27359500000011394,
+            "selection-address": 0.4852280000004612,
+            "draft-query": 1.090657000000192,
+            "native-preparation": 0.7390219999992951,
+            "visibility-normalization": 188.23917400000073,
+            "coupled-replay": 1.0330459999995583,
+            "canonical-append": 0.356445999999778,
+            "exact-author": 0.7666409999997086,
+            "publication": 0.750093000000561
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 6,
@@ -1035,37 +1051,38 @@
             "from": 5,
             "length": 1
           },
-          "oracleMs": 316.12877400000025
+          "oracleMs": 356.0399830000006
         }
       ]
     },
     {
       "label": "tasks-plain",
+      "source": "661ba2809048c91e9d6355b5eb3c14327c90ca6e",
       "prefixActions": 0,
       "deleted": false,
       "cold": {
-        "wall": 458.56466399999994,
-        "attribution": 437.593203,
-        "referenceWall": 292.87890500000003,
-        "referenceAttribution": 290.2651910000001
+        "wall": 478.54796500000003,
+        "attribution": 488.03344999999996,
+        "referenceWall": 314.7343900000001,
+        "referenceAttribution": 349.9333919999999
       },
       "rows": [
         {
           "name": "split",
-          "wallMs": 442.87437799999987,
-          "attributionWallMs": 530.2550729999999,
-          "exclusiveMs": 530.1705910000001,
-          "recorderBoundaryMs": 0.08448199999986628,
+          "wallMs": 451.5594860000001,
+          "attributionWallMs": 618.3297399999999,
+          "exclusiveMs": 618.241968,
+          "recorderBoundaryMs": 0.08777199999985896,
           "phaseMs": {
-            "overhead": 0.5399679999999307,
-            "selection-address": 1.1701700000000983,
-            "draft-query": 43.64729099999977,
-            "visibility-normalization": 231.77688799999987,
-            "coupled-replay": 77.35513200000014,
-            "native-preparation": 87.44549600000596,
-            "canonical-append": 2.852575999999999,
-            "exact-author": 78.48718899999585,
-            "publication": 6.980362999998306
+            "overhead": 0.7285909999998239,
+            "selection-address": 1.468714000000091,
+            "draft-query": 49.38097099999959,
+            "visibility-normalization": 273.6812629999997,
+            "coupled-replay": 92.10472700000082,
+            "native-preparation": 93.20732999999791,
+            "canonical-append": 3.027621000000181,
+            "exact-author": 97.2715980000014,
+            "publication": 7.458925000000363
           },
           "work": {
             "author/draft.fullConstructionTrees": 1,
@@ -1251,24 +1268,24 @@
             "from": 0,
             "length": 1
           },
-          "oracleMs": 494.417099
+          "oracleMs": 485.11727300000007
         },
         {
           "name": "join",
-          "wallMs": 391.8251680000003,
-          "attributionWallMs": 385.4904539999998,
-          "exclusiveMs": 385.4519529999998,
-          "recorderBoundaryMs": 0.038500999999996566,
+          "wallMs": 424.4012929999999,
+          "attributionWallMs": 397.3645840000004,
+          "exclusiveMs": 397.3194940000003,
+          "recorderBoundaryMs": 0.045090000000072905,
           "phaseMs": {
-            "overhead": 0.24871499999972002,
-            "selection-address": 0.5777400000001762,
-            "draft-query": 3.7026889999997366,
-            "native-preparation": 1.0183160000005955,
-            "visibility-normalization": 222.07394899999963,
-            "coupled-replay": 134.36036999999988,
-            "canonical-append": 0.6561299999998482,
-            "exact-author": 21.56171300000142,
-            "publication": 1.2908319999987725
+            "overhead": 0.18349200000056953,
+            "selection-address": 0.5298490000000129,
+            "draft-query": 3.79817199999934,
+            "native-preparation": 1.041239999996833,
+            "visibility-normalization": 227.8957889999997,
+            "coupled-replay": 139.70871000000034,
+            "canonical-append": 0.6944110000004002,
+            "exact-author": 22.340174000002207,
+            "publication": 1.1727470000009816
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 8,
@@ -1434,24 +1451,24 @@
             "from": 0,
             "length": 4
           },
-          "oracleMs": 400.29599499999995
+          "oracleMs": 397.303594
         },
         {
           "name": "unrelated-edit",
-          "wallMs": 6.625499000000218,
-          "attributionWallMs": 6.392264000000068,
-          "exclusiveMs": 6.377123000000211,
-          "recorderBoundaryMs": 0.01514099999985774,
+          "wallMs": 5.73807399999987,
+          "attributionWallMs": 5.98329799999965,
+          "exclusiveMs": 5.97080700000015,
+          "recorderBoundaryMs": 0.012490999999499763,
           "phaseMs": {
-            "overhead": 0.30279499999960535,
-            "selection-address": 0.5227679999998145,
-            "draft-query": 0.7664240000008249,
-            "native-preparation": 0.8091779999981554,
-            "visibility-normalization": 1.8859800000000178,
-            "coupled-replay": 0.4556580000003123,
-            "canonical-append": 0.35792399999991176,
-            "exact-author": 0.6544270000022152,
-            "publication": 0.6371099999992111
+            "overhead": 0.248634999999922,
+            "selection-address": 0.47847799999954077,
+            "draft-query": 0.661019999999553,
+            "native-preparation": 0.8196049999992283,
+            "visibility-normalization": 1.7958699999999226,
+            "coupled-replay": 0.3959350000000086,
+            "canonical-append": 0.32688499999994747,
+            "exact-author": 0.6101880000001074,
+            "publication": 0.6466820000014195
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 8,
@@ -1511,37 +1528,38 @@
             "from": 4,
             "length": 1
           },
-          "oracleMs": 385.7784179999994
+          "oracleMs": 389.4530560000003
         }
       ]
     },
     {
       "label": "tasks-deleted",
+      "source": "661ba2809048c91e9d6355b5eb3c14327c90ca6e",
       "prefixActions": 0,
       "deleted": true,
       "cold": {
-        "wall": 435.252695,
-        "attribution": 439.809969,
-        "referenceWall": 284.576589,
-        "referenceAttribution": 291.12295499999993
+        "wall": 427.50360600000005,
+        "attribution": 518.294961,
+        "referenceWall": 285.34189200000003,
+        "referenceAttribution": 291.567444
       },
       "rows": [
         {
           "name": "split",
-          "wallMs": 362.1293330000001,
-          "attributionWallMs": 403.24650399999996,
-          "exclusiveMs": 403.12006099999985,
-          "recorderBoundaryMs": 0.12644300000010844,
+          "wallMs": 403.749949,
+          "attributionWallMs": 398.9376599999998,
+          "exclusiveMs": 398.84056899999996,
+          "recorderBoundaryMs": 0.09709099999986393,
           "phaseMs": {
-            "overhead": 0.4179689999996299,
-            "selection-address": 0.8630229999998846,
-            "draft-query": 40.08727500000009,
-            "visibility-normalization": 242.95563000000016,
-            "coupled-replay": 76.69990900000039,
-            "native-preparation": 3.1798260000039136,
-            "canonical-append": 2.1985760000000028,
-            "exact-author": 29.386775999998235,
-            "publication": 7.457519999997658
+            "overhead": 0.36800599999969563,
+            "selection-address": 0.7730329999999412,
+            "draft-query": 38.17188099999976,
+            "visibility-normalization": 244.42425499999968,
+            "coupled-replay": 71.54579099999978,
+            "native-preparation": 3.056037000000515,
+            "canonical-append": 2.27403699999968,
+            "exact-author": 31.703707000000577,
+            "publication": 6.6209130000002006
           },
           "work": {
             "author/draft.fullConstructionTrees": 1,
@@ -1738,24 +1756,24 @@
             "from": 1,
             "length": 1
           },
-          "oracleMs": 394.85146699999996
+          "oracleMs": 400.42384500000026
         },
         {
           "name": "join",
-          "wallMs": 379.58843700000034,
-          "attributionWallMs": 399.9985509999997,
-          "exclusiveMs": 399.96173899999985,
-          "recorderBoundaryMs": 0.036811999999827094,
+          "wallMs": 385.1095150000001,
+          "attributionWallMs": 441.540305,
+          "exclusiveMs": 441.5021029999998,
+          "recorderBoundaryMs": 0.038202000000183034,
           "phaseMs": {
-            "overhead": 0.14956199999960518,
-            "selection-address": 0.611301999999796,
-            "draft-query": 3.6030970000001616,
-            "native-preparation": 1.0123190000012983,
-            "visibility-normalization": 230.9629459999992,
-            "coupled-replay": 138.99459499999966,
-            "canonical-append": 0.7197419999997692,
-            "exact-author": 22.695087000000058,
-            "publication": 1.2499010000001363
+            "overhead": 0.25232599999981176,
+            "selection-address": 0.5937099999996462,
+            "draft-query": 4.043445000001611,
+            "native-preparation": 1.6194470000073125,
+            "visibility-normalization": 256.06753600000184,
+            "coupled-replay": 150.01666099999875,
+            "canonical-append": 1.2939109999997527,
+            "exact-author": 24.111532999997507,
+            "publication": 3.5417359999937617
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 8,
@@ -1925,24 +1943,24 @@
             "from": 0,
             "length": 5
           },
-          "oracleMs": 403.7369919999992
+          "oracleMs": 404.5507209999996
         },
         {
           "name": "unrelated-edit",
-          "wallMs": 225.61094800000046,
-          "attributionWallMs": 228.3656120000005,
-          "exclusiveMs": 228.34747200000038,
-          "recorderBoundaryMs": 0.018140000000130385,
+          "wallMs": 221.03431700000056,
+          "attributionWallMs": 227.84685700000045,
+          "exclusiveMs": 227.83004699999947,
+          "recorderBoundaryMs": 0.016810000000987202,
           "phaseMs": {
-            "overhead": 0.30693500000052154,
-            "selection-address": 0.5462579999993977,
-            "draft-query": 1.1238670000020647,
-            "native-preparation": 0.7644390000023122,
-            "visibility-normalization": 222.97910599999796,
-            "coupled-replay": 0.9635559999996985,
-            "canonical-append": 0.3010339999991629,
-            "exact-author": 0.7100510000027498,
-            "publication": 0.6703659999966476
+            "overhead": 0.3308550000010655,
+            "selection-address": 0.4911870000005365,
+            "draft-query": 1.1439829999999347,
+            "native-preparation": 0.824134999998023,
+            "visibility-normalization": 222.40363699999943,
+            "coupled-replay": 0.9545379999999568,
+            "canonical-append": 0.33214500000030966,
+            "exact-author": 0.7010780000000523,
+            "publication": 0.6652990000011414
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 8,
@@ -2071,37 +2089,38 @@
             "from": 5,
             "length": 1
           },
-          "oracleMs": 385.725359
+          "oracleMs": 397.1862310000006
         }
       ]
     },
     {
       "label": "100-plain",
+      "source": "661ba2809048c91e9d6355b5eb3c14327c90ca6e",
       "prefixActions": 100,
       "deleted": false,
       "cold": {
-        "wall": 1119.638531,
-        "attribution": 1049.2499739999998,
-        "referenceWall": 6983.196343,
-        "referenceAttribution": 6747.649923
+        "wall": 1072.6637799999999,
+        "attribution": 991.961638,
+        "referenceWall": 7116.052292,
+        "referenceAttribution": 6870.550527
       },
       "rows": [
         {
           "name": "split",
-          "wallMs": 529.973159000001,
-          "attributionWallMs": 548.9142770000008,
-          "exclusiveMs": 548.8275769999991,
-          "recorderBoundaryMs": 0.08670000000165601,
+          "wallMs": 535.140496,
+          "attributionWallMs": 570.155546,
+          "exclusiveMs": 570.0648040000005,
+          "recorderBoundaryMs": 0.09074199999940902,
           "phaseMs": {
-            "overhead": 0.5893390000010186,
-            "selection-address": 1.212677999999869,
-            "draft-query": 50.94440499999291,
-            "native-preparation": 9.731902000005903,
-            "visibility-normalization": 243.50044700001672,
-            "coupled-replay": 203.09481799999867,
-            "canonical-append": 2.615083999999115,
-            "exact-author": 31.39958899998055,
-            "publication": 5.826015000006009
+            "overhead": 0.596679999999651,
+            "selection-address": 1.1572089999999662,
+            "draft-query": 51.52562000000398,
+            "native-preparation": 10.172737999999299,
+            "visibility-normalization": 250.0674329999938,
+            "coupled-replay": 214.49725999999737,
+            "canonical-append": 2.880366999999751,
+            "exact-author": 32.91640600000392,
+            "publication": 6.341833000002225
           },
           "work": {
             "author/draft.fullConstructionTrees": 1,
@@ -2296,24 +2315,24 @@
             "from": 0,
             "length": 101
           },
-          "oracleMs": 513.9721279999994
+          "oracleMs": 503.60645300000033
         },
         {
           "name": "join",
-          "wallMs": 405.3800489999994,
-          "attributionWallMs": 437.35364899999877,
-          "exclusiveMs": 437.3239479999993,
-          "recorderBoundaryMs": 0.029700999999477062,
+          "wallMs": 454.2041799999988,
+          "attributionWallMs": 425.837888,
+          "exclusiveMs": 425.8043569999991,
+          "recorderBoundaryMs": 0.03353100000094855,
           "phaseMs": {
-            "overhead": 0.3071159999999509,
-            "selection-address": 0.7815520000003744,
-            "draft-query": 4.345411000002059,
-            "native-preparation": 0.9523889999873063,
-            "visibility-normalization": 226.4354559999938,
-            "coupled-replay": 177.7776679999988,
-            "canonical-append": 0.7840819999983069,
-            "exact-author": 24.625014000010196,
-            "publication": 1.3449610000079701
+            "overhead": 0.20021300000007614,
+            "selection-address": 0.6679800000001705,
+            "draft-query": 4.130847000000358,
+            "native-preparation": 0.9276170000011916,
+            "visibility-normalization": 229.68896899998435,
+            "coupled-replay": 164.19373899999482,
+            "canonical-append": 0.5547590000005584,
+            "exact-author": 24.268004000019573,
+            "publication": 1.205759999998918
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 6,
@@ -2483,24 +2502,24 @@
             "from": 0,
             "length": 104
           },
-          "oracleMs": 504.77607799999896
+          "oracleMs": 535.049395
         },
         {
           "name": "unrelated-edit",
-          "wallMs": 5.735292999999729,
-          "attributionWallMs": 5.85260400000152,
-          "exclusiveMs": 5.83707399999912,
-          "recorderBoundaryMs": 0.015530000002399902,
+          "wallMs": 5.757493000000977,
+          "attributionWallMs": 6.608707999999751,
+          "exclusiveMs": 6.5941080000011425,
+          "recorderBoundaryMs": 0.014599999998608837,
           "phaseMs": {
-            "overhead": 0.2762930000008055,
-            "selection-address": 0.520978999998988,
-            "draft-query": 0.7309220000024652,
-            "native-preparation": 0.681202999991001,
-            "visibility-normalization": 1.8454099999999016,
-            "coupled-replay": 0.40079700000023877,
-            "canonical-append": 0.31006499999966763,
-            "exact-author": 0.5485770000068442,
-            "publication": 0.5383580000016082
+            "overhead": 0.277486000000863,
+            "selection-address": 0.5446379999993951,
+            "draft-query": 1.1076760000014474,
+            "native-preparation": 0.6413829999910377,
+            "visibility-normalization": 1.9167809999999008,
+            "coupled-replay": 0.4856689999996888,
+            "canonical-append": 0.36200599999938277,
+            "exact-author": 0.6776910000025964,
+            "publication": 0.5953780000054394
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 8,
@@ -2560,37 +2579,38 @@
             "from": 104,
             "length": 1
           },
-          "oracleMs": 485.3190219999997
+          "oracleMs": 537.7470479999993
         }
       ]
     },
     {
       "label": "100-deleted",
+      "source": "661ba2809048c91e9d6355b5eb3c14327c90ca6e",
       "prefixActions": 100,
       "deleted": true,
       "cold": {
-        "wall": 1023.8435400000001,
-        "attribution": 1015.997562,
-        "referenceWall": 6937.908385000001,
-        "referenceAttribution": 6763.366319000001
+        "wall": 1034.268507,
+        "attribution": 1039.8731070000001,
+        "referenceWall": 7057.263474,
+        "referenceAttribution": 6846.845950999999
       },
       "rows": [
         {
           "name": "split",
-          "wallMs": 538.4698870000011,
-          "attributionWallMs": 542.0379069999999,
-          "exclusiveMs": 541.9407150000006,
-          "recorderBoundaryMs": 0.09719199999926786,
+          "wallMs": 516.2459600000002,
+          "attributionWallMs": 531.72804,
+          "exclusiveMs": 531.629089,
+          "recorderBoundaryMs": 0.09895099999994272,
           "phaseMs": {
-            "overhead": 0.40738600000076985,
-            "selection-address": 0.7380429999993794,
-            "draft-query": 46.74225300001126,
-            "visibility-normalization": 242.98096099998838,
-            "coupled-replay": 211.56381799999144,
-            "native-preparation": 2.4290129999899364,
-            "canonical-append": 2.2510070000007545,
-            "exact-author": 29.027014000015697,
-            "publication": 5.898412000002281
+            "overhead": 0.409696000000622,
+            "selection-address": 0.7674719999995432,
+            "draft-query": 45.40628699998524,
+            "visibility-normalization": 239.58485500002826,
+            "coupled-replay": 207.56882199999745,
+            "native-preparation": 2.4449880000065605,
+            "canonical-append": 1.7410089999993943,
+            "exact-author": 28.37509199998931,
+            "publication": 5.429818999993586
           },
           "work": {
             "author/draft.fullConstructionTrees": 1,
@@ -2789,24 +2809,24 @@
             "from": 0,
             "length": 102
           },
-          "oracleMs": 479.39038400000027
+          "oracleMs": 475.08970899999986
         },
         {
           "name": "join",
-          "wallMs": 413.39367800000036,
-          "attributionWallMs": 437.1059150000001,
-          "exclusiveMs": 437.0683049999989,
-          "recorderBoundaryMs": 0.03761000000122294,
+          "wallMs": 435.3593720000008,
+          "attributionWallMs": 433.9122389999993,
+          "exclusiveMs": 433.80696799999896,
+          "recorderBoundaryMs": 0.10527100000035716,
           "phaseMs": {
-            "overhead": 0.16156299999965995,
-            "selection-address": 0.6454190000040398,
-            "draft-query": 3.927405999995244,
-            "native-preparation": 0.8855120000080206,
-            "visibility-normalization": 237.73916400000417,
-            "coupled-replay": 166.6270639999966,
-            "canonical-append": 0.6459600000016508,
-            "exact-author": 25.28438599999572,
-            "publication": 1.1894409999949858
+            "overhead": 0.3163540000005014,
+            "selection-address": 1.0257280000005267,
+            "draft-query": 4.4466709999978775,
+            "native-preparation": 1.0717179999955988,
+            "visibility-normalization": 227.76916599999277,
+            "coupled-replay": 174.04045999999835,
+            "canonical-append": 0.631069999999454,
+            "exact-author": 23.380702000013116,
+            "publication": 1.2303700000011304
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 6,
@@ -2980,24 +3000,24 @@
             "from": 0,
             "length": 105
           },
-          "oracleMs": 483.73929599999974
+          "oracleMs": 496.63390100000106
         },
         {
           "name": "unrelated-edit",
-          "wallMs": 225.46725499999957,
-          "attributionWallMs": 230.59860800000024,
-          "exclusiveMs": 230.57788900000014,
-          "recorderBoundaryMs": 0.020719000000099186,
+          "wallMs": 231.047278,
+          "attributionWallMs": 227.00379300000168,
+          "exclusiveMs": 226.97960299999977,
+          "recorderBoundaryMs": 0.02419000000190863,
           "phaseMs": {
-            "overhead": 0.29340200000115146,
-            "selection-address": 0.49725799999941955,
-            "draft-query": 1.0807090000016615,
-            "native-preparation": 0.6665019999927608,
-            "visibility-normalization": 225.40168500000073,
-            "coupled-replay": 1.1767980000004172,
-            "canonical-append": 0.3250369999987015,
-            "exact-author": 0.5758590000004915,
-            "publication": 0.5813580000049114
+            "overhead": 0.28272500000093714,
+            "selection-address": 0.4845979999990959,
+            "draft-query": 1.1089080000037939,
+            "native-preparation": 0.6329419999929087,
+            "visibility-normalization": 221.81377700000485,
+            "coupled-replay": 1.15705899999557,
+            "canonical-append": 0.33459600000060163,
+            "exact-author": 0.610130000004574,
+            "publication": 0.5790579999993497
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 8,
@@ -3130,37 +3150,38 @@
             "from": 105,
             "length": 1
           },
-          "oracleMs": 474.96040299999913
+          "oracleMs": 475.2616629999993
         }
       ]
     },
     {
       "label": "1000-plain",
+      "source": "661ba2809048c91e9d6355b5eb3c14327c90ca6e",
       "prefixActions": 1000,
       "deleted": false,
       "cold": {
-        "wall": 11219.380796,
-        "attribution": 11405.578681,
-        "referenceWall": 229129.380834,
-        "referenceAttribution": 236914.45811900002
+        "wall": 11271.822572000001,
+        "attribution": 11700.002635,
+        "referenceWall": 238610.79758800002,
+        "referenceAttribution": 238385.62227400002
       },
       "rows": [
         {
           "name": "split",
-          "wallMs": 1398.0792190000066,
-          "attributionWallMs": 1541.9639369999932,
-          "exclusiveMs": 1541.8628129999852,
-          "recorderBoundaryMs": 0.10112400000798516,
+          "wallMs": 1637.261560999992,
+          "attributionWallMs": 1574.7017259999993,
+          "exclusiveMs": 1574.5790549999801,
+          "recorderBoundaryMs": 0.12267100001918152,
           "phaseMs": {
-            "overhead": 0.8767939999816008,
-            "selection-address": 1.7164880000054836,
-            "draft-query": 140.6133839994436,
-            "native-preparation": 94.33461600082228,
-            "visibility-normalization": 400.42182899962063,
-            "coupled-replay": 816.8346200000378,
-            "canonical-append": 4.949740000010934,
-            "exact-author": 70.83998199994676,
-            "publication": 11.376484000124037
+            "overhead": 0.6354899999860208,
+            "selection-address": 1.3382119999732822,
+            "draft-query": 142.471338999836,
+            "native-preparation": 65.639661000052,
+            "visibility-normalization": 409.8605470008624,
+            "coupled-replay": 858.9473769999458,
+            "canonical-append": 5.609450999996625,
+            "exact-author": 78.05864499948802,
+            "publication": 12.141003999859095
           },
           "work": {
             "author/draft.fullConstructionTrees": 1,
@@ -3285,7 +3306,7 @@
             "author/referenceOwnership.markerBindingsVisited": 1583,
             "author/referenceOwnership.allocationsInspected": 3523,
             "author/referenceOwnership.effectsInspected": 1831,
-            "publication/payload.bytesCompared": 39118,
+            "publication/payload.bytesCompared": 39122,
             "publication/payload.comparisons": 1031,
             "publication/nativeTape.indexesConstructed": 2,
             "publication/nativeTape.partsInput": 2,
@@ -3355,24 +3376,24 @@
             "from": 0,
             "length": 1001
           },
-          "oracleMs": 1895.9093069999944
+          "oracleMs": 1807.378090000013
         },
         {
           "name": "join",
-          "wallMs": 1099.2273289999866,
-          "attributionWallMs": 1117.8546339999884,
-          "exclusiveMs": 1117.8163640000275,
-          "recorderBoundaryMs": 0.03826999996090308,
+          "wallMs": 1046.6230090000026,
+          "attributionWallMs": 1147.4419639999978,
+          "exclusiveMs": 1147.3991849999875,
+          "recorderBoundaryMs": 0.042779000010341406,
           "phaseMs": {
-            "overhead": 0.18705199999385513,
-            "selection-address": 0.8070939999888651,
-            "draft-query": 4.235489000013331,
-            "native-preparation": 0.8471829999471083,
-            "visibility-normalization": 368.2937209996453,
-            "coupled-replay": 681.1982600000629,
-            "canonical-append": 0.6596410000056494,
-            "exact-author": 60.55738700032816,
-            "publication": 1.0688070000032894
+            "overhead": 0.19098999997368082,
+            "selection-address": 0.7935740000102669,
+            "draft-query": 4.517783999996027,
+            "native-preparation": 1.020092000166187,
+            "visibility-normalization": 376.6438369999232,
+            "coupled-replay": 707.8259019999823,
+            "canonical-append": 0.5713790000008885,
+            "exact-author": 54.78191000004881,
+            "publication": 1.0964959998964332
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 10,
@@ -3473,7 +3494,7 @@
             "author/traversal.cellsVisited": 52458,
             "author/referenceOwnership.effectsInspected": 1834,
             "author/traversal.occurrencesVisited": 231,
-            "publication/payload.bytesCompared": 2938,
+            "publication/payload.bytesCompared": 2942,
             "publication/payload.comparisons": 77,
             "publication/nativeTape.indexesConstructed": 1,
             "publication/nativeTape.partsInput": 0,
@@ -3542,24 +3563,24 @@
             "from": 0,
             "length": 1004
           },
-          "oracleMs": 1858.6336809999775
+          "oracleMs": 1801.690426999994
         },
         {
           "name": "unrelated-edit",
-          "wallMs": 5.463749000016833,
-          "attributionWallMs": 6.078139000019291,
-          "exclusiveMs": 6.059699000004912,
-          "recorderBoundaryMs": 0.01844000001437962,
+          "wallMs": 6.485136000002967,
+          "attributionWallMs": 6.099489999993239,
+          "exclusiveMs": 6.062219000014011,
+          "recorderBoundaryMs": 0.03727099997922778,
           "phaseMs": {
-            "overhead": 0.25124300000607036,
-            "selection-address": 0.5991600000415929,
-            "draft-query": 0.7654919999476988,
-            "native-preparation": 0.5956110002007335,
-            "visibility-normalization": 1.9092209999798797,
-            "coupled-replay": 0.4778280000027735,
-            "canonical-append": 0.44093700000667013,
-            "exact-author": 0.4640079998644069,
-            "publication": 0.5746389999694657
+            "overhead": 0.2853750000067521,
+            "selection-address": 0.6112000000139233,
+            "draft-query": 0.7582719999772962,
+            "native-preparation": 0.6206590000947472,
+            "visibility-normalization": 1.844669999962207,
+            "coupled-replay": 0.4956970000057481,
+            "canonical-append": 0.37852600004407577,
+            "exact-author": 0.4890089998662006,
+            "publication": 0.6160820000222884
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 8,
@@ -3594,7 +3615,7 @@
             "author/provenance.birthActionsInspected": 1,
             "author/provenance.allocationsInspected": 0,
             "author/provenance.effectsInspected": 1,
-            "publication/payload.bytesCompared": 1070,
+            "publication/payload.bytesCompared": 1072,
             "publication/payload.comparisons": 31,
             "publication/nativeTape.indexesConstructed": 1,
             "publication/nativeTape.partsInput": 0,
@@ -3619,37 +3640,38 @@
             "from": 1004,
             "length": 1
           },
-          "oracleMs": 1830.1302079999878
+          "oracleMs": 1930.9274140000052
         }
       ]
     },
     {
       "label": "1000-deleted",
+      "source": "89cf9053f942b365dcbbf7a59a7d3d59e4254b98",
       "prefixActions": 1000,
       "deleted": true,
       "cold": {
-        "wall": 11892.046966,
-        "attribution": 12800.332005,
-        "referenceWall": 244566.113658,
-        "referenceAttribution": 239271.692297
+        "wall": 11712.875678,
+        "attribution": 11657.502061,
+        "referenceWall": 234466.68967300002,
+        "referenceAttribution": 242432.983982
       },
       "rows": [
         {
           "name": "split",
-          "wallMs": 1383.2184669999988,
-          "attributionWallMs": 1378.07557299998,
-          "exclusiveMs": 1377.9562810000207,
-          "recorderBoundaryMs": 0.11929199995938689,
+          "wallMs": 1410.2355989999778,
+          "attributionWallMs": 1412.536495999986,
+          "exclusiveMs": 1412.4037940000126,
+          "recorderBoundaryMs": 0.13270199997350574,
           "phaseMs": {
-            "overhead": 0.4482659999630414,
-            "selection-address": 0.7763839999970514,
-            "draft-query": 136.59181200014427,
-            "visibility-normalization": 382.51825899854884,
-            "coupled-replay": 768.9564240000036,
-            "native-preparation": 2.7168379999347962,
-            "canonical-append": 2.866225999983726,
-            "exact-author": 73.12862300136476,
-            "publication": 10.072741000039969
+            "overhead": 0.4668159999710042,
+            "selection-address": 0.8091740000236314,
+            "draft-query": 139.52996799864923,
+            "visibility-normalization": 395.84628400200745,
+            "coupled-replay": 789.2969699999958,
+            "native-preparation": 2.7170940000214614,
+            "canonical-append": 3.494596000004094,
+            "exact-author": 69.89957699933439,
+            "publication": 10.476016999979038
           },
           "work": {
             "author/draft.fullConstructionTrees": 1,
@@ -3776,7 +3798,7 @@
             "author/referenceOwnership.markerBindingsVisited": 1583,
             "author/referenceOwnership.allocationsInspected": 3524,
             "author/referenceOwnership.effectsInspected": 1832,
-            "publication/payload.bytesCompared": 39118,
+            "publication/payload.bytesCompared": 39114,
             "publication/payload.comparisons": 1031,
             "publication/nativeTape.indexesConstructed": 2,
             "publication/nativeTape.partsInput": 2,
@@ -3848,24 +3870,24 @@
             "from": 0,
             "length": 1002
           },
-          "oracleMs": 1748.2738379999937
+          "oracleMs": 1785.8919159999932
         },
         {
           "name": "join",
-          "wallMs": 1173.7891030000173,
-          "attributionWallMs": 1110.566175999993,
-          "exclusiveMs": 1110.5312649999978,
-          "recorderBoundaryMs": 0.03491099999519065,
+          "wallMs": 1114.4859109999961,
+          "attributionWallMs": 1091.1298270000261,
+          "exclusiveMs": 1091.0968270000303,
+          "recorderBoundaryMs": 0.03299999999580905,
           "phaseMs": {
-            "overhead": 0.1678230000543408,
-            "selection-address": 0.6616999999969266,
-            "draft-query": 4.277897999971174,
-            "native-preparation": 0.9240370002225973,
-            "visibility-normalization": 364.387213000271,
-            "coupled-replay": 681.9592110000085,
-            "canonical-append": 0.7338829999789596,
-            "exact-author": 56.34513499960303,
-            "publication": 1.1092759998864494
+            "overhead": 0.17324400000507012,
+            "selection-address": 0.7382600000710227,
+            "draft-query": 3.946201999904588,
+            "native-preparation": 0.8385229997220449,
+            "visibility-normalization": 352.7840219998034,
+            "coupled-replay": 676.9197220000788,
+            "canonical-append": 0.8216530000208877,
+            "exact-author": 53.769413000147324,
+            "publication": 1.1387880002730526
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 10,
@@ -3968,7 +3990,7 @@
             "author/traversal.cellsVisited": 52458,
             "author/referenceOwnership.effectsInspected": 1835,
             "author/traversal.occurrencesVisited": 231,
-            "publication/payload.bytesCompared": 2942,
+            "publication/payload.bytesCompared": 2938,
             "publication/payload.comparisons": 77,
             "publication/nativeTape.indexesConstructed": 1,
             "publication/nativeTape.partsInput": 0,
@@ -4039,24 +4061,24 @@
             "from": 0,
             "length": 1005
           },
-          "oracleMs": 1820.2076769999694
+          "oracleMs": 1782.179467000009
         },
         {
           "name": "unrelated-edit",
-          "wallMs": 387.6600089999847,
-          "attributionWallMs": 367.6725649999571,
-          "exclusiveMs": 367.6518030000152,
-          "recorderBoundaryMs": 0.020761999941896647,
+          "wallMs": 365.9251600000134,
+          "attributionWallMs": 364.17327299999306,
+          "exclusiveMs": 364.15227199997753,
+          "recorderBoundaryMs": 0.021001000015530735,
           "phaseMs": {
-            "overhead": 0.2637169999652542,
-            "selection-address": 0.6302479999721982,
-            "draft-query": 1.135757000069134,
-            "native-preparation": 0.6916180005646311,
-            "visibility-normalization": 359.7118959999643,
-            "coupled-replay": 3.4525149999535643,
-            "canonical-append": 0.48251899995375425,
-            "exact-author": 0.6152909998781979,
-            "publication": 0.6890039996360429
+            "overhead": 0.24758299998939037,
+            "selection-address": 0.5959409999777563,
+            "draft-query": 1.1225070000509731,
+            "native-preparation": 0.6288410002598539,
+            "visibility-normalization": 356.311493999965,
+            "coupled-replay": 3.4367769999662414,
+            "canonical-append": 0.5064979999442585,
+            "exact-author": 0.6239289999357425,
+            "publication": 0.6997029999038205
           },
           "work": {
             "driver/nativeTape.nativePositionNodesVisited": 8,
@@ -4124,7 +4146,7 @@
             "author/provenance.birthActionsInspected": 1,
             "author/provenance.allocationsInspected": 0,
             "author/provenance.effectsInspected": 1,
-            "publication/payload.bytesCompared": 1072,
+            "publication/payload.bytesCompared": 1070,
             "publication/payload.comparisons": 31,
             "publication/nativeTape.indexesConstructed": 1,
             "publication/nativeTape.partsInput": 0,
@@ -4189,7 +4211,7 @@
             "from": 1005,
             "length": 1
           },
-          "oracleMs": 1795.4086040000548
+          "oracleMs": 1773.1134430000093
         }
       ]
     }
@@ -4197,12 +4219,13 @@
   "cold": [
     {
       "label": "cold-root-plain-attribution",
-      "workerWallMs": 3569.229378,
+      "workerWallMs": 3932.40394800005,
       "complete": true,
-      "fixtureSha256": "5418595eeb07eae6fea304bfb83aa42544ffe1d749af7e3825a58dfa03f61a2c",
-      "candidateColdMs": 845.729743,
-      "referenceColdMs": 1158.384863,
-      "continuedEditMs": 18.23981700000013,
+      "fixtureSha256": "99f0ed57a3421d74340dd06907933367f17ca29ab3616f1db000cf2a558b5735",
+      "candidateColdMs": 813.369715,
+      "referenceColdMs": 1105.9287530000001,
+      "continuedEditMs": 15.928855000000112,
+      "evictionReopenMs": 0.2175320000001193,
       "startedWithEmptyHistory": true,
       "history": {
         "canUndo": true,
@@ -4214,7 +4237,7 @@
       },
       "undoRestoration": "exact",
       "redoRestoration": "exact",
-      "canonicalSha256": "d205a07442e967dd937e5fb72fdef3eedbce36df85b55776cdcbf69f71e14530",
+      "canonicalSha256": "459c2f41c26b9a519c184e156c78c582db08507e2d0aad1b3fefee7b82fc2af6",
       "persistence": {
         "measured": false,
         "reason": "no journal attached"
@@ -4222,12 +4245,13 @@
     },
     {
       "label": "cold-root-deleted-attribution",
-      "workerWallMs": 4147.670545999999,
+      "workerWallMs": 4193.37365199998,
       "complete": true,
-      "fixtureSha256": "46c92438689d9e2a7f12f9f9eafc04b79b6d07505a0909b264d52e0c780a48f1",
-      "candidateColdMs": 983.1774859999999,
-      "referenceColdMs": 1204.850588,
-      "continuedEditMs": 212.0677370000003,
+      "fixtureSha256": "6c278ca3a656ddc8cf841e9f4604ae83dbc23c6daef337961e95677192c0a3c9",
+      "candidateColdMs": 806.317904,
+      "referenceColdMs": 1080.7011509999998,
+      "continuedEditMs": 192.7129530000002,
+      "evictionReopenMs": 0.2617849999996906,
       "startedWithEmptyHistory": true,
       "history": {
         "canUndo": true,
@@ -4239,7 +4263,7 @@
       },
       "undoRestoration": "exact",
       "redoRestoration": "exact",
-      "canonicalSha256": "c12f134a070deb1c038f65eeac7b641cb76f3964f5151ebbfb458d915a4387b7",
+      "canonicalSha256": "b55bbe059563dd88dbbd3656915727ca063c38ee5e005f9b25a3da9c21058aa4",
       "persistence": {
         "measured": false,
         "reason": "no journal attached"
@@ -4247,12 +4271,13 @@
     },
     {
       "label": "cold-tasks-plain-attribution",
-      "workerWallMs": 3859.538565,
+      "workerWallMs": 4408.805906000081,
       "complete": true,
-      "fixtureSha256": "7b9a8eadbcfefda4858cfc205e10138ec3fccf2d221c8c6b470e3faa58cd607d",
-      "candidateColdMs": 955.872852,
-      "referenceColdMs": 1264.761092,
-      "continuedEditMs": 16.74782200000027,
+      "fixtureSha256": "f679ff4ac6fdb8dc95c2173a458449168e4a9f890e5696ac5bf82082e90f6c9b",
+      "candidateColdMs": 870.304996,
+      "referenceColdMs": 1203.186168,
+      "continuedEditMs": 17.122642999999698,
+      "evictionReopenMs": 0.2993950000000041,
       "startedWithEmptyHistory": true,
       "history": {
         "canUndo": true,
@@ -4264,7 +4289,7 @@
       },
       "undoRestoration": "exact",
       "redoRestoration": "exact",
-      "canonicalSha256": "b29596d579a6f1588fb2c08444e630f220a3acc919f6ee80a04cb0ee9694a0cb",
+      "canonicalSha256": "e19613ef9060e6d0194c122e86d06345f73a8ddac11888d67cb24714abed69f2",
       "persistence": {
         "measured": false,
         "reason": "no journal attached"
@@ -4272,12 +4297,13 @@
     },
     {
       "label": "cold-tasks-deleted-attribution",
-      "workerWallMs": 4600.895891,
+      "workerWallMs": 5104.594092000043,
       "complete": true,
-      "fixtureSha256": "6a7de69e096e5fdac2299dbede941ec8f39048f063c71b7229be1c18405ba9b1",
-      "candidateColdMs": 1075.367034,
-      "referenceColdMs": 1351.5739529999998,
-      "continuedEditMs": 253.53968900000018,
+      "fixtureSha256": "46705bac9e727b57d6b2b6b077141ee7f704b8eaedd2f69438b87291a3e30522",
+      "candidateColdMs": 985.7293220000001,
+      "referenceColdMs": 1285.1119889999998,
+      "continuedEditMs": 244.86597500000016,
+      "evictionReopenMs": 0.3069140000002335,
       "startedWithEmptyHistory": true,
       "history": {
         "canUndo": true,
@@ -4289,7 +4315,7 @@
       },
       "undoRestoration": "exact",
       "redoRestoration": "exact",
-      "canonicalSha256": "a6cbd2a6887d45182a714561bccf3f9f8ff2c583da7ece6c413227f7f8989527",
+      "canonicalSha256": "8092c5a0d50a613c89a3ab8a22f786165523375ca2092fdd31a47c17d2fa28ad",
       "persistence": {
         "measured": false,
         "reason": "no journal attached"
@@ -4297,12 +4323,13 @@
     },
     {
       "label": "cold-100-plain-attribution",
-      "workerWallMs": 12240.815403999999,
+      "workerWallMs": 13442.275179999997,
       "complete": true,
-      "fixtureSha256": "28a78e8269b9426d65c091a23afea406d6248cfaa6404fad1f66f9bc5d8fa527",
-      "candidateColdMs": 1622.25487,
-      "referenceColdMs": 8566.105762,
-      "continuedEditMs": 25.213369999999486,
+      "fixtureSha256": "c5b4c129b3de680344088cf07395efd442f42d02b8f275caeb7bb43eaddaa71d",
+      "candidateColdMs": 1680.552632,
+      "referenceColdMs": 8409.0889,
+      "continuedEditMs": 23.928502000000663,
+      "evictionReopenMs": 0.3161049999998795,
       "startedWithEmptyHistory": true,
       "history": {
         "canUndo": true,
@@ -4314,7 +4341,7 @@
       },
       "undoRestoration": "exact",
       "redoRestoration": "exact",
-      "canonicalSha256": "05d15458da7e02e1a9accf4a74953eb140338b1c6ba904108b11f4c34c249c0f",
+      "canonicalSha256": "6b75122b0691e9751337b18d19a814eddedf1b6ebeedf4c4cccc4622dd3a4f56",
       "persistence": {
         "measured": false,
         "reason": "no journal attached"
@@ -4322,12 +4349,13 @@
     },
     {
       "label": "cold-100-deleted-attribution",
-      "workerWallMs": 12548.141447999998,
+      "workerWallMs": 13756.36672099994,
       "complete": true,
-      "fixtureSha256": "d3b34fd23ca7f54c54ba6d11742ddd4f94cc1c47f43c1d403cf1da69db521d47",
-      "candidateColdMs": 1695.960407,
-      "referenceColdMs": 8271.077678,
-      "continuedEditMs": 269.6810720000012,
+      "fixtureSha256": "9cc8c1577b2999c56773565e9309d46c448f3d1b0968c7c9e154e41b248e9d34",
+      "candidateColdMs": 1652.587925,
+      "referenceColdMs": 8168.569843,
+      "continuedEditMs": 293.0800659999986,
+      "evictionReopenMs": 0.4159159999999247,
       "startedWithEmptyHistory": true,
       "history": {
         "canUndo": true,
@@ -4339,7 +4367,7 @@
       },
       "undoRestoration": "exact",
       "redoRestoration": "exact",
-      "canonicalSha256": "80c3f1d4a62eac68293be7fd499cf1950fc323be279436a023e9bb446e2c8370",
+      "canonicalSha256": "27467f5559f794a1d6caec3fae37ed0b8452cbec1dee19b0d030449c1a0a6571",
       "persistence": {
         "measured": false,
         "reason": "no journal attached"
@@ -4347,12 +4375,13 @@
     },
     {
       "label": "cold-1000-plain-attribution",
-      "workerWallMs": 265299.12198399997,
+      "workerWallMs": 271745.45941,
       "complete": true,
-      "fixtureSha256": "0c4d5cad4cec723fe3b25c42143c5a70590c9763c033134ff150ff08bcd57fe1",
-      "candidateColdMs": 13816.099741,
-      "referenceColdMs": 245288.181484,
-      "continuedEditMs": 86.73162199999206,
+      "fixtureSha256": "546cbcf6ab72d548a6d69cabebaec1e725f2b2c913255bc76401d9d4e0dd0223",
+      "candidateColdMs": 13928.85542,
+      "referenceColdMs": 238499.633649,
+      "continuedEditMs": 80.74542299998575,
+      "evictionReopenMs": 0.6954009999753907,
       "startedWithEmptyHistory": true,
       "history": {
         "canUndo": true,
@@ -4364,7 +4393,7 @@
       },
       "undoRestoration": "exact",
       "redoRestoration": "exact",
-      "canonicalSha256": "f7340a8175bf2545689f2c3f068d028cd0a7e9a503bfb50aaeb6c95371958d6a",
+      "canonicalSha256": "1d48d2a1ca52e10c337a18118191c28c6116f1606daf9ec723fcf9a2e1f9d88d",
       "persistence": {
         "measured": false,
         "reason": "no journal attached"
@@ -4372,12 +4401,13 @@
     },
     {
       "label": "cold-1000-deleted-attribution",
-      "workerWallMs": 261545.30562499998,
+      "workerWallMs": 269918.35016799986,
       "complete": true,
-      "fixtureSha256": "c0d1aa2bc0278863fe1464fdd468103ab820d9ff10a4a9aaebdf7e7a4bc563f5",
-      "candidateColdMs": 13967.521408,
-      "referenceColdMs": 240493.45166299999,
-      "continuedEditMs": 450.67679200001294,
+      "fixtureSha256": "da8682d73ff19ff3f2cc1a99ca89b8ac0bac08723d468287d12967983589e7e0",
+      "candidateColdMs": 14355.391185,
+      "referenceColdMs": 236029.588351,
+      "continuedEditMs": 440.9157750000013,
+      "evictionReopenMs": 0.6902009999903385,
       "startedWithEmptyHistory": true,
       "history": {
         "canUndo": true,
@@ -4389,7 +4419,7 @@
       },
       "undoRestoration": "exact",
       "redoRestoration": "exact",
-      "canonicalSha256": "58782fcfc11c382c6c7b6cb077d59e571f3f2204b9789df7f15497bea87ca920",
+      "canonicalSha256": "e9464dd6000586822f35756eb76d812e8b586470a51061e42458859c71d8f973",
       "persistence": {
         "measured": false,
         "reason": "no journal attached"
@@ -4404,7 +4434,7 @@
       "before": ["a", "bc"],
       "candidate": ["a", "bc"],
       "reference": ["a", "bc"],
-      "canonicalSha256": "fcf9f98f6d152b41382fa5a98b20ff7b2471f61364b9a22c684180ea28415871",
+      "canonicalSha256": "369be7cc7e489a85726bfe41bc9124c8496e0f8f1d97f7721b118896b5f258f5",
       "readerInvalidations": 1,
       "outcome": "mapped-equivalence"
     },
@@ -4415,27 +4445,27 @@
       "before": ["a", "bc"],
       "candidate": ["a", "bc"],
       "reference": ["ac", "b"],
-      "canonicalSha256": "60e7076673183c388e27bdefde8ca758cfe9c2918776c5ab015c79f649cca1e5",
+      "canonicalSha256": "64c9b5d55b14b24f5b349221d7f12dd93e52d0a0c58a6f23a754316e71d37c2e",
       "readerInvalidations": 1,
       "outcome": "counterexample"
     }
   ],
   "mainWorkerSeconds": [
-    ["root-plain-wall", 6.108417481999999],
-    ["root-plain-attribution", 7.8528155669999995],
-    ["root-deleted-wall", 7.201530101999997],
-    ["root-deleted-attribution", 8.585882767999996],
-    ["tasks-plain-wall", 7.280909146999998],
-    ["tasks-plain-attribution", 9.288422808999997],
-    ["tasks-deleted-wall", 8.580033612],
-    ["tasks-deleted-attribution", 10.510933547999993],
-    ["100-plain-wall", 16.320418038000003],
-    ["100-plain-attribution", 17.770335672999995],
-    ["100-deleted-wall", 17.973797388000005],
-    ["100-deleted-attribution", 19.576032496999993],
-    ["1000-plain-wall", 276.746512506],
-    ["1000-plain-attribution", 288.41248805],
-    ["1000-deleted-wall", 298.79626225499993],
-    ["1000-deleted-attribution", 296.66370751199986]
+    ["root-plain-wall", 5.983121029000001],
+    ["root-plain-attribution", 7.811529945],
+    ["root-deleted-wall", 7.268952068999999],
+    ["root-deleted-attribution", 8.823459278999998],
+    ["tasks-plain-wall", 7.379655608000001],
+    ["tasks-plain-attribution", 9.458448599000002],
+    ["tasks-deleted-wall", 8.669241350000004],
+    ["tasks-deleted-attribution", 10.564341730999994],
+    ["100-plain-wall", 16.348027216000002],
+    ["100-plain-attribution", 17.842945706],
+    ["100-deleted-wall", 17.980359191999987],
+    ["100-deleted-attribution", 19.46983312499999],
+    ["1000-plain-wall", 285.815970248],
+    ["1000-plain-attribution", 289.72146589600004],
+    ["1000-deleted-wall", 270.012352602],
+    ["1000-deleted-attribution", 279.519735374]
   ]
 }

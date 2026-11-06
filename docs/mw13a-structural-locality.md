@@ -287,30 +287,30 @@ short samples, exclusive totals, full-input work and fallback reasons together.
 
 ### Source-scoped short results
 
-Measured engine/driver source: `7cc76f9ee53e5fde4102f48bca5c73db070991c3`. Separate cold harness: `2d338be659ffbd345c38899579224e82500e39a8`. The engine files are unchanged between these commits; the latter adds cold checks and a recorder cleanup test. Node v26.13.0, Yjs 13.6.33. The raw main report and separate cold report are complete. All 16 main workers and eight cold workers stayed below 300 seconds. The slowest main worker took 298.80 seconds. The earlier exploratory timeout is incomplete and is excluded.
+Measured engine source: `661ba2809048c91e9d6355b5eb3c14327c90ca6e`. Main drivers: `661ba2809048c91e9d6355b5eb3c14327c90ca6e`, `89cf9053f942b365dcbbf7a59a7d3d59e4254b98`. Cold harness: `89cf9053f942b365dcbbf7a59a7d3d59e4254b98`. Later changes add documentation/results and test assertions. Node v26.13.0, Yjs 13.6.33. All 16 main profiles and eight separate final cold-open/continued-authoring workers passed below 300 seconds. The slowest worker took 289.72 seconds. Earlier complete profiles and the exploratory incomplete timeout are preserved separately; neither substitutes for this source-scoped set.
 
-These are single raw samples, not percentiles. `split`, `join`, and unrelated-edit wall times below have diagnostics disabled. Their fresh attribution peers use different new native identities.
+These are single raw samples, not percentiles. Each case records its driver source. Fourteen main profiles include a ninth post-eviction edit; the two replacement 1,000-action deletion profiles keep the eight required edits and move reconstruction/history verification into separate cold workers. The table uses their common operations. One stopped attempt remains incomplete and is archived, not counted as a passing worker. Wall-only and attribution workers use the same original inputs and different new native identities.
 
 | Input         | Split ms | Join ms | Unrelated edit ms | Unrelated pub replay / sort inputs / deletion ranges indexed |
 | ------------- | -------: | ------: | ----------------: | -----------------------------------------------------------: |
-| root-plain    |   381.82 |  318.92 |              5.60 |                                                    1 / 0 / 0 |
-| root-deleted  |   310.26 |  310.87 |            175.41 |                                                    1 / 6 / 0 |
-| tasks-plain   |   442.87 |  391.83 |              6.63 |                                                    1 / 0 / 0 |
-| tasks-deleted |   362.13 |  379.59 |            225.61 |                                                    1 / 6 / 0 |
-| 100-plain     |   529.97 |  405.38 |              5.74 |                                                    1 / 0 / 0 |
-| 100-deleted   |   538.47 |  413.39 |            225.47 |                                                 1 / 106 / 80 |
-| 1000-plain    |  1398.08 | 1099.23 |              5.46 |                                                    1 / 0 / 0 |
-| 1000-deleted  |  1383.22 | 1173.79 |            387.66 |                                               1 / 1006 / 800 |
+| root-plain    |   367.12 |  313.80 |              5.38 |                                                    1 / 0 / 0 |
+| root-deleted  |   318.01 |  320.33 |            200.80 |                                                    1 / 6 / 0 |
+| tasks-plain   |   451.56 |  424.40 |              5.74 |                                                    1 / 0 / 0 |
+| tasks-deleted |   403.75 |  385.11 |            221.03 |                                                    1 / 6 / 0 |
+| 100-plain     |   535.14 |  454.20 |              5.76 |                                                    1 / 0 / 0 |
+| 100-deleted   |   516.25 |  435.36 |            231.05 |                                                 1 / 106 / 80 |
+| 1000-plain    |  1637.26 | 1046.62 |              6.49 |                                                    1 / 0 / 0 |
+| 1000-deleted  |  1410.24 | 1114.49 |            365.93 |                                               1 / 1006 / 800 |
 
-The 1,000-action plain split replays 1,001 actions from genesis. Its author queries sort 2,002 input entries, selection staging sorts another 1,001, and publication sorts another 1,001. Exact-author reference reconstruction is counted separately. The unrelated deletion variant demonstrates the other cause: one action replays while publication still sorts 1,006 actions and rebuilds 800 deletion ranges. Staging repeats that work. Low suffix-replay counts do not imply bounded work.
+The 1,000-action plain split replays 1001 actions from genesis. Its author queries sort 2002 input entries, selection staging sorts another 1001, and publication sorts another 1001. Exact-author reference reconstruction is counted separately. With the unrelated deletion, a distant edit replays 1 action while publication sorts 1006 actions and rebuilds 800 deletion ranges. Staging repeats that work. Low suffix-replay counts do not imply bounded work.
 
-Representative exclusive phase rows below are from the attribution workers. The overhead column includes the measured recorder-boundary difference; each row sums to attribution wall time. They are not added to the independent wall-only samples.
+Representative exclusive phase rows below are from the attribution workers. Overhead includes the measured recorder-boundary difference; each row sums to attribution wall time. These times are separate from the diagnostics-disabled wall samples.
 
 | Input / edit                  |  Draft | Native | Author | Coupled |   View | Selection | Append | Publish | Overhead | Attribution wall |
 | ----------------------------- | -----: | -----: | -----: | ------: | -----: | --------: | -----: | ------: | -------: | ---------------: |
-| 1000-plain / split            | 140.61 |  94.33 |  70.84 |  816.83 | 400.42 |      1.72 |   4.95 |   11.38 |     0.88 |          1541.96 |
-| 1000-deleted / unrelated-edit |   1.14 |   0.69 |   0.62 |    3.45 | 359.71 |      0.63 |   0.48 |    0.69 |     0.26 |           367.67 |
+| 1000-plain / split            | 142.47 |  65.64 |  78.06 |  858.95 | 409.86 |      1.34 |   5.61 |   12.14 |     0.64 |          1574.70 |
+| 1000-deleted / unrelated-edit |   1.12 |   0.63 |   0.62 |    3.44 | 356.31 |      0.60 |   0.51 |    0.70 |     0.25 |           364.17 |
 
-Cold/reference setup remains outside edit timers. The two 1,000-action final cold-open/continued-authoring workers passed in 265.30 and 261.55 seconds. Each opened fresh independent and materialized documents, then verified one new managed edit, exact Undo/Redo, empty initial local history, old-publication reads, and full canonical retention. Persistence is unmeasured.
+Cold/reference setup remains outside edit timers. The two 1,000-action final cold-open/continued-authoring workers passed in 271.75 and 269.92 seconds. Each reopened the exact final canonical output in fresh independent and materialized documents, then verified one new managed edit, exact Undo/Redo, empty initial local history, old-publication reads, and full retention. Persistence is unmeasured.
 
-[Compact results](../benchmarks/multiwriter/results/structural-locality-short.json) retain phase/work numbers and source pins. The issue evidence contains all raw spans, invocation counts, resource IDs, exact inputs and new carriers. The original remote diagnostic description used the phrase “causally earlier”; the actions are concurrent, with the join ordered earlier by Lamport order. The harness wording is corrected; no causal ancestry or semantic result was changed.
+[Compact results](../benchmarks/multiwriter/results/structural-locality-short.json) retain phase/work numbers and source pins. Issue evidence preserves all raw spans, invocation counts, resource IDs, original inputs and new carriers. Earlier raw remote metadata used “causally earlier”; those actions are concurrent with the join ordered earlier by Lamport order. The corrected harness states this accurately; no causal ancestry or semantic result was changed.
