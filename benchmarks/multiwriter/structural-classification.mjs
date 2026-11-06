@@ -1,11 +1,7 @@
 import assert from 'node:assert/strict';
 import { writeFileSync } from 'node:fs';
 import { serialize } from 'node:v8';
-import {
-  emptyHomeCounterexample,
-  rawObservation,
-  refinementMap,
-} from '../../test/multiwriter/structural-refinement.js';
+import { emptyHomeCounterexample, rawObservation, refinementMap } from './structural-refinement.js';
 import { commandGenesis } from '../../test/multiwriter/commands/replica.js';
 import { projectWithActivity } from '../../src/markdown/multiwriter/projection/project.js';
 import { reconstructProvenance } from '../../src/markdown/multiwriter/reference/provenance.js';

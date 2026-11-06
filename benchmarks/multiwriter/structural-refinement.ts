@@ -1,6 +1,6 @@
 /** Experimental A-only replay. The production reader guard never calls this helper. */
-import { commandGenesis, commandReplica } from './commands/replica.js';
-import type { CommandReplica } from './commands/replica.js';
+import { commandGenesis, commandReplica } from '../../test/multiwriter/commands/replica.js';
+import type { CommandReplica } from '../../test/multiwriter/commands/replica.js';
 import { insertParagraph } from '../../src/markdown/multiwriter/authoring/index.js';
 import { actionKey } from '../../src/markdown/multiwriter/actions/references.js';
 import { action, C, resource } from '../../src/markdown/multiwriter/actions/test-fixtures.js';

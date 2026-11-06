@@ -153,6 +153,20 @@ contract](../../docs/mw13a-structural-locality.md) before using these profiles t
 choose a production optimization. The original prefix captures have unknown source
 SHAs and different actors. They are diagnostic restores, not uninterrupted runs.
 
+The benchmark programs are supported source tools, so their existing Knip entry
+and project patterns participate in both full-project and production analysis.
+They consume the engine's opt-in diagnostic API outside a test runner. Test
+modules remain development inputs. The shared native refinement fixture lives in
+`structural-refinement.ts` beside the classification worker because both that
+executable and the differential tests call it. The fixture previously lived at
+`test/multiwriter/structural-refinement.ts`; earlier evidence keeps that source
+path and its original source pins.
+
+This analysis boundary preserves `captureDiagnostics()`, its inferred
+`DiagnosticReport`, and the internal `refineCheckpoint()` probe. Neither
+`diagnostics.ts` nor `materialization/coupled.ts` is an exempt entry file. Their
+unused exports still produce findings, including exports used only by tests.
+
 To regenerate a compact phase/work table from complete or partial raw reports:
 
 ```sh

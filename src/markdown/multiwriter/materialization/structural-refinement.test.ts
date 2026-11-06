@@ -15,7 +15,7 @@ import {
   refinementMap,
   rawObservation,
   emptyHomeCounterexample,
-} from '../../../../test/multiwriter/structural-refinement.js';
+} from '../../../../benchmarks/multiwriter/structural-refinement.js';
 import { createMaterializationOracle } from '../../../../test/multiwriter/materialization-oracle.js';
 import { deleteBlocks, insertParagraph, insertText, joinWithPrevious } from '../authoring/index.js';
 import type { LocalEditResult } from '../authoring/editor.js';

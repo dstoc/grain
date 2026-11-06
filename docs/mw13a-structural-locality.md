@@ -79,7 +79,7 @@ reserved edge cells without an ordinary middle cell and preserves equivalence.
 Three characters are needed to put the new separator between two selected basis
 cells. Removing the join or second new marker removes this trigger.
 
-`emptyHomeCounterexample()` in `test/multiwriter/structural-refinement.ts`
+`emptyHomeCounterexample()` in `benchmarks/multiwriter/structural-refinement.ts`
 constructs and certifies all three complete actions at their exact author
 closures. The join uses the public canonical admission boundary with an original
 occurrence allocation; the split uses managed public authoring; marker preparation
