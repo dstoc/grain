@@ -260,11 +260,21 @@ export function projectionChange(
       for (const occurrence of value?.bucket.roots ?? [])
         slot(sides[side].occurrence(occurrence).slot, side);
   }
-  const requirements = new Map<string, readonly EffectRef[]>();
+  const edits = new Map<string, Map<string, EffectRef>>();
   const refs = (id: NodeId) => {
     const key = resourceKey(id);
-    if (!requirements.has(key)) requirements.set(key, before.nodeRequirements.get(key) ?? []);
-    return requirements.get(key)!;
+    let values = edits.get(key);
+    if (!values) {
+      values = new Map();
+      countWork('projection.adapterWitnessNodesSeeded');
+      for (const ref of before.nodeRequirements.get(key) ?? []) {
+        countWork('projection.adapterWitnessSeedEntriesVisited');
+        countWork('projection.adapterWitnessKeyedUpdates');
+        values.set(effectKey(ref), ref);
+      }
+      edits.set(key, values);
+    }
+    return values;
   };
   for (const change of changes.derived.requirements) {
     countWork('projection.adapterRequirementDeltas');
@@ -277,17 +287,22 @@ export function projectionChange(
       }
     if (change.before) {
       const old = { action: change.before.order.action.id, ordinal: change.before.order.ordinal };
-      for (const id of change.before.nodes)
-        requirements.set(
-          resourceKey(id),
-          refs(id).filter((ref) => effectKey(ref) !== effectKey(old)),
-        );
+      for (const id of change.before.nodes) {
+        countWork('projection.adapterWitnessKeyedUpdates');
+        refs(id).delete(effectKey(old));
+      }
     }
     if (change.after) {
       const next = { action: change.after.order.action.id, ordinal: change.after.order.ordinal };
-      for (const id of change.after.nodes)
-        if (!refs(id).some((ref) => effectKey(ref) === effectKey(next)))
-          requirements.set(resourceKey(id), [...refs(id), next]);
+      for (const id of change.after.nodes) {
+        const values = refs(id),
+          key = effectKey(next);
+        countWork('projection.adapterWitnessKeyedReads');
+        if (!values.has(key)) {
+          countWork('projection.adapterWitnessKeyedUpdates');
+          values.set(key, next);
+        }
+      }
     }
   }
   const semantic = new Map(changes.actions.map((action) => [actionKey(action.id), action]));
@@ -347,19 +362,26 @@ export function projectionChange(
       }
     }
   }
-  for (const id of [...nodes.values(), ...containers.values()]) refs(id);
-  for (const [id, values] of requirements) {
-    countWork('projection.adapterWitnessEntriesCopied', values.length);
-    requirements.set(
-      id,
-      [...values].sort(
-        (a, b) => (
-          countWork('projection.adapterWitnessComparisons'),
-          compareActions(source!.get(actionKey(a.action))!, source!.get(actionKey(b.action))!) ||
-            a.ordinal - b.ordinal
-        ),
-      ),
-    );
+  const requirements = new Map<string, readonly EffectRef[]>();
+  for (const node of [...nodes.values(), ...containers.values()]) {
+    const id = resourceKey(node);
+    if (requirements.has(id)) continue;
+    const values: EffectRef[] = [];
+    countWork('projection.adapterWitnessFinalNodes');
+    for (const ref of edits.get(id)?.values() ?? before.nodeRequirements.get(id) ?? []) {
+      countWork('projection.adapterWitnessFinalEntriesVisited');
+      countWork('projection.adapterWitnessEntriesCopied');
+      values.push(ref);
+    }
+    countWork('projection.adapterWitnessSortInputs', values.length);
+    values.sort((a, b) => {
+      countWork('projection.adapterWitnessComparisons');
+      return (
+        compareActions(source!.get(actionKey(a.action))!, source!.get(actionKey(b.action))!) ||
+        a.ordinal - b.ordinal
+      );
+    });
+    requirements.set(id, values);
   }
   const effects = changes.actions.flatMap((action) => action.effects);
   return {

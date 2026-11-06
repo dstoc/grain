@@ -447,10 +447,12 @@ function indexMeasured(
   for (const [id, refs] of nodeRequirements)
     for (const ref of refs) {
       const key = deletionEffectKey(ref);
-      requirementReaders.set(key, [
-        ...(requirementReaders.get(key) ?? []),
-        nodeAllocations.get(id)!.id,
-      ]);
+      const readers = requirementReaders.get(key) ?? [];
+      countWork('projection.requirementReferencesInspected');
+      countWork('projection.requirementReaderEntriesInspected', readers.length);
+      countWork('projection.requirementReaderEntriesCopied', readers.length);
+      countWork('projection.requirementReaderEntriesAdded');
+      requirementReaders.set(key, [...readers, nodeAllocations.get(id)!.id]);
     }
   const splitVisibility = SplitVisibility.create(
     value.activity.actions,
@@ -1056,15 +1058,23 @@ export class MaterializedProjection {
     for (const [id, refs] of change.requirements) {
       const node = nodeAllocations.get(id)!.id;
       for (const old of nodeRequirements.get(id) ?? []) {
+        countWork('projection.requirementReferencesInspected');
         const key = deletionEffectKey(old);
-        requirementReaders.set(
-          key,
-          (requirementReaders.get(key) ?? []).filter((n) => resourceKey(n) !== id),
-        );
+        const readers = (requirementReaders.get(key) ?? []).filter((n) => {
+          countWork('projection.requirementReaderEntriesInspected');
+          return resourceKey(n) !== id;
+        });
+        countWork('projection.requirementReaderEntriesCopied', readers.length);
+        requirementReaders.set(key, readers);
       }
       for (const ref of refs) {
+        countWork('projection.requirementReferencesInspected');
         const key = deletionEffectKey(ref);
-        requirementReaders.set(key, [...(requirementReaders.get(key) ?? []), node]);
+        const readers = requirementReaders.get(key) ?? [];
+        countWork('projection.requirementReaderEntriesInspected', readers.length);
+        countWork('projection.requirementReaderEntriesCopied', readers.length);
+        countWork('projection.requirementReaderEntriesAdded');
+        requirementReaders.set(key, [...readers, node]);
       }
       nodeRequirements.set(id, refs);
       requirementNodes.add(id);
@@ -1097,11 +1107,14 @@ export class MaterializedProjection {
       splitVisibility = splitChange.index;
     for (const node of splitChange.nodes) affected.add(resourceKey(node));
     for (const ref of splitChange.effects)
-      for (const node of [
-        ...(before.requirementReaders.get(deletionEffectKey(ref)) ?? []),
-        ...(requirementReaders.get(deletionEffectKey(ref)) ?? []),
+      for (const readers of [
+        before.requirementReaders.get(deletionEffectKey(ref)) ?? [],
+        requirementReaders.get(deletionEffectKey(ref)) ?? [],
       ])
-        requirementNodes.add(resourceKey(node));
+        for (const node of readers) {
+          countWork('projection.requirementReaderEntriesInspected');
+          requirementNodes.add(resourceKey(node));
+        }
     for (const id of coverage.nodes) affected.add(id);
     const visibilityDraft = before.witnesses.prepare({
       nodes: [...new Set([...affected, ...requirementNodes])].map(

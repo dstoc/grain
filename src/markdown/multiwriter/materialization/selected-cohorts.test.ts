@@ -8,8 +8,7 @@ import { markers, firstTape } from '../../../../benchmarks/multiwriter/structura
 import { captureDiagnostics } from '../diagnostics.js';
 import { compareBytes } from '../actions/cbor.js';
 import { textPoint, resolveAddress } from '../projection/addresses.js';
-import { resourceKey } from '../layout/index.js';
-import type { NodeId } from '../contracts.js';
+import type { ActionEnvelope, ActionId, NodeId } from '../contracts.js';
 import type { OwnershipResult } from '../ownership/ownership.js';
 
 const publication = (p: CommandReplica) => p.document.publication.status().publication!;
@@ -317,3 +316,75 @@ for (const width of [1, 4, 12])
       expect(selected(held.value.ownership, [root, quote])).toEqual(saved);
     });
   });
+
+test('property and allocating-action controls keep selected nonempty roots coherent', () => {
+  const f = new NativeFixture();
+  f.author('A1', (f) => [f.split('P', 'R', 'P3')]);
+  f.author('B1', (f) => [f.split('P', 'L', 'P1')]);
+  const genesis = {
+    documentId: 'D',
+    genesisId: 'G',
+    layout: f.genesis,
+    body: { ...f.bodies.get('G')!, allocations: f.genesis.allocations },
+    initialProperties: [{ node: f.id('P', 'node'), values: { presentation: 'code' as const } }],
+  };
+  const p = commandReplica(genesis, undefined, 'materialized');
+  try {
+    for (const name of ['A1', 'B1']) {
+      const envelope = f.envelope(name);
+      p.document.certifyLocal(envelope);
+      p.document.store.append(envelope);
+      p.editor.refresh();
+    }
+    const held = publication(p),
+      root = f.id('root', 'node'),
+      saved = selected(held.value.ownership, [root]);
+    expect(held.value.ownership.buckets).toHaveLength(1);
+    const { value, report } = captureDiagnostics(() =>
+      p.editor.session('property').edit((ctx) => {
+        ctx.draft.setInfo(p.editor.handle(f.id('P', 'node')), 'js');
+        return { status: 'handled' };
+      }, undefined),
+    );
+    expect(value.status).toBe('applied');
+    expect(report.work['publication/ownership.cohortExportCalls'] ?? 0).toBe(0);
+    check(p);
+    let previousControl: ActionId | null = null;
+    const target = f.envelope('A1');
+    for (const active of [false, true]) {
+      const ready = p.document.store.snapshot().ready,
+        sequence =
+          ready
+            .filter((a) => a.id.actor === target.id.actor)
+            .reduce((n, a) => (a.id.sequence > n ? a.id.sequence : n), 0n) + 1n;
+      const envelope: ActionEnvelope = {
+        ...target,
+        id: { ...target.id, sequence },
+        lamport: ready.reduce((n, a) => (a.lamport > n ? a.lamport : n), 0n) + 1n,
+        dependencies: ready.map((a) => a.id),
+        groupId: { ...target.groupId, sequence: sequence + 1000n },
+        allocations: [],
+        nativeInsertUpdates: [],
+        nativeManifest: [],
+        effects: [
+          {
+            type: 'SetGroupActive' as const,
+            group: target.groupId,
+            actions: [target.id],
+            active,
+            previousControl,
+          },
+        ],
+      };
+      p.document.certifyLocal(envelope);
+      p.document.store.append(envelope);
+      p.editor.refresh();
+      previousControl = envelope.id;
+      check(p);
+      expect(selected(held.value.ownership, [root])).toEqual(saved);
+    }
+  } finally {
+    p.close();
+    f.destroy();
+  }
+});

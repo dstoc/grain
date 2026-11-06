@@ -313,3 +313,47 @@ with its own nonempty cohorts. Independent full exports, both delivery orders,
 cross-parent retraction, undo/redo, native refinement, old readers and cold
 reseeding remain separate checks. These work counts establish no whole-command
 latency or parent acceptance.
+
+## Destination witness accounting
+
+The production adapter seeds one temporary keyed map per node whose requirement
+contributions change. Removals and additions use exact action/effect keys.
+Duplicate additions preserve retained reference objects. Each affected node gets
+one final materialization and the existing semantic-order sort; container-only
+readers use retained arrays directly. Maps do not escape preparation. Empty and
+removal-only results remain explicit. A decline still charges edits already
+attempted.
+
+| Counter (`projection.` prefix)                          | Unit                                                                                                      |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `adapterWitnessNodesSeeded`                             | Temporary per-node maps created.                                                                          |
+| `adapterWitnessSeedEntriesVisited`                      | Retained references visited once while seeding those maps.                                                |
+| `adapterWitnessKeyedReads`                              | Addition membership checks, including duplicates.                                                         |
+| `adapterWitnessKeyedUpdates`                            | Seed insertions, attempted removals and successful new-reference insertions.                              |
+| `adapterWitnessFinalNodes`                              | Complete final per-node arrays produced, including empty results.                                         |
+| `adapterWitnessFinalEntriesVisited`                     | References traversed during final materialization.                                                        |
+| `adapterWitnessEntriesCopied`                           | References copied into final arrays; unchanged unit. Repeated intermediate array edits have been removed. |
+| `adapterWitnessSortInputs`, `adapterWitnessComparisons` | Final sort inputs and comparator calls.                                                                   |
+| `requirementReferencesInspected`                        | References visited while updating the reverse requirement index.                                          |
+| `requirementReaderEntriesInspected`                     | Dependent entries inspected by removal filters, addition spreads and old/new split-reader traversal.      |
+| `requirementReaderEntriesCopied`                        | Filter outputs and existing dependent entries copied by addition spreads.                                 |
+| `requirementReaderEntriesAdded`                         | New dependent entries appended to reverse-reader arrays.                                                  |
+
+The reverse index preserves its existing array behavior. Reinstalling many nodes
+with one shared requirement can still do quadratic dependent-array work; that is
+charged explicitly rather than claimed constant. Cold seeds also charge reverse
+array construction. Old/new split readers are traversed directly, removing their
+combined temporary spread. Counts include discarded prepared candidates and
+adapter declines after edits. Synthetic contribution controls compare the actual
+adapter with independent previous array semantics at widths 8/32/128 and changed
+contributions 1/4/8. Real lifting fixtures share one effect across 8/32/128 distinct
+destinations and compare every dependent scan/copy with a separate model before
+rejecting the prepared candidate as stale. Complete normalized/visibility and
+canonical-byte checks remain enabled.
+
+A selected-reader GC worker holds a nonempty root across 16 later publications,
+16 cancelled candidates and eviction. The originating producer and cancelled
+candidate roots must collect while that reader remains usable. It also verifies
+held native reads and unchanged canonical bytes. This complements closure
+inspection: the reader factory captures only its completed parent-map fork;
+entries contain semantic bucket/order facts and no activity or commit callbacks.

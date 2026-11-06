@@ -547,3 +547,92 @@ test('cancelled production adapter candidates release roots while the prior tupl
   );
   assert.deepEqual(result, { released: true, candidates: 16, retainedPrior: true });
 });
+
+test('held selected cohort roots release producer and cancelled candidates across later publications', () => {
+  const result = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [
+        '--expose-gc',
+        '--import',
+        './benchmarks/multiwriter/resolve-ts.mjs',
+        '--input-type=module',
+        '--eval',
+        String.raw`
+          import assert from 'node:assert/strict';
+          import { NativeFixture } from './src/markdown/multiwriter/ownership/test-fixtures.ts';
+          import { commandReplica } from './test/multiwriter/commands/replica.ts';
+          import { insertParagraph } from './src/editing/commands/insert-paragraph.ts';
+          import { insertText } from './src/editing/commands/insert-text.ts';
+          import { StructuralIndex } from './src/markdown/multiwriter/materialization/structural.ts';
+          import { MaterializedProjection } from './src/markdown/multiwriter/materialization/projection.ts';
+          const f = new NativeFixture();
+          f.author('A1', f => [f.split('P', 'R', 'P3')]);
+          f.author('B1', f => [f.split('P', 'L', 'P1')]);
+          const genesis = {documentId: 'D', genesisId: 'G', layout: f.genesis,
+            body: {...f.bodies.get('G'), allocations: f.genesis.allocations}, initialProperties: []};
+          const producers = new WeakMap(), selectedCohorts = StructuralIndex.prototype.selectedCohorts;
+          StructuralIndex.prototype.selectedCohorts = function () {
+            const read = selectedCohorts.call(this);
+            producers.set(read, new WeakRef(this));
+            return read;
+          };
+          const p = commandReplica(genesis, undefined, 'materialized');
+          for (const name of ['A1', 'B1']) {
+            const envelope = f.envelope(name);
+            p.document.certifyLocal(envelope); p.document.store.append(envelope); p.editor.refresh();
+          }
+          // Hold only the selected reader, not its OwnershipResult or publication.
+          const read = p.document.publication.status().publication.value.ownership.cohortLookup,
+            producer = producers.get(read), root = f.id('root', 'node'), saved = structuredClone(read(root));
+          assert.equal(saved.length, 1); assert.equal(saved[0].roots.length, 2);
+          for (let i = 1; i <= 16; i++) assert.equal(p.editor.session('text').edit(insertText, {
+            nodeId: p.handle(p.nodes()[0]), from: 1, text: 'x',
+          }, {typing: false}).status, 'applied');
+          assert.deepEqual(read(root), saved);
+          const source = commandReplica(genesis, p.document.store.encodeUpdate());
+          assert.equal(source.editor.session('split').edit(insertParagraph, {
+            nodeId: source.handle(source.nodes()[0]), from: 1,
+          }).status, 'applied');
+          p.document.store.applyUpdate(source.document.store.encodeUpdate());
+          const retired = [], prepare = MaterializedProjection.prototype.prepare;
+          let built = false;
+          MaterializedProjection.prototype.prepare = function* (...args) {
+            const candidate = yield* prepare.apply(this, args);
+            retired.push(new WeakRef(candidate.value), new WeakRef(candidate.value.ownership),
+              producers.get(candidate.value.ownership.cohortLookup));
+            built = true; yield; return candidate;
+          };
+          for (let trial = 0; trial < 16; trial++) {
+            built = false;
+            let work = p.document.publication.refresh(0);
+            while (!built) { assert.equal(work.state, 'deferred'); work = work.continuation.resume(1); }
+            assert.equal(work.state, 'deferred'); work.continuation.cancel();
+            assert.deepEqual(read(root), saved);
+          }
+          MaterializedProjection.prototype.prepare = prepare;
+          StructuralIndex.prototype.selectedCohorts = selectedCohorts;
+          p.document.publication.evict();
+          const turn = () => new Promise(resolve => setImmediate(resolve));
+          let released = false;
+          for (let i = 0; i < 10; i++) {
+            await turn(); global.gc(); global.gc();
+            if (!producer.deref() && retired.every(ref => ref && !ref.deref())) { released = true; break; }
+          }
+          assert.deepEqual(read(root), saved);
+          const bytes = p.document.store.encodeUpdate();
+          const held = p.document.publication.status().publication;
+          const native = held.native.encodeState();
+          p.editor.refresh();
+          assert(Buffer.from(held.native.encodeState()).equals(native));
+          assert(Buffer.from(p.document.store.encodeUpdate()).equals(bytes));
+          assert.deepEqual(read(root), saved);
+          console.log(JSON.stringify({released, candidates: retired.length / 3, heldSelectedRoots: saved[0].roots.length}));
+          p.close(); source.close(); f.destroy();
+        `,
+      ],
+      { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ),
+  );
+  assert.deepEqual(result, { released: true, candidates: 16, heldSelectedRoots: 2 });
+});
