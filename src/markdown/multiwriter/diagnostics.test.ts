@@ -152,3 +152,12 @@ test('early generator cancellation labels cleanup and normal completion does not
   ).toBe(17);
   expect(report.wallMs).toBe(117);
 });
+
+test('disabled work instrumentation returns the original iterator', () => {
+  const original = (function* () {
+    yield;
+    return 1;
+  })();
+  expect(measureWork('coupled-replay', original)).toBe(original);
+  original.return(0);
+});

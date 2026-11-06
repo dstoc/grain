@@ -114,7 +114,17 @@ export function captureDiagnostics<T>(
     recorder = undefined;
   }
 }
-export function* measureWork<T>(
+export function measureWork<T>(
+  phase: DiagnosticPhase,
+  work: Generator<void, T, void>,
+  purpose?: DiagnosticPurpose,
+): Generator<void, T, void> {
+  // Preserve the original iterator and its scheduling while diagnostics are off.
+  // Start capture before creating measured work; callers can explicitly wrap an
+  // existing iterator inside a capture when attributing a deferred resume.
+  return recorder ? measuredWork(phase, work, purpose) : work;
+}
+function* measuredWork<T>(
   phase: DiagnosticPhase,
   work: Generator<void, T, void>,
   purpose?: DiagnosticPurpose,
