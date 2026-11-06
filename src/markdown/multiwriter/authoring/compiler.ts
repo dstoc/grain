@@ -1071,10 +1071,10 @@ export class CommandCompiler {
             position: number | undefined;
           for (const source of original) {
             if (
-              same(source.range.tape, p.range.tape) &&
               source.range.client === p.range.client &&
               source.range.clock <= p.range.clock &&
-              p.range.clock + p.range.length <= source.range.clock + source.range.length
+              p.range.clock + p.range.length <= source.range.clock + source.range.length &&
+              same(source.range.tape, p.range.tape)
             ) {
               position = base + p.range.clock - source.range.clock;
               break;
