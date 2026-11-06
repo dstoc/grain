@@ -1,10 +1,10 @@
 # MW-13C projection locality
 
-Issue: grain/104. Base: `c9327db5209ad1d566c6f2ef84e4186cba6d40a5`
-on `feat/94-incremental-materialization`. The approved proposal is grain/104's
-`proposal` v1 and proposal PR #93. Implementation PR #95 owns this child branch.
-The parent owns production B+C integration and PR #88. This document does not
-establish complete C, integrated performance, or parent acceptance.
+Issue: grain/104. The controlled C slice was integrated through PR #95 at
+`864a182`. The production continuation uses approved proposal v2 and draft PR #96,
+branch `integration/104-production-projection`, over exact B+C `65ab8f5`.
+The parent owns shared integration and PR #88. This document does not establish
+complete C, integrated performance, readiness authorization, or parent acceptance.
 
 ## Candidate and resource contract
 
@@ -113,7 +113,7 @@ Explicit full iteration is separate and charged.
 | Operation/input condition                                                    | Current behavior and remaining gate                                                                                                                                                                                                                                 |
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | First open, eviction or no compatible retained source                        | Full provenance/projection/index seed; expected cold path.                                                                                                                                                                                                          |
-| Production structural commands through `prepare()`                           | Guarded full structural projector. The parent must wire reviewed B `StructuralChanges` into the local consumer and verify compatible source pins. C-controlled differences do not establish that gate.                                                              |
+| Production structural commands through `prepare()`                           | One retained B producer and exact resource adapter feed the local C builder. Managed 10/150 split/type/join/distant-edit/history controls cover difficult features. Broader acceptance remains source-scoped.                                                       |
 | Producer declines structural/native refinement                               | Preserve B's suffix/cold fallback and historical-reader guard. C supplies no marker-only exemption.                                                                                                                                                                 |
 | Exact controlled append, earlier arrival or batch                            | Local visibility, interpretation, region/view/address candidate for split/join, text, deletion, transfer, placement, lifting, interpretation, wrappers, sections, numbering and history.                                                                            |
 | Structural list/item/quote edit beside consecutive nonempty mixed wrappers   | Separate regions across different nonempty wrappers. The original failing ordered-list split probe is retained as a passing regression. Quote-growth controls at 8/32/128 paragraphs rebuild seven list-region nodes and inspect seven boundary nodes at each size. |
@@ -139,9 +139,10 @@ concurrent births/deletion/splits, transfers and ghost slots, packet winners and
 membership, wrapper cleanup, sections, ordered numbering, paste, indent/outdent,
 all-content deletion, exact batches, earlier arrivals, cancellation and eviction.
 
-Remaining acceptance includes consumption of reviewed B output and production
-managed-command verification at compatible B/C source pins, including exact
-suffix/retraction/earlier-arrival evidence. Fresh broad correctness/static reports
+The production candidate consumes B's exact changes. Managed 10/150-node traces
+check warm publication with distant deletion, suppression and scaffolds. Remaining
+acceptance includes broader production semantic, suffix/retraction/earlier-arrival,
+atomicity, retention and compatible-head CI evidence. Fresh broad correctness/static reports
 and any deadline failures remain separately source-scoped; earlier reports do not
 prove later changes. The parent owns that integration.
 Controlled fixtures build complete differences outside C timing and preserve
@@ -199,3 +200,46 @@ The regional schedule also reads/copies root-width ordering data. Its counters d
 not claim those arrays or boundary tables are constant work. Increasing an
 unrelated quote's descendants does not increase regional subtree reconstruction;
 a genuinely wide merge, section suffix or ordered numbering region remains wide.
+
+## Production adapter and installation
+
+`MaterializedOwnership.prepareReady()` reads the certified suffix through indexed
+ready access and retains B's ordered payload entries for the prefix. Fresh batches
+supply exact `reconstructBirthContent()` coverage, including inactive allocations.
+Earlier arrivals retain B's complete ordering audit. Resource rebuilds explicitly
+materialize and charge the retained inputs; the independent reference assembles
+all batches itself.
+
+`projection-adapter.ts` binds the old C state to B's exact genesis, native view,
+ready source and checkpoint. It visits both sides of assignment, placement, flow,
+run, occurrence, root, attachment, cohort and requirement deltas. Selected flow
+ancestry retains private-home headers and effective destinations. A work queue
+expands participating tapes through C's existing reverse readers, including ghosts.
+Destination contributions remove old effect references and add new references to
+complete retained per-node witness arrays. Semantically equal entries recreated
+by historical replay do not dirty C; visits to those delta entries remain charged.
+
+Text/property publications advance the same checkpoint binding. C's private state
+builder has no independent generation or producer commit. A local production commit
+retains the owned B producer. The public controlled seam still evicts that producer
+after an external commit. A C decline uses the same prepared B result for full
+projection/indexing and installs a coherent binding; it never prepares a second B.
+
+Adapter declines are `incompatible-producer-base`, `incompatible-producer-candidate`,
+`incompatible-producer-source` and `missing-exact-addition`. Cold open/eviction and
+C's exact metadata declines retain named full reconstruction. Required ordinary
+commands producing incomplete metadata remain integration defects.
+
+Activity, B and C candidates expose nonmutating `assertCurrent()` checks. The
+publication hook captures the pair and checks all participants before installing
+any root. B prepares checkpoint refinement, positions, resources and counters
+before installation. Commit does not read a ready sequence or refine checkpoints.
+Stale activity/B/C, each eligibility failure and cancellation after C construction
+leave the old tuple and committed roots intact; retry is checked independently.
+
+Diagnostics retain aggregate resource IDs and also qualify them by purpose.
+`publication/...` identifies accepted-state work; `staging/...` and `author/...`
+remain separate. D's full pre-append staging and exact-author work are unchanged.
+A history control can require B's genuine historical suffix replay, including a
+replay from zero before the first periodic checkpoint. This does not imply full
+C provenance/projection/index reconstruction.

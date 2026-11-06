@@ -85,8 +85,12 @@ export function openMaterializedDocument(
     {
       fullProjectionCount: () => projection.fullProjectionCount(),
       commit() {
-        prepared!.commit();
-        preparedProjection!.commit();
+        const activityCandidate = prepared!,
+          projectionCandidate = preparedProjection!;
+        activityCandidate.assertCurrent();
+        projectionCandidate.assertCurrent();
+        activityCandidate.commit();
+        projectionCandidate.commit();
         preparedProjection = undefined;
         prepared = undefined;
       },

@@ -1,3 +1,5 @@
+import { reconstructBirths, reconstructBirthContent } from '../reference/provenance.js';
+import type { ReadySequence } from '../authoring/ready-source.js';
 import { countWork } from '../diagnostics.js';
 import { measure } from '../diagnostics.js';
 import { OwnershipResult } from '../ownership/ownership.js';
@@ -157,6 +159,19 @@ function retainedSelection(
     eligible: (ref) => decisions(ref)?.[ref.ordinal * 3 + 2] === '1',
   };
 }
+/** Certified publication input. Retained ordered payloads own the old layout
+ * entries; production callers provide no duplicate full provenance inventory. */
+export interface StructuralReadyInput {
+  readonly genesis: ProjectionInput['genesis'];
+  readonly genesisManifest: ProjectionInput['genesisManifest'];
+  readonly initialProperties: ProjectionInput['initialProperties'];
+  readonly native: NativeView;
+  readonly actions: ReadySequence;
+}
+interface LayoutSequence {
+  readonly length: number;
+  at(index: number): ProjectionInput['actions'][number] | undefined;
+}
 export interface CoupledWork extends ResourceWork {
   actionsReplayed: number;
   effectsReplayed: number;
@@ -270,14 +285,78 @@ export class MaterializedOwnership {
     copy.snapshots = this.snapshots;
     return copy;
   }
+  *prepareReady(input: StructuralReadyInput, activity: Activity, variants: PayloadIndex) {
+    const source = readySource(input.actions);
+    const additions = source && this.source && source.additions(this.source);
+    const count = this.state?.count ?? 0;
+    const append = !!(
+      additions &&
+      this.state &&
+      this.genesis === input.genesis &&
+      input.actions.length === count + additions.actions.length &&
+      (!count ||
+        !additions.actions.length ||
+        compareActions(input.actions.at(count - 1)!, additions.actions[0]) < 0)
+    );
+    const fresh =
+      additions && this.genesis === input.genesis ? additions.actions : [...input.actions];
+    const freshEntries = fresh.map((action) => ({ action, births: reconstructBirths(action) }));
+    const entries = append
+      ? []
+      : [...input.actions].map((action) => ({
+          action,
+          births: reconstructBirths(action),
+        }));
+    if (!append) countWork('coupled.readyAuditEntries', entries.length);
+    const order = this.order;
+    const indexed: LayoutSequence | undefined = append
+      ? {
+          length: input.actions.length,
+          at: (i) => (i < count ? get(order, String(i))?.entry : freshEntries[i - count]),
+        }
+      : undefined;
+    const birthContent = freshEntries.flatMap(({ action, births }) =>
+      reconstructBirthContent({ ...action, births }),
+    );
+    const prepared = yield* this.prepareInput(
+      { ...input, actions: entries, birthContent: [] },
+      activity,
+      variants,
+      undefined,
+      input.actions,
+      indexed,
+    );
+    return {
+      ...prepared,
+      value: {
+        ownership: prepared.value.ownership,
+        changes: prepared.value.changes,
+        birthContent,
+        get snapshots() {
+          return prepared.value.snapshots;
+        },
+      },
+    };
+  }
   *prepare(
+    input: ProjectionInput,
+    activity: Activity,
+    variants: PayloadIndex,
+    stagedTapes?: readonly TapeId[],
+    sequence?: ActionSequence,
+  ) {
+    return yield* this.prepareInput(input, activity, variants, stagedTapes, sequence);
+  }
+  private *prepareInput(
     input: ProjectionInput,
     activity: Activity,
     variants: PayloadIndex,
     /** Exact changes in a private author draft based on this committed prefix. */
     stagedTapes?: readonly TapeId[],
     sequence?: ActionSequence,
+    indexed?: LayoutSequence,
   ) {
+    let length = indexed?.length ?? input.actions.length;
     const generation = ++this.generation,
       count = this.state?.count ?? 0;
     const source = sequence && readySource(sequence),
@@ -290,14 +369,17 @@ export class MaterializedOwnership {
       additions &&
       this.state &&
       this.genesis === input.genesis &&
-      input.actions.length === count + additions.actions.length &&
+      length === count + additions.actions.length &&
       (!count ||
         !additions.actions.length ||
         compareActions(sequence!.at(count - 1)!, additions.actions[0]) < 0)
     );
     // Unknown/earlier inventories take the complete ordering audit. All tables
     // and replay then use that same order, including callers without ready metadata.
-    if (!exactAppend) input = { ...input, actions: orderedLayoutInputs(input.actions) };
+    if (!exactAppend) {
+      input = { ...input, actions: orderedLayoutInputs(input.actions) };
+      length = input.actions.length;
+    }
     const controls = exactAppend
       ? additions!.actions.flatMap((action) =>
           action.effects.flatMap((effect) =>
@@ -315,10 +397,10 @@ export class MaterializedOwnership {
       ? retainedSelection(this.order, this.positions)
       : selectInterpretations(activity, input.initialProperties);
     if (!indexedSelection) this.counts.interpretationSelections++;
-    let frontier = this.genesis === input.genesis ? Math.min(count, input.actions.length) : 0;
+    let frontier = this.genesis === input.genesis ? Math.min(count, length) : 0;
     let order: MapRoot<Payload> | undefined = indexedSelection ? this.order : undefined;
     let positions: MapRoot<number> | undefined = indexedSelection ? this.positions : undefined;
-    let retainedPrefix = this.genesis === input.genesis && input.actions.length >= count;
+    let retainedPrefix = this.genesis === input.genesis && length >= count;
     const indices = indexedSelection
       ? [
           ...new Set([
@@ -329,14 +411,17 @@ export class MaterializedOwnership {
             ...additions!.actions.map((_, i) => count + i),
           ]),
         ]
-      : Array.from({ length: input.actions.length }, (_, i) => i);
+      : Array.from({ length: length }, (_, i) => i);
     const payloadChanges: StructuralChanges['payloads'][number][] = [];
     const changedActions: StructuralChanges['actions'][number][] = [];
     for (const i of indices) {
       yield;
       if (generation !== this.generation) throw new Error('Coupled candidate is no longer current');
       countWork('coupled.actionsCompared');
-      const entry = exactAppend && i < count ? get(this.order, String(i))!.entry : input.actions[i];
+      const entry =
+        exactAppend && i < count
+          ? get(this.order, String(i))!.entry
+          : (indexed?.at(i) ?? input.actions[i]);
       const action = entry.action,
         key = actionKey(action.id),
         bytes = variants.get(key);
@@ -384,11 +469,20 @@ export class MaterializedOwnership {
         order = set(order, String(i), { key, bytes, decisions, entry });
       }
     }
-    for (let i = input.actions.length; i < count; i++)
+    for (let i = length; i < count; i++)
       payloadChanges.push({ position: i, before: get(this.order, String(i)) });
     const touched = stagedTapes ?? (this.native && changedNativeTapes(this.native, input.native));
     const continuous =
       touched !== undefined && this.state !== undefined && this.genesis === input.genesis;
+    let auditEntries: ProjectionInput['actions'] | undefined;
+    const fullEntries = () => {
+      if (!indexed) return input.actions;
+      if (!auditEntries) {
+        auditEntries = Array.from({ length }, (_, i) => indexed.at(i)!);
+        countWork('coupled.readyAuditEntries', length);
+      }
+      return auditEntries;
+    };
     const snapshotCache = continuous ? this.snapshots.fork() : new PersistentMap<TapeSnapshot>();
     const markers = continuous ? this.markers.fork() : new PersistentMap<string>();
     const updated: TapeSnapshot[] = [];
@@ -396,7 +490,7 @@ export class MaterializedOwnership {
       ? touched
       : [
           ...input.genesis.allocations,
-          ...input.actions.flatMap(({ action }) => action.allocations),
+          ...fullEntries().flatMap(({ action }) => action.allocations),
         ].flatMap((allocation) => (allocation.type === 'tape' ? [allocation.id] : []));
     for (const tape of tapes) {
       const snapshot = input.native.snapshot(tape),
@@ -467,10 +561,17 @@ export class MaterializedOwnership {
     }
     const retained =
       continuous && compatible && retainedPrefix && this.resources
-        ? this.resources.retained.append(input.actions.slice(count), updated, index, this.counts)
+        ? this.resources.retained.append(
+            indexed
+              ? Array.from({ length: length - count }, (_, i) => indexed.at(count + i)!)
+              : input.actions.slice(count),
+            updated,
+            index,
+            this.counts,
+          )
         : OwnershipResources.create(
             input.genesis,
-            input.actions,
+            fullEntries(),
             coldSnapshots ?? [...snapshotCache.values()],
             index,
             this.counts,
@@ -507,16 +608,27 @@ export class MaterializedOwnership {
       index,
       retained,
       this.counts,
-      exactAppend
-        ? { length: input.actions.length, at: (i) => get(order, String(i))!.entry }
-        : input.actions,
+      exactAppend ? { length: length, at: (i) => get(order, String(i))!.entry } : input.actions,
     );
-    this.counts.actionsReplayed += input.actions.length - from;
-    for (let i = from; i < input.actions.length; i++)
+    this.counts.actionsReplayed += length - from;
+    for (let i = from; i < length; i++)
       this.counts.effectsReplayed += get(order, String(i))!.entry.action.effects.length;
     checkpoints = checkpoints.slice(-8);
     let committed = false;
+    const assertCurrent = () => {
+      if (committed || generation !== this.generation)
+        throw new Error('Coupled candidate is no longer current');
+    };
+    const installedNative = input.native,
+      installedGenesis = input.genesis;
+    const installedResources = {
+      homes: result.homes,
+      cohorts: result.cohorts,
+      requirements: result.requirements,
+      retained: result.retained,
+    };
     return {
+      assertCurrent,
       value: {
         ownership: result.value,
         get snapshots() {
@@ -558,33 +670,27 @@ export class MaterializedOwnership {
           subdivisions,
           tapes,
           replayFrom: from,
-          replayTo: input.actions.length,
+          replayTo: length,
           reason,
         } satisfies StructuralChanges,
       },
       commit: () => {
-        if (committed || generation !== this.generation)
-          throw new Error('Coupled candidate is no longer current');
+        assertCurrent();
         committed = true;
         this.state = result.state;
-        this.resources = {
-          homes: result.homes,
-          cohorts: result.cohorts,
-          requirements: result.requirements,
-          retained: result.retained,
-        };
-        this.native = input.native;
+        this.resources = installedResources;
+        this.native = installedNative;
         this.order = order;
         this.source = source;
         this.positions = positions;
-        this.genesis = input.genesis;
+        this.genesis = installedGenesis;
         this.markers = markers;
         this.snapshots = snapshotCache;
         this.checkpoints = checkpoints;
-        countWork('coupled.committedActionsReplayed', input.actions.length - from);
+        countWork('coupled.committedActionsReplayed', length - from);
         countWork('coupled.candidatesCommitted');
         this.counts.lastReplayFrom = from;
-        this.counts.lastReplayLength = input.actions.length - from;
+        this.counts.lastReplayLength = length - from;
         this.counts.lastReplayReason = reason;
       },
     };
@@ -792,36 +898,43 @@ export class MaterializedOwnership {
       replayTo: actions.length,
       reason: hasMarkers ? 'content-subdivision' : 'append',
     };
+    const length = actions.length;
+    const positions = set(this.positions, payload.key, prior.count);
+    let checkpoints = hasMarkers
+      ? this.checkpoints.map((checkpoint) => refineCheckpoint(checkpoint, snapshots, index))
+      : this.checkpoints;
+    if (state.count % 128 === 0) checkpoints = [...checkpoints, finalState].slice(-8);
+    const installedResources = { ...resources, retained, cohorts, requirements, homes };
     let committed = false;
+    const assertCurrent = () => {
+      if (committed || generation !== this.generation)
+        throw new Error('Coupled refinement candidate is no longer current');
+    };
     countWork('coupled.candidatesPrepared');
     this.counts.actionsReplayed++;
     this.counts.effectsReplayed += action.effects.length;
     return {
+      assertCurrent,
       value,
       touched,
       changes,
       structuralChanges,
       control: !directAction,
       commit: () => {
-        if (committed || generation !== this.generation)
-          throw new Error('Coupled refinement candidate is no longer current');
+        assertCurrent();
         committed = true;
         this.state = finalState;
-        this.resources = { ...resources, retained, cohorts, requirements, homes };
+        this.resources = installedResources;
         this.markers = markers;
         this.snapshots = snapshotCache;
         this.native = native;
-        this.positions = set(this.positions, payload.key, prior.count);
+        this.positions = positions;
         this.order = candidateOrder;
         this.source = source;
-        if (hasMarkers)
-          this.checkpoints = this.checkpoints.map((checkpoint) =>
-            refineCheckpoint(checkpoint, snapshots, index),
-          );
-        if (state.count % 128 === 0) this.checkpoints = [...this.checkpoints, finalState].slice(-8);
+        this.checkpoints = checkpoints;
         countWork('coupled.committedActionsReplayed');
         countWork('coupled.candidatesCommitted');
-        this.counts.lastReplayFrom = actions.length - 1;
+        this.counts.lastReplayFrom = length - 1;
         this.counts.lastReplayLength = 1;
         this.counts.lastReplayReason = hasMarkers ? 'content-subdivision' : 'append';
       },

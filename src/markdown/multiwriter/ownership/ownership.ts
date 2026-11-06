@@ -11,6 +11,7 @@ import type {
   NativeId,
   TapeId,
   NodeId,
+  OccurrenceId,
   RangeRef,
   RunId,
   SemanticEffect,
@@ -111,6 +112,12 @@ export class OwnershipResult {
   }
   runLayout(run: RunId) {
     return structuredClone(this.layout.runLayout(run));
+  }
+  flowPlacement(flow: FlowId) {
+    return structuredClone(this.layout.flowPlacement(flow));
+  }
+  occurrence(id: OccurrenceId) {
+    return structuredClone(this.layout.occurrence(id));
   }
   get runLayouts() {
     return structuredClone(this.layout.runLayouts);

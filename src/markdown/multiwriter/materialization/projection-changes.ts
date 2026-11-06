@@ -22,7 +22,7 @@ export interface StructuralProjectionChange {
   readonly semanticChanges: readonly ActionEnvelope[];
   readonly native: NativeView;
   readonly activity: Activity;
-  readonly structure: { readonly value: OwnershipResult; commit(): void };
+  readonly structure: { readonly value: OwnershipResult; assertCurrent?(): void; commit(): void };
   /** Complete before/after flow/header readers, including ghosts and removals. */
   readonly nodes: readonly NodeId[];
   /** Former/new raw containers whose child sequences changed. */

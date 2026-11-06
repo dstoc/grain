@@ -57,6 +57,7 @@ export interface ActivityWork {
 }
 export interface PreparedActivity {
   readonly value: Activity;
+  assertCurrent(): void;
   commit(): void;
 }
 const empty: State = { count: 0 };
@@ -206,19 +207,24 @@ export class MaterializedActivity {
     }
     checkpoints = checkpoints.slice(-8);
     const value = activity(state);
+    const length = actions.length;
     let committed = false;
+    const assertCurrent = () => {
+      if (committed || generation !== this.generation)
+        throw new Error('Activity candidate is no longer current');
+    };
     return {
       value,
+      assertCurrent,
       commit: () => {
-        if (committed || generation !== this.generation)
-          throw new Error('Activity candidate is no longer current');
+        assertCurrent();
         committed = true;
         this.state = state;
         this.order = order;
         this.source = source;
         this.checkpoints = checkpoints;
         this.counts.lastReplayFrom = from;
-        this.counts.lastReplayLength = actions.length - from;
+        this.counts.lastReplayLength = length - from;
       },
     };
   }

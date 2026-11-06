@@ -161,7 +161,7 @@ test('code info, competing peer writes and controls preserve text addresses and 
   }
 });
 
-test('marker/presentation, mixed history groups and unavailable targets retain full projection', () => {
+test('marker/presentation, mixed history groups and unavailable targets use regional projection', () => {
   const p = open('- [ ] task\n\ntail'),
     oracle = createMaterializationOracle();
   try {
@@ -173,7 +173,8 @@ test('marker/presentation, mixed history groups and unavailable targets retain f
       ctx.draft.setChecked(p.handle(item), true);
       return insertText(ctx, { nodeId: p.handle(inline), from: 0, text: 'X' });
     }, undefined);
-    expect(counts(p).fullProjections).toBeGreaterThan(start.fullProjections);
+    expect(counts(p).fullProjections).toBe(start.fullProjections);
+    expect(counts(p).localStructuralProjections).toBe(start.localStructuralProjections + 1);
     expect(history.undo().state).toBe('applied');
     oracle.check(p.document, p.genesis);
     const before = counts(p).fullProjections;
@@ -185,7 +186,7 @@ test('marker/presentation, mixed history groups and unavailable targets retain f
       },
       undefined,
     );
-    expect(counts(p).fullProjections).toBeGreaterThan(before);
+    expect(counts(p).fullProjections).toBe(before);
     oracle.check(p.document, p.genesis);
     p.editor.edit({ local: 'delete', group: 1n }, deleteBlocks, {
       nodeIds: [p.handle(p.nodes()[0])],

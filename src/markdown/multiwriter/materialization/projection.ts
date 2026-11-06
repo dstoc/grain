@@ -47,6 +47,8 @@ import { VisibilityWitnesses } from './visibility-witnesses.js';
 import { SplitVisibility } from './split-visibility.js';
 import { deletionEffectKey } from './subtree-deletions.js';
 import { ProjectionOrder } from './projection-order.js';
+import { projectionChange } from './projection-adapter.js';
+import type { ProducerBinding } from './projection-adapter.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
 /** Seed once, then update only exact changed contributions. Until B supplies a
@@ -131,6 +133,7 @@ interface TextTape {
   readonly byId: ReadonlyMap<string, TextVisibility>;
 }
 interface State {
+  readonly producerBase?: ProducerBinding;
   readonly value: Projection;
   readonly nodes: PersistentMap<NodeRecord>;
   readonly text: PersistentMap<TextTape>;
@@ -744,11 +747,18 @@ export class MaterializedProjection {
       properties && before
         ? this.appendProperties(before, properties.changes, properties.value, activity)
         : undefined;
-    let state: State, commitStructure: () => void;
+    let state: State, commitStructure: () => void, assertStructure: () => void;
+    let producerBase: ProducerBinding;
+    let localStructural = false;
     if (propertyState && properties) {
       yield;
       state = propertyState;
       commitStructure = properties.commit;
+      assertStructure = properties.assertCurrent;
+      producerBase = {
+        genesis: properties.structuralChanges.base.genesis,
+        ...properties.structuralChanges.candidate,
+      };
       this.counts.localPropertyProjections++;
     } else if (suffix && before) {
       yield;
@@ -764,61 +774,107 @@ export class MaterializedProjection {
       );
       if (suffix.control) this.counts.localTextControls++;
       commitStructure = suffix.commit;
+      assertStructure = suffix.assertCurrent;
+      producerBase = {
+        genesis: suffix.structuralChanges.base.genesis,
+        ...suffix.structuralChanges.candidate,
+      };
       this.counts.localTextProjections++;
     } else {
-      const input: ProjectionInput = {
-        genesis: genesis.layout,
-        genesisManifest: genesis.body.nativeManifest,
-        initialProperties: genesis.initialProperties,
-        ...reconstructProvenance(genesis.layout, [...actions]),
-        native,
-      };
       const prepared = yield* measureWork(
         'coupled-replay',
-        this.ownership.prepare(input, activity, variants, undefined, actions),
+        this.ownership.prepareReady(
+          {
+            genesis: genesis.layout,
+            genesisManifest: genesis.body.nativeManifest,
+            initialProperties: genesis.initialProperties,
+            actions,
+            native,
+          },
+          activity,
+          variants,
+        ),
       );
       yield;
-      const selection = interpretationCandidate(
-        before,
-        actions,
-        readySource(actions),
-        activity,
-        genesis.initialProperties,
-      );
-      const visibility = indexedVisibility(
-        before,
-        actions,
-        readySource(actions),
-        this.counts,
-        selection.delta?.changes,
-      );
-      const value = projectWithActivity(input, activity, {
-        ...prepared.value,
-        visibility: visibility.reduce,
-        interpretations: selection.index.value(),
-      });
-      state = index(
-        value,
-        input,
-        visibility.root(),
-        selection.index,
-        readySource(actions),
-        before,
-        selection.delta,
-      );
+      const adapted = before
+        ? projectionChange(before, prepared, actions, native, activity)
+        : undefined;
+      const local =
+        adapted?.state === 'adapted'
+          ? this.buildStructuralState(before, adapted.change)
+          : undefined;
+      if (local?.state === 'prepared') {
+        state = local.roots;
+        localStructural = true;
+      } else {
+        const reason =
+          local?.state === 'fallback'
+            ? local.reason
+            : adapted?.state === 'fallback'
+              ? adapted.reason
+              : 'cold';
+        countWork(`projection.fullFallback.${reason}`);
+        const input: ProjectionInput = {
+          genesis: genesis.layout,
+          genesisManifest: genesis.body.nativeManifest,
+          initialProperties: genesis.initialProperties,
+          ...reconstructProvenance(genesis.layout, [...actions]),
+          native,
+        };
+        const selection = interpretationCandidate(
+          before,
+          actions,
+          readySource(actions),
+          activity,
+          genesis.initialProperties,
+        );
+        const visibility = indexedVisibility(
+          before,
+          actions,
+          readySource(actions),
+          this.counts,
+          selection.delta?.changes,
+        );
+        const value = projectWithActivity(input, activity, {
+          ownership: prepared.value.ownership,
+          snapshots: prepared.value.snapshots,
+          visibility: visibility.reduce,
+          interpretations: selection.index.value(),
+        });
+        state = index(
+          value,
+          input,
+          visibility.root(),
+          selection.index,
+          readySource(actions),
+          before,
+          selection.delta,
+        );
+        this.counts.fullProjections++;
+      }
       commitStructure = prepared.commit;
-      this.counts.fullProjections++;
+      assertStructure = prepared.assertCurrent;
+      producerBase = {
+        genesis: prepared.value.changes.base.genesis,
+        ...prepared.value.changes.candidate,
+      };
     }
-    state = { ...state, source: readySource(actions) };
+    state = { ...state, source: readySource(actions), producerBase };
     let committed = false;
+    const assertCurrent = () => {
+      if (committed || generation !== this.generation || this.state !== before)
+        throw new Error('Projection candidate is no longer current');
+      assertStructure();
+    };
     return {
       value: state.value,
+      assertCurrent,
       commit: () => {
-        if (committed || generation !== this.generation)
-          throw new Error('Projection candidate is no longer current');
+        assertCurrent();
         commitStructure();
         committed = true;
         this.state = state;
+        if (localStructural) this.counts.localStructuralProjections++;
       },
     };
   }
@@ -827,11 +883,35 @@ export class MaterializedProjection {
    * and wrapper context. Other regions return a named reconstruction condition.
    */
   prepareStructural(change: StructuralProjectionChange) {
-    return measure('visibility-normalization', () => this.prepareStructuralMeasured(change));
+    return measure('visibility-normalization', () => {
+      const generation = ++this.generation,
+        before = this.state;
+      const result = this.buildStructuralState(before, change);
+      if (result.state === 'fallback') return result;
+      let committed = false;
+      const assertCurrent = () => {
+        if (committed || generation !== this.generation || this.state !== before)
+          throw new Error('Projection candidate is no longer current');
+        change.structure.assertCurrent?.();
+      };
+      return {
+        state: 'prepared' as const,
+        value: result.value,
+        revision: change.revision,
+        assertCurrent,
+        commit: () => {
+          assertCurrent();
+          change.structure.commit();
+          committed = true;
+          this.state = result.roots;
+          this.counts.localStructuralProjections++;
+          // Controlled callers supply an external producer.
+          this.ownership.evict();
+        },
+      };
+    });
   }
-  private prepareStructuralMeasured(change: StructuralProjectionChange) {
-    const generation = ++this.generation,
-      before = this.state;
+  private buildStructuralState(before: State | undefined, change: StructuralProjectionChange) {
     const fallback = (reason: string) => {
       countWork(`projection.fallback.${reason}`);
       for (const node of [...change.nodes, ...change.containers])
@@ -1168,23 +1248,7 @@ export class MaterializedProjection {
         normalization,
       };
       countWork('projection.localStructuralCandidates');
-      let committed = false;
-      return {
-        state: 'prepared' as const,
-        value,
-        revision: change.revision,
-        commit: () => {
-          if (committed || generation !== this.generation || this.state !== before)
-            throw new Error('Projection candidate is no longer current');
-          change.structure.commit();
-          committed = true;
-          this.state = state;
-          this.counts.localStructuralProjections++;
-          // The caller owns the supplied structural branch. Never reuse this module's
-          // unrelated old replay cache after externally prepared structure is committed.
-          this.ownership.evict();
-        },
-      };
+      return { state: 'prepared' as const, value, roots: state, revision: change.revision };
     };
     const regional = (reason: string) => {
       countWork(`projection.normalizationBoundary.${reason}`);
