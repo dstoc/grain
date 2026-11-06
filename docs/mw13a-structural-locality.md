@@ -41,6 +41,13 @@ wrapper remains canonical. Target lookup uses retained origins. The runner
 checks exact selection restoration, the unrelated edit/deletion, prior-publication
 reads, canonical/native retention, eviction, and continued typing after eviction.
 
+The final canonical output of each attribution case also enters a separate
+five-minute cold worker. That worker opens fresh materialized and independent
+reference documents, compares complete state, and authors one new managed edit
+with undo/redo. Its new session starts with empty history; old facts remain
+canonical. These cold and continued-authoring costs are separate from the main
+sequence timings.
+
 ## Minimal counterexample
 
 Start with two paragraphs: `abc` and an empty paragraph. Keep their original
@@ -137,6 +144,31 @@ reason and its work count. B must bring this conditional rule and its implementa
 through review. An unconditional marker-only fast path is ruled out. C can work
 independently against the resource contract below. No B/C implementation starts
 in this child.
+
+### Preservation argument to review in B
+
+A narrower sufficient condition is an ordered refinement of each old content
+cell into contiguous content cells with the same assignment, while every old
+reserved cell maps only to reserved cells. Keep all original markers, ranges,
+occurrence bindings and attachment order. New markers have no old attachments.
+Install new tapes/homes only at their actual birth action. Require unchanged
+historical effect order, activity, eligibility and component graph.
+
+Under these conditions, fixed-range transfer is pointwise over the subdivision.
+Raw traversal replaces each old content cell in place by its contiguous image.
+A retained split cut stays at the same original marker: its basis and selected
+contiguous segment both expand through the same ordered mapping. The reference
+owner and first nonadjacent candidate therefore stay the same. Induction over
+unchanged effects preserves ownership and placement. Cohort groups retain their
+original basis keys; cut ranks transform monotonically, preserving ties and order.
+Old attachment slots keep their marker/side meaning, while new empty slots add
+addresses that require projection updates.
+
+The counterexample violates the reserved-cell condition: an old reserved cell
+maps to an ordinary interior cell that was absent from content adjacency. An
+earlier join, moved attachment, withdrawn marker, control, or reactivated split
+also invalidates a premise. This is a proposed sufficient certificate for review,
+not authorization to use it without the differential and negative checks in B.
 
 ## Shared candidate and change-set contract
 

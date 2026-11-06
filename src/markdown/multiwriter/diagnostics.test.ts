@@ -107,3 +107,48 @@ test('disabled diagnostics preserve behavior and a thrown capture restores the d
   const { report } = captureDiagnostics(() => measure('publication', () => countWork('committed')));
   expect(report.work).toEqual({ 'driver/committed': 1 });
 });
+
+test('early generator cancellation labels cleanup and normal completion does not add a return call', () => {
+  let clock = 0,
+    returns = 0,
+    cleanups = 0;
+  const make = () => {
+    const work = (function* () {
+      try {
+        clock += 2;
+        yield;
+        clock += 3;
+        return 1;
+      } finally {
+        clock += 5;
+        cleanups++;
+      }
+    })();
+    const original = work.return.bind(work);
+    work.return = (value) => {
+      returns++;
+      return original(value);
+    };
+    return measureWork('coupled-replay', work);
+  };
+  const { report } = captureDiagnostics(
+    () => {
+      const cancelled = make();
+      cancelled.next();
+      clock += 100;
+      cancelled.return(0);
+      const completed = make();
+      completed.next();
+      completed.next();
+    },
+    () => clock,
+  );
+  expect(returns).toBe(1);
+  expect(cleanups).toBe(2);
+  expect(
+    report.spans
+      .filter((s) => s.phase === 'coupled-replay')
+      .reduce((n, s) => n + s.end - s.start, 0),
+  ).toBe(17);
+  expect(report.wallMs).toBe(117);
+});

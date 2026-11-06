@@ -52,8 +52,13 @@ export function observation(p) {
 export function independentCheck(p, retainedOracle) {
   const bytes = p.document.store.encodeUpdate();
   const cold = retainedOracle ?? commandReplica(p.genesis, bytes, 'reference', limits);
-  if (retainedOracle)
-    cold.receive(p.document.store.encodeUpdate(cold.document.store.encodeStateVector()));
+  if (retainedOracle) {
+    const delta = p.document.store.encodeUpdate(cold.document.store.encodeStateVector());
+    // An unchanged canonical set already has its independently reconstructed
+    // publication. Every nonempty update still runs full reference publication.
+    // Complete canonical equality below also covers pending carrier bytes.
+    if (delta.length !== 2 || delta[0] !== 0 || delta[1] !== 0) cold.receive(delta);
+  }
   try {
     assert.equal(
       compareBytes(bytes, cold.document.store.encodeUpdate()),
@@ -346,7 +351,7 @@ export function runRemoteFixture(genesis, { instrumented = false } = {}) {
       genesis,
       canonical: p.document.store.encodeUpdate(),
       description:
-        'new independent public-authoring replicas; real unrelated local edit makes peer join causally earlier in semantic order; both deliveries and duplicates',
+        'new independent public-authoring replicas; real unrelated local edit orders the concurrent peer join before the split; both deliveries and duplicates',
       persistence: { measured: false, reason: 'no journal attached' },
     };
   } finally {

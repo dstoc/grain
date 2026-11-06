@@ -449,6 +449,27 @@ test('short structural runner uses real managed history, independent checks, exc
     const edit = report.trace.find((s) => s.name === 'unrelated-edit').exclusive.work;
     assert.equal(edit['publication/projection.fullProjectors'], 1);
     assert(readFileSync(output + '.bin').byteLength > 0);
+    const coldOutput = join(directory, 'cold');
+    execFileSync(
+      process.execPath,
+      [
+        '--import',
+        './benchmarks/multiwriter/resolve-ts.mjs',
+        'benchmarks/multiwriter/structural-cold-worker.mjs',
+        '--fixture',
+        output + '.bin',
+        '--output',
+        coldOutput,
+      ],
+      { cwd: root, stdio: ['ignore', 'pipe', 'pipe'], timeout: 300_000 },
+    );
+    const cold = JSON.parse(readFileSync(coldOutput + '.json'));
+    assert.equal(cold.complete, true);
+    assert.equal(cold.startedWithEmptyHistory, true);
+    assert.equal(cold.history.undo, 1);
+    assert.equal(cold.history.redo, 0);
+    assert.equal(cold.undoRestoration, 'exact');
+    assert.equal(cold.redoRestoration, 'exact');
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

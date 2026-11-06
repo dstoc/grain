@@ -91,6 +91,7 @@ function child(label, args) {
     (result.stdout ?? '') + (result.stderr ?? ''),
   );
   if (result.error || result.status !== 0) {
+    manifest.complete = false;
     manifest.failure = {
       label,
       status: result.status,
@@ -139,6 +140,21 @@ for (const { name, file, bytes } of files) {
       manifest.samples.push({ label, workerWallMs, report: label + '.json' });
       save();
     }
+}
+manifest.coldSamples = [];
+for (const sample of manifest.samples.filter((s) => s.label.endsWith('-attribution'))) {
+  const label = 'cold-' + sample.label;
+  const workerWallMs = child(label, [
+    '--import',
+    './benchmarks/multiwriter/resolve-ts.mjs',
+    'benchmarks/multiwriter/structural-cold-worker.mjs',
+    '--fixture',
+    join(output, sample.label + '.bin'),
+    '--output',
+    join(output, label),
+  ]);
+  manifest.coldSamples.push({ label, workerWallMs, report: label + '.json' });
+  save();
 }
 manifest.complete = true;
 save();

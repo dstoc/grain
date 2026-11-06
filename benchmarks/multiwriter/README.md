@@ -152,3 +152,13 @@ all new carriers are retained. See the [refinement decision and shared execution
 contract](../../docs/mw13a-structural-locality.md) before using these profiles to
 choose a production optimization. The original prefix captures have unknown source
 SHAs and different actors. They are diagnostic restores, not uninterrupted runs.
+
+To regenerate a compact phase/work table from complete or partial raw reports:
+
+```sh
+node benchmarks/multiwriter/summarize-structural.mjs /tmp/mw13a-results
+```
+
+This writes `summary.md` and `summary.json` in the result directory. It verifies
+that raw exclusive spans are contiguous and reconcile with their interval. A
+partial source report stays partial; this command does not complete missing work.
