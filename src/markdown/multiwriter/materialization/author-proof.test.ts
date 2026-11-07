@@ -43,9 +43,8 @@ for (const depth of [0, 8, 32])
         misses: {},
       });
       expect(report.work['author/authorProof.hits']).toBe(depth + 1);
-      expect(report.work['author/authorProof.snapshotBindingsIndexed']).toBe(
-        ((depth + 1) * (depth + 6)) / 2,
-      );
+      expect(report.work['author/authorProof.snapshotBindingsIndexed'] ?? 0).toBe(0);
+      expect(report.work['author/authorProof.affectedTapesValidated']).toBe(2 * (depth + 1));
       expect(report.work['author/authorProof.actionBytesCopied']).toBeGreaterThan(0);
       expect(report.work['author/authorProof.envelopeBytesEncoded']).toBeGreaterThan(
         report.work['author/authorProof.actionBytesCopied'],
@@ -59,9 +58,31 @@ for (const depth of [0, 8, 32])
       expect(report.work['author/ownership.suffixActions']).toBe(2 * (depth + 1));
       expect(report.work['author/authorProof.suffixActions']).toBe(depth + 1);
       expect(report.work['author/referenceOwnership.fullReconstructions'] ?? 0).toBe(0);
-      expect(report.work['author/authorProof.preambleActions']).toBe(
-        ((depth + 1) * (depth + 2)) / 2,
-      );
+      expect(report.work['author/authorProof.preambleActions'] ?? 0).toBe(0);
+      expect(report.work['author/authorProof.candidateActionsValidated']).toBe(depth + 1);
+      expect(report.work['author/projectionAuthor.candidateBirthCallbacks']).toBe(depth + 1);
+      expect(report.work['author/command.candidatesPrepared']).toBe(depth + 1);
+      expect(report.work['publication/command.candidatesPublished']).toBe(depth + 1);
+      for (const name of [
+        'readiness.authorClosureMaterialized',
+        'readiness.authorClosureCloned',
+        'readiness.authorClosureSortInputs',
+        'projectionAuthor.ancestorBirthCallbacks',
+        'projectionAuthor.preambleActions',
+        'projectionAuthor.preambleSnapshots',
+        'authorProof.preambleSnapshots',
+        'authorProof.preambleHomes',
+        'activity.orderedEntriesExported',
+        'activity.effectActionsExported',
+        'resources.homesExported',
+        'resources.tapesEnumerated',
+        'draft.fullConstructionTrees',
+        'compiler.fullConstructionTrees',
+        'projection.fullProjectors',
+        'authorProof.oldActionsReplayed',
+      ])
+        expect(report.work[`author/${name}`] ?? 0, name).toBe(0);
+
       oracle.check(p.document, p.genesis);
     } finally {
       oracle.destroy();

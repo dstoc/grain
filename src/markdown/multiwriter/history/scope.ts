@@ -1,5 +1,7 @@
+import { countWork } from '../diagnostics.js';
 import type {
   ActionEnvelope,
+  CellAssignment,
   ActionId,
   BlockSlot,
   FlowId,
@@ -50,7 +52,7 @@ export function captureFootprint(
   const runFlow = runFlows(before.value.ownership);
   const known = (node: NodeId) =>
     before.value.ownership.nodeAllocations.some((n) => resourceKey(n.id) === resourceKey(node));
-  const ranges = (values: readonly RangeRef[]) => {
+  const ranges = (values: readonly RangeRef[], selected?: readonly CellAssignment[]) => {
     for (const range of values) {
       // Same-action ranges are classified after allocation; they have no pre-edit owner.
       if (
@@ -61,7 +63,10 @@ export function captureFootprint(
         continue;
       const start = native.marker(range.start).index,
         end = native.marker(range.end).index;
-      for (const cell of before.value.ownership.assignments) {
+      const assignments = selected ?? before.value.ownership.assignments;
+      if (!selected) countWork('history.footprintAssignmentExports', assignments.length);
+      for (const cell of assignments) {
+        countWork('history.footprintCellsInspected');
         if (resourceKey(cell.cell.tape) !== resourceKey(range.tape)) continue;
         const cellStart = native.marker(cell.cell.start).index,
           cellEnd = native.marker(cell.cell.end).index;
@@ -78,24 +83,64 @@ export function captureFootprint(
   for (const effect of envelope.effects) {
     if (effect.type === 'MoveBlock') {
       if (
+        effect.node.birth.type === 'action' &&
+        effect.node.birth.action.actor === envelope.id.actor &&
+        effect.node.birth.action.sequence === envelope.id.sequence
+      )
+        continue;
+      if (
         before.value.ownership.nodeAllocations.some(
           (n) => resourceKey(n.id) === resourceKey(effect.node),
         )
       )
         source(effect.node);
     } else if (effect.type === 'JoinFlow') {
-      if (
-        before.value.ownership.flowPlacements.some(
-          (p) => resourceKey(p.flow) === resourceKey(effect.source),
-        )
-      ) {
+      // A validated retained flow has a permanent home; a same-action flow has
+      // no pre-edit parent. Neither query needs the complete flow/node inventory.
+      if (before.value.ownership.homeForFlow(effect.source)) {
         const node = before.value.ownership.flowBlock(effect.source);
         endpoints.push(node);
-        source(node);
+        const placement = before.value.ownership.blockPlacement(node);
+        if (placement) sourceParents.push(placement.slot.parent);
       }
     } else if (effect.type === 'TransferRange') ranges(effect.ranges);
-    else if (effect.type === 'SplitFlow') ranges(effect.basis.ranges.map((r) => r.range));
-    else if (effect.type === 'LiftChildren')
+    else if (effect.type === 'SplitFlow') {
+      const single =
+        envelope.effects.every(
+          (e) =>
+            ['SplitFlow', 'InsertText', 'DeleteText', 'SetProperties'].includes(e.type) ||
+            (e.type === 'MoveBlock' &&
+              resourceKey(e.node) === resourceKey(effect.newNode) &&
+              e.standaloneFlow !== null &&
+              resourceKey(e.standaloneFlow) === resourceKey(effect.newFlow)),
+        ) &&
+        envelope.effects.filter((e) => e.type === 'SplitFlow').length === 1 &&
+        !envelope.allocations.some(
+          (a) => a.type === 'run' && resourceKey(a.id) === resourceKey(effect.cut.run),
+        );
+      // Use the pre-command source traversal. New cut markers are read from the
+      // final native view, but ownership is never copied backward from the result.
+      let selected: CellAssignment[] | undefined;
+      if (single) {
+        const ownership = before.value.ownership;
+        let flow = ownership.runLayout(effect.cut.run).flow;
+        for (;;) {
+          countWork('history.footprintFlowAncestors');
+          const placement = ownership.flowPlacement(flow);
+          if (placement.parent.type !== 'flow') break;
+          flow = ownership.runLayout(placement.parent.slot.run).flow;
+        }
+        // The cut can name a joined child's run. Its own raw traversal omits
+        // the containing flow's earlier cells, which the split basis can retain.
+        selected = ownership
+          .raw(flow)
+          .flatMap((entry) => (entry.type === 'cell' ? [entry.assignment] : []));
+      }
+      ranges(
+        effect.basis.ranges.map((r) => r.range),
+        selected,
+      );
+    } else if (effect.type === 'LiftChildren')
       for (const placement of effect.placements) source(placement.node);
   }
   return structuredClone({

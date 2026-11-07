@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import type { ActionEnvelope, ActorId } from '../contracts.js';
 import { compareActions } from '../contracts.js';
 import { actionKey } from '../actions/references.js';
@@ -38,6 +39,28 @@ export function registerReadyAppend(
       };
     },
   });
+}
+
+/** One private append, with full iteration charged only when a fallback requests it. */
+export function readyAppend(base: ReadySequence, action: ActionEnvelope): ReadySequence {
+  const length = base.length + 1;
+  const sequence: ReadySequence = {
+    length,
+    at(index) {
+      index = Math.trunc(index) || 0;
+      const at = index < 0 ? length + index : index;
+      return at < 0 || at >= length ? undefined : at === length - 1 ? action : base.at(at);
+    },
+    *[Symbol.iterator]() {
+      for (const entry of base) {
+        countWork('command.retainedEntriesEnumerated');
+        yield entry;
+      }
+      yield action;
+    },
+  };
+  registerReadyAppend(sequence, base, action);
+  return sequence;
 }
 
 /** Exact immutable ready membership. Updating a root never links earlier wrapper

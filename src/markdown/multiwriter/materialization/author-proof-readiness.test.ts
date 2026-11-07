@@ -77,3 +77,31 @@ test('reentrant facts invalidate the attempt before a local certificate is stage
     p.store.destroy();
   }
 });
+
+test('local redundant dependencies retain the same result certificate after canonical admission', () => {
+  const p = fixture(),
+    first = action(A),
+    second = action(A, 2n, [first]);
+  try {
+    p.store.append(first);
+    p.store.append(second);
+    p.store.readReady();
+    const secondIdentity = p.seen[1].request.indexed!.resultIdentity;
+    p.seen.length = 0;
+    // The wire canonicalizes this set to ascending actor/sequence order.
+    const candidate = action(A, 3n, [second, first]);
+    expect(p.store.checkLocal(candidate)).toBe(null);
+    expect(p.seen[0].request.indexed!.past.identity).toBe(secondIdentity);
+    const resultIdentity = p.seen[0].request.indexed!.resultIdentity;
+    expect(p.seen).toHaveLength(1);
+    const before = p.store.readinessDiagnostics().localCertificatesReused;
+    p.store.append(candidate);
+    p.store.readReady();
+    expect(p.seen).toHaveLength(1);
+    expect(p.store.readinessDiagnostics().localCertificatesReused).toBe(before + 1);
+    p.store.checkLocal(action(A, 4n, [candidate]));
+    expect(p.seen[1].request.indexed!.past.identity).toBe(resultIdentity);
+  } finally {
+    p.store.destroy();
+  }
+});

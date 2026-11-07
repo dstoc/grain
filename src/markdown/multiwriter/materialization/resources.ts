@@ -47,6 +47,7 @@ export class OwnershipResources {
     return this.flowHomes.get(resourceKey(flow));
   }
   homeForTape(tape: TapeSnapshot['tape']): HomeBinding | undefined {
+    countWork('resources.homeTapeQueries');
     return this.homeEntries.get(resourceKey(tape));
   }
   snapshots(cache: PersistentMap<TapeSnapshot>): readonly TapeSnapshot[] {

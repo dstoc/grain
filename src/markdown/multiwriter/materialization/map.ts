@@ -1,3 +1,5 @@
+import { countWork } from '../diagnostics.js';
+
 /** Private immutable AVL roots. Updating one key copies only its search path. */
 export interface MapRoot<T> {
   readonly key: string;
@@ -8,12 +10,14 @@ export interface MapRoot<T> {
 }
 export function get<T>(root: MapRoot<T> | undefined, key: string): T | undefined {
   while (root) {
+    countWork('index.nodesRead');
     if (key === root.key) return root.value;
     root = key < root.key ? root.left : root.right;
   }
 }
 const height = <T>(root: MapRoot<T> | undefined) => root?.height ?? 0;
 function node<T>(key: string, value: T, left?: MapRoot<T>, right?: MapRoot<T>): MapRoot<T> {
+  countWork('index.nodesAllocated');
   return { key, value, left, right, height: 1 + Math.max(height(left), height(right)) };
 }
 function rotateLeft<T>(root: MapRoot<T>): MapRoot<T> {
@@ -75,6 +79,7 @@ export function remove<T>(root: MapRoot<T> | undefined, key: string): MapRoot<T>
 function* orderedEntries<T>(root: MapRoot<T> | undefined): Generator<readonly [string, T]> {
   if (!root) return;
   yield* orderedEntries(root.left);
+  countWork('index.entriesExported');
   yield [root.key, root.value];
   yield* orderedEntries(root.right);
 }

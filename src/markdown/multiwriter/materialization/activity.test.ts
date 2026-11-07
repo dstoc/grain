@@ -11,9 +11,27 @@ import { MaterializedActivity } from './activity.js';
 import { SeededRandom } from '../../../../test/multiwriter/network.js';
 import { registerReadySource } from '../authoring/ready-source.js';
 import { MaterializedReadyIndex, registerReadyAppend } from './ready-index.js';
+import { captureDiagnostics } from '../diagnostics.js';
 
 const payloads = (actions: readonly ActionEnvelope[]) =>
   new Map(actions.map((a) => [actionKey(a.id), encodeEnvelope(a)]));
+
+test('lazy activity export charges actual traversal and cloning only on the first read', () => {
+  const cache = new MaterializedActivity(),
+    actions = chain(3),
+    value = publish(cache, actions);
+  const { report } = captureDiagnostics(() => {
+    expect(value.actions).toHaveLength(3);
+    expect(value.effects).toHaveLength(3);
+    expect(value.actions).toHaveLength(3);
+    expect(value.effects).toHaveLength(3);
+  });
+  expect(report.work['driver/activity.actionsCloned']).toBe(3);
+  expect(report.work['driver/activity.effectsCloned']).toBe(3);
+  expect(report.work['driver/activity.orderedEntriesExported']).toBe(6);
+  expect(report.work['driver/activity.effectActionsExported']).toBe(3);
+  cache.evict();
+});
 function publish(cache: MaterializedActivity, actions: readonly ActionEnvelope[]) {
   const sorted = [...actions].sort(compareActions);
   const candidate = finish(cache.prepare(sorted, payloads(sorted)));
@@ -308,6 +326,27 @@ function publishIndexed(
   candidate.commit();
   return candidate.value;
 }
+
+test('an author activity fork requires the exact committed source and remains generation guarded', () => {
+  const cache = new MaterializedActivity(),
+    actions = chain(2);
+  const entries = new Map(actions.map((a) => [actionKey(a.id), a]));
+  const source = new MaterializedReadyIndex({}).refine(entries, 2n);
+  const unrelated = new MaterializedReadyIndex({}).refine(entries, 2n);
+  publishIndexed(cache, actions, source);
+  expect(cache.authorBase(unrelated, actions.length)).toBeUndefined();
+  expect(cache.authorBase(source, actions.length - 1)).toBeUndefined();
+  const base = cache.authorBase(source, actions.length)!;
+  expect(base).toBeDefined();
+  base.assertCurrent();
+  cache.cancel();
+  expect(() => base.assertCurrent()).toThrow('invalidated');
+  // A private fork's immutable prefix remains independently usable.
+  const candidate = finish(base.branch.prepare(actions, payloads(actions)));
+  equal(candidate.value, actions);
+  base.branch.evict();
+  cache.evict();
+});
 
 test('indexed earlier arrivals, replacements and unrelated sources retain exact prefix fallback', () => {
   for (const scenario of ['earlier', 'replace', 'withdraw', 'unrelated'] as const) {

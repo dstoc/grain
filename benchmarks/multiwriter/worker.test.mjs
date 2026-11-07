@@ -442,7 +442,10 @@ test('short structural runner uses real managed history, independent checks, exc
         assert.equal(row.exclusive.spans[i].start, row.exclusive.spans[i - 1].end);
     }
     const split = report.trace.find((s) => s.name === 'split').exclusive.work;
-    assert.equal(split['author/draft.fullConstructionTrees'], 1);
+    assert.equal(split['author/draft.fullConstructionTrees'] ?? 0, 0);
+    assert.equal(split['author/compiler.fullConstructionTrees'] ?? 0, 0);
+    assert.equal(split['author/command.candidatesPrepared'], 1);
+    assert.equal(split['publication/command.candidatesPublished'], 1);
     assert.equal(split['publication/ownership.fullInputEnumerated'] ?? 0, 0);
     assert.equal(split['publication/ownership.sortInputs'] ?? 0, 0);
     assert.equal(split['publication/ownership.suffixActions'], 1);

@@ -7,6 +7,13 @@ import type { projectMarkdown } from '../projection/project.js';
 import type { TapeId } from '../contracts.js';
 import type { OwnershipResult } from '../ownership/index.js';
 
+/** One exact certified action's private result, owned by the publication boundary. */
+export interface PreparedLocalPublication<T> {
+  readonly publication: PublishedProjection<T>;
+  assertCurrent(action: ActionEnvelope): void;
+  cancel(): void;
+}
+
 /** Private synchronous command branch over the current committed publication. */
 export type CommandOwnership = (
   action: ActionEnvelope,
@@ -34,5 +41,9 @@ export interface AuthoringDocument {
     action: ActionEnvelope,
     native: NativeView,
   ): PublishedProjection<ReturnType<typeof projectMarkdown>> | undefined;
+  /** Certify the final exact author body, then stage one private publication. */
+  prepareLocalAction?(
+    action: ActionEnvelope,
+  ): PreparedLocalPublication<ReturnType<typeof projectMarkdown>> | undefined;
   certifyLocal(action: ActionEnvelope): void;
 }
