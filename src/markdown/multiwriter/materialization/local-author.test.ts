@@ -178,6 +178,7 @@ for (const outcome of [
       vi.spyOn(MaterializedActivity.prototype, 'authorBase').mockReturnValue(undefined);
     if (outcome === 'unavailable-suffix')
       vi.spyOn(MaterializedOwnership.prototype, 'prepareAuthor').mockImplementation(function* () {
+        yield;
         return { state: 'unavailable', reason: 'test-suffix' };
       });
     if (outcome === 'callback-error')
