@@ -5,11 +5,19 @@ import { resourceKey } from '../layout/index.js';
 import { captureFootprint } from './scope.js';
 import { captureDiagnostics } from '../diagnostics.js';
 
-for (const from of [0, 2, 4])
-  test(`split footprint matches full pre-command assignment scanning after join (${from})`, () => {
-    const p = commandReplica(commandGenesis('abcd\n\nefgh\n\ntail'), undefined, 'materialized');
+for (const { from, nested } of [
+  ...[0, 2, 4, 5, 6, 8].map((from) => ({ from, nested: false })),
+  ...[9, 10, 12].map((from) => ({ from, nested: true })),
+])
+  test(`split footprint matches full pre-command assignment scanning after ${nested ? 'nested ' : ''}join (${from})`, () => {
+    const p = commandReplica(
+      commandGenesis(nested ? 'abcd\n\nefgh\n\nijkl\n\ntail' : 'abcd\n\nefgh\n\ntail'),
+      undefined,
+      'materialized',
+    );
     try {
       const session = p.editor.session();
+      if (nested) session.edit(deleteBackwardAtStart, { nodeId: p.handle(p.nodes()[2]) });
       session.edit(deleteBackwardAtStart, { nodeId: p.handle(p.nodes()[1]) });
       session.edit(insertText, { nodeId: p.handle(p.nodes()[0]), from: 1, text: 'X' });
       const before = p.document.publication.status().publication!;

@@ -120,11 +120,22 @@ export function captureFootprint(
         );
       // Use the pre-command source traversal. New cut markers are read from the
       // final native view, but ownership is never copied backward from the result.
-      const selected = single
-        ? before.value.ownership
-            .raw(before.value.ownership.runLayout(effect.cut.run).flow)
-            .flatMap((entry) => (entry.type === 'cell' ? [entry.assignment] : []))
-        : undefined;
+      let selected: CellAssignment[] | undefined;
+      if (single) {
+        const ownership = before.value.ownership;
+        let flow = ownership.runLayout(effect.cut.run).flow;
+        for (;;) {
+          countWork('history.footprintFlowAncestors');
+          const placement = ownership.flowPlacement(flow);
+          if (placement.parent.type !== 'flow') break;
+          flow = ownership.runLayout(placement.parent.slot.run).flow;
+        }
+        // The cut can name a joined child's run. Its own raw traversal omits
+        // the containing flow's earlier cells, which the split basis can retain.
+        selected = ownership
+          .raw(flow)
+          .flatMap((entry) => (entry.type === 'cell' ? [entry.assignment] : []));
+      }
       ranges(
         effect.basis.ranges.map((r) => r.range),
         selected,

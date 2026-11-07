@@ -66,7 +66,8 @@ semantic equality, action IDs or a merged cache for exact evidence.
 
 ## History footprint
 
-A single supported split reads the **pre-command** source traversal. Final native
+A single supported split reads the **pre-command** containing-flow traversal,
+following joined-flow ancestors when the cut names a child run. Final native
 marker coordinates locate new subdivisions within those old assignments. Moving
 its freshly split destination does not alter pre-command ownership. Joins query
 the retained home and placement directly. Other transfers or compound structural
