@@ -1,3 +1,4 @@
+import { OwnershipValidationError } from '../ownership/errors.js';
 import type { RangeRef, RunId, TapeId } from '../contracts.js';
 import { resourceKey } from '../layout/index.js';
 import { cellKey } from '../ownership/cells.js';
@@ -25,17 +26,20 @@ export class MaterializedHomes {
       const run = resourceKey(home.run),
         tape = resourceKey(home.cell.tape);
       if (next.runs.has(run) || next.tapes.has(tape))
-        throw new Error('Duplicate private home binding');
+        throw new OwnershipValidationError('Duplicate private home binding');
       next.runs.set(run, home);
       next.tapes.set(tape, home);
       dirty.set(tape, home.cell.tape);
     }
     for (const key of dirty.keys()) {
-      if (!next.tapes.has(key)) throw new Error('Native tape lacks a private home binding');
+      if (!next.tapes.has(key))
+        throw new OwnershipValidationError('Native tape lacks a private home binding');
       const home = next.tapes.get(key)!,
         edges = [index.adjacent(home.cell.start, 'right'), index.adjacent(home.cell.end, 'left')];
       if (edges.some((cell) => cell.fragments.length))
-        throw new Error('Reserved home cells must remain text-free; bracket edge typing');
+        throw new OwnershipValidationError(
+          'Reserved home cells must remain text-free; bracket edge typing',
+        );
       next.edges.set(
         key,
         edges.map((cell) => cellKey(cell.range)),
@@ -48,7 +52,7 @@ export class MaterializedHomes {
   }
   home(run: RunId): HomeBinding {
     const home = this.runs.get(resourceKey(run));
-    if (!home) throw new Error('Cut run is not a bound home root');
+    if (!home) throw new OwnershipValidationError('Cut run is not a bound home root');
     return structuredClone(home);
   }
   isReserved(cell: RangeRef): boolean {
@@ -56,19 +60,20 @@ export class MaterializedHomes {
   }
   assertCapture(range: RangeRef): void {
     const home = this.tapes.get(resourceKey(range.tape));
-    if (!home || !this.index) throw new Error('Capture uses a tape without a home binding');
+    if (!home || !this.index)
+      throw new OwnershipValidationError('Capture uses a tape without a home binding');
     const start = this.index.position(range.tape, range.start),
       end = this.index.position(range.tape, range.end);
     if (
       start <= this.index.position(range.tape, home.cell.start) ||
       end >= this.index.position(range.tape, home.cell.end)
     )
-      throw new Error('Structural captures need interior home endpoints');
+      throw new OwnershipValidationError('Structural captures need interior home endpoints');
     this.index.range(range);
   }
   binding(tape: TapeId): HomeBinding {
     const home = this.tapes.get(resourceKey(tape));
-    if (!home) throw new Error('Native tape lacks a private home binding');
+    if (!home) throw new OwnershipValidationError('Native tape lacks a private home binding');
     return home;
   }
 }

@@ -9,6 +9,8 @@ import {
   TextRefinementError,
 } from '../ownership/text-validation.js';
 import { actionKey } from '../actions/references.js';
+import { countWork } from '../diagnostics.js';
+import type { AuthorProofProvider } from '../ownership/author-proof.js';
 import type { IngestValidatorOptions } from '../ingest/validator.js';
 import { finish, IngestCapacityError, IngestDataError } from '../ingest/work.js';
 import { reduceActivity } from '../visibility/index.js';
@@ -24,6 +26,7 @@ import {
 /** MW-15 invokes this only on genesis + exact dependencies + candidate native body. */
 export function createProjectionAuthorValidator(options: {
   readonly genesis: LayoutGenesis;
+  readonly authorProof?: AuthorProofProvider;
   readonly births: (action: ActionEnvelope) => readonly BirthPlacement[];
 }): NonNullable<IngestValidatorOptions['validateAuthor']> {
   const genesis = structuredClone(options.genesis);
@@ -82,6 +85,13 @@ export function createProjectionAuthorValidator(options: {
     const snapshots = allocations
       .filter((entry) => entry.type === 'tape')
       .map((entry) => context.native.snapshot(entry.id));
+    countWork('projectionAuthor.preambleActions', actions.length);
+    countWork('projectionAuthor.preambleAllocations', allocations.length);
+    countWork('projectionAuthor.preambleSnapshots', snapshots.length);
+    countWork(
+      'projectionAuthor.preambleSnapshotParts',
+      snapshots.reduce((n, s) => n + s.parts.length, 0),
+    );
     const read = (range: NativeTextRange) =>
       context.native
         .lookup(range)
@@ -89,20 +99,30 @@ export function createProjectionAuthorValidator(options: {
         .join('');
     try {
       validateMembership(action, allocations);
-      const certify = (selection: ReturnType<typeof selectInterpretations>) => {
-        const result = createOwnershipAuthorValidator({
-          ...options,
-          births,
-          genesis,
-          effectEligible: (_actions, order) =>
-            selection.effectEligible({ action: order.action.id, ordinal: order.ordinal }),
-          interpretationEligible: (_actions, order) =>
-            selection.eligible({ action: order.action.id, ordinal: order.ordinal }),
-        })(action, context);
-        return result !== null && typeof result === 'object' ? finish(result) : result;
-      };
-      const failure = certify(selected);
-      if (failure) return failure;
+    } catch (error) {
+      if (error instanceof IngestDataError || error instanceof IngestCapacityError) throw error;
+      if (!(error instanceof Error)) throw error;
+      return 'reference';
+    }
+    const certify = (selection: ReturnType<typeof selectInterpretations>) => {
+      const result = createOwnershipAuthorValidator({
+        ...options,
+        births,
+        genesis,
+        // Alternate packet validation always retains independent full replay.
+        authorProof: action.effects.some((e) => e.type === 'Interpret')
+          ? undefined
+          : options.authorProof,
+        effectEligible: (_actions, order) =>
+          selection.effectEligible({ action: order.action.id, ordinal: order.ordinal }),
+        interpretationEligible: (_actions, order) =>
+          selection.eligible({ action: order.action.id, ordinal: order.ordinal }),
+      })(action, context);
+      return result !== null && typeof result === 'object' ? finish(result) : result;
+    };
+    const failure = certify(selected);
+    if (failure) return failure;
+    try {
       for (const [ordinal, effect] of action.effects.entries()) {
         if (effect.type !== 'Interpret') continue;
         const packet = effect.packet;

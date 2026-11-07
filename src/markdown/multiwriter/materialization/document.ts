@@ -1,4 +1,11 @@
+import { OwnershipValidationError } from '../ownership/errors.js';
 import { measureWork } from '../diagnostics.js';
+import { countWork } from '../diagnostics.js';
+import { readySource } from '../authoring/ready-source.js';
+import { localAuthorBase, bindAuthorPublication } from '../ownership/author-proof.js';
+import type { AuthorProofRequest, AuthorProofResult } from '../ownership/author-proof.js';
+import { resourceKey } from '../layout/index.js';
+import type { TapeId } from '../contracts.js';
 import { measure } from '../diagnostics.js';
 import { IndexedActionStore, readySequence } from './readiness.js';
 import type { ReferenceGenesis } from '../reference/document.js';
@@ -34,6 +41,7 @@ export function openMaterializedDocument(
   const validateAuthor = createProjectionAuthorValidator({
     genesis: genesis.layout,
     births: reconstructBirths,
+    authorProof: prepareAuthorProof,
   });
   const validate = createIngestValidator({
     genesis: genesis.body,
@@ -66,6 +74,130 @@ export function openMaterializedDocument(
     activityActionsReplayed: 0,
     activityPayloadsCompared: 0,
   };
+  const proofWork = {
+    requests: 0,
+    hits: 0,
+    rejected: 0,
+    ordinals: 0,
+    oldActionsReplayed: 0,
+    discarded: 0,
+    misses: {} as Record<string, number>,
+  };
+  function prepareAuthorProof(request: AuthorProofRequest): AuthorProofResult {
+    proofWork.requests++;
+    const miss = (reason: string): AuthorProofResult => {
+      proofWork.misses[reason] = (proofWork.misses[reason] ?? 0) + 1;
+      return { state: 'unavailable', reason };
+    };
+    const base = localAuthorBase(request);
+    if (!base) return miss('not-exact-local-author');
+    const action = request.action;
+    const structural = action.effects.filter(
+      (e) => e.type === 'SplitFlow' || e.type === 'JoinFlow',
+    );
+    if (
+      structural.length !== 1 ||
+      action.effects.some(
+        (e) =>
+          !['SplitFlow', 'JoinFlow', 'SetProperties', 'InsertText', 'DeleteText'].includes(e.type),
+      )
+    )
+      return miss('unsupported-effect-shape');
+    for (let ordinal = 0; ordinal < action.effects.length; ordinal++) {
+      const order = { action: { id: action.id, lamport: action.lamport }, ordinal };
+      if (
+        request.input.isActive(order) !==
+          request.activity.isEffectActive({ action: action.id, ordinal }) ||
+        request.input.interpretationEligible?.(order)
+      )
+        return miss('changed-candidate-eligibility');
+    }
+    const status = publication.status(),
+      published = status.publication;
+    if (!published || status.stale || !status.canAuthor) return miss('unavailable-publication');
+    const source = readySource(base.ready);
+    if (!source) return miss('unindexed-ready');
+    const owned = projection.authorOwnership(genesis.layout, source, published.native);
+    if (!owned) return miss('unavailable-owned-base');
+    const assertCurrent = () => {
+      base.assertCurrent();
+      const current = publication.status();
+      if (current.stale || !current.canAuthor || current.publication !== published)
+        throw new Error('Author publication was invalidated');
+      owned.assertCurrent();
+    };
+    const branch = owned.branch;
+    try {
+      bindAuthorPublication(request, owned.bindings, assertCurrent);
+      const length = base.ready.length + 1;
+      const sequence = {
+        length,
+        at: (i: number) => {
+          const at = i < 0 ? length + i : i;
+          return at === length - 1 ? action : base.ready.at(at);
+        },
+      };
+      registerReadyAppend(sequence, base.ready, action);
+      const key = actionKey(action.id),
+        bytes = encodeEnvelope(action);
+      const variants = { get: (id: string) => (id === key ? bytes : base.payloads.get(id)) };
+      // The validated body, not compiler-supplied staged tapes, defines every change.
+      const touched = new Map<string, TapeId>();
+      for (const birth of action.nativeManifest) touched.set(resourceKey(birth.tape), birth.tape);
+      for (const allocation of action.allocations) {
+        const tape =
+          allocation.type === 'tape'
+            ? allocation.id
+            : allocation.type === 'marker'
+              ? allocation.tape
+              : undefined;
+        if (tape) touched.set(resourceKey(tape), tape);
+      }
+      const snapshots = new Map(request.input.snapshots.map((s) => [resourceKey(s.tape), s]));
+      const native: NativeView = {
+        ...request.native,
+        snapshot: (tape) => {
+          const snapshot = snapshots.get(resourceKey(tape));
+          if (!snapshot) throw new Error('Validated author snapshot is unavailable');
+          countWork('authorProof.snapshotPartsRead', snapshot.parts.length);
+          return snapshot;
+        },
+      };
+      const prepared = finish(
+        branch.prepareAuthor(
+          {
+            ...request.input,
+            genesis: genesis.layout,
+            actions: [{ action, births: request.input.actions.at(-1)!.births }],
+            genesisManifest: genesis.body.nativeManifest,
+            initialProperties: genesis.initialProperties,
+            birthContent: [],
+            native,
+          },
+          request.activity,
+          variants,
+          [...touched.values()],
+          sequence,
+          request,
+          owned.bindings,
+        ),
+      );
+      if (prepared.state === 'unavailable') return miss(prepared.reason);
+      if (prepared.state === 'rejected') throw new Error('Unexpected author preparation rejection');
+      proofWork.ordinals += action.effects.length;
+      proofWork.hits++;
+      return prepared;
+    } catch (error) {
+      if (!(error instanceof OwnershipValidationError)) throw error;
+      proofWork.rejected++;
+      return { state: 'rejected' };
+    } finally {
+      proofWork.oldActionsReplayed += Math.max(0, branch.diagnostics().actionsReplayed - 1);
+      countWork('authorProof.discardedCandidates');
+      proofWork.discarded++;
+      branch.evict();
+    }
+  }
   let preparedProjection: PreparedProjection | undefined;
   let prepared: PreparedActivity | undefined;
   const publication = new MaterializedPublication(
@@ -112,6 +244,7 @@ export function openMaterializedDocument(
   );
   return {
     commandMode: 'overlay' as const,
+    authorProofDiagnostics: () => ({ ...proofWork, misses: { ...proofWork.misses } }),
     readyActions: () => readySequence(store.readReady()),
     activityDiagnostics: () => activity.diagnostics(),
     ownershipDiagnostics: () => projection.diagnostics().ownership,

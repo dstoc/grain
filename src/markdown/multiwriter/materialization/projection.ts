@@ -735,6 +735,38 @@ export class MaterializedProjection {
   commandOwnership() {
     return this.ownership.fork();
   }
+  authorOwnership(genesis: object, ready: object, native: object) {
+    const state = this.state,
+      generation = this.generation,
+      base = state?.producerBase;
+    if (
+      !base ||
+      !base.checkpoint ||
+      base.genesis !== genesis ||
+      base.ready !== ready ||
+      base.native !== native
+    )
+      return undefined;
+    const owned = this.ownership.authorBase(base);
+    if (!owned) return undefined;
+    return {
+      ...owned,
+      bindings: {
+        genesis,
+        ready,
+        native,
+        checkpoint: base.checkpoint,
+        projection: state!,
+        revision: generation,
+        ownershipRevision: owned.revision,
+      },
+      assertCurrent: () => {
+        if (this.state !== state || this.generation !== generation)
+          throw new Error('Author projection base was invalidated');
+        owned.assertCurrent();
+      },
+    };
+  }
   *prepare(
     genesis: ReferenceGenesis,
     actions: ReadySequence,

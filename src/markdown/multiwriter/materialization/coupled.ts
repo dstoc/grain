@@ -8,7 +8,7 @@ import { cellKey, assignmentKey } from '../ownership/cells.js';
 import { PersistentMap, get, set } from './map.js';
 import type { MapRoot } from './map.js';
 import type { TapeSnapshot } from '../text/types.js';
-import type { TapeId, MarkerId } from '../contracts.js';
+import type { ActionId, TapeId, MarkerId } from '../contracts.js';
 import { compareActions } from '../contracts.js';
 import type { NativeView } from '../ingest/publication.js';
 import { changedNativeTapes, hasIndexedNative } from './native.js';
@@ -33,6 +33,12 @@ import type { ReadySource } from '../authoring/ready-source.js';
 import { subdivideCells } from './subdivision.js';
 import type { StructuralChanges } from './subdivision.js';
 import { structuralReads } from './structural.js';
+import type {
+  AuthorProofRequest,
+  AuthorProofResult,
+  AuthorPublicationBinding,
+} from '../ownership/author-proof.js';
+import { completeAuthorProof, AuthorProofUnavailable } from '../ownership/author-proof.js';
 
 function markerSignature(snapshot: TapeSnapshot): string {
   return snapshot.parts
@@ -285,6 +291,79 @@ export class MaterializedOwnership {
     copy.snapshots = this.snapshots;
     return copy;
   }
+  /** Exact committed roots only. The guard owns no candidate and is never a proof. */
+  authorBase(base: {
+    readonly genesis: object;
+    readonly native?: object;
+    readonly ready?: object;
+    readonly checkpoint?: object;
+  }) {
+    if (
+      !this.state ||
+      this.genesis !== base.genesis ||
+      this.native !== base.native ||
+      this.source !== base.ready ||
+      this.state !== base.checkpoint
+    )
+      return undefined;
+    const state = this.state,
+      generation = this.generation;
+    return {
+      branch: this.fork()!,
+      revision: generation,
+      assertCurrent: () => {
+        if (this.state !== state || this.generation !== generation)
+          throw new Error('Author ownership base was invalidated');
+      },
+    };
+  }
+  *prepareAuthor(
+    input: ProjectionInput,
+    activity: Activity,
+    variants: PayloadIndex,
+    tapes: readonly TapeId[],
+    sequence: ActionSequence,
+    request: AuthorProofRequest,
+    bindings: AuthorPublicationBinding,
+  ): Generator<void, AuthorProofResult, void> {
+    const count = this.state?.count ?? 0,
+      order = this.order;
+    const candidate = input.actions.at(-1)!;
+    const indexed: LayoutSequence = {
+      length: sequence.length,
+      at: (i) => (i < count ? get(order, String(i))?.entry : i === count ? candidate : undefined),
+    };
+    try {
+      const prepared = yield* this.prepareInput(
+        input,
+        activity,
+        variants,
+        tapes,
+        sequence,
+        indexed,
+        undefined,
+        candidate.action.id,
+      );
+      prepared.assertCurrent();
+      const changes = prepared.value.changes;
+      if (changes.replayFrom !== count || changes.replayTo !== count + 1)
+        throw new Error('Author proof replayed outside its single candidate suffix');
+      countWork('authorProof.suffixActions', changes.replayTo - changes.replayFrom);
+      countWork('authorProof.oldActionsReplayed', count - changes.replayFrom);
+      return {
+        state: 'proved',
+        proof: completeAuthorProof(request, bindings, {
+          ordinals: candidate.action.effects.length,
+          replayFrom: changes.replayFrom,
+          replayTo: changes.replayTo,
+          refinement: changes.subdivisions,
+        }),
+      };
+    } catch (error) {
+      if (!(error instanceof AuthorProofUnavailable)) throw error;
+      return { state: 'unavailable', reason: error.reason };
+    }
+  }
   *prepareReady(input: StructuralReadyInput, activity: Activity, variants: PayloadIndex) {
     const source = readySource(input.actions);
     const additions = source && this.source && source.additions(this.source);
@@ -360,6 +439,7 @@ export class MaterializedOwnership {
       readonly source: ReadySource | undefined;
       readonly additions: ReturnType<ReadySource['additions']>;
     },
+    author?: ActionId,
   ) {
     let length = indexed?.length ?? input.actions.length;
     const generation = ++this.generation,
@@ -379,6 +459,8 @@ export class MaterializedOwnership {
         !additions.actions.length ||
         compareActions(sequence!.at(count - 1)!, additions.actions[0]) < 0)
     );
+    if (author && (!exactAppend || additions!.actions.length !== 1 || length !== count + 1))
+      throw new AuthorProofUnavailable('not-exact-single-append');
     // Unknown/earlier inventories take the complete ordering audit. All tables
     // and replay then use that same order, including callers without ready metadata.
     if (!exactAppend) {
@@ -564,6 +646,9 @@ export class MaterializedOwnership {
       if (readerFrontier < count) reason = 'reserved-content-reader';
       else if (exactAppend && frontier === count) reason = 'content-subdivision';
     }
+    // Decline BEFORE resource reconstruction, checkpoint selection or old replay.
+    if (author && (!continuous || !compatible || !retainedPrefix || frontier !== count))
+      throw new AuthorProofUnavailable(!continuous ? 'native-continuity' : reason);
     const retained =
       continuous && compatible && retainedPrefix && this.resources
         ? this.resources.retained.append(
@@ -614,6 +699,7 @@ export class MaterializedOwnership {
       retained,
       this.counts,
       exactAppend ? { length: length, at: (i) => get(order, String(i))!.entry } : input.actions,
+      author,
     );
     this.counts.actionsReplayed += length - from;
     for (let i = from; i < length; i++)

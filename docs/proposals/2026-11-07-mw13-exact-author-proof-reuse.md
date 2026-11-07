@@ -3,8 +3,10 @@
 - **Issue:** grain/104; integration parent grain/94. The parent assigns this
   bounded D-owned slice to the existing C/PR96 executor. grain/105 and grain/106
   remain blocked and undispatched.
-- **Status:** Proposed. Technical proposal review must complete before production
-  changes. Implementation authorization in `cmt_cnRiPYg8rHt1LuEU` retains this gate.
+- **Status:** Technical proposal v4 approved at `e8128a7` in
+  `cmt_nGtOKK4V1HEGSYpn`, under the implementation authorization in
+  `cmt_cnRiPYg8rHt1LuEU`. Independent implementation review and readiness remain
+  separate. See the [implementation contract](../mw13-exact-author-proof.md).
 - **Authority:** grain/94 `structural-execution-plan` v1, SHA-256
   `e63457a69a187e962b053452e1072ba24a630569ae43c4b676de13aa44b3adc7`,
   especially §§3–5, the D specification, and §§8–9; grain/104 owner instructions
@@ -53,8 +55,8 @@ otherwise. These are source observations at the inspected head:
    action IDs, Lamport time, heads, or visible output.
 3. `ingest/validator.ts` already checks references, group sealing/control validity,
    candidate native application, native references, and allocations. It reuses an
-   exact native branch where possible. A certificate hit for the *same* bytes and
-   dependency certificates is different from certifying a *new* structural action.
+   exact native branch where possible. A certificate hit for the _same_ bytes and
+   dependency certificates is different from certifying a _new_ structural action.
 4. `projection/validation.ts:createProjectionAuthorValidator()` resolves birth
    callbacks, activity, interpretation selection, allocations and native snapshots,
    then validates membership and calls `createOwnershipAuthorValidator()`.
@@ -269,16 +271,16 @@ retains facts and retries publication; the proof is not a new publication cache.
 
 ### Explicit fallback conditions
 
-| Condition | Required behavior |
-| --- | --- |
-| Reference document, remote admission or unindexed author context | Existing full author validator. |
-| Author dependencies do not cover the current exact ready set | Full validation against that author's own closure. |
-| Missing/cold/evicted B base or unsupported candidate effect shape | Named proof miss, then full author validation. |
-| Earlier order/activity change, native withdrawal/reorder, or reserved-content reader frontier | Decline before earlier replay; retain full exact-author reconstruction and conservative guards. |
-| Candidate packet/control, transfer/move/lift, or multiple structural effects | Existing complete certification, including alternate interpretation and effect-prefix checks. |
-| Invalid references, manifests, Unicode boundary, homes, brackets, membership or candidate author predicate | Existing rejection; no proof and no append. |
-| Stale generation, changed facts or operational/capacity/host failure | Cancel/propagate for retry; do not accept or misclassify as peer data. |
-| Lost/stale/forged/partial proof | No bypass; abort an invalidated attempt or use full validation for an ordinary miss. |
+| Condition                                                                                                  | Required behavior                                                                               |
+| ---------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Reference document, remote admission or unindexed author context                                           | Existing full author validator.                                                                 |
+| Author dependencies do not cover the current exact ready set                                               | Full validation against that author's own closure.                                              |
+| Missing/cold/evicted B base or unsupported candidate effect shape                                          | Named proof miss, then full author validation.                                                  |
+| Earlier order/activity change, native withdrawal/reorder, or reserved-content reader frontier              | Decline before earlier replay; retain full exact-author reconstruction and conservative guards. |
+| Candidate packet/control, transfer/move/lift, or multiple structural effects                               | Existing complete certification, including alternate interpretation and effect-prefix checks.   |
+| Invalid references, manifests, Unicode boundary, homes, brackets, membership or candidate author predicate | Existing rejection; no proof and no append.                                                     |
+| Stale generation, changed facts or operational/capacity/host failure                                       | Cancel/propagate for retry; do not accept or misclassify as peer data.                          |
+| Lost/stale/forged/partial proof                                                                            | No bypass; abort an invalidated attempt or use full validation for an ordinary miss.            |
 
 Record these operation/input reasons separately. Ordinary supported warm paragraph
 split/join must hit the proof path when all stated conditions hold. A generic

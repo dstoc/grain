@@ -244,7 +244,9 @@ leave the old tuple and committed roots intact; retry is checked independently.
 
 Diagnostics retain aggregate resource IDs and also qualify them by purpose.
 `publication/...` identifies accepted-state work; `staging/...` and `author/...`
-remain separate. D's full pre-append staging and exact-author work are unchanged.
+remain separate. D's full pre-append staging remains separate. The assigned
+[exact-author proof slice](mw13-exact-author-proof.md) replaces full ownership replay
+only for a supported exact local candidate after all original preambles.
 A history control can require B's genuine historical suffix replay, including a
 replay from zero before the first periodic checkpoint. This does not imply full
 C provenance/projection/index reconstruction.

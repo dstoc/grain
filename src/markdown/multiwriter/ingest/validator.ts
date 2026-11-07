@@ -22,6 +22,7 @@ import { NativeTapeCache } from '../text/cache.js';
 import type { NativeBody } from '../text/types.js';
 import { NativeValidationError, resourceKey } from '../text/identity.js';
 import { DEFAULT_INGEST_LIMITS, assertLimit, IngestDataError } from './work.js';
+import { bindAuthorNative } from '../ownership/author-proof.js';
 import type { Work } from './work.js';
 
 type Reason = QuarantineReason | null;
@@ -217,12 +218,14 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
       }
       if (!(yield* checkAllocations(action, context, genesis.allocations))) return 'reference';
       if (options.validateAuthor) {
+        const view = nativeView(native);
+        bindAuthorNative(context.indexed, action, view);
         const result = options.validateAuthor(action, {
           get dependencies() {
             return context.dependencies;
           },
           indexed: context.indexed,
-          native: nativeView(native),
+          native: view,
         });
         const reason = typeof result === 'object' && result !== null ? yield* result : result;
         if (reason) return reason;
