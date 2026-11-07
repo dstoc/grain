@@ -22,17 +22,28 @@ export function deriveHomes(
   batch: LayoutGenesis,
   effects: readonly SemanticEffect[] = [],
 ): readonly HomeBinding[] {
-  countWork('homes.allocationsInspected', batch.allocations.length);
   countWork('homes.effectsInspected', effects.length);
   countWork('homes.birthsInspected', batch.births.length);
   const transfers = new Set(
     effects.flatMap((effect) => (effect.type === 'TransferRange' ? [resourceKey(effect.run)] : [])),
   );
   const runs = batch.allocations
-    .filter((entry) => entry.type === 'run')
-    .filter((entry) => !transfers.has(resourceKey(entry.id)));
-  const flows = batch.allocations.filter((entry) => entry.type === 'flow');
-  const tapes = batch.allocations.filter((entry) => entry.type === 'tape');
+    .filter((entry) => {
+      countWork('homes.allocationsInspected');
+      return entry.type === 'run';
+    })
+    .filter((entry) => {
+      countWork('homes.rootCandidatesInspected');
+      return !transfers.has(resourceKey(entry.id));
+    });
+  const flows = batch.allocations.filter((entry) => {
+    countWork('homes.allocationsInspected');
+    return entry.type === 'flow';
+  });
+  const tapes = batch.allocations.filter((entry) => {
+    countWork('homes.allocationsInspected');
+    return entry.type === 'tape';
+  });
   // Build disposable indexes from this batch. Duplicate roots still count as
   // ambiguity; first tape/birth matches retain the full scan's lookup semantics.
   const byFlow = new Map<string, typeof runs>();

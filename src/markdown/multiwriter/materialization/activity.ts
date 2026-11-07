@@ -103,15 +103,18 @@ function activity(state: State): Activity {
     },
     get effects() {
       if (!effects) countWork('activity.effectActionsExported', state.count);
-      return (effects ??= structuredClone(
-        ordered().flatMap(({ action }) =>
+      if (!effects) {
+        const selected = ordered().flatMap(({ action }) =>
           isActive(action.id)
             ? action.effects.flatMap((effect, ordinal) =>
                 effect.type === 'SetGroupActive' ? [] : [{ action: action.id, ordinal, effect }],
               )
             : [],
-        ),
-      ));
+        );
+        countWork('activity.effectsCloned', selected.length);
+        effects = structuredClone(selected);
+      }
+      return effects;
     },
     isActive,
     observes,

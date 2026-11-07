@@ -178,39 +178,68 @@ export function assertEdgeBrackets(
 ): void {
   const newMarkers = new Set(
     action.allocations
-      .filter((entry) => entry.type === 'marker')
+      .filter((entry) => {
+        countWork('edgeBrackets.allocationsInspected');
+        return entry.type === 'marker';
+      })
       .map((entry) => resourceKey(entry.id)),
   );
-  const inserted = action.nativeManifest.filter((entry) => entry.type === 'text');
+  const inserted = action.nativeManifest.filter((entry) => {
+    countWork('edgeBrackets.manifestEntriesInspected');
+    return entry.type === 'text';
+  });
   // Also check the partition itself before examining candidate text identities.
   const index = new CellIndex(snapshots);
   for (const home of homes) {
-    const snapshot = snapshots.find((snapshot) => sameId(snapshot.tape, home.cell.tape))!;
-    const markers = snapshot.parts.filter((part) => part.type === 'marker');
-    const priorMarkers = markers.filter(
-      (part) =>
+    const snapshot = snapshots.find((snapshot) => {
+      countWork('edgeBrackets.snapshotQueries');
+      return sameId(snapshot.tape, home.cell.tape);
+    })!;
+    const markers = snapshot.parts.filter((part) => {
+      countWork('edgeBrackets.partsInspected');
+      return part.type === 'marker';
+    });
+    const priorMarkers = markers.filter((part) => {
+      countWork('edgeBrackets.priorMarkersInspected');
+      return (
         !newMarkers.has(resourceKey(part.marker)) ||
         sameId(part.marker, home.cell.start) ||
-        sameId(part.marker, home.cell.end),
-    );
+        sameId(part.marker, home.cell.end)
+      );
+    });
     for (const part of snapshot.parts) {
+      countWork('edgeBrackets.partsInspected');
       if (
         part.type !== 'text' ||
-        !inserted.some(
-          (birth) =>
+        !inserted.some((birth) => {
+          countWork('edgeBrackets.nativeBirthsCompared');
+          return (
             sameId(birth.tape, snapshot.tape) &&
             birth.native.client === part.native.client &&
             birth.native.clock < part.native.clock + part.text.length &&
-            birth.native.clock + birth.native.length > part.native.clock,
-        )
+            birth.native.clock + birth.native.length > part.native.clock
+          );
+        })
       )
         continue;
-      const before = priorMarkers.findLast((marker) => marker.index < part.index);
-      const after = priorMarkers.find((marker) => marker.index > part.index);
+      const before = priorMarkers.findLast((marker) => {
+        countWork('edgeBrackets.markersCompared');
+        return marker.index < part.index;
+      });
+      const after = priorMarkers.find((marker) => {
+        countWork('edgeBrackets.markersCompared');
+        return marker.index > part.index;
+      });
       if (!before || !after) throw new OwnershipValidationError('Text outside home sentinels');
       if (!sameId(before.marker, home.cell.start) && !sameId(after.marker, home.cell.end)) continue;
-      const left = markers.findLast((marker) => marker.index < part.index)!;
-      const right = markers.find((marker) => marker.index > part.index)!;
+      const left = markers.findLast((marker) => {
+        countWork('edgeBrackets.markersCompared');
+        return marker.index < part.index;
+      })!;
+      const right = markers.find((marker) => {
+        countWork('edgeBrackets.markersCompared');
+        return marker.index > part.index;
+      })!;
       if (
         !newMarkers.has(resourceKey(left.marker)) ||
         !newMarkers.has(resourceKey(right.marker)) ||

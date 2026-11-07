@@ -155,6 +155,14 @@ for (const unrelated of [0, 8, 32])
         );
         expect(p.actual.authorProofDiagnostics().hits).toBe(valid ? 1 : 0);
         if (valid) {
+          // Candidate preflight and B resource append each derive homes through
+          // three allocation filters. These are actual visits, not input sizes.
+          expect(report.work['author/homes.allocationsInspected']).toBe(
+            6 * action.allocations.length,
+          );
+          expect(report.work['author/edgeBrackets.allocationsInspected']).toBe(
+            action.allocations.length,
+          );
           expect(report.work['author/authorProof.candidateActionsValidated']).toBe(1);
           expect(report.work['author/authorProof.affectedTapesValidated']).toBe(
             variant === 'join' ? 0 : variant === 'bracketed' ? 3 : 2,
