@@ -1,3 +1,4 @@
+import { withOwnershipAuthorPreamble } from '../ownership/validation.js';
 import type { ActionEnvelope, NativeTextRange, RangeRef } from '../contracts.js';
 import type { BirthPlacement, LayoutGenesis } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
@@ -30,6 +31,10 @@ export function createProjectionAuthorValidator(options: {
   readonly births: (action: ActionEnvelope) => readonly BirthPlacement[];
 }): NonNullable<IngestValidatorOptions['validateAuthor']> {
   const genesis = structuredClone(options.genesis);
+  // One validator owns the immutable genesis and its home descriptors. Candidate
+  // activity, native snapshots and birth callbacks remain invocation-specific.
+  const validateOwnership = createOwnershipAuthorValidator({ ...options, genesis });
+  let validatePacketOwnership: ReturnType<typeof createOwnershipAuthorValidator> | undefined;
   return (action, context) => {
     // The indexed past certifies all ancestor constructors. Pure refinement has
     // no placement, ownership, packet membership or interpretation decisions.
@@ -70,12 +75,6 @@ export function createProjectionAuthorValidator(options: {
     // Resolve host-supplied birth bindings before data-rejection catches. Host
     // failures must propagate; the reference boundary handles ProvenanceError.
     const inputs = actions.map((action) => ({ action, births: options.births(action) }));
-    const births = (action: ActionEnvelope) =>
-      inputs.find(
-        (entry) =>
-          entry.action.id.actor === action.id.actor &&
-          entry.action.id.sequence === action.id.sequence,
-      )!.births;
     const activity = reduceActivity(actions);
     const selected = selectInterpretations(activity);
     const allocations = [
@@ -105,20 +104,33 @@ export function createProjectionAuthorValidator(options: {
       return 'reference';
     }
     const certify = (selection: ReturnType<typeof selectInterpretations>) => {
-      const result = createOwnershipAuthorValidator({
-        ...options,
-        births,
-        genesis,
-        // Alternate packet validation always retains independent full replay.
-        authorProof: action.effects.some((e) => e.type === 'Interpret')
-          ? undefined
-          : options.authorProof,
-        effectEligible: (_actions, order) =>
-          selection.effectEligible({ action: order.action.id, ordinal: order.ordinal }),
-        interpretationEligible: (_actions, order) =>
-          selection.eligible({ action: order.action.id, ordinal: order.ordinal }),
-      })(action, context);
-      return result !== null && typeof result === 'object' ? finish(result) : result;
+      const validate = action.effects.some((e) => e.type === 'Interpret')
+        ? (validatePacketOwnership ??= createOwnershipAuthorValidator({
+            ...options,
+            genesis,
+            authorProof: undefined,
+          }))
+        : validateOwnership;
+      return withOwnershipAuthorPreamble(
+        context,
+        {
+          action,
+          native: context.native,
+          actions,
+          allocations,
+          snapshots,
+          inputs,
+          activity,
+          effectEligible: (order) =>
+            selection.effectEligible({ action: order.action.id, ordinal: order.ordinal }),
+          interpretationEligible: (order) =>
+            selection.eligible({ action: order.action.id, ordinal: order.ordinal }),
+        },
+        () => {
+          const result = validate(action, context);
+          return result !== null && typeof result === 'object' ? finish(result) : result;
+        },
+      );
     };
     const failure = certify(selected);
     if (failure) return failure;

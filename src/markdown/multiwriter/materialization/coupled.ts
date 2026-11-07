@@ -364,7 +364,30 @@ export class MaterializedOwnership {
       return { state: 'unavailable', reason: error.reason };
     }
   }
-  *prepareReady(input: StructuralReadyInput, activity: Activity, variants: PayloadIndex) {
+  *prepareReady(
+    input: StructuralReadyInput,
+    activity: Activity,
+    variants: PayloadIndex,
+    touched?: readonly TapeId[],
+  ) {
+    return yield* this.prepareIndexed(input, activity, variants, touched);
+  }
+  /** Private compiler revisions share indexed input without masquerading as
+   * final publication preparation. They never install a partial action. */
+  *prepareCommand(
+    input: StructuralReadyInput,
+    activity: Activity,
+    variants: PayloadIndex,
+    touched: readonly TapeId[],
+  ) {
+    return yield* this.prepareIndexed(input, activity, variants, touched);
+  }
+  private *prepareIndexed(
+    input: StructuralReadyInput,
+    activity: Activity,
+    variants: PayloadIndex,
+    touched?: readonly TapeId[],
+  ) {
     const source = readySource(input.actions);
     const additions = source && this.source && source.additions(this.source);
     const count = this.state?.count ?? 0;
@@ -401,7 +424,7 @@ export class MaterializedOwnership {
       { ...input, actions: entries, birthContent: [] },
       activity,
       variants,
-      undefined,
+      touched,
       input.actions,
       indexed,
       { source, additions },
@@ -766,14 +789,14 @@ export class MaterializedOwnership {
           reason,
         } satisfies StructuralChanges,
       },
-      commit: () => {
+      commit: (acceptedSource?: ReadySource) => {
         assertCurrent();
         committed = true;
         this.state = result.state;
         this.resources = installedResources;
         this.native = installedNative;
         this.order = order;
-        this.source = source;
+        this.source = acceptedSource ?? source;
         this.positions = positions;
         this.genesis = installedGenesis;
         this.markers = markers;
@@ -1022,7 +1045,7 @@ export class MaterializedOwnership {
       changes,
       structuralChanges,
       control: !directAction,
-      commit: () => {
+      commit: (acceptedSource?: ReadySource) => {
         assertCurrent();
         committed = true;
         this.state = finalState;
@@ -1032,7 +1055,7 @@ export class MaterializedOwnership {
         this.native = native;
         this.positions = positions;
         this.order = candidateOrder;
-        this.source = source;
+        this.source = acceptedSource ?? source;
         this.checkpoints = checkpoints;
         countWork('coupled.committedActionsReplayed');
         countWork('coupled.candidatesCommitted');

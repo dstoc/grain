@@ -58,7 +58,7 @@ export interface ActivityWork {
 export interface PreparedActivity {
   readonly value: Activity;
   assertCurrent(): void;
-  commit(): void;
+  commit(acceptedSource?: ReadySource): void;
 }
 const empty: State = { count: 0 };
 function* entries<T>(root: MapRoot<T> | undefined): Generator<readonly [string, T]> {
@@ -216,12 +216,12 @@ export class MaterializedActivity {
     return {
       value,
       assertCurrent,
-      commit: () => {
+      commit: (acceptedSource?: ReadySource) => {
         assertCurrent();
         committed = true;
         this.state = state;
         this.order = order;
-        this.source = source;
+        this.source = acceptedSource ?? source;
         this.checkpoints = checkpoints;
         this.counts.lastReplayFrom = from;
         this.counts.lastReplayLength = length - from;

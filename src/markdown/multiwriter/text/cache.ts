@@ -66,6 +66,7 @@ export class NativeTapeCache {
   }
   private prepareMeasured(key: string, insertions: readonly NativeInsertion[]): PreparedNativeBody {
     this.#idle();
+    countWork('native.preparedOperations', insertions.length);
     if (!key || this.#retained.has(key))
       throw new Error('Native body key already published/invalid');
     const token = {};
@@ -191,6 +192,9 @@ export class NativeTapeCache {
   /** Stages validation across slices; no native mutation occurs until inspection completes. */
   *applySteps(key: string, input: NativeBody): Work<void> {
     this.#idle();
+    countWork('native.bodyApplications');
+    if (key === 'genesis') countWork('native.genesisApplications');
+    countWork('native.bodyManifestEntries', input.nativeManifest.length);
     if (!key) throw new Error('Invalid native body key');
     const body = copyBody(input);
     const previous = this.#retained.get(key);
@@ -530,12 +534,24 @@ export class NativeTapeCache {
     }
   }
   #recover(): void {
+    countWork('native.recoveries');
+    countWork('native.recoveryBodies', this.#retained.size);
     const ready = [...this.#retained].map(([key, body]) => ({ key, body }));
     this.rebuild(ready);
   }
 }
 
 function copyBody(body: NativeBody): NativeBody {
+  countWork('native.bodyAllocationsCopied', body.allocations.length);
+  countWork('native.bodyManifestEntriesCopied', body.nativeManifest.length);
+  countWork('native.bodyUpdatesCopied', body.nativeInsertUpdates.length);
+  countWork(
+    'native.bodyUpdateBytesCopied',
+    body.nativeInsertUpdates.reduce((sum, update) => sum + update.length, 0),
+  );
+  const envelope = body as NativeBody & Partial<import('../contracts.js').ActionEnvelope>;
+  countWork('native.bodyEffectsCopied', envelope.effects?.length ?? 0);
+  countWork('native.bodyDependenciesCopied', envelope.dependencies?.length ?? 0);
   return structuredClone(body);
 }
 function sameBody(a: NativeBody, b: NativeBody): boolean {

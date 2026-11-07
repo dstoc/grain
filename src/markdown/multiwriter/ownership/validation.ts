@@ -16,8 +16,38 @@ import {
 } from './author-proof.js';
 import type { AuthorProofProvider, AuthorProofRequest } from './author-proof.js';
 import { countWork } from '../diagnostics.js';
+import type { Activity } from '../visibility/activity.js';
 import type { TapeSnapshot } from '../text/types.js';
 
+/** Reuse one invocation's exact inputs across projection and ownership checks.
+ * These are inputs to validation, never a certificate or a reason to skip checks.
+ */
+interface OwnershipAuthorPreamble {
+  readonly action: ActionEnvelope;
+  readonly native: AuthorValidationContext['native'];
+  readonly actions: readonly ActionEnvelope[];
+  readonly allocations: readonly ActionEnvelope['allocations'][number][];
+  readonly snapshots: readonly TapeSnapshot[];
+  readonly inputs: OwnershipInput['actions'];
+  readonly activity: Activity;
+  effectEligible(order: EffectOrder): boolean;
+  interpretationEligible(order: EffectOrder): boolean;
+}
+const preambles = new WeakMap<AuthorValidationContext, OwnershipAuthorPreamble>();
+/** Internal synchronous reuse only. A peer/context property cannot supply it. */
+export function withOwnershipAuthorPreamble<T>(
+  context: AuthorValidationContext,
+  input: OwnershipAuthorPreamble,
+  operation: () => T,
+): T {
+  if (preambles.has(context)) throw new Error('Ownership preamble invocation is already active');
+  preambles.set(context, input);
+  try {
+    return operation();
+  } finally {
+    preambles.delete(context);
+  }
+}
 /** MW-03 supplies deterministic node-to-birth bindings from retained allocation/effect facts.
  * This adapter certifies ownership/home conventions, not MW-06 projection or command validity.
  */
@@ -30,17 +60,32 @@ export function createOwnershipAuthorValidator(options: {
     actions: readonly ActionEnvelope[],
     order: EffectOrder,
   ) => boolean;
-}): NonNullable<IngestValidatorOptions['validateAuthor']> {
+}) {
+  let genesisHomes: ReturnType<typeof deriveHomes> | undefined;
   const genesis = structuredClone(options.genesis);
-  return (action: ActionEnvelope, context: AuthorValidationContext) => {
+  return (
+    action: ActionEnvelope,
+    context: AuthorValidationContext,
+  ): ReturnType<NonNullable<IngestValidatorOptions['validateAuthor']>> => {
+    const prepared = preambles.get(context);
+    if (prepared && (prepared.action !== action || prepared.native !== context.native))
+      throw new Error('Ownership preamble belongs to a different author invocation');
     // Native capacity and host configuration errors must propagate, never quarantine a peer.
-    const actions = [...context.dependencies, action];
-    const allocations = [...genesis.allocations, ...actions.flatMap((entry) => entry.allocations)];
-    const snapshots = allocations
-      .filter((entry) => entry.type === 'tape')
-      .map((tape) => context.native.snapshot(tape.id));
-    const inputs = actions.map((entry) => ({ action: entry, births: options.births(entry) }));
-    const activity = reduceActivity(actions);
+    const actions = prepared?.actions ?? [...context.dependencies, action];
+    const allocations = prepared?.allocations ?? [
+      ...genesis.allocations,
+      ...actions.flatMap((entry) => entry.allocations),
+    ];
+    const snapshots =
+      prepared?.snapshots ??
+      allocations
+        .filter((entry) => entry.type === 'tape')
+        .map((tape) => context.native.snapshot(tape.id));
+    const inputs =
+      prepared?.inputs ??
+      actions.map((entry) => ({ action: entry, births: options.births(entry) }));
+    const activity = prepared?.activity ?? reduceActivity(actions);
+    if (prepared) countWork('authorProof.preambleInputsReused');
     countWork('authorProof.preambleActions', actions.length);
     countWork('authorProof.preambleAllocations', allocations.length);
     countWork('authorProof.preambleSnapshots', snapshots.length);
@@ -55,7 +100,7 @@ export function createOwnershipAuthorValidator(options: {
     };
     try {
       const homes = [
-        ...deriveHomes(genesis),
+        ...(genesisHomes ??= deriveHomes(genesis)),
         ...inputs.flatMap((entry) =>
           deriveHomes(
             { allocations: entry.action.allocations, births: entry.births },
@@ -73,8 +118,12 @@ export function createOwnershipAuthorValidator(options: {
       actions: inputs,
       snapshots,
       isActive: (order) =>
-        activity.isActive(order.action.id) && (options.effectEligible?.(actions, order) ?? true),
-      interpretationEligible: (order) => options.interpretationEligible?.(actions, order) ?? false,
+        activity.isActive(order.action.id) &&
+        (prepared?.effectEligible(order) ?? options.effectEligible?.(actions, order) ?? true),
+      interpretationEligible: (order) =>
+        prepared?.interpretationEligible(order) ??
+        options.interpretationEligible?.(actions, order) ??
+        false,
     };
     // Provider/host failures are outside the semantic rejection boundary.
     if (options.authorProof) {

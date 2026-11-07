@@ -1,4 +1,9 @@
-import { countWork, measureWork } from '../diagnostics.js';
+import { countWork, measure, measureWork } from '../diagnostics.js';
+import { encodeEnvelope } from '../actions/codec.js';
+import type { ActionEnvelope } from '../contracts.js';
+import { readyAppend } from './ready-index.js';
+import { finish } from '../ingest/work.js';
+import type { PreparedLocalPublication } from '../authoring/document.js';
 import type { ActionStore } from '../actions/store.js';
 import { IndexedActionStore, readySequence } from './readiness.js';
 import type { ReadySequence } from '../authoring/ready-source.js';
@@ -25,6 +30,35 @@ export interface MaterializationWork {
   nativeReadyActionsVisited: number;
   readyIndexNodesVisited: number;
 }
+// Expired handles retain their immutable result, never a live document or cache.
+const localHandles = new WeakMap<
+  object,
+  { assertCurrent(action: ActionEnvelope): void; cancel(): void }
+>();
+function localHandle<T>(
+  publication: PublishedProjection<T>,
+  token: object,
+): PreparedLocalPublication<T> {
+  return Object.freeze({
+    publication,
+    assertCurrent: (action: ActionEnvelope) => {
+      const live = localHandles.get(token);
+      if (!live) throw new Error('Local candidate is no longer current');
+      live.assertCurrent(action);
+    },
+    cancel: () => localHandles.get(token)?.cancel(),
+  });
+}
+interface LocalCandidate<T> {
+  readonly token: object;
+  readonly base: PublishedProjection<T>;
+  readonly source: ReadySource;
+  readonly version: number;
+  readonly generation: number;
+  readonly action: ActionEnvelope;
+  readonly bytes: Uint8Array;
+  readonly publication: PublishedProjection<T>;
+}
 /** Incremental native stage. Readiness and semantic reduction still use the full oracle.
  * These fallbacks are explicit in diagnostics; this is not the completed MW-13 fast path.
  */
@@ -39,6 +73,8 @@ export class MaterializedPublication<T> {
   private nativeSource?: ReadySource;
   private closed = false;
   private refreshing = false;
+  private local?: LocalCandidate<T>;
+  private preparingLocal?: object;
   private readonly counts: MaterializationWork = {
     nativeBodiesIntegrated: 0,
     tapesIndexed: 0,
@@ -58,6 +94,7 @@ export class MaterializedPublication<T> {
       actions: ReadySequence,
       native: NativeView,
       variants: Pick<ReadonlyMap<string, Uint8Array>, 'get'>,
+      staging?: boolean,
     ) => Work<T>,
     private decodeOperations = DEFAULT_INGEST_LIMITS.decodeOperations as number,
     private readonly retainReady: (
@@ -66,7 +103,7 @@ export class MaterializedPublication<T> {
     ) => void = () => {},
     private readonly reduction: {
       readonly fullProjectionCount?: () => number;
-      readonly commit?: () => void;
+      readonly commit?: (accepted?: ReadySequence) => void;
       readonly cancel?: () => void;
       readonly evict?: () => void;
     } = {},
@@ -105,10 +142,137 @@ export class MaterializedPublication<T> {
     this.dropNative();
     this.decodeOperations = operations;
   }
+  /** Prepare once on private native/semantic roots. Only build() can publish them.
+   * Cancellation drops the advanced native cache; old native roots stay readable.
+   */
+  prepareLocal(
+    action: ActionEnvelope,
+    certify: (action: ActionEnvelope) => void,
+  ): PreparedLocalPublication<T> | undefined {
+    if (this.local) {
+      this.cancel();
+      countWork('command.candidateFallback.competing-preparation');
+      return undefined;
+    }
+    const status = this.status();
+    const base = status.publication,
+      source = this.snapshot && readySource(readySequence(this.snapshot));
+    if (
+      !base ||
+      status.stale ||
+      !source ||
+      !this.native ||
+      !this.snapshot ||
+      this.refreshing ||
+      this.preparingLocal
+    )
+      return undefined;
+    const observed = new Set(action.dependencies.map(actionKey));
+    if (
+      !base.heads.every((head) => observed.has(actionKey(head))) ||
+      source.has(actionKey(action.id)) ||
+      action.lamport <= source.maxLamport
+    ) {
+      countWork('command.candidateFallback.not-exact-published-base');
+      return undefined;
+    }
+    if (this.nativeSource !== source) {
+      countWork('command.candidateFallback.incomplete-native-base');
+      return undefined;
+    }
+    const version = this.store.factsVersion,
+      baseGeneration = this.generation;
+    const bytes = encodeEnvelope(action);
+    countWork('command.candidateBytesEncoded', bytes.length);
+    // Own the payload. Compiler buffers and caller objects cannot alter this candidate.
+    const owned = structuredClone(action);
+    countWork('command.candidatePayloadsCloned');
+    certify(owned);
+    if (
+      version !== this.store.factsVersion ||
+      this.generation !== baseGeneration ||
+      this.published !== base ||
+      compareBytes(encodeEnvelope(owned), bytes) !== 0
+    )
+      throw new Error('Local certification invalidated the candidate');
+    this.cancel();
+    const generation = this.generation;
+    const preparing = Object.freeze({});
+    this.preparingLocal = preparing;
+    try {
+      measure(
+        'native-preparation',
+        () => finish(this.apply(actionKey(owned.id), owned)),
+        'publication',
+      );
+      const native = Object.freeze(this.native!.view());
+      const sequence = readyAppend(readySequence(this.snapshot), owned);
+      const key = actionKey(owned.id);
+      const variants = {
+        get: (id: string) => (id === key ? bytes : this.snapshot!.variants.get(id)),
+      };
+      const fullBefore = this.reduction.fullProjectionCount?.();
+      const value = measure(
+        'visibility-normalization',
+        () => finish(this.reduce(sequence, native, variants, true)),
+        'publication',
+      );
+      this.counts.fullProjections +=
+        fullBefore === undefined ? 1 : this.reduction.fullProjectionCount!() - fullBefore;
+      if (
+        version !== this.store.factsVersion ||
+        generation !== this.generation ||
+        this.published !== base
+      )
+        throw new Error('Local candidate invalidated during preparation');
+      const publication = Object.freeze({
+        heads: Object.freeze([Object.freeze(owned.id)]),
+        native,
+        value,
+      });
+      const token = Object.freeze({});
+      const candidate: LocalCandidate<T> = Object.freeze({
+        token,
+        base,
+        source,
+        version,
+        generation,
+        action: owned,
+        bytes,
+        publication,
+      });
+      this.local = candidate;
+      countWork('command.candidatesPrepared');
+      localHandles.set(token, {
+        assertCurrent: (final: ActionEnvelope) => {
+          if (
+            this.local !== candidate ||
+            this.published !== base ||
+            this.generation !== generation ||
+            this.store.factsVersion !== version ||
+            compareBytes(encodeEnvelope(final), bytes) !== 0
+          )
+            throw new Error('Local candidate is no longer current');
+        },
+        cancel: () => {
+          if (this.local === candidate) this.cancel();
+        },
+      });
+      return localHandle(publication, token);
+    } catch (error) {
+      this.reduction.cancel?.();
+      this.dropNative();
+      throw error;
+    } finally {
+      if (this.preparingLocal === preparing) this.preparingLocal = undefined;
+    }
+  }
   refresh(operations?: number): Computation<PublishedProjection<T>> {
     this.assertOpen();
     if (operations !== undefined) assertLimit(operations);
-    this.cancel();
+    // A prepared local candidate owns the current reduction generation until
+    // exact ready admission either consumes it or selects the ordinary fallback.
+    if (!this.local || this.active) this.cancel();
     const version = this.store.factsVersion,
       generation = this.generation;
     if (this.published && version === this.publishedVersion) {
@@ -136,6 +300,42 @@ export class MaterializedPublication<T> {
         throw new IngestDataError('carrier', 'integrity', 'Canonical store integrity failed');
       this.retainReady(readySequence(snapshot), snapshot.variants);
       const variants = snapshot.variants;
+      const candidate = this.local;
+      if (candidate) {
+        const source = readySource(readySequence(snapshot));
+        const delta = source?.additions(candidate.source);
+        this.counts.readyIndexNodesVisited += delta?.nodesVisited ?? 0;
+        const key = actionKey(candidate.action.id);
+        const payload = variants.get(key);
+        if (
+          candidate.base === this.published &&
+          candidate.generation === generation &&
+          delta?.actions.length === 1 &&
+          actionKey(delta.actions[0].id) === key &&
+          payload &&
+          compareBytes(payload, candidate.bytes) === 0 &&
+          readySequence(snapshot).length === readySequence(this.snapshot!).length + 1
+        ) {
+          if (this.closed || version !== this.store.factsVersion || generation !== this.generation)
+            throw new Error('Local publication invalidated by changed facts');
+          this.reduction.commit?.(readySequence(snapshot));
+          this.integrated.set(key, candidate.bytes);
+          this.counts.nativeReadyActionsVisited++;
+          this.nativeSource = source;
+          this.snapshot = snapshot;
+          this.published = candidate.publication;
+          this.publishedVersion = version;
+          this.releaseLocal();
+          committed = true;
+          countWork('command.candidatesPublished');
+          countWork('publication.committed');
+          return candidate.publication;
+        }
+        countWork('command.candidateFallback.changed-ready');
+        this.releaseLocal();
+        this.reduction.cancel?.();
+        this.dropNative();
+      }
       if (this.sameReady(snapshot) && this.published) {
         this.snapshot = snapshot;
         this.publishedVersion = version;
@@ -182,7 +382,7 @@ export class MaterializedPublication<T> {
         throw new Error('Ingest publication invalidated by changed facts');
       const heads = Object.freeze(snapshot.heads.map((id) => Object.freeze(structuredClone(id))));
       const publication = Object.freeze({ heads, native, value });
-      this.reduction.commit?.();
+      this.reduction.commit?.(readySequence(snapshot));
       this.snapshot = snapshot;
       this.published = publication;
       this.publishedVersion = version;
@@ -190,7 +390,13 @@ export class MaterializedPublication<T> {
       countWork('publication.committed');
       return publication;
     } finally {
-      if (!committed) this.reduction.cancel?.();
+      if (!committed) {
+        if (this.local) {
+          this.releaseLocal();
+          this.dropNative();
+        }
+        this.reduction.cancel?.();
+      }
       if (state.state === 'deferred') state.continuation.cancel();
       this.refreshing = false;
     }
@@ -269,7 +475,21 @@ export class MaterializedPublication<T> {
       }
     }
   }
+  private releaseLocal(): void {
+    if (this.local) localHandles.delete(this.local.token);
+    this.local = undefined;
+  }
   private cancel(): void {
+    if (this.preparingLocal) {
+      this.preparingLocal = undefined;
+      this.dropNative();
+      countWork('command.preparationCancelled');
+    }
+    if (this.local) {
+      this.releaseLocal();
+      this.dropNative();
+      countWork('command.candidatesCancelled');
+    }
     this.generation++;
     this.active?.return(undefined as unknown as PublishedProjection<T>);
     this.active = undefined;

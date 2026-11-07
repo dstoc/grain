@@ -12,6 +12,7 @@ import type { NodeId as Handle } from '../../semantic/types.js';
 import { actorId, assertCounter } from '../contracts.js';
 import type { ActionEnvelope, ActionId, GroupId, NodeId } from '../contracts.js';
 import type { ReferenceGenesis } from '../reference/document.js';
+import type { PreparedLocalPublication } from './document.js';
 import type { AuthoringDocument } from './document.js';
 import { resourceKey } from '../layout/index.js';
 import { NativeTapeCache } from '../text/cache.js';
@@ -208,13 +209,17 @@ export class LocalEditor {
     envelope: ActionEnvelope,
     prepared: PreparedNativeBody | undefined,
     register: () => void,
+    candidate?: PreparedLocalPublication<ReturnType<typeof projectMarkdown>>,
   ): void {
-    return measure('canonical-append', () => this.appendMeasured(envelope, prepared, register));
+    return measure('canonical-append', () =>
+      this.appendMeasured(envelope, prepared, register, candidate),
+    );
   }
   private appendMeasured(
     envelope: ActionEnvelope,
     prepared: PreparedNativeBody | undefined,
     register: () => void,
+    candidate?: PreparedLocalPublication<ReturnType<typeof projectMarkdown>>,
   ): void {
     let appended = false;
     const retain = () => {
@@ -225,7 +230,8 @@ export class LocalEditor {
       register();
     };
     try {
-      this.document.certifyLocal(envelope);
+      if (candidate) candidate.assertCurrent(envelope);
+      else this.document.certifyLocal(envelope);
       this.document.store.append(envelope);
       appended = true;
     } catch (error) {
@@ -238,7 +244,10 @@ export class LocalEditor {
             .some((value) => value instanceof Uint8Array && compareBytes(value, bytes) === 0),
       );
       if (appended) retain();
-      else prepared?.abort();
+      else {
+        candidate?.cancel();
+        prepared?.abort();
+      }
       throw error;
     }
     retain();
@@ -510,10 +519,13 @@ export class LocalEditor {
       let stagedAfter: StableSelection | undefined;
       let emptyAfter = false;
       let footprintForHistory;
+      let candidate: PreparedLocalPublication<ReturnType<typeof projectMarkdown>> | undefined;
       try {
+        candidate = this.document.prepareLocalAction?.(envelope);
         if (register) {
           const native = nativeView(this.native);
           const staged =
+            candidate?.publication ??
             this.document.stageLocalAction?.(envelope, native) ??
             (() => {
               const actions = [...ready, envelope];
@@ -529,30 +541,54 @@ export class LocalEditor {
                 }),
               };
             })();
-          footprintForHistory = captureFootprint(envelope, p, native);
+          footprintForHistory = captureFootprint(
+            envelope,
+            p,
+            candidate?.publication.native ?? native,
+          );
           stagedAfter = after(staged);
           emptyAfter =
             !!staged.value.view.emptyRoot &&
             (!options.hostRoot || options.hostRoot === draft.rootId);
         }
       } catch (error) {
+        candidate?.cancel();
         prepared.abort();
         throw error;
       }
-      this.append(envelope, prepared, () => {
-        retained = id;
-        register?.({
-          envelope: structuredClone(envelope),
-          selectionBefore,
-          selectionAfter: stagedAfter,
-          footprint: footprintForHistory!,
-          emptyBefore:
-            !!p.value.view.emptyRoot && (!options.hostRoot || options.hostRoot === draft.rootId),
-          emptyAfter,
-        });
+      // One immutable command result carries the exact author roots and lowered
+      // selection across append callbacks and history registration. Recovery may
+      // publish newer merged roots, but never re-lowers this numeric selection.
+      const commandResult = Object.freeze({
+        base: p,
+        envelope,
+        candidate,
+        outcome,
+        selectionBefore,
+        selectionAfter: stagedAfter,
+        footprint: footprintForHistory,
+        emptyBefore:
+          !!p.value.view.emptyRoot && (!options.hostRoot || options.hostRoot === draft.rootId),
+        emptyAfter,
       });
+      this.append(
+        envelope,
+        prepared,
+        () => {
+          retained = id;
+          register?.({
+            envelope: structuredClone(commandResult.envelope),
+            selectionBefore: commandResult.selectionBefore,
+            selectionAfter: commandResult.selectionAfter,
+            footprint: commandResult.footprint!,
+            emptyBefore: commandResult.emptyBefore,
+            emptyAfter: commandResult.emptyAfter,
+          });
+        },
+        commandResult.candidate,
+      );
       const publication = this.refresh();
-      const selectionAfter = register ? stagedAfter : after(publication);
+      const selectionAfter = register ? commandResult.selectionAfter : after(publication);
       const footprint = {
         allocations: structuredClone(envelope.allocations),
         effects: structuredClone(envelope.effects),

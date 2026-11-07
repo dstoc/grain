@@ -320,9 +320,26 @@ export class IndexedActionStore extends ActionStore {
     const action = variant.envelope!;
     countWork('readiness.dependenciesVisited', action.dependencies.length);
     countWork('readiness.candidateAllocationsIndexed', action.allocations.length);
-    const dependencies = action.dependencies.map((id) => this.certified.get(actionKey(id))!);
+    // Dependencies are a canonical set on the wire. Use that same order for
+    // the local certificate, including controls with redundant older heads.
+    // Otherwise admission creates a different result identity for identical bytes.
+    countWork('readiness.candidateDependencySortInputs', action.dependencies.length);
+    const dependencies = [...action.dependencies]
+      .sort((a, b) => {
+        countWork('readiness.candidateDependencyComparisons');
+        return compareIds(a, b);
+      })
+      .map((id) => this.certified.get(actionKey(id))!);
     let past: MapRoot<Certificate> | undefined, seals: MapRoot<boolean> | undefined;
-    for (const dependency of dependencies) {
+    // Start with the newest dependency's exact root. Redundant causal ancestors
+    // then add nothing, preserving the native branch identity for the same past.
+    // Concurrent frontiers still merge explicitly and retain the ordinary fallback.
+    countWork('readiness.candidateFrontierSortInputs', dependencies.length);
+    const frontiers = [...dependencies].sort((a, b) => {
+      countWork('readiness.candidateFrontierComparisons');
+      return compareActions(b.variant.envelope!, a.variant.envelope!);
+    });
+    for (const dependency of frontiers) {
       yield;
       if (!past) past = dependency.after;
       else if (past !== dependency.after)

@@ -4,8 +4,10 @@ import { isInlineNode } from '../../node.js';
 import type { MarkdownNode } from '../../node.js';
 import { commandDraft } from '../../../editing/command-draft.js';
 import type { ChildLift, CommandDraft, InlineSplit } from '../../../editing/command-draft.js';
+import { CommandRecordDraft } from './record-draft.js';
 import { ConstructionTree } from '../../semantic/construction-tree.js';
 import type {
+  TreeDraft,
   ConversionPlan,
   DraftNode,
   DraftTextPiece,
@@ -81,7 +83,7 @@ export class MultiwriterCommandDraft implements CommandDraft {
   readonly intents: CommandIntent[] = [];
   readonly origins: OriginMap;
   readonly pieces = new Map<NodeId, readonly OriginPiece[]>();
-  private tree_?: ConstructionTree;
+  private tree_?: { readonly draft: TreeDraft };
   private readonly parents: CommandViewIndex['parents'];
   private readonly siblings: CommandViewIndex['siblings'];
   private readonly handles: { get(view: ViewNode): NodeId | undefined };
@@ -201,7 +203,7 @@ export class MultiwriterCommandDraft implements CommandDraft {
   }
   constructor(
     private readonly root: ViewNode,
-    overlay = false,
+    private readonly overlay = false,
   ) {
     const index = commandViewIndex(root);
     this.origins = index.origins;
@@ -214,11 +216,13 @@ export class MultiwriterCommandDraft implements CommandDraft {
       for (const id of this.origins.keys()) this.originPieces(id);
     }
   }
-  /** Structural commands keep the established isolated tree. Text and checked/info edits stay in an overlay. */
-  get tree(): ConstructionTree {
+  /** Isolated structural records, borrowed from the indexed publication until touched. */
+  get tree(): { readonly draft: TreeDraft } {
     if (!this.tree_) {
-      countWork('draft.fullConstructionTrees');
-      const tree = new ConstructionTree(projectionDocument({ root: this.root, emptyRoot: null }));
+      if (!this.overlay) countWork('draft.fullConstructionTrees');
+      const tree = this.overlay
+        ? { draft: new CommandRecordDraft(commandViewIndex(this.root)) }
+        : new ConstructionTree(projectionDocument({ root: this.root, emptyRoot: null }));
       for (const [id, content] of this.contents) {
         const before = tree.draft.node(id).content!;
         tree.draft.spliceText(id, { from: 0, to: before.length, insert: content });

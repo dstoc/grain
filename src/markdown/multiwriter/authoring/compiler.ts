@@ -1,4 +1,4 @@
-import { measure } from '../diagnostics.js';
+import { countWork, measure } from '../diagnostics.js';
 import type { ReadySequence } from './ready-source.js';
 import { convertedFocus } from './parser-focus.js';
 import { prepareParserConversion, bindParserConversion } from '../projection/parser-plan.js';
@@ -7,6 +7,9 @@ import type { ParserConversionPlan } from '../../block-parser/types.js';
 import { ProjectionError } from '../projection/interpretation.js';
 import { isInlineNode } from '../../node.js';
 import type { MarkdownNode } from '../../node.js';
+import { CommandRecordDraft } from './record-draft.js';
+import { commandViewIndex } from './view-index.js';
+import type { TreeDraft } from '../../semantic/draft.js';
 import { ConstructionTree } from '../../semantic/construction-tree.js';
 import type {
   CreateNodeSpec,
@@ -115,7 +118,7 @@ export class CommandCompiler {
   >();
   private readonly seenPlacements = new Set<Handle>();
   private readonly births = new Map<Handle, OccurrenceId>();
-  private tree_?: ConstructionTree;
+  private tree_?: { readonly draft: TreeDraft };
   private readonly properties = new Map<
     Handle,
     { checked?: boolean | null; info?: string | null }
@@ -182,9 +185,12 @@ export class CommandCompiler {
       if (intent.type === 'split') this.splitNodes.add(intent.split.destination);
     }
   }
-  private get tree(): ConstructionTree {
+  private get tree(): { readonly draft: TreeDraft } {
     if (!this.tree_) {
-      const tree = new ConstructionTree(projectionDocument({ root: this.root, emptyRoot: null }));
+      if (!this.overlay) countWork('compiler.fullConstructionTrees');
+      const tree = this.overlay
+        ? { draft: new CommandRecordDraft(commandViewIndex(this.root)) }
+        : new ConstructionTree(projectionDocument({ root: this.root, emptyRoot: null }));
       for (const [id, properties] of this.properties) {
         if (properties.checked !== undefined) tree.draft.setChecked(id, properties.checked);
         if (properties.info !== undefined) tree.draft.setInfo(id, properties.info);
@@ -416,11 +422,17 @@ export class CommandCompiler {
   }
   private blockSlot(parent: Handle, before: Handle | null, moving?: Handle): BlockSlot {
     const parentId = this.id(parent);
-    const children = this.tree.draft.node(parent).children.filter((id) => id !== moving);
-    const at = before === null ? children.length : children.indexOf(before);
-    if (at < 0) throw new Error('Insertion reference is not a destination child');
+    const tree = this.tree.draft;
+    if (before !== null && tree.parentOf(before) !== parent)
+      throw new Error('Insertion reference is not a destination child');
     const view = this.draft.origins.get(parent);
-    const previous = at > 0 ? children[at - 1] : undefined;
+    let previous =
+      before === null
+        ? tree instanceof CommandRecordDraft
+          ? tree.lastChildOf(parent)
+          : tree.node(parent).children.at(-1)
+        : tree.previousSiblingOf(before);
+    if (previous && previous === moving) previous = tree.previousSiblingOf(previous);
     const placement = previous ? this.ownership().blockPlacement(this.id(previous)) : undefined;
     // Original boundaries choose the raw constituent. An inserted or moved sibling
     // advances that gap, while unchanged siblings preserve retained hidden slots.

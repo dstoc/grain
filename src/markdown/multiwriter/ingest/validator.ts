@@ -1,4 +1,4 @@
-import { measureWork } from '../diagnostics.js';
+import { countWork, measureWork } from '../diagnostics.js';
 import { ActivityValidationError, reduceActivitySteps } from '../visibility/activity.js';
 import { groupKey } from '../visibility/identity.js';
 import { slotSequence } from '../layout/occurrences.js';
@@ -192,6 +192,7 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
           bytes!.length === retained.length &&
           bytes!.every((value, index) => compareBytes(value, retained[index]) === 0);
       }
+      countWork(reuse ? 'authorNative.exactAppendReuse' : 'authorNative.exactBaseRebuilds');
       if (!reuse) {
         discard();
         cache = new NativeTapeCache(decodeOperations);
@@ -264,6 +265,7 @@ export function createIngestValidator(options: IngestValidatorOptions): IngestVa
       retainedFactsCompared++;
       const bytes = ready.get(key);
       if (!bytes || compareBytes(fact, bytes) !== 0) {
+        countWork('authorNative.withdrawnFacts');
         discard();
         return;
       }

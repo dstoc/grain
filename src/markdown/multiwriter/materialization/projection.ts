@@ -773,7 +773,9 @@ export class MaterializedProjection {
     native: NativeView,
     activity: Activity,
     variants: PayloadIndex,
+    staging = false,
   ) {
+    const workBefore = staging ? this.ownership.diagnostics() : undefined;
     const generation = ++this.generation,
       before = this.state;
     const compatibleBefore = before?.producerBase?.genesis === genesis.layout ? before : undefined;
@@ -792,7 +794,9 @@ export class MaterializedProjection {
       properties && before
         ? this.appendProperties(before, properties.changes, properties.value, activity)
         : undefined;
-    let state: State, commitStructure: () => void, assertStructure: () => void;
+    let state: State,
+      commitStructure: (acceptedSource?: ReadySource) => void,
+      assertStructure: () => void;
     let producerBase: ProducerBinding;
     let localStructural = false;
     if (propertyState && properties) {
@@ -894,6 +898,13 @@ export class MaterializedProjection {
       commitStructure = prepared.commit;
       assertStructure = prepared.assertCurrent;
       producerBase = prepared.value.changes.candidate;
+      if (workBefore) {
+        const after = this.ownership.diagnostics();
+        this.counts.stagedStructuralProjections++;
+        this.counts.stagedStructureActionsReplayed +=
+          after.actionsReplayed - workBefore.actionsReplayed;
+        this.counts.stagedStructureTapesRead += after.nativeTapeReads - workBefore.nativeTapeReads;
+      }
     }
     state = { ...state, source: readySource(actions), producerBase };
     let committed = false;
@@ -905,11 +916,19 @@ export class MaterializedProjection {
     return {
       value: state.value,
       assertCurrent,
-      commit: () => {
+      commit: (acceptedSource?: ReadySource) => {
         assertCurrent();
-        commitStructure();
+        commitStructure(acceptedSource);
         committed = true;
-        this.state = state;
+        // Only the publication owner supplies an admitted equivalent ready root.
+        // Native, payload and semantic roots are the exact prepared candidate.
+        this.state = acceptedSource
+          ? {
+              ...state,
+              source: acceptedSource,
+              producerBase: { ...producerBase, ready: acceptedSource },
+            }
+          : state;
         if (localStructural) this.counts.localStructuralProjections++;
       },
     };

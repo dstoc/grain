@@ -15,7 +15,7 @@ import { encodeEnvelope } from '../actions/codec.js';
 import { finish, assertLimit } from '../ingest/work.js';
 import { createProjectionAuthorValidator } from '../projection/index.js';
 import { MaterializedActivity } from './activity.js';
-import { registerReadyAppend } from './ready-index.js';
+import { registerReadyAppend, readyAppend } from './ready-index.js';
 import { MaterializedProjection } from './projection.js';
 import type { PreparedActivity } from './activity.js';
 import type { PreparedProjection } from './projection.js';
@@ -205,12 +205,12 @@ export function openMaterializedDocument(
   const publication = new MaterializedPublication(
     store,
     genesis.body,
-    function* (actions, native, variants) {
+    function* (actions, native, variants, staging) {
       prepared = yield* activity.prepare(actions, variants);
       yield;
       preparedProjection = yield* measureWork(
         'visibility-normalization',
-        projection.prepare(genesis, actions, native, prepared.value, variants),
+        projection.prepare(genesis, actions, native, prepared.value, variants, staging),
       );
       return preparedProjection.value;
     },
@@ -218,13 +218,14 @@ export function openMaterializedDocument(
     (_actions, variants) => validate.retainReadyFacts(variants),
     {
       fullProjectionCount: () => projection.fullProjectionCount(),
-      commit() {
+      commit(actions) {
+        const acceptedSource = actions && readySource(actions);
         const activityCandidate = prepared!,
           projectionCandidate = preparedProjection!;
         activityCandidate.assertCurrent();
         projectionCandidate.assertCurrent();
-        activityCandidate.commit();
-        projectionCandidate.commit();
+        activityCandidate.commit(acceptedSource);
+        projectionCandidate.commit(acceptedSource);
         preparedProjection = undefined;
         prepared = undefined;
       },
@@ -265,10 +266,9 @@ export function openMaterializedDocument(
       return (action, native, touched) => {
         if (store.factsVersion !== version)
           throw new Error('Command ownership invalidated by changed facts');
-        const actions = [...readySequence(ready), action],
-          key = actionKey(action.id),
+        const actions = readyAppend(readySequence(ready), action);
+        const key = actionKey(action.id),
           bytes = encodeEnvelope(action);
-        registerReadyAppend(actions, readySequence(ready), action);
         const variants = { get: (id: string) => (id === key ? bytes : ready.variants.get(id)) };
         const before = branch.diagnostics(),
           beforeActivity = commandActivity.diagnostics();
@@ -277,19 +277,17 @@ export function openMaterializedDocument(
           return finish(
             measureWork(
               'coupled-replay',
-              branch.prepare(
+              branch.prepareCommand(
                 {
                   genesis: genesis.layout,
                   genesisManifest: genesis.body.nativeManifest,
                   initialProperties: genesis.initialProperties,
-                  actions: actions.map((action) => ({ action, births: reconstructBirths(action) })),
-                  birthContent: [],
+                  actions,
                   native,
                 },
                 prepared.value,
                 variants,
                 touched,
-                actions,
               ),
             ),
           ).value.ownership;
@@ -379,6 +377,15 @@ export function openMaterializedDocument(
         },
         'staging',
       );
+    },
+    prepareLocalAction(action: ActionEnvelope) {
+      // Retain the existing resource-local text/property staging paths. This
+      // candidate replaces structural reconstruction, not their history contract.
+      if (projection.canStageText(action) || projection.canStageProperties(action))
+        return undefined;
+      // Certification runs against the exact author closure, before any merged
+      // candidate is staged. A prepared publication confers no validation authority.
+      return publication.prepareLocal(action, (owned) => this.certifyLocal(owned));
     },
     certifyLocal(action: ActionEnvelope): void {
       return measure(
