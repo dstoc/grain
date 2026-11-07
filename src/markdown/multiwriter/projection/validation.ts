@@ -88,10 +88,16 @@ export function createProjectionAuthorValidator(options: {
     // A private exact-local attempt can certify the candidate before any author
     // closure inventory is requested. Unavailable results keep ordinary validation.
     let candidateBirths: readonly BirthPlacement[] | undefined;
+    let birthFailure: { readonly error: unknown } | undefined;
     const births = () => {
       if (!candidateBirths) {
         countWork('projectionAuthor.candidateBirthCallbacks');
-        candidateBirths = options.births(action);
+        try {
+          candidateBirths = options.births(action);
+        } catch (error) {
+          birthFailure = { error };
+          throw error;
+        }
       }
       return candidateBirths;
     };
@@ -108,6 +114,9 @@ export function createProjectionAuthorValidator(options: {
         try {
           return options.localAuthorProof!(request);
         } catch (error) {
+          // Birth callbacks keep their existing boundary, including the host's
+          // raw-provenance classification. Only provider failures are wrapped.
+          if (birthFailure && birthFailure.error === error) throw error;
           throw new AuthorProofProviderError(error);
         }
       })();

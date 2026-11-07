@@ -73,6 +73,7 @@ for (const unrelated of [0, 8, 32])
     'one-bracket',
     'marker-only-partition',
     'home',
+    'birth-slot',
     'marker-native',
     'missing-marker',
   ] as const)
@@ -101,6 +102,18 @@ for (const unrelated of [0, 8, 32])
           ...action,
           allocations: action.allocations.map((a) =>
             a.type === 'run' ? { ...a, skeleton: a.skeleton.slice(0, -1) } : a,
+          ),
+        };
+      if (variant === 'birth-slot')
+        action = {
+          ...action,
+          allocations: action.allocations.map((a) =>
+            a.type === 'node'
+              ? {
+                  ...a,
+                  birthSlot: { ...a.birthSlot!, predecessor: f.id('Q:birth', 'occurrence') },
+                }
+              : a,
           ),
         };
       if (variant === 'marker-native')
