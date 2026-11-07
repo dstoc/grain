@@ -140,6 +140,7 @@ export function openMaterializedDocument(
       registerReadyAppend(sequence, base.ready, action);
       const key = actionKey(action.id),
         bytes = encodeEnvelope(action);
+      countWork('authorProof.candidateBytesEncoded', bytes.length);
       const variants = { get: (id: string) => (id === key ? bytes : base.payloads.get(id)) };
       // The validated body, not compiler-supplied staged tapes, defines every change.
       const touched = new Map<string, TapeId>();
@@ -153,6 +154,7 @@ export function openMaterializedDocument(
               : undefined;
         if (tape) touched.set(resourceKey(tape), tape);
       }
+      countWork('authorProof.snapshotBindingsIndexed', request.input.snapshots.length);
       const snapshots = new Map(request.input.snapshots.map((s) => [resourceKey(s.tape), s]));
       const native: NativeView = {
         ...request.native,

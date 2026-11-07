@@ -43,6 +43,18 @@ for (const depth of [0, 8, 32])
         misses: {},
       });
       expect(report.work['author/authorProof.hits']).toBe(depth + 1);
+      expect(report.work['author/authorProof.snapshotBindingsIndexed']).toBe(
+        ((depth + 1) * (depth + 6)) / 2,
+      );
+      expect(report.work['author/authorProof.actionBytesCopied']).toBeGreaterThan(0);
+      expect(report.work['author/authorProof.envelopeBytesEncoded']).toBeGreaterThan(
+        report.work['author/authorProof.actionBytesCopied'],
+      );
+      expect(report.work['author/authorProof.refinementWitnessesCopied']).toBeGreaterThan(0);
+      expect(report.work['author/authorProof.refinementRangesCopied']).toBeGreaterThan(
+        report.work['author/authorProof.refinementWitnessesCopied'],
+      );
+
       // Compiler ownership queries are separately charged under the author purpose.
       expect(report.work['author/ownership.suffixActions']).toBe(2 * (depth + 1));
       expect(report.work['author/authorProof.suffixActions']).toBe(depth + 1);

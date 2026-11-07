@@ -96,7 +96,9 @@ births, scaffolds and interpretations are not blanket exclusions.
 rejections, named misses, old B actions replayed and discarded private forks.
 Opt-in diagnostics additionally charge preamble actions/allocations/homes/snapshot
 parts, candidate ordinals, split predicates, proof suffix/old actions, snapshot
-parts read and discarded candidates. Existing B counters charge native cells,
+parts read and discarded candidates. It separately counts head-coverage reads,
+encoding/copying action bytes, snapshot binding entries and copied refinement
+witness/range entries. Existing B counters charge native cells,
 refinement, resources, coverage and changed roots. `projectionAuthor.preamble*`
 charges the separate projection preamble. Compiler queries can also execute a
 suffix under the `author` purpose; `authorProof.suffixActions` isolates proof

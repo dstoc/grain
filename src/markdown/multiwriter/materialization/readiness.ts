@@ -288,8 +288,12 @@ export class IndexedActionStore extends ActionStore {
       )
         throw new Error('Local author attempt invalidated by changed facts or generation');
     };
+    countWork('authorProof.headCoverageDependencies', action.dependencies.length);
     const dependencies = new Set(action.dependencies.map(actionKey));
-    const close = view.heads.every((id) => dependencies.has(actionKey(id)))
+    const close = view.heads.every((id) => {
+      countWork('authorProof.headCoverageHeads');
+      return dependencies.has(actionKey(id));
+    })
       ? openLocalAuthorAttempt(candidate.context.indexed!, action, {
           owner: this.readyOwner,
           version,

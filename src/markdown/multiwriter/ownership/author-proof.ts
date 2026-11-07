@@ -9,6 +9,11 @@ import type { OwnershipInput } from './ownership.js';
 import type { Activity } from '../visibility/activity.js';
 import { countWork } from '../diagnostics.js';
 
+function encodedAction(action: ActionEnvelope): Uint8Array {
+  const bytes = encodeEnvelope(action);
+  countWork('authorProof.envelopeBytesEncoded', bytes.length);
+  return bytes;
+}
 interface LocalBase {
   readonly owner: object;
   readonly version: number;
@@ -36,7 +41,7 @@ export function openLocalAuthorAttempt(
 ): () => void {
   const attempt: Attempt = {
     base,
-    bytes: encodeEnvelope(action),
+    bytes: encodedAction(action),
     past: indexed.past.identity,
     dependencies: [...indexed.dependencies],
     proofs: new Set(),
@@ -57,7 +62,7 @@ function assertAttempt(indexed: IndexedValidation, action: ActionEnvelope, attem
     indexed.past.identity !== attempt.past ||
     indexed.dependencies.length !== attempt.dependencies.length ||
     indexed.dependencies.some((token, i) => token !== attempt.dependencies[i]) ||
-    compareBytes(encodeEnvelope(action), attempt.bytes) !== 0
+    compareBytes(encodedAction(action), attempt.bytes) !== 0
   )
     throw new Error('Author proof attempt was invalidated');
 }
@@ -196,6 +201,13 @@ export function completeAuthorProof(
     !samePublication(publicationTokens(bindings), attempt.publication.tokens)
   )
     throw new Error('Missing exact author publication binding');
+  const refinement = structuredClone(completion.refinement);
+  countWork('authorProof.refinementWitnessesCopied', refinement.length);
+  countWork(
+    'authorProof.refinementRangesCopied',
+    refinement.reduce((sum, entry) => sum + 1 + entry.after.length, 0),
+  );
+  countWork('authorProof.actionBytesCopied', attempt.bytes.length);
   const proof = Object.freeze({}) as AuthorProof;
   proofs.set(proof, {
     invocation: request.invocation,
@@ -210,7 +222,7 @@ export function completeAuthorProof(
     bytes: attempt.bytes.slice(),
     bindings: publicationTokens(bindings),
     ordinals: completion.ordinals,
-    refinement: structuredClone(completion.refinement),
+    refinement,
   });
   attempt.proofs.add(proof);
   return proof;
@@ -238,7 +250,7 @@ export function consumeAuthorProof(request: AuthorProofRequest, proof: AuthorPro
     completed.dependencies.length !== attempt.dependencies.length ||
     completed.dependencies.some((token, i) => token !== attempt.dependencies[i]) ||
     completed.ordinals !== request.action.effects.length ||
-    compareBytes(completed.bytes, encodeEnvelope(request.action)) !== 0
+    compareBytes(completed.bytes, encodedAction(request.action)) !== 0
   )
     throw new Error('Invalid or expired author proof');
   countWork('authorProof.hits');
