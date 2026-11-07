@@ -48,13 +48,17 @@ for (const size of [10, 150])
         vi.spyOn(document, 'prepareLocalAction').mockImplementation(
           (action) => (staged.candidate = prepare(action)),
         );
-        const step = (operation: () => { status?: string; state?: string }) => {
+        const step = (
+          operation: () => { status?: string; state?: string },
+          requiresCandidate = false,
+        ) => {
           staged.candidate = undefined;
           const { value, report } = captureDiagnostics(operation);
           expect(value.status ?? value.state).toBe('applied');
           const candidate = readCandidate();
-          if (candidate) {
-            expect(document.publication.status().publication).toBe(candidate.publication);
+          if (requiresCandidate) {
+            expect(candidate, 'eligible structural command must prepare its result').toBeDefined();
+            expect(document.publication.status().publication).toBe(candidate!.publication);
             expect(report.work['publication/command.candidatesPublished']).toBe(1);
             expect(report.work['author/command.candidatesPrepared']).toBe(1);
             // Compiler queries, exact-author certification and candidate application
@@ -85,12 +89,14 @@ for (const size of [10, 150])
             focus: { nodeId, offset, affinity: 'right' as const },
           };
         };
-        step(() =>
-          session.edit(
-            enter,
-            { nodeId: p.handle(p.nodes()[0]), from: 4 },
-            { selectionBefore: select(0, 4) },
-          ),
+        step(
+          () =>
+            session.edit(
+              enter,
+              { nodeId: p.handle(p.nodes()[0]), from: 4 },
+              { selectionBefore: select(0, 4) },
+            ),
+          true,
         );
         expect(
           p
@@ -113,12 +119,14 @@ for (const size of [10, 150])
           ),
         );
         const rightId = resourceKey(p.nodes()[1].origin.representative);
-        step(() =>
-          session.edit(
-            deleteBackwardAtStart,
-            { nodeId: p.handle(p.nodes()[1]) },
-            { selectionBefore: select(1, 0) },
-          ),
+        step(
+          () =>
+            session.edit(
+              deleteBackwardAtStart,
+              { nodeId: p.handle(p.nodes()[1]) },
+              { selectionBefore: select(1, 0) },
+            ),
+          true,
         );
         expect(p.nodes()[0].content).toBe('pL0abcRdef');
         step(() =>
