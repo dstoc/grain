@@ -7,6 +7,7 @@ import type { NativeView } from '../ingest/publication.js';
 import type { RetainedPayloadIndex } from '../ingest/validator.js';
 import type { OwnershipInput } from './ownership.js';
 import type { Activity } from '../visibility/activity.js';
+import type { BirthPlacement } from '../layout/index.js';
 import { countWork } from '../diagnostics.js';
 
 function encodedAction(action: ActionEnvelope): Uint8Array {
@@ -77,15 +78,21 @@ export function bindAuthorNative(
   assertAttempt(indexed!, action, attempt);
   attempt.native = { token: Object.freeze({}), view: native };
 }
-export interface AuthorProofRequest {
+export interface AuthorProofAttempt {
   readonly invocation: object;
   readonly action: ActionEnvelope;
   readonly indexed?: IndexedValidation;
   readonly native: NativeView;
+}
+export interface LocalAuthorProofRequest extends AuthorProofAttempt {
+  /** Invocation-local and memoized by the validator. Host errors must propagate. */
+  births(): readonly BirthPlacement[];
+}
+export interface AuthorProofRequest extends AuthorProofAttempt {
   readonly input: OwnershipInput;
   readonly activity: Activity;
 }
-export function localAuthorBase(request: AuthorProofRequest): LocalBase | undefined {
+export function localAuthorBase(request: AuthorProofAttempt): LocalBase | undefined {
   const attempt = request.indexed && attempts.get(request.indexed);
   if (!attempt) return undefined;
   assertAttempt(request.indexed!, request.action, attempt);
@@ -102,6 +109,7 @@ export type AuthorProofResult =
   | { readonly state: 'unavailable'; readonly reason: string }
   | { readonly state: 'rejected' };
 export type AuthorProofProvider = (request: AuthorProofRequest) => AuthorProofResult;
+export type LocalAuthorProofProvider = (request: LocalAuthorProofRequest) => AuthorProofResult;
 /** The committed C/B tuple; detached proofs replace each object with an opaque token. */
 export interface AuthorPublicationBinding {
   readonly genesis: object;
@@ -135,7 +143,7 @@ function samePublication(a: AuthorPublicationBinding, b: AuthorPublicationBindin
   );
 }
 export function bindAuthorPublication(
-  request: AuthorProofRequest,
+  request: AuthorProofAttempt,
   bindings: AuthorPublicationBinding,
   assertCurrent: () => void,
 ): void {
@@ -177,7 +185,7 @@ function opaque(value: object): object {
 /** Mint last. The registry owns only detached bytes, counts and opaque tokens;
  * it cannot retain the fork, checkpoint, native facade, document or callbacks. */
 export function completeAuthorProof(
-  request: AuthorProofRequest,
+  request: AuthorProofAttempt,
   bindings: AuthorPublicationBinding,
   completion: {
     readonly ordinals: number;
@@ -227,7 +235,7 @@ export function completeAuthorProof(
   attempt.proofs.add(proof);
   return proof;
 }
-export function consumeAuthorProof(request: AuthorProofRequest, proof: AuthorProof): void {
+export function consumeAuthorProof(request: AuthorProofAttempt, proof: AuthorProof): void {
   const completed = proofs.get(proof);
   proofs.delete(proof);
   const base = localAuthorBase(request);

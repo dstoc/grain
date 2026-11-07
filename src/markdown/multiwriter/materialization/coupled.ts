@@ -34,7 +34,7 @@ import { subdivideCells } from './subdivision.js';
 import type { StructuralChanges } from './subdivision.js';
 import { structuralReads } from './structural.js';
 import type {
-  AuthorProofRequest,
+  AuthorProofAttempt,
   AuthorProofResult,
   AuthorPublicationBinding,
 } from '../ownership/author-proof.js';
@@ -317,13 +317,18 @@ export class MaterializedOwnership {
       },
     };
   }
+  /** Indexed immutable retained binding; no home export or current-flow filter. */
+  authorHome(tape: TapeId) {
+    countWork('authorProof.retainedHomeQueries');
+    return this.resources?.retained.homeForTape(tape);
+  }
   *prepareAuthor(
     input: ProjectionInput,
     activity: Activity,
     variants: PayloadIndex,
     tapes: readonly TapeId[],
     sequence: ActionSequence,
-    request: AuthorProofRequest,
+    request: AuthorProofAttempt,
     bindings: AuthorPublicationBinding,
   ): Generator<void, AuthorProofResult, void> {
     const count = this.state?.count ?? 0,

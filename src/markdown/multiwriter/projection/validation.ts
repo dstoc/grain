@@ -11,7 +11,16 @@ import {
 } from '../ownership/text-validation.js';
 import { actionKey } from '../actions/references.js';
 import { countWork } from '../diagnostics.js';
-import type { AuthorProofProvider } from '../ownership/author-proof.js';
+import type {
+  AuthorProofProvider,
+  LocalAuthorProofProvider,
+  LocalAuthorProofRequest,
+} from '../ownership/author-proof.js';
+import {
+  consumeAuthorProof,
+  discardAuthorProof,
+  AuthorProofProviderError,
+} from '../ownership/author-proof.js';
 import type { IngestValidatorOptions } from '../ingest/validator.js';
 import { finish, IngestCapacityError, IngestDataError } from '../ingest/work.js';
 import { reduceActivity } from '../visibility/index.js';
@@ -28,12 +37,17 @@ import {
 export function createProjectionAuthorValidator(options: {
   readonly genesis: LayoutGenesis;
   readonly authorProof?: AuthorProofProvider;
+  readonly localAuthorProof?: LocalAuthorProofProvider;
   readonly births: (action: ActionEnvelope) => readonly BirthPlacement[];
 }): NonNullable<IngestValidatorOptions['validateAuthor']> {
   const genesis = structuredClone(options.genesis);
   // One validator owns the immutable genesis and its home descriptors. Candidate
   // activity, native snapshots and birth callbacks remain invocation-specific.
-  const validateOwnership = createOwnershipAuthorValidator({ ...options, genesis });
+  const validateOwnership = createOwnershipAuthorValidator({
+    ...options,
+    genesis,
+    authorProof: options.localAuthorProof ? undefined : options.authorProof,
+  });
   let validatePacketOwnership: ReturnType<typeof createOwnershipAuthorValidator> | undefined;
   return (action, context) => {
     // The indexed past certifies all ancestor constructors. Pure refinement has
@@ -71,10 +85,54 @@ export function createProjectionAuthorValidator(options: {
       )
         return null;
     }
+    // A private exact-local attempt can certify the candidate before any author
+    // closure inventory is requested. Unavailable results keep ordinary validation.
+    let candidateBirths: readonly BirthPlacement[] | undefined;
+    const births = () => {
+      if (!candidateBirths) {
+        countWork('projectionAuthor.candidateBirthCallbacks');
+        candidateBirths = options.births(action);
+      }
+      return candidateBirths;
+    };
+    if (options.localAuthorProof && !action.effects.some((effect) => effect.type === 'Interpret')) {
+      const request: LocalAuthorProofRequest = {
+        invocation: Object.freeze({}),
+        action,
+        indexed: context.indexed,
+        native: context.native,
+        births,
+      };
+      countWork('authorProof.requests');
+      const result = (() => {
+        try {
+          return options.localAuthorProof!(request);
+        } catch (error) {
+          throw new AuthorProofProviderError(error);
+        }
+      })();
+      if (result.state === 'rejected') {
+        countWork('authorProof.rejections');
+        return 'reference';
+      }
+      if (result.state === 'proved') {
+        try {
+          consumeAuthorProof(request, result.proof);
+          return null;
+        } finally {
+          discardAuthorProof(result.proof);
+        }
+      }
+      countWork(`authorProof.miss.${result.reason}`);
+    }
     const actions = [...context.dependencies, action];
     // Resolve host-supplied birth bindings before data-rejection catches. Host
     // failures must propagate; the reference boundary handles ProvenanceError.
-    const inputs = actions.map((action) => ({ action, births: options.births(action) }));
+    const inputs = actions.map((entry) => {
+      if (entry === action) return { action: entry, births: births() };
+      countWork('projectionAuthor.ancestorBirthCallbacks');
+      return { action: entry, births: options.births(entry) };
+    });
     const activity = reduceActivity(actions);
     const selected = selectInterpretations(activity);
     const allocations = [
@@ -83,7 +141,10 @@ export function createProjectionAuthorValidator(options: {
     ];
     const snapshots = allocations
       .filter((entry) => entry.type === 'tape')
-      .map((entry) => context.native.snapshot(entry.id));
+      .map((entry) => {
+        countWork('authorProof.snapshotBindingsIndexed');
+        return context.native.snapshot(entry.id);
+      });
     countWork('projectionAuthor.preambleActions', actions.length);
     countWork('projectionAuthor.preambleAllocations', allocations.length);
     countWork('projectionAuthor.preambleSnapshots', snapshots.length);

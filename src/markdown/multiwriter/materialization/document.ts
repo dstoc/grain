@@ -3,8 +3,12 @@ import { measureWork } from '../diagnostics.js';
 import { countWork } from '../diagnostics.js';
 import { readySource } from '../authoring/ready-source.js';
 import { localAuthorBase, bindAuthorPublication } from '../ownership/author-proof.js';
-import type { AuthorProofRequest, AuthorProofResult } from '../ownership/author-proof.js';
+import type { LocalAuthorProofRequest, AuthorProofResult } from '../ownership/author-proof.js';
 import { resourceKey } from '../layout/index.js';
+import { deriveHomes } from '../ownership/homes.js';
+import { assertEdgeBrackets } from '../ownership/validation.js';
+import { validateMembership } from '../projection/interpretation.js';
+import type { TapeSnapshot } from '../text/types.js';
 import type { TapeId } from '../contracts.js';
 import { measure } from '../diagnostics.js';
 import { IndexedActionStore, readySequence } from './readiness.js';
@@ -41,7 +45,7 @@ export function openMaterializedDocument(
   const validateAuthor = createProjectionAuthorValidator({
     genesis: genesis.layout,
     births: reconstructBirths,
-    authorProof: prepareAuthorProof,
+    localAuthorProof: prepareAuthorProof,
   });
   const validate = createIngestValidator({
     genesis: genesis.body,
@@ -83,7 +87,7 @@ export function openMaterializedDocument(
     discarded: 0,
     misses: {} as Record<string, number>,
   };
-  function prepareAuthorProof(request: AuthorProofRequest): AuthorProofResult {
+  function prepareAuthorProof(request: LocalAuthorProofRequest): AuthorProofResult {
     proofWork.requests++;
     const miss = (reason: string): AuthorProofResult => {
       proofWork.misses[reason] = (proofWork.misses[reason] ?? 0) + 1;
@@ -103,15 +107,6 @@ export function openMaterializedDocument(
       )
     )
       return miss('unsupported-effect-shape');
-    for (let ordinal = 0; ordinal < action.effects.length; ordinal++) {
-      const order = { action: { id: action.id, lamport: action.lamport }, ordinal };
-      if (
-        request.input.isActive(order) !==
-          request.activity.isEffectActive({ action: action.id, ordinal }) ||
-        request.input.interpretationEligible?.(order)
-      )
-        return miss('changed-candidate-eligibility');
-    }
     const status = publication.status(),
       published = status.publication;
     if (!published || status.stale || !status.canAuthor) return miss('unavailable-publication');
@@ -119,84 +114,128 @@ export function openMaterializedDocument(
     if (!source) return miss('unindexed-ready');
     const owned = projection.authorOwnership(genesis.layout, source, published.native);
     if (!owned) return miss('unavailable-owned-base');
+    const active = activity.authorBase(source, base.ready.length);
+    if (!active) {
+      owned.branch.evict();
+      return miss('unavailable-activity-base');
+    }
     const assertCurrent = () => {
       base.assertCurrent();
       const current = publication.status();
       if (current.stale || !current.canAuthor || current.publication !== published)
         throw new Error('Author publication was invalidated');
       owned.assertCurrent();
+      active.assertCurrent();
     };
     const branch = owned.branch;
     try {
       bindAuthorPublication(request, owned.bindings, assertCurrent);
-      const length = base.ready.length + 1;
-      const sequence = {
-        length,
-        at: (i: number) => {
-          const at = i < 0 ? length + i : i;
-          return at === length - 1 ? action : base.ready.at(at);
-        },
-      };
-      registerReadyAppend(sequence, base.ready, action);
-      const key = actionKey(action.id),
-        bytes = encodeEnvelope(action);
-      countWork('authorProof.candidateBytesEncoded', bytes.length);
-      const variants = { get: (id: string) => (id === key ? bytes : base.payloads.get(id)) };
-      // The validated body, not compiler-supplied staged tapes, defines every change.
-      const touched = new Map<string, TapeId>();
-      for (const birth of action.nativeManifest) touched.set(resourceKey(birth.tape), birth.tape);
-      for (const allocation of action.allocations) {
-        const tape =
-          allocation.type === 'tape'
-            ? allocation.id
-            : allocation.type === 'marker'
-              ? allocation.tape
-              : undefined;
-        if (tape) touched.set(resourceKey(tape), tape);
-      }
-      countWork('authorProof.snapshotBindingsIndexed', request.input.snapshots.length);
-      const snapshots = new Map(request.input.snapshots.map((s) => [resourceKey(s.tape), s]));
-      const native: NativeView = {
-        ...request.native,
-        snapshot: (tape) => {
-          const snapshot = snapshots.get(resourceKey(tape));
-          if (!snapshot) throw new Error('Validated author snapshot is unavailable');
-          countWork('authorProof.snapshotPartsRead', snapshot.parts.length);
-          return snapshot;
-        },
-      };
-      const prepared = finish(
-        branch.prepareAuthor(
-          {
-            ...request.input,
-            genesis: genesis.layout,
-            actions: [{ action, births: request.input.actions.at(-1)!.births }],
-            genesisManifest: genesis.body.nativeManifest,
-            initialProperties: genesis.initialProperties,
-            birthContent: [],
-            native,
+      // This callback can fail operationally or reenter. Keep it outside the
+      // candidate-data catch, then recheck every exact binding before using it.
+      const births = request.births();
+      assertCurrent();
+      localAuthorBase(request);
+      try {
+        const length = base.ready.length + 1;
+        const sequence = {
+          length,
+          at: (i: number) => {
+            const at = i < 0 ? length + i : i;
+            return at === length - 1 ? action : base.ready.at(at);
           },
-          request.activity,
-          variants,
-          [...touched.values()],
-          sequence,
-          request,
-          owned.bindings,
-        ),
-      );
-      if (prepared.state === 'unavailable') return miss(prepared.reason);
-      if (prepared.state === 'rejected') throw new Error('Unexpected author preparation rejection');
-      proofWork.ordinals += action.effects.length;
-      proofWork.hits++;
-      return prepared;
-    } catch (error) {
-      if (!(error instanceof OwnershipValidationError)) throw error;
-      proofWork.rejected++;
-      return { state: 'rejected' };
+        };
+        registerReadyAppend(sequence, base.ready, action);
+        const key = actionKey(action.id),
+          bytes = encodeEnvelope(action);
+        countWork('authorProof.candidateBytesEncoded', bytes.length);
+        const variants = { get: (id: string) => (id === key ? bytes : base.payloads.get(id)) };
+        // The validated body, not compiler-supplied staged tapes, defines every change.
+        const touched = new Map<string, TapeId>();
+        for (const birth of action.nativeManifest) touched.set(resourceKey(birth.tape), birth.tape);
+        for (const allocation of action.allocations) {
+          const tape =
+            allocation.type === 'tape'
+              ? allocation.id
+              : allocation.type === 'marker'
+                ? allocation.tape
+                : undefined;
+          if (tape) touched.set(resourceKey(tape), tape);
+        }
+        // Each exact affected snapshot is read once. Marker-only changes remain
+        // in this set; an empty text manifest is never a partition exemption.
+        const snapshots = new Map<string, TapeSnapshot>();
+        const native: NativeView = {
+          ...request.native,
+          snapshot: (tape) => {
+            const key = resourceKey(tape);
+            let snapshot = snapshots.get(key);
+            if (!snapshot) {
+              snapshot = request.native.snapshot(tape);
+              countWork('authorProof.snapshotPartsRead', snapshot.parts.length);
+              snapshots.set(key, snapshot);
+            }
+            return snapshot;
+          },
+        };
+        // Native/provider failures occur outside pure candidate-data checks.
+        const changed = [...touched.values()].map((tape) => native.snapshot(tape));
+        const activityCandidate = finish(active.branch.prepare(sequence, variants));
+        assertCurrent();
+        for (let ordinal = 0; ordinal < action.effects.length; ordinal++) {
+          const ref = { action: action.id, ordinal };
+          if (!activityCandidate.value.isEffectActive(ref))
+            return miss('changed-candidate-eligibility');
+        }
+        // These pure checks throw only tagged candidate-data errors. Callback,
+        // native-reader, capacity and cancellation failures propagate unchanged.
+        // Eligibility above excludes Interpret; retain membership's explicit check.
+        validateMembership(action, []);
+        const fresh = deriveHomes({ allocations: action.allocations, births }, action.effects);
+        const freshByTape = new Map(fresh.map((home) => [resourceKey(home.cell.tape), home]));
+        const homes = changed.map((snapshot) => {
+          const home =
+            freshByTape.get(resourceKey(snapshot.tape)) ?? branch.authorHome(snapshot.tape);
+          if (!home) throw new OwnershipValidationError('Native tape lacks a private home binding');
+          return home;
+        });
+        assertEdgeBrackets(action, homes, changed);
+        countWork('authorProof.affectedTapesValidated', changed.length);
+        const prepared = finish(
+          branch.prepareAuthor(
+            {
+              genesis: genesis.layout,
+              actions: [{ action, births }],
+              genesisManifest: genesis.body.nativeManifest,
+              initialProperties: genesis.initialProperties,
+              birthContent: [],
+              native,
+            },
+            activityCandidate.value,
+            variants,
+            [...touched.values()],
+            sequence,
+            request,
+            owned.bindings,
+          ),
+        );
+        if (prepared.state === 'unavailable') return miss(prepared.reason);
+        if (prepared.state === 'rejected')
+          throw new Error('Unexpected author preparation rejection');
+        assertCurrent();
+        countWork('authorProof.candidateActionsValidated');
+        proofWork.ordinals += action.effects.length;
+        proofWork.hits++;
+        return prepared;
+      } catch (error) {
+        if (!(error instanceof OwnershipValidationError)) throw error;
+        proofWork.rejected++;
+        return { state: 'rejected' };
+      }
     } finally {
       proofWork.oldActionsReplayed += Math.max(0, branch.diagnostics().actionsReplayed - 1);
       countWork('authorProof.discardedCandidates');
       proofWork.discarded++;
+      active.branch.evict();
       branch.evict();
     }
   }

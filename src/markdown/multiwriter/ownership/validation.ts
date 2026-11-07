@@ -7,6 +7,7 @@ import { reduceActivity } from '../visibility/activity.js';
 import { CellIndex, sameId } from './cells.js';
 import { deriveHomes } from './homes.js';
 import type { HomeBinding } from './homes.js';
+import { OwnershipValidationError } from './errors.js';
 import { certifyOwnership } from './ownership.js';
 import type { OwnershipInput } from './ownership.js';
 import {
@@ -170,7 +171,7 @@ export function createOwnershipAuthorValidator(options: {
 /** Final text-free edges alone do not certify two author-allocated brackets. Remove
  * this action's interior markers to locate the insertion's original home cell.
  */
-function assertEdgeBrackets(
+export function assertEdgeBrackets(
   action: ActionEnvelope,
   homes: readonly HomeBinding[],
   snapshots: readonly TapeSnapshot[],
@@ -206,7 +207,7 @@ function assertEdgeBrackets(
         continue;
       const before = priorMarkers.findLast((marker) => marker.index < part.index);
       const after = priorMarkers.find((marker) => marker.index > part.index);
-      if (!before || !after) throw new Error('Text outside home sentinels');
+      if (!before || !after) throw new OwnershipValidationError('Text outside home sentinels');
       if (!sameId(before.marker, home.cell.start) && !sameId(after.marker, home.cell.end)) continue;
       const left = markers.findLast((marker) => marker.index < part.index)!;
       const right = markers.find((marker) => marker.index > part.index)!;
@@ -216,7 +217,9 @@ function assertEdgeBrackets(
         sameId(left.marker, home.cell.start) ||
         sameId(right.marker, home.cell.end)
       )
-        throw new Error('Edge typing needs two interior author-allocated brackets');
+        throw new OwnershipValidationError(
+          'Edge typing needs two interior author-allocated brackets',
+        );
       index.range({ tape: snapshot.tape, start: left.marker, end: right.marker });
     }
   }

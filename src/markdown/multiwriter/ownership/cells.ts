@@ -1,3 +1,4 @@
+import { OwnershipValidationError } from './errors.js';
 import type {
   CellAssignment,
   MarkerId,
@@ -10,6 +11,7 @@ import { resourceKey } from '../layout/index.js';
 import type { BoundaryIndex } from '../layout/index.js';
 import type { TapeSnapshot } from '../text/cache.js';
 import type { LocatedText } from '../text/types.js';
+import { countWork } from '../diagnostics.js';
 
 export interface NativeCell {
   readonly range: RangeRef;
@@ -51,19 +53,28 @@ export class CellIndex implements BoundaryIndex {
   >();
 
   constructor(snapshots: readonly TapeSnapshot[]) {
+    countWork('cellIndex.snapshotsCloned', snapshots.length);
+    countWork(
+      'cellIndex.partsCloned',
+      snapshots.reduce((n, s) => n + s.parts.length, 0),
+    );
     const cells: NativeCell[] = [];
     for (const snapshot of structuredClone(snapshots)) {
+      countWork('cellIndex.tapesIndexed');
       const key = resourceKey(snapshot.tape);
-      if (this.tapes.has(key)) throw new Error('Duplicate native tape snapshot');
+      if (this.tapes.has(key)) throw new OwnershipValidationError('Duplicate native tape snapshot');
       let previous: MarkerId | null = null;
       let fragments: LocatedText[] = [];
       const tapeCells: NativeCell[] = [];
       let position = 0;
       for (const part of snapshot.parts) {
-        if (part.index !== position) throw new Error('Invalid native snapshot positions');
+        countWork('cellIndex.partsTraversed');
+        if (part.index !== position)
+          throw new OwnershipValidationError('Invalid native snapshot positions');
         if (part.type === 'marker') {
           const markerKey = resourceKey(part.marker);
-          if (this.markers.has(markerKey)) throw new Error('Duplicate native marker');
+          if (this.markers.has(markerKey))
+            throw new OwnershipValidationError('Duplicate native marker');
           this.markers.set(markerKey, {
             tape: snapshot.tape,
             position,
@@ -79,7 +90,8 @@ export class CellIndex implements BoundaryIndex {
           fragments = [];
           position++;
         } else {
-          if (!previous || !part.text.length) throw new Error('Text outside native cells');
+          if (!previous || !part.text.length)
+            throw new OwnershipValidationError('Text outside native cells');
           fragments.push({
             index: position,
             text: part.text,
@@ -89,7 +101,7 @@ export class CellIndex implements BoundaryIndex {
         }
       }
       if (fragments.length || position !== snapshot.length || !tapeCells.length)
-        throw new Error('Missing permanent tape endpoints');
+        throw new OwnershipValidationError('Missing permanent tape endpoints');
       const clients = new Map<number, { start: number; end: number; cell: NativeCell }[]>();
       for (const cell of tapeCells)
         for (const fragment of cell.fragments) {
@@ -120,22 +132,23 @@ export class CellIndex implements BoundaryIndex {
   }
   position(tape: TapeId, marker: MarkerId): number {
     const found = this.markers.get(resourceKey(marker));
-    if (!found || !sameId(found.tape, tape)) throw new Error('Unknown native range endpoint');
+    if (!found || !sameId(found.tape, tape))
+      throw new OwnershipValidationError('Unknown native range endpoint');
     return found.position;
   }
   adjacent(boundary: MarkerId, side: 'left' | 'right'): NativeCell {
     const marker = this.markers.get(resourceKey(boundary));
-    if (!marker) throw new Error('Unknown permanent marker');
+    if (!marker) throw new OwnershipValidationError('Unknown permanent marker');
     const cell = this.tape(marker.tape).find((cell) =>
       sameId(side === 'left' ? cell.range.end : cell.range.start, boundary),
     );
-    if (!cell) throw new Error('Slot points outside permanent tape endpoints');
+    if (!cell) throw new OwnershipValidationError('Slot points outside permanent tape endpoints');
     return cell;
   }
   range(range: RangeRef): readonly NativeCell[] {
     const start = this.position(range.tape, range.start);
     const end = this.position(range.tape, range.end);
-    if (start >= end) throw new Error('Invalid open native range');
+    if (start >= end) throw new OwnershipValidationError('Invalid open native range');
     return this.tape(range.tape).slice(
       this.markers.get(resourceKey(range.start))!.ordinal,
       this.markers.get(resourceKey(range.end))!.ordinal,
@@ -143,16 +156,16 @@ export class CellIndex implements BoundaryIndex {
   }
   tape(tape: TapeId): readonly NativeCell[] {
     const result = this.tapes.get(resourceKey(tape));
-    if (!result) throw new Error('Missing native tape snapshot');
+    if (!result) throw new OwnershipValidationError('Missing native tape snapshot');
     return result;
   }
   containsBoundary(range: RangeRef, boundary: MarkerId): boolean {
     const marker = this.markers.get(resourceKey(boundary));
-    if (!marker) throw new Error('Unknown permanent marker');
+    if (!marker) throw new OwnershipValidationError('Unknown permanent marker');
     if (!sameId(marker.tape, range.tape)) return false;
     const start = this.position(range.tape, range.start);
     const end = this.position(range.tape, range.end);
-    if (start >= end) throw new Error('Invalid open native range');
+    if (start >= end) throw new OwnershipValidationError('Invalid open native range');
     return marker.position >= start && marker.position <= end;
   }
   locateToken(tape: TapeId, native: NativeId): NativeCell {
@@ -162,7 +175,7 @@ export class CellIndex implements BoundaryIndex {
       !Number.isSafeInteger(native.clock) ||
       native.clock < 0
     )
-      throw new Error('Invalid native text identity');
+      throw new OwnershipValidationError('Invalid native text identity');
     const cells = this.tape(tape);
     const client = this.native.get(resourceKey(tape))!.get(native.client);
     let cell: NativeCell | undefined;
@@ -188,13 +201,13 @@ export class CellIndex implements BoundaryIndex {
         ),
       );
     }
-    if (!cell) throw new Error('Unknown native text identity');
+    if (!cell) throw new OwnershipValidationError('Unknown native text identity');
     return cell;
   }
   token(range: NativeTextRange): readonly NativeCell[] {
     this.locateToken(range.tape, range);
     if (!Number.isSafeInteger(range.length) || range.length <= 0)
-      throw new Error('Invalid native text range');
+      throw new OwnershipValidationError('Invalid native text range');
     const client = this.native.get(resourceKey(range.tape))!.get(range.client)!;
     let cells: readonly NativeCell[];
     if (client.disjoint) {
@@ -246,11 +259,12 @@ export class CellIndex implements BoundaryIndex {
           const before = fragment.text.charCodeAt(offset - 1);
           const after = fragment.text.charCodeAt(offset);
           if (before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff)
-            throw new Error('Native text range splits a surrogate pair');
+            throw new OwnershipValidationError('Native text range splits a surrogate pair');
         }
         covered += end - start;
       }
-    if (covered !== range.length) throw new Error('Unknown native text identity');
+    if (covered !== range.length)
+      throw new OwnershipValidationError('Unknown native text identity');
     return cells;
   }
 }

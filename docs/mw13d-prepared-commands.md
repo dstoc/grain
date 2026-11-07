@@ -50,13 +50,38 @@ The existing attempt-specific ownership proof remains required. Reference and
 remote validation retain their own exact causal closure. No command is certified
 against an unrelated merged publication. Candidate packets retain full validation.
 
-Projection and ownership checks share one invocation's birth inputs, activity,
-allocations and snapshots through a scoped private registry. Every membership,
-home, edge-bracket, constructor and author-only split check still runs. The
-registry checks action/native identity and releases its inputs in `finally`.
-Genesis home descriptors are cached only inside their owning validator. Packet
-validation creates its separate full validator lazily. No history of complete
-author-result projections is retained.
+For the already-supported exact-local single split/join class, projection asks
+for a proof before reading the author closure. The attempt still follows native
+ingest, reference and allocation validation. It requires the exact committed B/C
+publication and an activity root with the same ready source and action count.
+All three roots and their generations remain guarded through consumption.
+
+The private activity fork appends only the candidate and uses indexed activity
+and retained interpretation decisions. The validator resolves candidate births
+once, outside data-rejection catches, then rechecks the invocation after that
+callback. It derives changed/new tapes from the validated manifest and allocations,
+including marker-only changes. One command-local snapshot map reads those exact
+tapes, without exporting unrelated resources or snapshots. Candidate home checks
+and the original edge-bracket algorithm use each touched tape's actual home,
+including homes outside the split/join's current flow. Every changed tape still
+receives partition validation. Tagged data errors reject; callback, reader,
+capacity and invalidation failures propagate.
+
+The strict author-only B suffix retains resource append/count/native binding,
+constructor, capture, coverage and pre-effect split checks. Conditional native
+continuity/refinement/frontier guards can decline before old replay. Minting and
+single consumption keep the exact attempt, payload, closure, native and B/C tokens.
+No historical complete author result cache is added. Both private forks and the
+selected snapshot map live only for this synchronous attempt; the detached proof
+retains bytes and opaque tokens, with the existing attempt cleanup.
+
+The ordinary full validator remains the fallback for cold/evicted/mismatched
+roots, controls, packets, moves, multiple structural effects, different closures
+and conservative refinement misses. Fallback projection and ownership checks
+share one invocation's full inputs. A declined early attempt does not invoke the
+candidate birth callback or record its miss twice. Full closure, snapshot, home
+and activity export counters remain live on that work. Remote validation still
+reconstructs the author's own causal past independently of the merged publication.
 
 Readiness orders local dependency certificates in the same order as canonical
 admission. It starts frontier merging from the newest dependency root, so
@@ -78,23 +103,27 @@ footprint test checks joined sources and both edge/interior splits.
 
 Do not describe this pipeline as one validation. Necessary work is separate:
 
-| Boundary                   | Expected supported warm behavior                                                                                                                |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| Command/compiler overlay   | Touched fields/links; zero full construction trees. Private compiler query revisions remain separately counted.                                 |
-| Native writer              | One `prepare`; original body/reference/native checks remain.                                                                                    |
-| Exact author certification | One final local certification. Existing reference checks and one author-only B proof suffix remain; preamble inventory scans are still charged. |
-| Candidate application      | One native application and one activity/B/C preparation. B consumes one suffix action for an ordinary append.                                   |
-| Selection and footprint    | Capture before append using the candidate and pre-command ownership; no full assignment export for the supported split/join.                    |
-| Canonical append/admission | One append and exact certificate/payload/dependency checks.                                                                                     |
-| Publication                | Install the same candidate; zero second B/C preparation or full projector for an exact admitted append.                                         |
+| Boundary                   | Expected supported warm behavior                                                                                                                                                             |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Command/compiler overlay   | Touched fields/links; zero full construction trees. Private compiler query revisions remain separately counted.                                                                              |
+| Native writer              | One `prepare`; original body/reference/native checks remain.                                                                                                                                 |
+| Exact author certification | One final local certification. Existing native/reference checks, selected-tape partition/bracket checks and one author-only B proof suffix remain; no full preamble on an eligible warm hit. |
+| Candidate application      | One native application and one activity/B/C preparation. B consumes one suffix action for an ordinary append.                                                                                |
+| Selection and footprint    | Capture before append using the candidate and pre-command ownership; no full assignment export for the supported split/join.                                                                 |
+| Canonical append/admission | One append and exact certificate/payload/dependency checks.                                                                                                                                  |
+| Publication                | Install the same candidate; zero second B/C preparation or full projector for an exact admitted append.                                                                                      |
 
 `publication/*` work includes the publication owner's preparation before append.
 It does not mean all work occurred after append. Exclusive phase spans and
-uninstrumented wall samples are separate. Historical preamble counters describe
-inventory sizes; `authorProof.preambleInputsReused` records shared input reuse,
+uninstrumented wall samples are separate. Fallback preamble counters describe
+actual full inventory sizes; `authorProof.preambleInputsReused` records shared input reuse,
 and native snapshot counters record actual traversal/copying. Dependency sorting
 charges only direct dependencies; author closure materialization/sorting remains
-visible under its existing counters.
+visible under its existing counters on fallback. Activity exports, home queries,
+cell partition copies/traversals and persistent-index reads/allocations are charged
+at their actual work sites. The fixture-specific positive counts are distinct
+validated tapes and candidate actions, not universal tape bounds. Separate B cell
+index construction and ingest/native application remain necessary obligations.
 
 ## Lifetimes and fallbacks
 
@@ -115,8 +144,10 @@ misses. Start-of-paragraph Enter can include a move and still use full author
 certification. These are correctness paths, not acceptance passes.
 
 The 150-short-paragraph p50 15 ms target remains unmet in development evidence.
-Full exact-author preamble/closure scans, cold/evicted staging and full history
-control certification remain costs. Required final-source raw reports and the
+Full exact-author preamble/closure scans remain on fallback. Cold/evicted staging
+and full history-control certification remain costs. The approved warm-route
+slice must have its own changed-source checks and timing evidence; it does not
+establish the target or complete the unsupported paths. Required final-source raw reports and the
 acceptance crosswalk belong to the issue artifacts. Broader MW10/MW18 storage,
 scale, uninterrupted history and total cache accounting remain E/parent work.
 

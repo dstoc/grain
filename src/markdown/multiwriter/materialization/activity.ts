@@ -8,6 +8,7 @@ import { ActivityValidationError } from '../visibility/activity.js';
 import type { Activity, ActiveEffect } from '../visibility/activity.js';
 import { groupKey } from '../visibility/identity.js';
 import type { Work } from '../ingest/work.js';
+import { countWork } from '../diagnostics.js';
 import * as persistent from './map.js';
 import type { MapRoot } from './map.js';
 
@@ -70,6 +71,7 @@ function* entries<T>(root: MapRoot<T> | undefined): Generator<readonly [string, 
 const contains = (frontier: Frontier, id: ActionId) =>
   (persistent.get(frontier, id.actor) ?? 0n) >= id.sequence;
 function requireRecord(state: State, id: ActionId): Record {
+  countWork('activity.recordQueries');
   const record = persistent.get(state.byId, actionKey(id));
   if (!record)
     throw new ActivityValidationError(`Action is outside the ready closure: ${actionKey(id)}`);
@@ -79,7 +81,10 @@ function activity(state: State): Activity {
   let actions: readonly ActionEnvelope[] | undefined, effects: readonly ActiveEffect[] | undefined;
   const ordered = () => {
     const records: Record[] = [];
-    for (let record = state.last; record; record = record.previous) records.push(record);
+    for (let record = state.last; record; record = record.previous) {
+      countWork('activity.orderedEntriesExported');
+      records.push(record);
+    }
     return records.reverse();
   };
   const isActive = (id: ActionId) => {
@@ -93,9 +98,11 @@ function activity(state: State): Activity {
   };
   return {
     get actions() {
+      if (!actions) countWork('activity.actionsCloned', state.count);
       return (actions ??= structuredClone(ordered().map((record) => record.action)));
     },
     get effects() {
+      if (!effects) countWork('activity.effectActionsExported', state.count);
       return (effects ??= structuredClone(
         ordered().flatMap(({ action }) =>
           isActive(action.id)
@@ -162,11 +169,25 @@ export class MaterializedActivity {
     copy.checkpoints = this.checkpoints;
     return copy;
   }
+  /** An author fork must name the exact committed publication source. */
+  authorBase(source: ReadySource, count: number) {
+    if (this.source !== source || this.state.count !== count) return undefined;
+    const state = this.state,
+      generation = this.generation;
+    return {
+      branch: this.fork(),
+      assertCurrent: () => {
+        if (this.state !== state || this.source !== source || this.generation !== generation)
+          throw new Error('Author activity base was invalidated');
+      },
+    };
+  }
   *prepare(actions: ActionSequence, variants: PayloadIndex): Work<PreparedActivity> {
     const generation = ++this.generation;
     const source = readySource(actions),
       additions = source && this.source && source.additions(this.source);
     this.counts.readyIndexNodesVisited += additions?.nodesVisited ?? 0;
+    countWork('activity.readyIndexNodesVisited', additions?.nodesVisited ?? 0);
     // Ready roots certify the exact same retained payload objects, not just IDs
     // or counts. Earlier semantic additions still require the full comparison.
     const append =
@@ -184,10 +205,12 @@ export class MaterializedActivity {
       if (!bytes) throw new Error('Activity cache requires exact ready payloads');
       const prior = persistent.get(this.order, String(index));
       this.counts.payloadsCompared++;
+      countWork('activity.payloadsCompared');
       if (prior?.key === key && compareBytes(prior.bytes, bytes) === 0)
         order = persistent.set(order, String(index), prior);
       else {
         frontier = Math.min(frontier, index);
+        countWork('activity.payloadBytesCopied', bytes.length);
         order = persistent.set(order, String(index), { key, bytes: bytes.slice() });
       }
     }
@@ -230,12 +253,15 @@ export class MaterializedActivity {
   }
   private *advance(state: State, input: ActionEnvelope): Work<State> {
     yield;
+    countWork('activity.actionsCloned');
+    countWork('activity.effectsCloned', input.effects.length);
     const action = structuredClone(input),
       key = actionKey(action.id);
     if (persistent.get(state.byId, key))
       throw new ActivityValidationError(`Duplicate action in ready set: ${key}`);
     let past: Frontier;
     for (const id of action.dependencies) {
+      countWork('activity.dependencyEdgesVisited');
       yield;
       const dependency = requireRecord(state, id);
       if (dependency.action.lamport >= action.lamport)
@@ -245,6 +271,7 @@ export class MaterializedActivity {
         for (const [actor, sequence] of entries(dependency.after)) {
           yield;
           this.counts.frontierEntries++;
+          countWork('activity.frontierEntriesVisited');
           if ((persistent.get(past, actor) ?? 0n) < sequence)
             past = persistent.set(past, actor, sequence);
         }
