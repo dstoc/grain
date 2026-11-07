@@ -170,3 +170,109 @@ it('rejects malformed endpoints, snapshots, native IDs, and allocations', () => 
     index.range({ ...f.homes[0].cell, end: { ...f.homes[0].cell.end, ordinal: 999 } }),
   ).toThrow('Unknown native');
 });
+
+it('matches a full scan for every retained marker pair, including empty refined cells', () => {
+  const f = fixture('a😀z');
+  f.author('A1', (f) => f.insert('edge', 'x', 'P:end'));
+  const snapshot = f.peers.get('A')!.snapshot(f.id('tP', 'tape'));
+  const index = new CellIndex([snapshot]);
+  const markers = snapshot.parts.filter((part) => part.type === 'marker');
+  const ownership = f.reduce('A');
+  for (const [i, start] of markers.entries()) {
+    for (const [j, end] of markers.entries()) {
+      const range = { tape: snapshot.tape, start: start.marker, end: end.marker };
+      if (i >= j) {
+        expect(() => index.range(range)).toThrow('Invalid open native range');
+        continue;
+      }
+      const expected = index.cells.filter(
+        (cell) =>
+          index.position(range.tape, cell.range.start) >= start.index &&
+          index.position(range.tape, cell.range.end) <= end.index,
+      );
+      expect(index.range(range)).toEqual(expected);
+      for (const cell of index.cells)
+        for (const fragment of cell.fragments)
+          expect(ownership.contains(range, { tape: range.tape, native: fragment.range })).toBe(
+            expected.includes(cell),
+          );
+    }
+  }
+});
+
+it('matches a full native fragment scan across interleaved clients, clock gaps and surrogate units', () => {
+  const f = fixture('a😀z');
+  f.author('A1', (f) => f.insert('a-edge', '𝄞', 'P:end'));
+  f.author('B1', (f) => f.insert('b-edge', 'b', 'P:start'));
+  f.deliver('B', 'A', ['B1']);
+  const snapshot = f.peers.get('A')!.snapshot(f.id('tP', 'tape'));
+  const index = new CellIndex([snapshot]);
+  for (const part of snapshot.parts) {
+    if (part.type === 'marker') {
+      expect(() => index.locateToken(snapshot.tape, part.native)).toThrow('Unknown native text');
+      continue;
+    }
+    for (let offset = 0; offset < part.text.length; offset++) {
+      const native = { client: part.native.client, clock: part.native.clock + offset };
+      const scanned = index.cells.find((cell) =>
+        cell.fragments.some(
+          (fragment) =>
+            fragment.range.client === native.client &&
+            fragment.range.clock <= native.clock &&
+            native.clock < fragment.range.clock + fragment.range.length,
+        ),
+      );
+      expect(index.locateToken(snapshot.tape, native)).toBe(scanned);
+    }
+  }
+});
+
+it('preserves first-cell diagnostics for overlapping native identities', () => {
+  const f = fixture('ab');
+  const snapshot = structuredClone(f.peers.get('A')!.snapshot(f.id('tP', 'tape')));
+  const texts = snapshot.parts.filter((part) => part.type === 'text');
+  const index = new CellIndex([
+    {
+      ...snapshot,
+      parts: snapshot.parts.map((part) =>
+        part === texts[1] ? { ...part, native: { ...texts[0].native } } : part,
+      ),
+    },
+  ]);
+  expect(index.locateToken(snapshot.tape, texts[0].native)).toBe(
+    index.cells.find((cell) =>
+      cell.fragments.some(
+        (fragment) =>
+          fragment.range.client === texts[0].native.client &&
+          fragment.range.clock === texts[0].native.clock,
+      ),
+    ),
+  );
+});
+
+it('replays only the layout contract while insulating retained results from caller mutation', () => {
+  const f = fixture('abc');
+  const entry = f.author('A1', (f) => [f.split('P', 'S', 'P0')]);
+  const source = {
+    ...f.envelope('A1'),
+    get nativeInsertUpdates(): never {
+      throw new Error('Ownership read transport bytes');
+    },
+    get nativeManifest(): never {
+      throw new Error('Ownership read native manifest');
+    },
+  };
+  const result = reduceOwnership({
+    genesis: f.genesis,
+    actions: [{ action: source, births: entry.births }],
+    snapshots: f.homes.map((home) => f.peers.get('A')!.snapshot(home.cell.tape)),
+    isActive: () => true,
+  });
+  const before = result.assignments;
+  expect(result.assignments).toEqual(f.reduce('A').assignments);
+  (source.allocations as unknown[]).length = 0;
+  (source.effects as unknown[]).length = 0;
+  Object.assign(source.id, { sequence: 999n });
+  expect(result.assignments).toEqual(before);
+  expect(f.text(result, 'fS')).toBe('bc');
+});

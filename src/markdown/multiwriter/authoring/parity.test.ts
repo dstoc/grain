@@ -176,50 +176,51 @@ const cases: Case[] = [
     command: (ctx, { nodeId }) => deleteBlocks(ctx, { nodeIds: [nodeId] }),
   },
 ];
-for (const fixture of cases)
-  test(`serial command parity: ${fixture.name}`, () => {
-    const peer = commandReplica(commandGenesis(fixture.markdown));
-    const canonical = CanonicalDocument.fromMarkdown(fixture.markdown, {
-        documentId: 'parity',
-        actionId: 'import',
-        authorityEpoch: 'parity',
-      }),
-      writer = new CanonicalWriter(canonical);
-    try {
-      let view = peer.view().root,
-        node = canonical.root;
-      for (const i of fixture.path ?? [0]) {
-        view = view.children[i]!;
-        node = node.children[i]!;
-      }
-      const initial = peer
-        .nodes()
-        .flatMap((n) => n.fragments.filter((f) => f.visible).map((f) => f.range));
-      const result = peer.editor.edit({ local: 'parity', group: 1n }, fixture.command, {
-        nodeId: peer.handle(view),
-      });
-      const legacy = runCommand(
-        writer,
-        { actionId: 'command' },
-        canonical.root.sharedId,
-        undefined,
-        fixture.command,
-        { nodeId: node.sharedId },
-      );
-      expect(result.status === 'not-applicable').toBe(!legacy);
-      expect(peer.markdown()).toBe(serializeToString(canonical.exportMarkdownTree()));
-      const native = peer.document.publication.status().publication!.native;
-      for (const range of initial)
-        expect(native.lookup(range).reduce((n, p) => n + p.text.length, 0)).toBe(range.length);
-      const reopened = commandReplica(peer.genesis, peer.document.store.encodeUpdate());
+for (const implementation of ['reference', 'materialized'] as const)
+  for (const fixture of cases)
+    test(`${implementation} serial command parity: ${fixture.name}`, () => {
+      const peer = commandReplica(commandGenesis(fixture.markdown), undefined, implementation);
+      const canonical = CanonicalDocument.fromMarkdown(fixture.markdown, {
+          documentId: 'parity',
+          actionId: 'import',
+          authorityEpoch: 'parity',
+        }),
+        writer = new CanonicalWriter(canonical);
       try {
-        expect(reopened.observe()).toEqual(peer.observe());
+        let view = peer.view().root,
+          node = canonical.root;
+        for (const i of fixture.path ?? [0]) {
+          view = view.children[i]!;
+          node = node.children[i]!;
+        }
+        const initial = peer
+          .nodes()
+          .flatMap((n) => n.fragments.filter((f) => f.visible).map((f) => f.range));
+        const result = peer.editor.edit({ local: 'parity', group: 1n }, fixture.command, {
+          nodeId: peer.handle(view),
+        });
+        const legacy = runCommand(
+          writer,
+          { actionId: 'command' },
+          canonical.root.sharedId,
+          undefined,
+          fixture.command,
+          { nodeId: node.sharedId },
+        );
+        expect(result.status === 'not-applicable').toBe(!legacy);
+        expect(peer.markdown()).toBe(serializeToString(canonical.exportMarkdownTree()));
+        const native = peer.document.publication.status().publication!.native;
+        for (const range of initial)
+          expect(native.lookup(range).reduce((n, p) => n + p.text.length, 0)).toBe(range.length);
+        const reopened = commandReplica(peer.genesis, peer.document.store.encodeUpdate());
+        try {
+          expect(reopened.observe()).toEqual(peer.observe());
+        } finally {
+          reopened.close();
+        }
       } finally {
-        reopened.close();
+        writer.close();
+        canonical.close();
+        peer.close();
       }
-    } finally {
-      writer.close();
-      canonical.close();
-      peer.close();
-    }
-  });
+    });

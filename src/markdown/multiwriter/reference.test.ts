@@ -3,6 +3,7 @@ import { contractCorpus } from '../../../test/multiwriter/corpus.js';
 import { replicaTraceAdapter } from '../../../test/multiwriter/network.js';
 import { runContractTrace } from '../../../test/multiwriter/trace.js';
 import { referenceFactory } from '../../../test/multiwriter/reference/factory.js';
+import { isImmutableData } from '../../../test/multiwriter/immutable.js';
 
 const equal = (actual: unknown, expected: unknown, context: string) =>
   expect(actual, context).toEqual(expected);
@@ -169,5 +170,33 @@ test('a reopened writer authors with a fresh actor and a reset runtime sequence'
     expect((await reopened.observe()).undo).toEqual(['A2']);
   } finally {
     await reopened.dispose();
+  }
+});
+
+test('readonly fixture observations retain detached immutable data and fresh raw isolation reads', async () => {
+  const trace = contractCorpus.find((entry) => entry.id === 'shared-empty-genesis')!;
+  const port = await referenceFactory(trace).open({ peer: 'A', genesis: trace });
+  try {
+    const before = await port.observe();
+    const raw = await port.isolationState();
+    expect(Object.isFrozen(before)).toBe(true);
+    expect(isImmutableData(before, new WeakSet())).toBe(true);
+    if (!before.raw) throw new Error('Expected full reference observation');
+    expect(Object.isFrozen(before.raw.projection.root)).toBe(true);
+    expect(() => (before.held as string[]).push('fake')).toThrow();
+    const detached = structuredClone(before);
+    (detached.held as string[]).push('fake');
+    expect((await port.observe()).held).toEqual([]);
+    expect(await port.isolationState()).toEqual(raw);
+    const first = trace.steps.find((step) => step.type === 'author' && step.action.peer === 'A');
+    if (!first || first.type !== 'author') throw new Error('Missing local command');
+    await port.author(first.action);
+    const after = await port.observe();
+    expect(after.held).toContain(first.action.id);
+    expect(isImmutableData(after, new WeakSet())).toBe(true);
+    expect(before.held).toEqual([]);
+    expect((await port.isolationState()).canonical).not.toEqual(raw.canonical);
+  } finally {
+    await port.dispose();
   }
 });

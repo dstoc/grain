@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import { finish } from '../ingest/work.js';
 import type { Work } from '../ingest/work.js';
 
@@ -38,9 +39,20 @@ export function reduceActivity(input: readonly ActionEnvelope[]): Activity {
 }
 
 export function* reduceActivitySteps(input: readonly ActionEnvelope[]): Work<Activity> {
-  const actions = [...input].sort(compareActions);
+  countWork('activity.actionsCloned', input.length);
+  countWork('activity.sortInputs', input.length);
+  const actions = [...input].sort(
+    (a, b) => (countWork('activity.sortComparisons'), compareActions(a, b)),
+  );
   const byId = new Map<string, ActionEnvelope>();
-  const past = new Map<string, ReadonlySet<string>>();
+  // A fresh full causal matrix for this reduction. This shares no indexed-reader
+  // certificates or checkpoint state. Word unions avoid copying string sets for
+  // every ancestor of every action during cold author-closure certification.
+  const past = new Map<string, { readonly ordinal: number; readonly bits: Uint32Array }>();
+  function contains(bits: Uint32Array, key: string): boolean {
+    const ordinal = past.get(key)?.ordinal;
+    return ordinal !== undefined && (bits[ordinal >>> 5] & (1 << (ordinal & 31))) !== 0;
+  }
   const controls = new Map<string, ActionEnvelope>();
   const groups = new Map<string, ActionEnvelope[]>();
   const active = new Map<string, boolean>();
@@ -52,25 +64,27 @@ export function* reduceActivitySteps(input: readonly ActionEnvelope[]): Work<Act
     return action;
   }
 
-  for (const action of actions) {
+  for (const [ordinal, action] of actions.entries()) {
     yield;
     const key = actionKey(action.id);
     if (byId.has(key)) throw new ActivityValidationError(`Duplicate action in ready set: ${key}`);
     byId.set(key, action);
-    const closure = new Set<string>();
+    const closure = new Uint32Array(Math.ceil(ordinal / 32));
     for (const dependency of action.dependencies) {
+      countWork('activity.causalEdgesVisited');
       yield;
       const dependencyKey = actionKey(dependency);
       const ancestors = past.get(dependencyKey);
       if (!ancestors)
         throw new ActivityValidationError(`Missing or unordered dependency: ${dependencyKey}`);
-      closure.add(dependencyKey);
-      for (const ancestor of ancestors) {
+      closure[ancestors.ordinal >>> 5] |= 1 << (ancestors.ordinal & 31);
+      for (let word = 0; word < ancestors.bits.length; word++) {
         yield;
-        closure.add(ancestor);
+        countWork('activity.causalWordsVisited');
+        closure[word] |= ancestors.bits[word];
       }
     }
-    past.set(key, closure);
+    past.set(key, { ordinal, bits: closure });
     active.set(key, true);
     if (action.groupId.session.actor !== action.id.actor)
       throw new ActivityValidationError('An action must belong to its actor session');
@@ -105,7 +119,7 @@ export function* reduceActivitySteps(input: readonly ActionEnvelope[]): Work<Act
       (control.previousControl ? actionKey(control.previousControl) : null)
     )
       throw new ActivityValidationError('Control must extend the previous owner control');
-    if (previous && !closure.has(actionKey(previous.id)))
+    if (previous && !contains(closure, actionKey(previous.id)))
       throw new ActivityValidationError('Control must observe the previous owner control');
     const members = groups.get(group) ?? [];
     const targets = new Set(control.actions.map(actionKey));
@@ -121,7 +135,7 @@ export function* reduceActivitySteps(input: readonly ActionEnvelope[]): Work<Act
     for (const id of control.actions) {
       yield;
       requireAction(id);
-      if (!closure.has(actionKey(id)))
+      if (!contains(closure, actionKey(id)))
         throw new ActivityValidationError('Control must observe all target actions');
       active.set(actionKey(id), control.active);
     }
@@ -135,7 +149,7 @@ export function* reduceActivitySteps(input: readonly ActionEnvelope[]): Work<Act
   function observes(observer: ActionId, prior: ActionId): boolean {
     requireAction(observer);
     requireAction(prior);
-    return past.get(actionKey(observer))!.has(actionKey(prior));
+    return contains(past.get(actionKey(observer))!.bits, actionKey(prior));
   }
   function isEffectActive(ref: EffectRef): boolean {
     const action = requireAction(ref.action);

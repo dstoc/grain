@@ -1,4 +1,6 @@
 import * as Y from 'yjs';
+// @ts-expect-error Node APIs are supplied by Vitest; Grain has no @types/node dependency.
+import { Buffer } from 'node:buffer';
 import { actorId, SYNC_DIRECTIONS } from '../../../src/markdown/multiwriter/contracts.js';
 import type {
   ActionEnvelope,
@@ -21,8 +23,15 @@ import {
 import { resourceKey } from '../../../src/markdown/multiwriter/layout/index.js';
 import { NativeFixture } from '../../../src/markdown/multiwriter/ownership/test-fixtures.js';
 import { NativeTapeCache } from '../../../src/markdown/multiwriter/text/cache.js';
+import type { TapePart } from '../../../src/markdown/multiwriter/text/cache.js';
 import { DirectionalActionProvider } from '../../../src/markdown/multiwriter/providers/adapter.js';
 import { openReferenceDocument } from '../../../src/markdown/multiwriter/reference/document.js';
+import type { ReferenceGenesis } from '../../../src/markdown/multiwriter/reference/document.js';
+import type { AuthoringDocument } from '../../../src/markdown/multiwriter/authoring/document.js';
+import type {
+  ActionStore,
+  ActionStoreSnapshot,
+} from '../../../src/markdown/multiwriter/actions/store.js';
 import { serializeProjection } from '../../../src/markdown/multiwriter/projection/index.js';
 import type { ViewNode } from '../../../src/markdown/multiwriter/projection/index.js';
 import type { ContractTrace, Observation, TraceAction } from '../trace.js';
@@ -33,12 +42,66 @@ import { selectCarrier } from './carrier.js';
 
 const key = (id: ActionId) => `${id.actor}:${id.sequence}`;
 
+/** Observations contain semantic data only; native bytes use isolationState().
+ * Freeze one detached observation per facts version, so repeated readonly exports
+ * do not copy its whole tree. The network still requests and checks a stable snapshot
+ * on every read, and raw canonical/native isolation reads remain uncached.
+ */
+function freezeObservation(value: Observation): Observation {
+  const pending: unknown[] = [value],
+    seen = new WeakSet<object>();
+  while (pending.length) {
+    const item = pending.pop();
+    if (!item || typeof item !== 'object' || seen.has(item)) continue;
+    seen.add(item);
+    pending.push(...Object.values(item));
+    Object.freeze(item);
+  }
+  return value;
+}
+
+/** Retain the actual immutable payloads rather than re-encoding every old
+ * envelope for fixture-native prefix checks. Readiness guarantees one variant.
+ */
+function readyPayloads(snapshot: ActionStoreSnapshot): Uint8Array[] {
+  const entries = new Map(snapshot.actions.map((entry) => [key(entry.id), entry]));
+  return snapshot.ready.map((action) => {
+    const entry = entries.get(key(action.id));
+    if (entry?.variants.length !== 1) throw new Error('Ready action lacks one exact payload');
+    return entry.variants[0];
+  });
+}
+
+function lowerBoundIndex(entries: readonly { readonly index: number }[], position: number): number {
+  let low = 0,
+    high = entries.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (entries[middle].index < position) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+interface HeadlessDocument extends AuthoringDocument {
+  readonly store: ActionStore;
+  readonly publication: AuthoringDocument['publication'] & { evict?(): void };
+  nativeStates(): readonly Uint8Array[];
+  destroy(): void;
+}
+export interface ReferenceFactoryOptions {
+  readonly openDocument?: (genesis: ReferenceGenesis) => HeadlessDocument;
+  /** Observe each completed publication, including before final convergence. */
+  readonly onPublication?: (document: HeadlessDocument, genesis: ReferenceGenesis) => void;
+}
+
 /** Immutable common genesis and trace command definitions only. Expected observations
  * are deliberately not captured. Every open owns all maps, clients and namespaces.
  */
 export function referenceFactory(
   trace: ContractTrace,
   onAuthor?: (action: TraceAction) => void,
+  options: ReferenceFactoryOptions = {},
 ): ReplicaFactory {
   const commands = structuredClone(
     trace.steps.flatMap((s) => (s.type === 'author' ? [s.action] : [])),
@@ -84,13 +147,22 @@ export function referenceFactory(
           throw new Error('Conflicting reference session alias');
         actorAliases.set(actor, value);
       }
+      // Symbolic aliases only: readiness/native/projection still use each actual
+      // document's independent decoders and validators. The complete bytes key
+      // distinguishes forks, malformed variants and envelope extras exactly.
+      const decodedAliases = new Map<string, ActionEnvelope>();
       function decodeReference(bytes: Uint8Array) {
+        const key = Buffer.from(bytes).toString('base64');
+        const previous = decodedAliases.get(key);
+        if (previous) return previous;
         const action = decodeEnvelope(bytes);
         register(action.id.actor, action.groupId.session.local);
+        decodedAliases.set(key, action);
         return action;
       }
 
-      let document = openReferenceDocument(config.genesis);
+      const openDocument = options.openDocument ?? openReferenceDocument;
+      let document: HeadlessDocument = openDocument(config.genesis);
       const journalBytes: Uint8Array[] = checkpoint ? [checkpoint.slice()] : [];
       let provider = await DirectionalActionProvider.open({
         store: document.store,
@@ -145,7 +217,7 @@ export function referenceFactory(
       function materialize() {
         if (cached && materializedVersion === document.store.factsVersion) return cached;
         const snapshot = document.store.snapshot();
-        const bytes = snapshot.ready.map(encodeEnvelope);
+        const bytes = readyPayloads(snapshot);
         if (
           readyBytes.length > bytes.length ||
           readyBytes.some((b, i) => compareBytes(b, bytes[i]) !== 0)
@@ -173,6 +245,7 @@ export function referenceFactory(
         // this native cache, so every insert on one tape sees the same snapshot.
         // Keep this local to one materialization, including fresh checkpoint opens.
         const tapeSnapshots = new Map<string, ReturnType<typeof native.snapshot>>();
+        const markerParts = new Map<string, readonly Extract<TapePart, { type: 'marker' }>[]>();
         for (const action of snapshot.ready) {
           const command = commandByName.get(name(action.id));
           if (!command) throw new Error('No immutable alias definition');
@@ -275,12 +348,15 @@ export function referenceFactory(
               if (!snap) {
                 snap = native.snapshot(birth.tape);
                 tapeSnapshots.set(tapeKey, snap);
+                markerParts.set(
+                  tapeKey,
+                  snap.parts.filter((part) => part.type === 'marker'),
+                );
               }
               const at = native.locate(birth.tape, birth.native);
-              const left = snap.parts.findLast((v) => v.type === 'marker' && v.index < at)!;
-              const right = snap.parts.find(
-                (v) => v.type === 'marker' && v.index >= at + birth.native.length,
-              )!;
+              const markers = markerParts.get(tapeKey)!;
+              const left = markers[lowerBoundIndex(markers, at) - 1];
+              const right = markers[lowerBoundIndex(markers, at + birth.native.length)];
               if (left.type === 'marker' && right.type === 'marker')
                 aliases.ranges.set(intent.cell, {
                   tape: birth.tape,
@@ -297,6 +373,7 @@ export function referenceFactory(
         let publication = document.publication.refresh();
         while (publication.state === 'deferred')
           publication = publication.continuation.resume(Number.MAX_SAFE_INTEGER);
+        options.onPublication?.(document, config.genesis);
         materializedVersion = document.store.factsVersion;
         cached = { snapshot, p: publication.value };
         return cached;
@@ -341,11 +418,11 @@ export function referenceFactory(
       let observed: Observation | undefined;
       function observe(): Observation {
         if (observed && observedVersion === document.store.factsVersion)
-          return structuredClone({
+          return Object.freeze({
             ...observed,
-            undo: history.undo,
-            redo: history.redo,
-            emittedActions: emitted,
+            undo: Object.freeze([...history.undo]),
+            redo: Object.freeze([...history.redo]),
+            emittedActions: Object.freeze([...emitted]),
           });
         const { snapshot, p } = materialize();
         const beforeCanonical = document.store.encodeUpdate(),
@@ -354,14 +431,44 @@ export function referenceFactory(
         const stateByName = new Map(snapshot.actions.map((v) => [name(v.id), v.readiness.state]));
         const o = p.value.ownership;
         const textEntries = [...aliases.text];
-        const tokenAlias = (range: NativeTextRange) =>
-          textEntries.find(
-            ([, v]) =>
-              resourceKey(v.tape) === resourceKey(range.tape) &&
-              v.client === range.client &&
-              v.clock <= range.clock &&
-              range.clock < v.clock + v.length,
-          )?.[0];
+        // Symbolic lookup only. Keep the original first-match rule for overlapping
+        // aliases; disjoint native ranges can use a clock index instead of rescanning
+        // every alias for every visible fragment at every observation.
+        const aliasIndex = new Map<string, { start: number; end: number; name: string }[]>();
+        for (const [name, range] of textEntries) {
+          const key = `${resourceKey(range.tape)}:${range.client}`;
+          const entries = aliasIndex.get(key) ?? [];
+          entries.push({ start: range.clock, end: range.clock + range.length, name });
+          aliasIndex.set(key, entries);
+        }
+        const overlapping = new Set<string>();
+        for (const [key, entries] of aliasIndex) {
+          entries.sort((a, b) => a.start - b.start);
+          if (entries.some((entry, i) => i > 0 && entries[i - 1].end > entry.start))
+            overlapping.add(key);
+        }
+        const tokenAlias = (range: NativeTextRange) => {
+          const key = `${resourceKey(range.tape)}:${range.client}`;
+          if (overlapping.has(key))
+            return textEntries.find(
+              ([, value]) =>
+                resourceKey(value.tape) === resourceKey(range.tape) &&
+                value.client === range.client &&
+                value.clock <= range.clock &&
+                range.clock < value.clock + value.length,
+            )?.[0];
+          const entries = aliasIndex.get(key);
+          if (!entries) return undefined;
+          let low = 0,
+            high = entries.length;
+          while (low < high) {
+            const middle = (low + high) >>> 1;
+            if (entries[middle].start <= range.clock) low = middle + 1;
+            else high = middle;
+          }
+          const entry = entries[low - 1];
+          return entry && range.clock < entry.end ? entry.name : undefined;
+        };
         const visible: Record<string, string[]> = {};
         const view: Observation['view'][number][] = [];
         const addresses: Record<string, Observation['addresses'][string]> = {};
@@ -573,7 +680,8 @@ export function referenceFactory(
         )
           throw new Error('Reference reads authored shared facts');
         observedVersion = document.store.factsVersion;
-        return structuredClone(observed);
+        observed = freezeObservation(structuredClone(observed));
+        return observed;
       }
       return {
         get handles() {
@@ -619,13 +727,14 @@ export function referenceFactory(
           try {
             document.certifyLocal(prepared.envelope);
             document.store.append(prepared.envelope);
-            if (!document.store.snapshot().ready.some((v) => key(v.id) === key(id)))
+            const accepted = document.store.snapshot();
+            if (!accepted.ready.some((v) => key(v.id) === key(id)))
               throw new Error(
-                `Local action refused: ${command.id} ${JSON.stringify(document.store.snapshot().actions.map((v) => v.readiness))}`,
+                `Local action refused: ${command.id} ${JSON.stringify(accepted.actions.map((v) => v.readiness))}`,
               );
             prepared.commit();
             writerSequence++;
-            readyBytes = document.store.snapshot().ready.map(encodeEnvelope);
+            readyBytes = readyPayloads(accepted);
           } catch (error) {
             prepared.abort();
             native.destroy();
@@ -750,6 +859,7 @@ export function referenceFactory(
             return;
           }
           if (operation === 'drop-caches') {
+            document.publication.evict?.();
             native.destroy();
             native = freshNative();
             readyBytes = [];
@@ -762,7 +872,7 @@ export function referenceFactory(
           const bytes = document.store.encodeUpdate();
           await provider.close();
           document.destroy();
-          document = openReferenceDocument(config.genesis);
+          document = openDocument(config.genesis);
           provider = await DirectionalActionProvider.open({
             store: document.store,
             mode,

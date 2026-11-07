@@ -22,7 +22,24 @@ const defaults: PresentedProperties = {
   info: null,
   checked: null,
 };
+/** Shared property defaults; selection schedules remain independent. */
+export function presentedProperties(
+  values: Partial<PresentedProperties> = {},
+): PresentedProperties {
+  return { ...defaults, ...values };
+}
 const refKey = (ref: EffectRef) => `${ref.action.actor}:${ref.action.sequence}:${ref.ordinal}`;
+
+/** Property-only updates cannot change raw placement, ownership or packet membership. */
+export function isPropertyUpdate(action: ActionEnvelope): boolean {
+  return (
+    !action.allocations.length &&
+    !action.nativeManifest.length &&
+    !action.nativeInsertUpdates.length &&
+    action.effects.length > 0 &&
+    action.effects.every((effect) => effect.type === 'SetProperties')
+  );
+}
 
 /** Complete snapshot selection. Reactivated packets keep their original priority. */
 export function selectInterpretations(
@@ -172,6 +189,7 @@ export function validateMembership(
   action: ActionEnvelope,
   allocations: readonly Allocation[],
 ): void {
+  if (!action.effects.some((effect) => effect.type === 'Interpret')) return;
   const byId = new Map(allocations.map((a) => [resourceKey(a.id), a]));
   const own = new Set(action.allocations.map((a) => resourceKey(a.id)));
   const outputs = new Set<string>(),

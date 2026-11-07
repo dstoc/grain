@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import { compareActions } from '../contracts.js';
 import type {
   ActionEnvelope,
@@ -35,6 +36,22 @@ export type LayoutAction = Pick<
   ActionEnvelope,
   'id' | 'lamport' | 'dependencies' | 'allocations' | 'effects'
 >;
+/** Copy only the declared layout contract, insulating replay from caller mutation
+ * without copying unrelated envelope transport bytes or manifests.
+ */
+export function copyLayoutAction({
+  id,
+  lamport,
+  dependencies,
+  allocations,
+  effects,
+}: LayoutAction): LayoutAction {
+  countWork('layout.actionsCloned');
+  countWork('layout.allocationsCloned', allocations.length);
+  countWork('layout.effectsCloned', effects.length);
+  countWork('layout.causalEdgesCloned', dependencies.length);
+  return structuredClone({ id, lamport, dependencies, allocations, effects });
+}
 export interface LayoutActionInput {
   readonly action: LayoutAction;
   readonly births: readonly BirthPlacement[];
@@ -90,11 +107,15 @@ export class LayoutPrefix {
   private readonly flows = new Map<string, FlowAllocation>();
   private readonly runs = new Map<string, RunLayout>();
   private readonly occurrences = new Map<string, OrderedOccurrence>();
+  private readonly sequences = new Map<string, OrderedOccurrence[]>();
   private readonly blockOwners = new Map<string, string>();
   private readonly blocks = new Map<string, ForestEdge<string, BlockPlacement | null>>();
   // Run → immutable flow, flow → run or own block terminal; block terminals end ancestry.
   private readonly inline = new Map<string, ForestEdge<string, FlowPlacement | null>>();
-  private readonly actions = new Map<string, Set<string>>();
+  private readonly actions = new Map<
+    string,
+    { readonly ordinal: number; readonly bits: Uint32Array }
+  >();
   private current: LayoutAction | null = null;
   private nextOrdinal = 0;
   private rootId: NodeId | null = null;
@@ -105,6 +126,9 @@ export class LayoutPrefix {
   }
   get root(): NodeId {
     return this.rootId!;
+  }
+  nodeAllocation(id: NodeId): NodeAllocation {
+    return this.node(id);
   }
   get nodeAllocations(): readonly NodeAllocation[] {
     return [...this.nodes.values()];
@@ -142,17 +166,17 @@ export class LayoutPrefix {
   ): readonly OrderedOccurrence[] {
     this.validateSlot(slot);
     const sequence = slotSequence(slot);
-    return orderOccurrences(
-      [...this.occurrences.values()].filter((entry) => slotSequence(entry.slot) === sequence),
-      buckets,
-    );
+    const entries = this.sequences.get(sequence) ?? [];
+    return entries.length || buckets.length ? orderOccurrences(entries, buckets) : [];
   }
   children(parent: NodeId, buckets: readonly OccurrenceBucket[] = []): readonly NodeId[] {
     return this.occurrenceOrder({ parent, predecessor: null }, buckets).flatMap((occurrence) => {
       const key = resourceKey(occurrence.id);
-      return [...this.blocks.values()].flatMap((edge) =>
-        edge.value && resourceKey(edge.value.occurrence) === key ? [edge.value.node] : [],
-      );
+      const owner = this.blockOwners.get(key),
+        edge = owner && this.blocks.get(owner);
+      return edge && edge.value && resourceKey(edge.value.occurrence) === key
+        ? [edge.value.node]
+        : [];
     });
   }
   /** Flow attachments only. MW-04 uses occurrenceOrder for transferred run attachments. */
@@ -193,20 +217,21 @@ export class LayoutPrefix {
   beginAction(input: LayoutActionInput): void {
     if (this.current && this.nextOrdinal !== this.current.effects.length)
       throw new Error('Previous action prefix is incomplete');
-    const action = structuredClone(input.action);
+    const action = copyLayoutAction(input.action);
     if (this.current && compareActions(this.current, action) >= 0)
       throw new Error('Actions must enter in semantic order');
     const key = actionKey(action.id);
     if (this.actions.has(key)) throw new Error('Duplicate action prefix');
-    const past = new Set<string>();
+    const ordinal = this.actions.size;
+    const past = new Uint32Array(Math.ceil(ordinal / 32));
     for (const dependency of action.dependencies) {
       const dependencyKey = actionKey(dependency);
       const ancestors = this.actions.get(dependencyKey);
       if (!ancestors) throw new Error('Missing action dependency');
-      past.add(dependencyKey);
-      for (const ancestor of ancestors) past.add(ancestor);
+      past[ancestors.ordinal >>> 5] |= 1 << (ancestors.ordinal & 31);
+      for (let word = 0; word < ancestors.bits.length; word++) past[word] |= ancestors.bits[word];
     }
-    this.actions.set(key, past);
+    this.actions.set(key, { ordinal, bits: past });
     this.current = action;
     this.nextOrdinal = 0;
     this.allocate(
@@ -279,6 +304,11 @@ export class LayoutPrefix {
     }
     return { blocks, flows };
   }
+  private observes(observer: LayoutAction['id'], prior: LayoutAction['id']): boolean {
+    const ordinal = this.actions.get(actionKey(prior))?.ordinal;
+    const bits = this.actions.get(actionKey(observer))!.bits;
+    return ordinal !== undefined && (bits[ordinal >>> 5] & (1 << (ordinal & 31))) !== 0;
+  }
   private node(id: NodeId): NodeAllocation {
     const node = this.nodes.get(resourceKey(id));
     if (!node) throw new Error('Missing node allocation');
@@ -326,6 +356,7 @@ export class LayoutPrefix {
   }
   private allocate(batch: LayoutGenesis, action: LayoutAction | null): void {
     const orderById = new Map<string, EffectOrder>();
+    const changedSequences = new Set<string>();
     for (const [ordinal, effect] of (action?.effects ?? []).entries()) {
       for (const id of effectOccurrences(effect)) {
         const key = resourceKey(id);
@@ -373,11 +404,17 @@ export class LayoutPrefix {
           break;
         case 'occurrence':
           if (this.occurrences.has(key)) throw new Error('Duplicate occurrence');
-          this.occurrences.set(key, {
+          const entry = {
             id: allocation.id,
             slot: allocation.slot,
             order: action ? (orderById.get(key) ?? { action, ordinal: -1 }) : null,
-          });
+          };
+          this.occurrences.set(key, entry);
+          const sequence = slotSequence(entry.slot);
+          changedSequences.add(sequence);
+          const entries = this.sequences.get(sequence) ?? [];
+          entries.push(entry);
+          this.sequences.set(sequence, entries);
           break;
         default:
           break;
@@ -409,7 +446,7 @@ export class LayoutPrefix {
           if (
             previous.order &&
             actionKey(previous.order.action.id) !== actionKey(action.id) &&
-            !this.actions.get(actionKey(action.id))!.has(actionKey(previous.order.action.id))
+            !this.observes(action.id, previous.order.action.id)
           )
             throw new Error('Predecessor is not causally available');
         }
@@ -426,31 +463,24 @@ export class LayoutPrefix {
       unplaced.some((node) => !births.has(resourceKey(node.id)))
     )
       throw new Error('Birth bindings must cover exactly the new non-root nodes');
+    const newOccurrences = new Set(
+      batch.allocations.flatMap((allocation) =>
+        allocation.type === 'occurrence' ? [resourceKey(allocation.id)] : [],
+      ),
+    );
     for (const node of unplaced) {
       const birth = births.get(resourceKey(node.id))!;
       const occurrence = this.occurrence(birth.occurrence);
-      if (
-        !batch.allocations.some(
-          (allocation) =>
-            allocation.type === 'occurrence' &&
-            resourceKey(allocation.id) === resourceKey(birth.occurrence),
-        )
-      )
+      if (!newOccurrences.has(resourceKey(birth.occurrence)))
         throw new Error('Birth occurrence must be newly allocated');
       if (!sameSlot(occurrence.slot, node.birthSlot!))
         throw new Error('Birth occurrence must use the immutable birth slot');
       if (this.moveBlock({ ...birth, slot: node.birthSlot! }) !== 'applied')
         throw new Error('Invalid fallback placement');
     }
-    // Validate each complete sequence now, including inactive/ineffective occurrences.
-    const sequences = new Map<string, OrderedOccurrence[]>();
-    for (const occurrence of this.occurrences.values()) {
-      const sequence = slotSequence(occurrence.slot);
-      const entries = sequences.get(sequence) ?? [];
-      entries.push(occurrence);
-      sequences.set(sequence, entries);
-    }
-    for (const entries of sequences.values()) orderOccurrences(entries);
+    // Only new occurrences can change an immutable sequence. This full replay
+    // still reconstructs its own sequences; it never imports a cached prefix.
+    for (const sequence of changedSequences) orderOccurrences(this.sequences.get(sequence)!);
   }
 }
 

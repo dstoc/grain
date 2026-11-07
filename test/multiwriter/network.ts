@@ -1,7 +1,10 @@
 import { decodeUpdate, Item, mergeUpdates } from 'yjs';
+// @ts-expect-error Node APIs are supplied by Vitest; Grain has no @types/node dependency.
+import { Buffer } from 'node:buffer';
 import { SYNC_DIRECTIONS } from '../../src/markdown/multiwriter/contracts.js';
 import type { DeliveryRoute, SyncMode } from '../../src/markdown/multiwriter/contracts.js';
 import type { ContractTrace, Observation, Step, TraceAction, TraceAdapter } from './trace.js';
+import { isImmutableData } from './immutable.js';
 
 export type LocalStep = Exclude<Step, { type: 'deliver' | 'expect' }>;
 type Mutation = Extract<Step, { type: 'deliver' }>['mutation'];
@@ -109,7 +112,7 @@ function canonicalPayloads(update: Uint8Array): readonly string[] {
     if (!(item instanceof Item)) continue;
     for (const value of item.content.getContent()) {
       if (!(value instanceof Uint8Array)) throw new Error('Canonical carrier payload is not bytes');
-      values.add(Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join(''));
+      values.add(Buffer.from(value).toString('hex'));
     }
   }
   return [...values].sort();
@@ -153,6 +156,7 @@ export class ReplicaNetwork {
   private readonly actions = new Map<string, TraceAction>();
   private readonly bindings = new Map<string, unknown>();
   private readonly inventories = new Map<string, Pick<Observation, 'held' | 'variants'>>();
+  private readonly immutableObservations = new WeakSet<object>();
   private readonly steps: NetworkStep[] = [];
   private readonly random: SeededRandom;
   private serial = 0;
@@ -228,7 +232,10 @@ export class ReplicaNetwork {
     });
   }
   async observe(peer: string): Promise<Observation> {
-    return structuredClone(await this.peer(peer).observe());
+    const observation = await this.peer(peer).observe();
+    return isImmutableData(observation, this.immutableObservations)
+      ? observation
+      : structuredClone(observation);
   }
   async step(step: NetworkStep): Promise<void> {
     // Record before execution so a failing command is included in the replay artifact.

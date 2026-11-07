@@ -1,6 +1,8 @@
+import { measure, countWork } from '../diagnostics.js';
 import { assertTextRange, assertWellFormedText } from '../../semantic/types.js';
 import type {
   Affinity,
+  Allocation,
   BlockSlot,
   NativeId,
   NativeTextRange,
@@ -10,7 +12,7 @@ import type {
 import { resourceKey } from '../layout/index.js';
 import type { OwnershipResult } from '../ownership/index.js';
 import type { NativeView } from '../ingest/publication.js';
-import type { Visibility } from '../visibility/index.js';
+import type { Visibility, NodeVisibility } from '../visibility/index.js';
 import { ProjectionError } from './interpretation.js';
 import type { ProjectionView, TextFragment, ViewNode } from './types.js';
 
@@ -43,6 +45,9 @@ export function selectionRanges(
 }
 
 export function textPoint(node: ViewNode, offset: number, affinity: Affinity): TextPoint {
+  return measure('selection-address', () => textPointMeasured(node, offset, affinity));
+}
+function textPointMeasured(node: ViewNode, offset: number, affinity: Affinity): TextPoint {
   assertTextRange(node.content, offset, offset, 'Projected caret');
   const visible: { fragment: TextFragment; start: number; end: number }[] = [];
   let cursor = 0;
@@ -101,6 +106,25 @@ export function deletionTargets(node: ViewNode): readonly NodeId[] {
   return structuredClone(node.origin.constituents);
 }
 
+/** Publication-owned immutable resources. Pairing both identities prevents a
+ * caller from using an index from another ownership/visibility snapshot.
+ */
+export interface AddressIndex {
+  readonly allocations: Pick<ReadonlyMap<string, Extract<Allocation, { type: 'node' }>>, 'get'>;
+  readonly visibility: Pick<ReadonlyMap<string, NodeVisibility>, 'get'>;
+  readonly flowHomes: Pick<ReadonlyMap<string, NodeId>, 'get'>;
+}
+const addressIndexes = new WeakMap<OwnershipResult, WeakMap<Visibility, AddressIndex>>();
+export function registerAddressIndex(
+  ownership: OwnershipResult,
+  visibility: Visibility,
+  index: AddressIndex,
+): void {
+  let snapshots = addressIndexes.get(ownership);
+  if (!snapshots) addressIndexes.set(ownership, (snapshots = new WeakMap()));
+  snapshots.set(visibility, index);
+}
+
 export type AddressResolution =
   | { readonly state: 'available'; readonly address: ProjectionAddress }
   | { readonly state: 'unavailable'; readonly address: ProjectionAddress };
@@ -110,10 +134,31 @@ export function resolveAddress(
   ownership: OwnershipResult,
   visibility: Visibility,
 ): AddressResolution {
-  const nodes = ownership.nodeAllocations;
-  const exists = (id: NodeId) => nodes.some((node) => resourceKey(node.id) === resourceKey(id));
-  const available = (id: NodeId) =>
-    visibility.nodes.some((node) => resourceKey(node.node) === resourceKey(id) && node.available);
+  return measure('selection-address', () => resolveAddressMeasured(address, ownership, visibility));
+}
+function resolveAddressMeasured(
+  address: ProjectionAddress,
+  ownership: OwnershipResult,
+  visibility: Visibility,
+): AddressResolution {
+  const index = addressIndexes.get(ownership)?.get(visibility);
+  // The independent reference and callers without a coherent registered pair
+  // retain the complete lookup. Indexed selected reads never enumerate it.
+  const nodes = index ? undefined : ownership.nodeAllocations;
+  if (!index) countWork('address.fullIndexesRead');
+  const exists = (id: NodeId) => {
+    countWork('address.nodeQueries');
+    return index
+      ? !!index.allocations.get(resourceKey(id))
+      : nodes!.some((node) => resourceKey(node.id) === resourceKey(id));
+  };
+  const nodeVisibility = (id: NodeId) => {
+    countWork('address.visibilityQueries');
+    return index
+      ? index.visibility.get(resourceKey(id))
+      : visibility.nodes.find((node) => resourceKey(node.node) === resourceKey(id));
+  };
+  const available = (id: NodeId) => nodeVisibility(id)?.available === true;
   let valid = false;
   switch (address.type) {
     case 'node':
@@ -139,12 +184,13 @@ export function resolveAddress(
     case 'text': {
       try {
         const resolved = ownership.resolveSlot(address.slot);
-        const home = nodes.find(
-          (node) => node.flow && resourceKey(node.flow) === resourceKey(resolved.run.flow),
-        );
-        const homeVisibility = visibility.nodes.find(
-          (node) => home && resourceKey(node.node) === resourceKey(home.id),
-        );
+        countWork('address.flowHomeQueries');
+        const home = index
+          ? index.flowHomes.get(resourceKey(resolved.run.flow))
+          : nodes!.find(
+              (node) => node.flow && resourceKey(node.flow) === resourceKey(resolved.run.flow),
+            )?.id;
+        const homeVisibility = home && nodeVisibility(home);
         // Creation undo can suppress the source header while its joined flow
         // survives. Keep that lineage, but reject deleted sources/destinations.
         valid =

@@ -7,7 +7,11 @@ export interface ForestEdge<K, V> {
   readonly value: V;
 }
 export function replaceEdge<K, V>(
-  forest: Map<K, ForestEdge<K, V>>,
+  forest: {
+    get(key: K): ForestEdge<K, V> | undefined;
+    has(key: K): boolean;
+    set(key: K, value: ForestEdge<K, V>): unknown;
+  },
   child: K,
   parent: K,
   value: V,

@@ -3,9 +3,10 @@ import type { ActionEnvelope } from '../../src/markdown/multiwriter/contracts.js
 import { NativeTapeCache } from '../../src/markdown/multiwriter/text/cache.js';
 import { openReferenceDocument } from '../../src/markdown/multiwriter/reference/document.js';
 import type { ReferenceGenesis } from '../../src/markdown/multiwriter/reference/document.js';
+import type { AuthoringDocument } from '../../src/markdown/multiwriter/authoring/document.js';
 import { CellIndex, HomeIndex } from '../../src/markdown/multiwriter/ownership/index.js';
 
-export function publication(document: ReturnType<typeof openReferenceDocument>) {
+export function publication(document: AuthoringDocument) {
   let result = document.publication.refresh();
   while (result.state === 'deferred') result = result.continuation.resume();
   return result.value;

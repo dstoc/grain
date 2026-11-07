@@ -2,6 +2,9 @@ import { afterEach, expect, test } from 'vitest';
 import type { ActionEnvelope, Allocation, SemanticEffect } from '../contracts.js';
 import { ActionStore } from '../actions/store.js';
 import { createIngestValidator } from '../ingest/index.js';
+import { nativeView } from '../ingest/publication.js';
+import { action as emptyAction } from '../actions/test-fixtures.js';
+import type { AuthorValidationContext } from '../ingest/validator.js';
 import { NativeFixture } from '../ownership/test-fixtures.js';
 import { resourceKey } from '../layout/index.js';
 import { createProjectionAuthorValidator } from './index.js';
@@ -186,4 +189,52 @@ test('certifies conversion placement destinations through ownership and rejects 
       accepted.snapshot().ready[0]!.allocations.find((entry) => entry.type === 'node')!.id,
     ),
   ).toBe(resourceKey(f.id('W', 'node')));
+});
+
+test('indexed refinement propagates operational native-read failures and rejects malformed cell data', () => {
+  const f = fixture();
+  const birth = f.bodies.get('G')!.nativeManifest.find((birth) => birth.type === 'text')!;
+  const candidate = { ...emptyAction(), nativeManifest: [birth] };
+  const validate = createProjectionAuthorValidator({ genesis: f.genesis, births: () => [] });
+  const context: AuthorValidationContext = {
+    get dependencies(): readonly ActionEnvelope[] {
+      throw new Error('Indexed refinement enumerated its closure');
+    },
+    indexed: {
+      dependencies: [],
+      resultIdentity: {},
+      past: {
+        identity: {},
+        contains: () => false,
+        groupSealed: () => false,
+        allocation: (id) =>
+          f.genesis.allocations.find((a) => resourceKey(a.id) === resourceKey(id)),
+      },
+    },
+    native: nativeView(f.peers.get('A')!),
+  };
+  const failure = new Error('native host read failed');
+  expect(() =>
+    validate(candidate, {
+      indexed: context.indexed,
+      get dependencies() {
+        return context.dependencies;
+      },
+      native: {
+        ...context.native,
+        snapshot: () => {
+          throw failure;
+        },
+      },
+    }),
+  ).toThrow(failure);
+  expect(
+    validate(candidate, {
+      indexed: context.indexed,
+      get dependencies() {
+        return context.dependencies;
+      },
+      native: { ...context.native, snapshot: (tape) => ({ tape, length: 0, parts: [] }) },
+    }),
+  ).toBe('reference');
 });

@@ -1,4 +1,12 @@
-import type { CellAssignment, FlowId, InlineSlot, OccurrenceId, RunId } from '../contracts.js';
+import { countWork, touchWork } from '../diagnostics.js';
+import type {
+  CellAssignment,
+  FlowId,
+  InlineSlot,
+  OccurrenceId,
+  RangeRef,
+  RunId,
+} from '../contracts.js';
 import type { LayoutPrefix } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
 import type { LocatedText } from '../text/types.js';
@@ -11,6 +19,31 @@ export interface RunOrigin {
 }
 export interface RunAttachment extends RunOrigin {
   readonly destination: InlineSlot;
+}
+
+/** String computations only, for one synchronous coverage audit over owned data.
+ * Never retain across audits or pass to a traversal with foreign/mutable readers.
+ */
+export class CoverageKeys {
+  private readonly cells = new Map<RangeRef, string>();
+  private readonly assignments = new Map<RunOrigin, string>();
+
+  cell(range: RangeRef): string {
+    let key = this.cells.get(range);
+    if (key === undefined) {
+      key = cellKey(range);
+      this.cells.set(range, key);
+    }
+    return key;
+  }
+  assignment(origin: RunOrigin): string {
+    let key = this.assignments.get(origin);
+    if (key === undefined) {
+      key = assignmentKey(origin);
+      this.assignments.set(origin, key);
+    }
+    return key;
+  }
 }
 export type RawInlineEntry =
   | { readonly type: 'slot'; readonly slot: InlineSlot }
@@ -30,23 +63,29 @@ export type RawInlineEntry =
  */
 export function traverse(
   flow: FlowId,
-  layout: LayoutPrefix,
-  index: CellIndex,
-  assignments: ReadonlyMap<string, CellAssignment>,
-  roots: ReadonlyMap<string, readonly RunOrigin[]>,
-  attachments: ReadonlyMap<string, RunAttachment>,
+  layout: Pick<LayoutPrefix, keyof LayoutPrefix> & {
+    flowsAt?: (occurrence: OccurrenceId) => readonly FlowId[];
+  },
+  index: Pick<CellIndex, keyof CellIndex>,
+  assignments: Pick<ReadonlyMap<string, CellAssignment>, 'get' | 'values'>,
+  roots: Pick<ReadonlyMap<string, readonly RunOrigin[]>, 'get'>,
+  attachments: Pick<ReadonlyMap<string, RunAttachment>, 'get'>,
+  keys?: CoverageKeys,
 ): readonly RawInlineEntry[] {
   const result: RawInlineEntry[] = [];
   const visited = new Set<string>();
   const emitted = new Set<string>();
-  const flows = layout.flowPlacements;
+  const flows = layout.flowsAt ? [] : layout.flowPlacements;
   function walkFlow(id: FlowId): void {
+    countWork('traversal.flowsVisited');
+    touchWork('flows.read', resourceKey(id));
     const key = resourceKey(id);
     if (visited.has(key)) throw new Error('Repeated or cyclic inline flow traversal');
     visited.add(key);
     for (const root of roots.get(key) ?? []) walkRun(root);
   }
   function walkRun(origin: RunOrigin): void {
+    countWork('traversal.runsVisited');
     const key = resourceKey(origin.run);
     if (visited.has(key)) throw new Error('Repeated or cyclic run traversal');
     visited.add(key);
@@ -60,11 +99,17 @@ export function traverse(
         slots.add(slotKey);
         result.push({ type: 'slot', slot });
         for (const occurrence of layout.occurrenceOrder(slot)) {
+          countWork('traversal.occurrencesVisited');
           const attachment = attachments.get(resourceKey(occurrence.id));
           if (attachment) {
             result.push({ type: 'attachment', occurrence: occurrence.id, target: attachment.run });
             walkRun(attachment);
           }
+          if (layout.flowsAt)
+            for (const flow of layout.flowsAt(occurrence.id)) {
+              result.push({ type: 'attachment', occurrence: occurrence.id, target: flow });
+              walkFlow(flow);
+            }
           for (const placement of flows) {
             if (
               placement.parent.type === 'flow' &&
@@ -84,10 +129,15 @@ export function traverse(
     for (const range of run.skeleton) {
       const cells = index.range(range);
       for (const cell of cells) {
+        countWork('traversal.cellsVisited');
         boundary(cell.range.start);
-        const cellId = cellKey(cell.range);
+        const cellId = keys ? keys.cell(cell.range) : cellKey(cell.range);
         const assignment = assignments.get(cellId);
-        if (assignment && assignmentKey(assignment) === assignmentKey(origin)) {
+        if (
+          assignment &&
+          (keys ? keys.assignment(assignment) : assignmentKey(assignment)) ===
+            (keys ? keys.assignment(origin) : assignmentKey(origin))
+        ) {
           if (emitted.has(cellId)) throw new Error('Duplicate cell in run skeleton');
           emitted.add(cellId);
           result.push({ type: 'cell', assignment, fragments: cell.fragments });

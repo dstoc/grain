@@ -1,3 +1,4 @@
+import { measure } from '../diagnostics.js';
 import type { Affinity, NativeId, NodeId, ProjectionAddress, TapeId } from '../contracts.js';
 import type { BlockPlacement } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
@@ -59,6 +60,15 @@ function editable(node: ViewNode): boolean {
 
 /** Capture caller affinity before lowering; TextPoint.side is a different contract. */
 export function capturePoint(
+  p: HistoryPublication,
+  node: ViewNode,
+  offset: number,
+  affinity: Affinity,
+  host: ViewNode = p.value.view.root,
+): StablePoint {
+  return measure('selection-address', () => capturePointMeasured(p, node, offset, affinity, host));
+}
+function capturePointMeasured(
   p: HistoryPublication,
   node: ViewNode,
   offset: number,
@@ -136,9 +146,7 @@ function resolvePoint(
   let lineage = saved.address.slot.run;
   if (part.type === 'text') {
     const assignment = p.value.ownership.owner({ tape: bound.tape, native: bound.native });
-    const run = p.value.ownership.runLayouts.find(
-      (r) => resourceKey(r.run) === resourceKey(assignment.run),
-    )!;
+    const run = p.value.ownership.runLayout(assignment.run);
     owner = p.value.ownership.flowBlock(run.flow);
     lineage = assignment.run;
   } else {
@@ -281,6 +289,16 @@ function nearest(p: HistoryPublication, saved: StablePoint, host: ViewNode): Sel
 
 /** Pure caret restoration. It never changes mutation-address availability or canonical facts. */
 export function resolveSelection(
+  p: HistoryPublication,
+  selection: StableSelection | undefined,
+  initiatingHost: ProjectionAddress = p.value.view.root.origin,
+  emptyRoot = false,
+): SelectionRestoration {
+  return measure('selection-address', () =>
+    resolveSelectionMeasured(p, selection, initiatingHost, emptyRoot),
+  );
+}
+function resolveSelectionMeasured(
   p: HistoryPublication,
   selection: StableSelection | undefined,
   initiatingHost: ProjectionAddress = p.value.view.root.origin,

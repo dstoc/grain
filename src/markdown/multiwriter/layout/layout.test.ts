@@ -949,3 +949,33 @@ it('keeps invariants and converges after generated locally safe partitioned bloc
     }
   }
 });
+
+it.each([31, 32, 63, 64, 95, 96])(
+  'keeps causal predecessor availability across word boundary %s',
+  (size) => {
+    const f = new Fixture();
+    const prefix: LayoutActionInput[] = [];
+    for (let i = 0; i < size; i++)
+      prefix.push(
+        f.action(`C${i + 1}`, () => [], i ? [prefix[i - 1].action.id] : [], BigInt(i + 1)),
+      );
+    const tail = prefix.at(-1)!.action.id;
+    const a = f.action('A1', (f) => [f.move('P', 'root')], [tail], BigInt(size + 1));
+    const predecessor = (a.action.effects[0] as Extract<SemanticEffect, { type: 'MoveBlock' }>)
+      .occurrence;
+    const bridge = f.action(`C${size + 1}`, () => [], [a.action.id], BigInt(size + 2));
+    const b = f.action(
+      'B1',
+      (f) => [f.move('Q', 'root', f.alias(predecessor))],
+      [bridge.action.id],
+      BigInt(size + 3),
+    );
+    const layout = reduceLayout(f.genesis, [...prefix, a, bridge, b].reverse(), active);
+    expect(f.preorder(layout)).toEqual(['P', 'Q']);
+    invariants(layout);
+    const unrelated = { ...bridge, action: { ...bridge.action, dependencies: [tail] } };
+    expect(() => reduceLayout(f.genesis, [...prefix, a, unrelated, b], active)).toThrow(
+      'causally available',
+    );
+  },
+);

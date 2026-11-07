@@ -1,3 +1,4 @@
+import { OwnershipValidationError } from './errors.js';
 import type {
   CellAssignment,
   InlineSlot,
@@ -11,6 +12,7 @@ import type { LayoutGenesis } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
 import { cellKey, sameId } from './cells.js';
 import type { CellIndex } from './cells.js';
+import { countWork } from '../diagnostics.js';
 
 /** A full private tape range, bound by the root run's last skeleton element. */
 export type HomeBinding = CellAssignment;
@@ -20,36 +22,71 @@ export function deriveHomes(
   batch: LayoutGenesis,
   effects: readonly SemanticEffect[] = [],
 ): readonly HomeBinding[] {
-  const transfers = effects.flatMap((effect) =>
-    effect.type === 'TransferRange' ? [effect.run] : [],
+  countWork('homes.effectsInspected', effects.length);
+  countWork('homes.birthsInspected', batch.births.length);
+  const transfers = new Set(
+    effects.flatMap((effect) => (effect.type === 'TransferRange' ? [resourceKey(effect.run)] : [])),
   );
   const runs = batch.allocations
-    .filter((entry) => entry.type === 'run')
-    .filter((entry) => !transfers.some((run) => sameId(run, entry.id)));
-  const flows = batch.allocations.filter((entry) => entry.type === 'flow');
-  const tapes = batch.allocations.filter((entry) => entry.type === 'tape');
+    .filter((entry) => {
+      countWork('homes.allocationsInspected');
+      return entry.type === 'run';
+    })
+    .filter((entry) => {
+      countWork('homes.rootCandidatesInspected');
+      return !transfers.has(resourceKey(entry.id));
+    });
+  const flows = batch.allocations.filter((entry) => {
+    countWork('homes.allocationsInspected');
+    return entry.type === 'flow';
+  });
+  const tapes = batch.allocations.filter((entry) => {
+    countWork('homes.allocationsInspected');
+    return entry.type === 'tape';
+  });
+  // Build disposable indexes from this batch. Duplicate roots still count as
+  // ambiguity; first tape/birth matches retain the full scan's lookup semantics.
+  const byFlow = new Map<string, typeof runs>();
+  for (const run of runs) {
+    const key = resourceKey(run.flow),
+      group = byFlow.get(key) ?? [];
+    group.push(run);
+    byFlow.set(key, group);
+  }
+  const byTape = new Map<string, (typeof tapes)[number]>();
+  for (const tape of tapes) {
+    const key = resourceKey(tape.id);
+    if (!byTape.has(key)) byTape.set(key, tape);
+  }
+  const byNode = new Map<string, (typeof batch.births)[number]>();
+  for (const birth of batch.births) {
+    const key = resourceKey(birth.node);
+    if (!byNode.has(key)) byNode.set(key, birth);
+  }
   const homes: HomeBinding[] = [];
   for (const flow of flows) {
-    const roots = runs.filter((run) => sameId(run.flow, flow.id));
-    if (roots.length !== 1) throw new Error('Flow needs exactly one retained root run');
+    const roots = byFlow.get(resourceKey(flow.id)) ?? [];
+    if (roots.length !== 1)
+      throw new OwnershipValidationError('Flow needs exactly one retained root run');
     const run = roots[0];
     const range = run.skeleton.at(-1);
-    const tape = range && tapes.find((tape) => sameId(tape.id, range.tape));
+    const tape = range && byTape.get(resourceKey(range.tape));
     if (!range || !tape || !sameId(range.start, tape.start) || !sameId(range.end, tape.end))
-      throw new Error('Root run must end with its fresh full home tape');
-    const birth = batch.births.find((birth) => sameId(birth.node, flow.home));
-    if (!birth) throw new Error('Missing home run occurrence binding');
+      throw new OwnershipValidationError('Root run must end with its fresh full home tape');
+    const birth = byNode.get(resourceKey(flow.home));
+    if (!birth) throw new OwnershipValidationError('Missing home run occurrence binding');
     homes.push({ cell: range, run: run.id, occurrence: birth.occurrence });
   }
   if (runs.length !== homes.length)
-    throw new Error('Non-transfer root run must be born with its flow');
+    throw new OwnershipValidationError('Non-transfer root run must be born with its flow');
   if (
     tapes.length !== homes.length ||
     new Set(homes.map((home) => resourceKey(home.cell.tape))).size !== tapes.length
   )
-    throw new Error('Each fresh tape needs one distinct private home binding');
+    throw new OwnershipValidationError('Each fresh tape needs one distinct private home binding');
   if (new Set(homes.map((home) => resourceKey(home.occurrence))).size !== homes.length)
-    throw new Error('Each home root needs a distinct birth occurrence');
+    throw new OwnershipValidationError('Each home root needs a distinct birth occurrence');
+  countWork('homes.bindingsCloned', homes.length);
   return structuredClone(homes);
 }
 
@@ -60,7 +97,7 @@ export class HomeIndex {
   private readonly reserved = new Set<string>();
   constructor(
     bindings: readonly HomeBinding[],
-    private readonly index: CellIndex,
+    private readonly index: Pick<CellIndex, keyof CellIndex>,
   ) {
     for (const home of structuredClone(bindings)) {
       if (this.byRun.has(resourceKey(home.run)) || this.byTape.has(resourceKey(home.cell.tape)))
