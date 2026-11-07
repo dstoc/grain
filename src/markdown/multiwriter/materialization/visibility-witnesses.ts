@@ -63,7 +63,10 @@ export class VisibilityWitnesses {
         allocation,
         parent: parent ? resourceKey(parent) : null,
         birth: birthActive(allocation, input),
-        required: input.requirements(allocation.id).some(input.activity.isEffectActive),
+        required: input.requirements(allocation.id).some((ref) => {
+          countWork('witness.requirementActivityChecks');
+          return input.activity.isEffectActive(ref);
+        }),
         content: 0,
         total: 0,
         own: false,
@@ -115,7 +118,10 @@ export class VisibilityWitnesses {
         allocation,
         parent: parent ? resourceKey(parent) : null,
         birth: birthActive(allocation, input),
-        required: input.requirements(node).some(input.activity.isEffectActive),
+        required: input.requirements(node).some((ref) => {
+          countWork('witness.requirementActivityChecks');
+          return input.activity.isEffectActive(ref);
+        }),
         content: old?.content ?? 0,
         total: old?.total ?? 0,
         own: old?.own ?? false,
@@ -157,7 +163,8 @@ export class VisibilityWitnesses {
       visiting.add(id);
       const record = draft.records.get(id);
       if (!record) throw new Error('Unknown visibility ancestor');
-      if (record.parent && changedDeletion.has(record.parent)) refreshDeleted(record.parent);
+      countWork('witness.deletionAncestorsChecked');
+      if (record.parent) refreshDeleted(record.parent);
       const previous = draft.nodes.get(id)!,
         deleted =
           !!previous.tags.length || !!(record.parent && draft.nodes.get(record.parent)?.deleted);
@@ -168,10 +175,12 @@ export class VisibilityWitnesses {
         dirty.add(id);
         for (const child of draft.children.get(id) ?? []) {
           changedDeletion.add(child);
-          refreshDeleted(child);
         }
       }
     };
+    // The Set iterator also visits newly scheduled descendants. Only parent
+    // edges recurse: a child can already be waiting for this parent to finish.
+    // Recursing back down then would mistake that valid wait for a raw cycle.
     for (const id of changedDeletion) refreshDeleted(id);
     const paths = [...dirty];
     for (const id of paths) markPath(id, draft.records);

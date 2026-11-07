@@ -47,8 +47,19 @@ import { VisibilityWitnesses } from './visibility-witnesses.js';
 import { SplitVisibility } from './split-visibility.js';
 import { deletionEffectKey } from './subtree-deletions.js';
 import { ProjectionOrder } from './projection-order.js';
+import { projectionChange } from './projection-adapter.js';
+import type { ProducerBinding } from './projection-adapter.js';
 
 type Projection = ReturnType<typeof projectWithActivity>;
+function permittedRequirements(refs: readonly EffectRef[], visibility: SplitVisibility) {
+  return refs.filter((ref) => {
+    countWork('witness.requirementFilterEntriesInspected');
+    const permitted = visibility.permits(ref);
+    if (permitted) countWork('witness.requirementFilterEntriesCopied');
+    return permitted;
+  });
+}
+
 /** Seed once, then update only exact changed contributions. Until B supplies a
  * complete semantic delta, interpretation replacement/withdrawal remains a named
  * cold-index condition. The full reducer still owns subtree semantics.
@@ -131,6 +142,7 @@ interface TextTape {
   readonly byId: ReadonlyMap<string, TextVisibility>;
 }
 interface State {
+  readonly producerBase?: ProducerBinding;
   readonly value: Projection;
   readonly nodes: PersistentMap<NodeRecord>;
   readonly text: PersistentMap<TextTape>;
@@ -282,15 +294,16 @@ function resourceVisibility(
   const textView = textVisibility(order, text, []);
   let allNodes: Projection['visibility']['nodes'] | undefined;
   return {
+    // Retain the reference export order for existing exact-carrier hashes.
+    get text() {
+      return textView.text;
+    },
     get nodes() {
       if (!allNodes) {
         countWork('projection.visibilityNodesExported', nodes.size);
         allNodes = [...order.nodes()].map((node) => nodes.get(resourceKey(node))!);
       }
       return allNodes;
-    },
-    get text() {
-      return textView.text;
     },
   };
 }
@@ -443,10 +456,12 @@ function indexMeasured(
   for (const [id, refs] of nodeRequirements)
     for (const ref of refs) {
       const key = deletionEffectKey(ref);
-      requirementReaders.set(key, [
-        ...(requirementReaders.get(key) ?? []),
-        nodeAllocations.get(id)!.id,
-      ]);
+      const readers = requirementReaders.get(key) ?? [];
+      countWork('projection.requirementReferencesInspected');
+      countWork('projection.requirementReaderEntriesInspected', readers.length);
+      countWork('projection.requirementReaderEntriesCopied', readers.length);
+      countWork('projection.requirementReaderEntriesAdded');
+      requirementReaders.set(key, [...readers, nodeAllocations.get(id)!.id]);
     }
   const splitVisibility = SplitVisibility.create(
     value.activity.actions,
@@ -462,7 +477,7 @@ function indexMeasured(
     birthEnabled: (node) =>
       value.interpretations.birthEnabled(node) && !splitVisibility.hidden(node),
     requirements: (node) =>
-      (nodeRequirements.get(resourceKey(node)) ?? []).filter((ref) => splitVisibility.permits(ref)),
+      permittedRequirements(nodeRequirements.get(resourceKey(node)) ?? [], splitVisibility),
   });
   return {
     value,
@@ -720,6 +735,38 @@ export class MaterializedProjection {
   commandOwnership() {
     return this.ownership.fork();
   }
+  authorOwnership(genesis: object, ready: object, native: object) {
+    const state = this.state,
+      generation = this.generation,
+      base = state?.producerBase;
+    if (
+      !base ||
+      !base.checkpoint ||
+      base.genesis !== genesis ||
+      base.ready !== ready ||
+      base.native !== native
+    )
+      return undefined;
+    const owned = this.ownership.authorBase(base);
+    if (!owned) return undefined;
+    return {
+      ...owned,
+      bindings: {
+        genesis,
+        ready,
+        native,
+        checkpoint: base.checkpoint,
+        projection: state!,
+        revision: generation,
+        ownershipRevision: owned.revision,
+      },
+      assertCurrent: () => {
+        if (this.state !== state || this.generation !== generation)
+          throw new Error('Author projection base was invalidated');
+        owned.assertCurrent();
+      },
+    };
+  }
   *prepare(
     genesis: ReferenceGenesis,
     actions: ReadySequence,
@@ -729,7 +776,8 @@ export class MaterializedProjection {
   ) {
     const generation = ++this.generation,
       before = this.state;
-    let suffix = before
+    const compatibleBefore = before?.producerBase?.genesis === genesis.layout ? before : undefined;
+    let suffix = compatibleBefore
       ? this.ownership.prepareText(actions, native, activity, variants)
       : undefined;
     if (suffix && before && !this.localText(before, suffix.changes)) {
@@ -737,18 +785,22 @@ export class MaterializedProjection {
       suffix = undefined;
     }
     const properties =
-      !suffix && before
+      !suffix && compatibleBefore
         ? this.ownership.prepareProperties(actions, native, activity, variants)
         : undefined;
     const propertyState =
       properties && before
         ? this.appendProperties(before, properties.changes, properties.value, activity)
         : undefined;
-    let state: State, commitStructure: () => void;
+    let state: State, commitStructure: () => void, assertStructure: () => void;
+    let producerBase: ProducerBinding;
+    let localStructural = false;
     if (propertyState && properties) {
       yield;
       state = propertyState;
       commitStructure = properties.commit;
+      assertStructure = properties.assertCurrent;
+      producerBase = properties.structuralChanges.candidate;
       this.counts.localPropertyProjections++;
     } else if (suffix && before) {
       yield;
@@ -764,61 +816,101 @@ export class MaterializedProjection {
       );
       if (suffix.control) this.counts.localTextControls++;
       commitStructure = suffix.commit;
+      assertStructure = suffix.assertCurrent;
+      producerBase = suffix.structuralChanges.candidate;
       this.counts.localTextProjections++;
     } else {
-      const input: ProjectionInput = {
-        genesis: genesis.layout,
-        genesisManifest: genesis.body.nativeManifest,
-        initialProperties: genesis.initialProperties,
-        ...reconstructProvenance(genesis.layout, [...actions]),
-        native,
-      };
       const prepared = yield* measureWork(
         'coupled-replay',
-        this.ownership.prepare(input, activity, variants, undefined, actions),
+        this.ownership.prepareReady(
+          {
+            genesis: genesis.layout,
+            genesisManifest: genesis.body.nativeManifest,
+            initialProperties: genesis.initialProperties,
+            actions,
+            native,
+          },
+          activity,
+          variants,
+        ),
       );
       yield;
-      const selection = interpretationCandidate(
-        before,
-        actions,
-        readySource(actions),
-        activity,
-        genesis.initialProperties,
-      );
-      const visibility = indexedVisibility(
-        before,
-        actions,
-        readySource(actions),
-        this.counts,
-        selection.delta?.changes,
-      );
-      const value = projectWithActivity(input, activity, {
-        ...prepared.value,
-        visibility: visibility.reduce,
-        interpretations: selection.index.value(),
-      });
-      state = index(
-        value,
-        input,
-        visibility.root(),
-        selection.index,
-        readySource(actions),
-        before,
-        selection.delta,
-      );
+      const adapted = before
+        ? projectionChange(before, prepared, actions, native, activity)
+        : undefined;
+      const local =
+        adapted?.state === 'adapted'
+          ? this.buildStructuralState(before, adapted.change)
+          : undefined;
+      if (local?.state === 'prepared') {
+        state = local.roots;
+        localStructural = true;
+      } else {
+        const reason =
+          local?.state === 'fallback'
+            ? local.reason
+            : adapted?.state === 'fallback'
+              ? adapted.reason
+              : 'cold';
+        countWork(`projection.fullFallback.${reason}`);
+        const input: ProjectionInput = {
+          genesis: genesis.layout,
+          genesisManifest: genesis.body.nativeManifest,
+          initialProperties: genesis.initialProperties,
+          ...reconstructProvenance(genesis.layout, [...actions]),
+          native,
+        };
+        const selection = interpretationCandidate(
+          compatibleBefore,
+          actions,
+          readySource(actions),
+          activity,
+          genesis.initialProperties,
+        );
+        const visibility = indexedVisibility(
+          compatibleBefore,
+          actions,
+          readySource(actions),
+          this.counts,
+          selection.delta?.changes,
+        );
+        const value = projectWithActivity(input, activity, {
+          ownership: prepared.value.ownership,
+          snapshots: prepared.value.snapshots,
+          visibility: visibility.reduce,
+          interpretations: selection.index.value(),
+        });
+        state = index(
+          value,
+          input,
+          visibility.root(),
+          selection.index,
+          readySource(actions),
+          compatibleBefore,
+          selection.delta,
+        );
+        this.counts.fullProjections++;
+      }
       commitStructure = prepared.commit;
-      this.counts.fullProjections++;
+      assertStructure = prepared.assertCurrent;
+      producerBase = prepared.value.changes.candidate;
     }
-    state = { ...state, source: readySource(actions) };
+    state = { ...state, source: readySource(actions), producerBase };
     let committed = false;
+    const assertCurrent = () => {
+      if (committed || generation !== this.generation || this.state !== before)
+        throw new Error('Projection candidate is no longer current');
+      assertStructure();
+    };
     return {
       value: state.value,
+      assertCurrent,
       commit: () => {
-        if (committed || generation !== this.generation)
-          throw new Error('Projection candidate is no longer current');
+        assertCurrent();
         commitStructure();
         committed = true;
         this.state = state;
+        if (localStructural) this.counts.localStructuralProjections++;
       },
     };
   }
@@ -827,11 +919,35 @@ export class MaterializedProjection {
    * and wrapper context. Other regions return a named reconstruction condition.
    */
   prepareStructural(change: StructuralProjectionChange) {
-    return measure('visibility-normalization', () => this.prepareStructuralMeasured(change));
+    return measure('visibility-normalization', () => {
+      const generation = ++this.generation,
+        before = this.state;
+      const result = this.buildStructuralState(before, change);
+      if (result.state === 'fallback') return result;
+      let committed = false;
+      const assertCurrent = () => {
+        if (committed || generation !== this.generation || this.state !== before)
+          throw new Error('Projection candidate is no longer current');
+        change.structure.assertCurrent?.();
+      };
+      return {
+        state: 'prepared' as const,
+        value: result.value,
+        revision: change.revision,
+        assertCurrent,
+        commit: () => {
+          assertCurrent();
+          change.structure.commit();
+          committed = true;
+          this.state = result.roots;
+          this.counts.localStructuralProjections++;
+          // Controlled callers supply an external producer.
+          this.ownership.evict();
+        },
+      };
+    });
   }
-  private prepareStructuralMeasured(change: StructuralProjectionChange) {
-    const generation = ++this.generation,
-      before = this.state;
+  private buildStructuralState(before: State | undefined, change: StructuralProjectionChange) {
     const fallback = (reason: string) => {
       countWork(`projection.fallback.${reason}`);
       for (const node of [...change.nodes, ...change.containers])
@@ -983,15 +1099,23 @@ export class MaterializedProjection {
     for (const [id, refs] of change.requirements) {
       const node = nodeAllocations.get(id)!.id;
       for (const old of nodeRequirements.get(id) ?? []) {
+        countWork('projection.requirementReferencesInspected');
         const key = deletionEffectKey(old);
-        requirementReaders.set(
-          key,
-          (requirementReaders.get(key) ?? []).filter((n) => resourceKey(n) !== id),
-        );
+        const readers = (requirementReaders.get(key) ?? []).filter((n) => {
+          countWork('projection.requirementReaderEntriesInspected');
+          return resourceKey(n) !== id;
+        });
+        countWork('projection.requirementReaderEntriesCopied', readers.length);
+        requirementReaders.set(key, readers);
       }
       for (const ref of refs) {
+        countWork('projection.requirementReferencesInspected');
         const key = deletionEffectKey(ref);
-        requirementReaders.set(key, [...(requirementReaders.get(key) ?? []), node]);
+        const readers = requirementReaders.get(key) ?? [];
+        countWork('projection.requirementReaderEntriesInspected', readers.length);
+        countWork('projection.requirementReaderEntriesCopied', readers.length);
+        countWork('projection.requirementReaderEntriesAdded');
+        requirementReaders.set(key, [...readers, node]);
       }
       nodeRequirements.set(id, refs);
       requirementNodes.add(id);
@@ -1024,11 +1148,14 @@ export class MaterializedProjection {
       splitVisibility = splitChange.index;
     for (const node of splitChange.nodes) affected.add(resourceKey(node));
     for (const ref of splitChange.effects)
-      for (const node of [
-        ...(before.requirementReaders.get(deletionEffectKey(ref)) ?? []),
-        ...(requirementReaders.get(deletionEffectKey(ref)) ?? []),
+      for (const readers of [
+        before.requirementReaders.get(deletionEffectKey(ref)) ?? [],
+        requirementReaders.get(deletionEffectKey(ref)) ?? [],
       ])
-        requirementNodes.add(resourceKey(node));
+        for (const node of readers) {
+          countWork('projection.requirementReaderEntriesInspected');
+          requirementNodes.add(resourceKey(node));
+        }
     for (const id of coverage.nodes) affected.add(id);
     const visibilityDraft = before.witnesses.prepare({
       nodes: [...new Set([...affected, ...requirementNodes])].map(
@@ -1038,9 +1165,7 @@ export class MaterializedProjection {
       activity,
       birthEnabled: (node) => interpretations.birthEnabled(node) && !splitVisibility.hidden(node),
       requirements: (node) =>
-        (nodeRequirements.get(resourceKey(node)) ?? []).filter((ref) =>
-          splitVisibility.permits(ref),
-        ),
+        permittedRequirements(nodeRequirements.get(resourceKey(node)) ?? [], splitVisibility),
       tags: (node) => coverage.index.nodeTags(node),
     });
     const destinationTapes = new Map(
@@ -1168,23 +1293,7 @@ export class MaterializedProjection {
         normalization,
       };
       countWork('projection.localStructuralCandidates');
-      let committed = false;
-      return {
-        state: 'prepared' as const,
-        value,
-        revision: change.revision,
-        commit: () => {
-          if (committed || generation !== this.generation || this.state !== before)
-            throw new Error('Projection candidate is no longer current');
-          change.structure.commit();
-          committed = true;
-          this.state = state;
-          this.counts.localStructuralProjections++;
-          // The caller owns the supplied structural branch. Never reuse this module's
-          // unrelated old replay cache after externally prepared structure is committed.
-          this.ownership.evict();
-        },
-      };
+      return { state: 'prepared' as const, value, roots: state, revision: change.revision };
     };
     const regional = (reason: string) => {
       countWork(`projection.normalizationBoundary.${reason}`);
@@ -1926,8 +2035,9 @@ export class MaterializedProjection {
       birthEnabled: (node) =>
         before.value.interpretations.birthEnabled(node) && !before.splitVisibility.hidden(node),
       requirements: (node) =>
-        (before.nodeRequirements.get(resourceKey(node)) ?? []).filter((ref) =>
-          before.splitVisibility.permits(ref),
+        permittedRequirements(
+          before.nodeRequirements.get(resourceKey(node)) ?? [],
+          before.splitVisibility,
         ),
       tags: (node) => subtrees.nodeTags(node),
     });

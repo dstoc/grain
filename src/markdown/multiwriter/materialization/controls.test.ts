@@ -165,7 +165,7 @@ test('controls toggle complete multi-action typing groups while preserving exact
   }
 });
 
-test('a structural target retains the full replay fallback after text-only controls', () => {
+test('a structural target uses local projection after text-only controls', () => {
   const p = commandReplica(commandGenesis('abc\n\ntail'), undefined, 'materialized'),
     oracle = createMaterializationOracle();
   const h = p.editor.session('mixed'),
@@ -178,7 +178,7 @@ test('a structural target retains the full replay fallback after text-only contr
     const full = vi.spyOn(projector, 'projectWithActivity');
     try {
       expect(h.undo().state).toBe('applied');
-      expect(full).toHaveBeenCalled();
+      expect(full).not.toHaveBeenCalled();
     } finally {
       full.mockRestore();
     }

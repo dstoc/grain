@@ -70,6 +70,13 @@ class Recorder {
     const key = `${this.purpose}/${name}`;
     this.work[key] = (this.work[key] ?? 0) + amount;
   }
+  touch(kind: string, id: string): void {
+    for (const key of [kind, `${this.purpose}/${kind}`]) {
+      let ids = this.resources.get(key);
+      if (!ids) this.resources.set(key, (ids = new Set()));
+      ids.add(id);
+    }
+  }
   finish(): DiagnosticReport {
     return {
       wallMs: this.charge() - this.start,
@@ -92,10 +99,7 @@ export function countWork(name: string, amount = 1): void {
   recorder?.count(name, amount);
 }
 export function touchWork(kind: string, id: string): void {
-  if (!recorder) return;
-  let ids = recorder.resources.get(kind);
-  if (!ids) recorder.resources.set(kind, (ids = new Set()));
-  ids.add(id);
+  recorder?.touch(kind, id);
 }
 /** Install only for a bounded synchronous driver call. Nested/reentrant engine
  * operations use the same recorder. Separate captures cannot overlap.

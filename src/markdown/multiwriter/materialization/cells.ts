@@ -1,3 +1,4 @@
+import { OwnershipValidationError } from '../ownership/errors.js';
 import { countWork, touchWork } from '../diagnostics.js';
 import { CellIndex } from '../ownership/cells.js';
 import type { NativeCell } from '../ownership/cells.js';
@@ -58,7 +59,8 @@ export class MaterializedCells {
    * IDs from this exact immutable native view without rebuilding a cell tape.
    */
   withNative(native: NativeView, tapes: readonly TapeId[]): MaterializedCells {
-    if (!hasIndexedNative(native)) throw new Error('Cell reuse requires indexed native identity');
+    if (!hasIndexedNative(native))
+      throw new OwnershipValidationError('Cell reuse requires indexed native identity');
     const copy = new MaterializedCells([], undefined, native);
     copy.tapes = this.tapes;
     copy.markers = this.markers;
@@ -101,7 +103,7 @@ export class MaterializedCells {
   }
   private index(tape: TapeId): CellIndex {
     const index = this.tapes.get(resourceKey(tape));
-    if (!index) throw new Error('Missing native tape snapshot');
+    if (!index) throw new OwnershipValidationError('Missing native tape snapshot');
     return index;
   }
   get cells(): readonly NativeCell[] {
@@ -123,14 +125,14 @@ export class MaterializedCells {
     if (!native) return this.index(tape).position(tape, marker);
     const found = native.marker(marker);
     if (resourceKey(found.tape) !== resourceKey(tape))
-      throw new Error('Unknown native range endpoint');
+      throw new OwnershipValidationError('Unknown native range endpoint');
     return found.index;
   }
   adjacent(marker: MarkerId, side: 'left' | 'right'): NativeCell {
     const binding = this.markers.get(resourceKey(marker));
-    if (!binding) throw new Error('Unknown permanent marker');
+    if (!binding) throw new OwnershipValidationError('Unknown permanent marker');
     const cell = binding[side];
-    if (!cell) throw new Error('Slot points outside permanent tape endpoints');
+    if (!cell) throw new OwnershipValidationError('Slot points outside permanent tape endpoints');
     this.onRead?.(cell.range);
     const native = this.nativeFor(binding.tape);
     return native ? nativeCell(native, cell.range) : cell;
@@ -149,7 +151,7 @@ export class MaterializedCells {
   }
   containsBoundary(range: RangeRef, marker: MarkerId): boolean {
     const binding = this.markers.get(resourceKey(marker));
-    if (!binding) throw new Error('Unknown permanent marker');
+    if (!binding) throw new OwnershipValidationError('Unknown permanent marker');
     return (
       resourceKey(binding.tape) === resourceKey(range.tape) &&
       this.index(range.tape).containsBoundary(range, marker)

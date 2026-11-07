@@ -23,6 +23,7 @@ import { compareActions } from '../contracts.js';
 import type { RetainedPayloadIndex } from '../ingest/validator.js';
 import type { ReadySequence } from '../authoring/ready-source.js';
 import type { Work } from '../ingest/work.js';
+import { openLocalAuthorAttempt } from '../ownership/author-proof.js';
 
 interface Certificate {
   readonly token: object;
@@ -277,11 +278,41 @@ export class IndexedActionStore extends ActionStore {
     const candidate = finish(this.candidate({ bytes, envelope: structuredClone(action) }));
     if (!finish(validCertifiedReferencesSteps(action, candidate.context.indexed!.past)))
       return 'reference';
-    const validation = this.options.validate(structuredClone(action), candidate.context);
-    const failure =
-      typeof validation === 'object' && validation !== null ? finish(validation) : validation;
-    if (!failure) this.staged = candidate.certificate;
-    return failure;
+    const version = this.factsVersion,
+      generation = this.generation;
+    const assertCurrent = () => {
+      if (
+        this.factsVersion !== version ||
+        this.generation !== generation ||
+        this.memo?.value !== view
+      )
+        throw new Error('Local author attempt invalidated by changed facts or generation');
+    };
+    countWork('authorProof.headCoverageDependencies', action.dependencies.length);
+    const dependencies = new Set(action.dependencies.map(actionKey));
+    const close = view.heads.every((id) => {
+      countWork('authorProof.headCoverageHeads');
+      return dependencies.has(actionKey(id));
+    })
+      ? openLocalAuthorAttempt(candidate.context.indexed!, action, {
+          owner: this.readyOwner,
+          version,
+          generation,
+          ready: readySequence(view),
+          payloads: view.variants,
+          assertCurrent,
+        })
+      : undefined;
+    try {
+      const validation = this.options.validate(structuredClone(action), candidate.context);
+      const failure =
+        typeof validation === 'object' && validation !== null ? finish(validation) : validation;
+      assertCurrent();
+      if (!failure) this.staged = candidate.certificate;
+      return failure;
+    } finally {
+      close?.();
+    }
   }
   private *candidate(
     variant: ActionVariant,

@@ -181,7 +181,7 @@ test('marker refinement updates joined and transferred ghost addresses, not only
   }
 });
 
-test('changed split inputs replay from a compatible checkpoint before their first reader', () => {
+test('ordinary subdivision retains split decisions after a checkpoint', () => {
   const p = open('abc\n\ntail'),
     oracle = createMaterializationOracle();
   try {
@@ -199,10 +199,11 @@ test('changed split inputs replay from a compatible checkpoint before their firs
       oldOwners = before.value.ownership.assignments;
     addMarker(p, tapeText(p, 'b'));
     expect(diagnostics(p).ownership).toMatchObject({
-      lastReplayFrom: 128,
-      lastReplayLength: 2,
+      lastReplayFrom: 129,
+      lastReplayLength: 1,
       nativeMarkerFallbacks: 0,
-      nativeReaderInvalidations: 1,
+      nativeReaderInvalidations: 0,
+      lastReplayReason: 'content-subdivision',
     });
     expect(compareBytes(before.native.encodeState(), oldNative)).toBe(0);
     expect(before.value.ownership.assignments).toEqual(oldOwners);
@@ -248,7 +249,7 @@ test('split adjacency readers include concurrently joined tapes outside the auth
     oracle.check(p.document, p.genesis);
     const invalidations = diagnostics(p).ownership.nativeReaderInvalidations;
     addMarker(p, text);
-    expect(diagnostics(p).ownership.nativeReaderInvalidations).toBe(invalidations + 1);
+    expect(diagnostics(p).ownership.nativeReaderInvalidations).toBe(invalidations);
     oracle.check(p.document, p.genesis);
     coldEqual(p);
   } finally {
@@ -513,9 +514,7 @@ test('marker births outside transferred split-read intervals keep the committed 
         lastReplayLength: 1,
         nativeReaderInvalidations: counts.nativeReaderInvalidations,
       });
-      expect(diagnostics(p).ownership.nativeIntervalSkips).toBeGreaterThan(
-        counts.nativeIntervalSkips,
-      );
+      expect(diagnostics(p).ownership.lastReplayReason).toBe('content-subdivision');
     } finally {
       full.mockRestore();
     }
@@ -525,8 +524,9 @@ test('marker births outside transferred split-read intervals keep the committed 
     const invalidations = diagnostics(p).ownership.nativeReaderInvalidations;
     const visits = diagnostics(p).ownership.nativeIntervalNodesVisited;
     addMarker(p, tapeText(p, 'd'));
-    expect(diagnostics(p).ownership.nativeReaderInvalidations).toBe(invalidations + 1);
-    expect(diagnostics(p).ownership.nativeIntervalNodesVisited).toBeGreaterThan(visits);
+    expect(diagnostics(p).ownership.nativeReaderInvalidations).toBe(invalidations);
+    expect(diagnostics(p).ownership.nativeIntervalNodesVisited).toBe(visits);
+    expect(diagnostics(p).ownership.lastReplayReason).toBe('content-subdivision');
     expect(p.nodes().map((n) => n.content)).toEqual(['abef', 'Xc', 'dYZ', 'tail']);
     oracle.check(p.document, p.genesis);
     coldEqual(p);

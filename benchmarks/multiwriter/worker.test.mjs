@@ -331,16 +331,18 @@ test('discarded publication roots are collectable while held publications remain
         String.raw`
       import { commandGenesis, commandReplica } from './test/multiwriter/commands/replica.ts';
       import { insertText } from './src/editing/commands/insert-text.ts';
+      import { insertParagraph } from './src/editing/commands/insert-paragraph.ts';
+      import { joinWithPrevious } from './src/editing/commands/join-with-previous.ts';
       import { readySource } from './src/markdown/multiwriter/authoring/ready-source.ts';
       const turn = () => new Promise(resolve => setImmediate(resolve));
       const results = [];
-      for (const kind of ['text', 'info']) for (const managed of [false, true]) {
-        const peer = commandReplica(commandGenesis(kind === 'text' ? 'abc' : '\x60\x60\x60js\nabc\n\x60\x60\x60'), undefined, 'materialized');
+      for (const kind of ['text', 'info', 'structural']) for (const managed of [false, true]) {
+        const peer = commandReplica(commandGenesis(kind === 'info' ? '\x60\x60\x60js\nabc\n\x60\x60\x60' : 'abcdef'), undefined, 'materialized');
         const history = managed ? peer.editor.session('gc') : undefined;
         const property = (ctx, args) => { ctx.draft.setInfo(args.nodeId, args.info); return {status: 'handled'}; };
         const edit = i => {
-          const command = kind === 'text' ? insertText : property;
-          const input = kind === 'text' ? {nodeId: peer.handle(peer.nodes()[0]), from: 1, text: 'x'} : {nodeId: peer.handle(peer.nodes()[0]), info: String(i)};
+          const command = kind === 'structural' ? (i % 2 ? insertParagraph : joinWithPrevious) : kind === 'text' ? insertText : property;
+          const input = kind === 'structural' ? {nodeId: peer.handle(peer.nodes()[i % 2 ? 0 : 1]), from: 3} : kind === 'text' ? {nodeId: peer.handle(peer.nodes()[0]), from: 1, text: 'x'} : {nodeId: peer.handle(peer.nodes()[0]), info: String(i)};
           return history ? history.edit(command, input) : peer.editor.edit({local: 'gc', group: BigInt(i)}, command, input);
         };
         const retired = (() => {
@@ -379,7 +381,7 @@ test('discarded publication roots are collectable while held publications remain
   );
   assert.deepEqual(
     result,
-    ['text', 'info'].flatMap((kind) =>
+    ['text', 'info', 'structural'].flatMap((kind) =>
       [false, true].map((managed) => ({
         kind,
         managed,
@@ -441,13 +443,18 @@ test('short structural runner uses real managed history, independent checks, exc
     }
     const split = report.trace.find((s) => s.name === 'split').exclusive.work;
     assert.equal(split['author/draft.fullConstructionTrees'], 1);
-    assert(split['publication/ownership.fullInputEnumerated'] > 0);
-    assert(split['publication/ownership.sortInputs'] > 0);
-    assert.equal(split['publication/deletion.fullIndexesConstructed'], 1);
-    assert(split['publication/deletion.retainedEffectsInspected'] > 0);
+    assert.equal(split['publication/ownership.fullInputEnumerated'] ?? 0, 0);
+    assert.equal(split['publication/ownership.sortInputs'] ?? 0, 0);
+    assert.equal(split['publication/ownership.suffixActions'], 1);
+    assert.equal(split['publication/deletion.fullIndexesConstructed'] ?? 0, 0);
+    assert.equal(split['publication/projection.localStructuralCandidates'], 1);
+    assert.equal(split['publication/deletion.retainedEffectsInspected'] ?? 0, 0);
+    assert(split['publication/deletion.changedEffectsInspected'] > 0);
     assert(split['publication/coupled.candidatesCommitted'] > 0);
     const edit = report.trace.find((s) => s.name === 'unrelated-edit').exclusive.work;
-    assert.equal(edit['publication/projection.fullProjectors'], 1);
+    assert.equal(edit['publication/projection.fullProjectors'] ?? 0, 0);
+    assert.equal(edit['publication/provenance.fullReconstructions'] ?? 0, 0);
+    assert.equal(edit['publication/coupled.candidatesCommitted'], 1);
     assert(readFileSync(output + '.bin').byteLength > 0);
     const coldOutput = join(directory, 'cold');
     execFileSync(
@@ -474,4 +481,158 @@ test('short structural runner uses real managed history, independent checks, exc
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('cancelled production adapter candidates release roots while the prior tuple stays held', () => {
+  const result = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [
+        '--expose-gc',
+        '--import',
+        './benchmarks/multiwriter/resolve-ts.mjs',
+        '--input-type=module',
+        '--eval',
+        String.raw`
+          import assert from 'node:assert/strict';
+          import { commandGenesis, commandReplica } from './test/multiwriter/commands/replica.ts';
+          import { insertParagraph } from './src/editing/commands/insert-paragraph.ts';
+          import { MaterializedProjection } from './src/markdown/multiwriter/materialization/projection.ts';
+          const genesis = commandGenesis('abcdef\n\ntail');
+          const source = commandReplica(genesis), target = commandReplica(genesis, undefined, 'materialized');
+          const held = target.document.publication.status().publication;
+          const heldNative = held.native.encodeState(), heldView = JSON.stringify(held.value.view);
+          assert.equal(source.editor.session('source').edit(insertParagraph, {nodeId: source.handle(source.nodes()[0]), from: 2}).status, 'applied');
+          target.document.store.applyUpdate(source.document.store.encodeUpdate());
+          const retired = [];
+          const prepare = MaterializedProjection.prototype.prepare;
+          let built = false;
+          // A non-retaining wrapper records only weak identities. Mock call logs
+          // would themselves retain the candidate and invalidate this control.
+          MaterializedProjection.prototype.prepare = function* (...args) {
+            const candidate = yield* prepare.apply(this, args);
+            retired.push(new WeakRef(candidate.value), new WeakRef(candidate.value.view.root), new WeakRef(candidate.value.ownership));
+            built = true;
+            yield;
+            return candidate;
+          };
+          for (let trial = 0; trial < 16; trial++) {
+            built = false;
+            let work = target.document.publication.refresh(0);
+            while (!built) {
+              assert.equal(work.state, 'deferred');
+              work = work.continuation.resume(1);
+            }
+            assert.equal(work.state, 'deferred');
+            work.continuation.cancel();
+            assert.equal(target.document.publication.status().publication, held);
+            assert.equal(target.document.activityDiagnostics().retainedActions, 0);
+          }
+          MaterializedProjection.prototype.prepare = prepare;
+          target.document.publication.evict();
+          const turn = () => new Promise(resolve => setImmediate(resolve));
+          let released = false;
+          for (let i = 0; i < 10; i++) {
+            await turn(); global.gc(); global.gc();
+            if (retired.every(ref => ref.deref() === undefined)) { released = true; break; }
+          }
+          assert.equal(JSON.stringify(held.value.view), heldView);
+          assert(Buffer.from(held.native.encodeState()).equals(heldNative));
+          console.log(JSON.stringify({released, candidates: retired.length / 3, retainedPrior: true}));
+          target.close(); source.close();
+        `,
+      ],
+      { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ),
+  );
+  assert.deepEqual(result, { released: true, candidates: 16, retainedPrior: true });
+});
+
+test('held selected cohort roots release producer and cancelled candidates across later publications', () => {
+  const result = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [
+        '--expose-gc',
+        '--import',
+        './benchmarks/multiwriter/resolve-ts.mjs',
+        '--input-type=module',
+        '--eval',
+        String.raw`
+          import assert from 'node:assert/strict';
+          import { NativeFixture } from './src/markdown/multiwriter/ownership/test-fixtures.ts';
+          import { commandReplica } from './test/multiwriter/commands/replica.ts';
+          import { insertParagraph } from './src/editing/commands/insert-paragraph.ts';
+          import { insertText } from './src/editing/commands/insert-text.ts';
+          import { StructuralIndex } from './src/markdown/multiwriter/materialization/structural.ts';
+          import { MaterializedProjection } from './src/markdown/multiwriter/materialization/projection.ts';
+          const f = new NativeFixture();
+          f.author('A1', f => [f.split('P', 'R', 'P3')]);
+          f.author('B1', f => [f.split('P', 'L', 'P1')]);
+          const genesis = {documentId: 'D', genesisId: 'G', layout: f.genesis,
+            body: {...f.bodies.get('G'), allocations: f.genesis.allocations}, initialProperties: []};
+          const producers = new WeakMap(), selectedCohorts = StructuralIndex.prototype.selectedCohorts;
+          StructuralIndex.prototype.selectedCohorts = function () {
+            const read = selectedCohorts.call(this);
+            producers.set(read, new WeakRef(this));
+            return read;
+          };
+          const p = commandReplica(genesis, undefined, 'materialized');
+          for (const name of ['A1', 'B1']) {
+            const envelope = f.envelope(name);
+            p.document.certifyLocal(envelope); p.document.store.append(envelope); p.editor.refresh();
+          }
+          // Hold only the selected reader, not its OwnershipResult or publication.
+          const read = p.document.publication.status().publication.value.ownership.cohortLookup,
+            producer = producers.get(read), root = f.id('root', 'node'), saved = structuredClone(read(root));
+          assert.equal(saved.length, 1); assert.equal(saved[0].roots.length, 2);
+          for (let i = 1; i <= 16; i++) assert.equal(p.editor.session('text').edit(insertText, {
+            nodeId: p.handle(p.nodes()[0]), from: 1, text: 'x',
+          }, {typing: false}).status, 'applied');
+          assert.deepEqual(read(root), saved);
+          const source = commandReplica(genesis, p.document.store.encodeUpdate());
+          assert.equal(source.editor.session('split').edit(insertParagraph, {
+            nodeId: source.handle(source.nodes()[0]), from: 1,
+          }).status, 'applied');
+          p.document.store.applyUpdate(source.document.store.encodeUpdate());
+          const retired = [], prepare = MaterializedProjection.prototype.prepare;
+          let built = false;
+          MaterializedProjection.prototype.prepare = function* (...args) {
+            const candidate = yield* prepare.apply(this, args);
+            retired.push(new WeakRef(candidate.value), new WeakRef(candidate.value.ownership),
+              producers.get(candidate.value.ownership.cohortLookup));
+            built = true; yield; return candidate;
+          };
+          for (let trial = 0; trial < 16; trial++) {
+            built = false;
+            let work = p.document.publication.refresh(0);
+            while (!built) { assert.equal(work.state, 'deferred'); work = work.continuation.resume(1); }
+            assert.equal(work.state, 'deferred'); work.continuation.cancel();
+            assert.deepEqual(read(root), saved);
+          }
+          MaterializedProjection.prototype.prepare = prepare;
+          StructuralIndex.prototype.selectedCohorts = selectedCohorts;
+          p.document.publication.evict();
+          const turn = () => new Promise(resolve => setImmediate(resolve));
+          let released = false;
+          for (let i = 0; i < 10; i++) {
+            await turn(); global.gc(); global.gc();
+            if (!producer.deref() && retired.every(ref => ref && !ref.deref())) { released = true; break; }
+          }
+          assert.deepEqual(read(root), saved);
+          const bytes = p.document.store.encodeUpdate();
+          const held = p.document.publication.status().publication;
+          const native = held.native.encodeState();
+          p.editor.refresh();
+          assert(Buffer.from(held.native.encodeState()).equals(native));
+          assert(Buffer.from(p.document.store.encodeUpdate()).equals(bytes));
+          assert.deepEqual(read(root), saved);
+          console.log(JSON.stringify({released, candidates: retired.length / 3, heldSelectedRoots: saved[0].roots.length}));
+          p.close(); source.close(); f.destroy();
+        `,
+      ],
+      { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    ),
+  );
+  assert.deepEqual(result, { released: true, candidates: 16, heldSelectedRoots: 2 });
 });

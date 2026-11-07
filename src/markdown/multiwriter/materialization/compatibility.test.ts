@@ -44,8 +44,8 @@ for (const depth of [10, 150])
       expect(old.value.view.root.children[0].content).toBe('abcdef');
       oracle.check(p.document, p.genesis);
       control(p, edit, false);
-      expect(counts(p).interpretationSelections).toBe(after.interpretationSelections + 1);
-      expect(counts(p).payloadsCompared - after.payloadsCompared).toBe(depth + 2);
+      expect(counts(p).interpretationSelections).toBe(after.interpretationSelections);
+      expect(counts(p).payloadsCompared - after.payloadsCompared).toBe(2);
       oracle.check(p.document, p.genesis);
     } finally {
       oracle.destroy();
@@ -53,7 +53,7 @@ for (const depth of [10, 150])
     }
   }, 120000);
 
-test('exact append evidence does not suppress native reader invalidation', () => {
+test('exact append evidence certifies ordinary subdivisions across split and join', () => {
   const p = open(),
     oracle = createMaterializationOracle();
   try {
@@ -67,8 +67,9 @@ test('exact append evidence does not suppress native reader invalidation', () =>
     split(p, 2n);
     const after = counts(p);
     expect(after.payloadsCompared - before.payloadsCompared).toBe(1);
-    expect(after.nativeReaderInvalidations).toBeGreaterThan(before.nativeReaderInvalidations);
-    expect(after.lastReplayFrom).toBe(0);
+    expect(after.nativeReaderInvalidations).toBe(before.nativeReaderInvalidations);
+    expect(after.lastReplayFrom).toBe(2);
+    expect(after.lastReplayReason).toBe('content-subdivision');
     oracle.check(p.document, p.genesis);
   } finally {
     oracle.destroy();

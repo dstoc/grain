@@ -47,7 +47,7 @@ for (const Constructor of [LayoutPrefix, MaterializedLayout])
       if (layout instanceof MaterializedLayout) layout.beginAction(input, () => true);
       else layout.beginAction(input);
       expect(calls.mock.calls.length).toBeLessThan(150);
-      expect(orders).toHaveBeenCalledTimes(1);
+      expect(orders).toHaveBeenCalledTimes(layout instanceof MaterializedLayout ? 0 : 1);
       calls.mockClear();
       orders.mockClear();
       const next = { action: action(B, 1n, [born]), births: [] };
@@ -61,6 +61,96 @@ for (const Constructor of [LayoutPrefix, MaterializedLayout])
     }
     expect(layout.children(parent)).toContainEqual(node);
   });
+
+for (const Constructor of [LayoutPrefix, MaterializedLayout])
+  for (const kind of ['missing', 'cross-sequence', 'equal-priority', 'later-priority'] as const)
+    test(`${Constructor.name} rejects fresh ${kind} predecessor edges`, () => {
+      const genesis = commandGenesis('abc'),
+        layout = new Constructor(genesis.layout),
+        base = action();
+      const nodes = [resource('node', 0, base.id), resource('node', 1, base.id)],
+        occurrences = [resource('occurrence', 2, base.id), resource('occurrence', 3, base.id)];
+      const previous = genesis.layout.births[0].occurrence;
+      const slots = nodes.map(() => ({ parent: layout.root, predecessor: previous }));
+      if (kind === 'missing') slots[0].predecessor = resource('occurrence', 99, base.id);
+      if (kind === 'cross-sequence') slots[0].parent = layout.children(layout.root)[0];
+      if (kind === 'later-priority') slots[0].predecessor = occurrences[1];
+      const born = {
+        ...base,
+        allocations: nodes.flatMap((node, i) => [
+          {
+            type: 'node' as const,
+            id: node,
+            role: 'quote' as const,
+            flow: null,
+            birthSlot: slots[i],
+          },
+          { type: 'occurrence' as const, id: occurrences[i], slot: slots[i] },
+        ]),
+        effects:
+          kind === 'later-priority'
+            ? nodes.map((node, i) => ({
+                type: 'MoveBlock' as const,
+                node,
+                occurrence: occurrences[i],
+                slot: slots[i],
+                standaloneFlow: null,
+              }))
+            : [],
+      };
+      const input = {
+        action: born,
+        births: nodes.map((node, i) => ({ node, occurrence: occurrences[i] })),
+      };
+      expect(() =>
+        layout instanceof MaterializedLayout
+          ? layout.beginAction(input, () => true)
+          : layout.beginAction(input),
+      ).toThrow();
+    });
+
+for (const Constructor of [LayoutPrefix, MaterializedLayout])
+  for (const observed of [false, true])
+    test(`${Constructor.name} retains ghost predecessor availability, observed=${observed}`, () => {
+      const genesis = commandGenesis('abc'),
+        layout = new Constructor(genesis.layout),
+        base = action(),
+        ghost = resource('occurrence', 0, base.id),
+        slot = { parent: layout.root, predecessor: genesis.layout.births[0].occurrence };
+      const first = { ...base, allocations: [{ type: 'occurrence' as const, id: ghost, slot }] };
+      if (layout instanceof MaterializedLayout)
+        layout.beginAction({ action: first, births: [] }, () => true);
+      else layout.beginAction({ action: first, births: [] });
+      const next = action(B, 1n, observed ? [first] : []),
+        node = resource('node', 0, next.id),
+        occurrence = resource('occurrence', 1, next.id),
+        nextSlot = { parent: layout.root, predecessor: ghost };
+      const input = {
+        action: {
+          ...next,
+          allocations: [
+            {
+              type: 'node' as const,
+              id: node,
+              role: 'quote' as const,
+              flow: null,
+              birthSlot: nextSlot,
+            },
+            { type: 'occurrence' as const, id: occurrence, slot: nextSlot },
+          ],
+        },
+        births: [{ node, occurrence }],
+      };
+      const enter = () =>
+        layout instanceof MaterializedLayout
+          ? layout.beginAction(input, () => observed)
+          : layout.beginAction(input);
+      if (!observed) expect(enter).toThrow('Predecessor is not causally available');
+      else {
+        enter();
+        expect(layout.children(layout.root)).toContainEqual(node);
+      }
+    });
 
 for (const Constructor of [LayoutPrefix, MaterializedLayout])
   test(`${Constructor.name} rejects a cycle among new anchors in a retained sequence`, () => {

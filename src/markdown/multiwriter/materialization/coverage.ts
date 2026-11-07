@@ -1,3 +1,4 @@
+import { OwnershipValidationError } from '../ownership/errors.js';
 import type { FlowId } from '../contracts.js';
 import { resourceKey } from '../layout/index.js';
 import { PersistentMap } from './map.js';
@@ -26,13 +27,14 @@ export class OwnershipCoverage {
     const changed = new Map<string, PersistentMap<true>>();
     for (const [before, after] of replacements) {
       const flow = this.cells.get(before);
-      if (flow === undefined) throw new Error('Refined cell lacks a coverage certificate');
+      if (flow === undefined)
+        throw new OwnershipValidationError('Refined cell lacks a coverage certificate');
       let keys = changed.get(flow);
       if (!keys) changed.set(flow, (keys = this.flows.get(flow)!.fork()));
       keys.delete(before);
       this.cells.delete(before);
       for (const key of after) {
-        if (this.cells.has(key)) throw new Error('Cell emitted more than once');
+        if (this.cells.has(key)) throw new OwnershipValidationError('Cell emitted more than once');
         keys.set(key, true);
         this.cells.set(key, flow);
       }
@@ -56,14 +58,14 @@ export class OwnershipCoverage {
       visit();
       const keys = new PersistentMap<true>();
       for (const cell of entries) {
-        if (this.cells.has(cell)) throw new Error('Cell emitted more than once');
+        if (this.cells.has(cell)) throw new OwnershipValidationError('Cell emitted more than once');
         keys.set(cell, true);
         this.cells.set(cell, key);
       }
       this.flows.set(key, keys);
     }
     if (this.cells.size !== ownerCount)
-      throw new Error('Owned cell is unreachable in raw traversal');
+      throw new OwnershipValidationError('Owned cell is unreachable in raw traversal');
     this.dirty.clear();
   }
 }

@@ -1,11 +1,12 @@
+import { OwnershipValidationError } from '../ownership/errors.js';
 import { countWork } from '../diagnostics.js';
 import { measure } from '../diagnostics.js';
 import { compareActions } from '../contracts.js';
 import type {
+  ActionId,
   CellAssignment,
   FlowId,
   InlineSlot,
-  NodeId,
   RangeRef,
   RunId,
   SemanticEffect,
@@ -13,14 +14,13 @@ import type {
 import { resourceKey } from '../layout/index.js';
 import type { EffectOrder, LayoutActionInput, LayoutGenesis } from '../layout/index.js';
 import { assignmentKey, cellKey, sameId } from '../ownership/cells.js';
-import { cutPosition, splitBuckets } from '../ownership/cohorts.js';
+import { cutPosition } from '../ownership/cohorts.js';
 import type { HomeBinding } from '../ownership/homes.js';
-import type { SplitBirth } from '../ownership/cohorts.js';
 import { traverse } from '../ownership/traversal.js';
 import type { RunAttachment, RunOrigin } from '../ownership/traversal.js';
 
 import { OwnershipResult } from '../ownership/ownership.js';
-import type { OwnershipInput, DestinationRequirement } from '../ownership/ownership.js';
+import type { OwnershipInput } from '../ownership/ownership.js';
 import type { Activity } from '../visibility/activity.js';
 import { PersistentMap } from './map.js';
 import { MaterializedLayout } from './layout.js';
@@ -28,6 +28,7 @@ import { MaterializedCells } from './cells.js';
 import { OwnershipResources } from './resources.js';
 import { NativeReadIntervals } from './intervals.js';
 import { OwnershipCoverage } from './coverage.js';
+import { StructuralIndex, structuralReads } from './structural.js';
 export interface OwnershipCheckpoint {
   readonly count: number;
   readonly index: MaterializedCells;
@@ -35,8 +36,8 @@ export interface OwnershipCheckpoint {
   readonly owners: PersistentMap<CellAssignment>;
   readonly roots: PersistentMap<readonly RunOrigin[]>;
   readonly attachments: PersistentMap<RunAttachment>;
-  readonly splits: readonly SplitBirth[];
-  readonly candidates: readonly { readonly order: EffectOrder; readonly effect: SemanticEffect }[];
+  readonly structural: StructuralIndex;
+  readonly assignmentCounts: PersistentMap<number>;
   readonly flowIntentions: PersistentMap<EffectOrder>;
   readonly installedTapes: PersistentMap<true>;
   /** First active split whose result depends on each native tape's cell topology. */
@@ -52,16 +53,16 @@ export interface OwnershipCheckpoint {
 export function orderedOwners(
   index: MaterializedCells,
   owners: PersistentMap<CellAssignment>,
-  homes: readonly HomeBinding[],
+  homes: () => readonly HomeBinding[],
 ) {
   return {
     get: (key: string) => owners.get(key),
     *values(): Generator<CellAssignment, undefined, unknown> {
-      for (const home of homes)
+      for (const home of homes())
         for (const cell of index.range(home.cell)) {
           countWork('ownership.cellsInstalled');
           const owner = owners.get(cellKey(cell.range));
-          if (!owner) throw new Error('Native cell lacks a refined assignment');
+          if (!owner) throw new OwnershipValidationError('Native cell lacks a refined assignment');
           yield owner;
         }
       return undefined;
@@ -83,9 +84,23 @@ export function replayOwnershipSuffix(
   nativeIndex: MaterializedCells,
   resources: OwnershipResources,
   work: { coverageFlowsTraversed: number; coverageCellsVisited: number },
+  /** The caller certified the exact ordered prefix and suffix. The reference
+   * audit seam omits this and still deduplicates/sorts its complete input. */
+  ordered?: { readonly length: number; at(index: number): LayoutActionInput | undefined },
+  author?: ActionId,
 ) {
   return measure('coupled-replay', () =>
-    replayOwnershipSuffixMeasured(input, activity, resume, save, nativeIndex, resources, work),
+    replayOwnershipSuffixMeasured(
+      input,
+      activity,
+      resume,
+      save,
+      nativeIndex,
+      resources,
+      work,
+      ordered,
+      author,
+    ),
   );
 }
 function replayOwnershipSuffixMeasured(
@@ -96,16 +111,13 @@ function replayOwnershipSuffixMeasured(
   nativeIndex: MaterializedCells,
   resources: OwnershipResources,
   work: { coverageFlowsTraversed: number; coverageCellsVisited: number },
+  ordered:
+    | { readonly length: number; at(index: number): LayoutActionInput | undefined }
+    | undefined,
+  author?: ActionId,
 ) {
-  countWork('ownership.fullInputEnumerated', input.actions.length);
-  countWork('ownership.fullInputMaterialized', input.actions.length);
-  countWork('ownership.fullInputDeduplicated', input.actions.length);
-  countWork('ownership.sortInputs', input.actions.length);
   const genesis = input.genesis;
-  const actions = [
-    ...new Map(input.actions.map((entry) => [actionKey(entry), entry])).values(),
-  ].sort((a, b) => (countWork('ownership.sortComparisons'), compareActions(a.action, b.action)));
-  const homes = resources.homes;
+  const actions = ordered ?? orderedLayoutInputs(input.actions);
   if (input.homes) resources.assertHomes(input.homes);
   const index = nativeIndex;
   const nativeReaders = resume?.nativeReaders.fork() ?? new PersistentMap<number>();
@@ -115,16 +127,19 @@ function replayOwnershipSuffixMeasured(
   const owners = resume?.owners.fork() ?? new PersistentMap<CellAssignment>();
   const roots = resume?.roots.fork() ?? new PersistentMap<readonly RunOrigin[]>();
   const attachments = resume?.attachments.fork() ?? new PersistentMap<RunAttachment>();
-  let splits = resume?.splits ?? [];
-  let candidates = resume?.candidates ?? [];
+  const structural = resume?.structural.fork() ?? new StructuralIndex();
+  const assignmentCounts = resume?.assignmentCounts.fork() ?? new PersistentMap<number>();
   const flowIntentions = resume?.flowIntentions.fork() ?? new PersistentMap<EffectOrder>();
   const installedTapes = resume?.installedTapes.fork() ?? new PersistentMap<true>();
   const homeIndex = resources.homeDomain;
   const coverage = resume?.coverage.fork() ?? new OwnershipCoverage();
   function component(flow: FlowId): FlowId {
     let placement = layout.flowPlacement(flow);
-    while (placement.parent.type === 'flow')
+    countWork('ownership.flowAncestorVisits');
+    while (placement.parent.type === 'flow') {
       placement = layout.flowPlacement(layout.runLayout(placement.parent.slot.run).flow);
+      countWork('ownership.flowAncestorVisits');
+    }
     return placement.flow;
   }
   function dirtyRun(run: RunId): void {
@@ -147,14 +162,16 @@ function replayOwnershipSuffixMeasured(
       const occurrence = layout.occurrence(transfer.occurrence);
       const run = layout.runLayout(transfer.run);
       if ('parent' in occurrence.slot || !sameInlineSlot(occurrence.slot, transfer.destination))
-        throw new Error('Transfer occurrence slot is immutable');
+        throw new OwnershipValidationError('Transfer occurrence slot is immutable');
       if (!sameId(run.flow, layout.runLayout(transfer.destination.run).flow))
-        throw new Error('Transfer run has a different immutable destination flow');
+        throw new OwnershipValidationError(
+          'Transfer run has a different immutable destination flow',
+        );
       if (
         run.skeleton.length !== transfer.ranges.length ||
         run.skeleton.some((range, i) => cellKey(range) !== cellKey(transfer.ranges[i]))
       )
-        throw new Error('Transfer skeleton must retain authored range order');
+        throw new OwnershipValidationError('Transfer skeleton must retain authored range order');
       attachments.set(resourceKey(transfer.occurrence), {
         run: transfer.run,
         occurrence: transfer.occurrence,
@@ -163,15 +180,16 @@ function replayOwnershipSuffixMeasured(
     }
     for (const home of resources.batchHomes(batch.allocations)) {
       const tapeKey = resourceKey(home.cell.tape);
-      if (installedTapes.has(tapeKey)) throw new Error('Duplicate tape birth');
+      if (installedTapes.has(tapeKey)) throw new OwnershipValidationError('Duplicate tape birth');
       installedTapes.set(tapeKey, true);
       const flowKey = resourceKey(layout.runLayout(home.run).flow);
-      if (roots.has(flowKey)) throw new Error('Ambiguous home run order');
+      if (roots.has(flowKey)) throw new OwnershipValidationError('Ambiguous home run order');
       roots.set(flowKey, [{ run: home.run, occurrence: home.occurrence }]);
       for (const cell of index.range(home.cell)) {
         const key = cellKey(cell.range);
-        if (owners.has(key)) throw new Error('Conflicting home coverage');
+        if (owners.has(key)) throw new OwnershipValidationError('Conflicting home coverage');
         owners.set(key, { cell: cell.range, run: home.run, occurrence: home.occurrence });
+        countAssignment(home, 1);
       }
     }
   }
@@ -192,12 +210,17 @@ function replayOwnershipSuffixMeasured(
             homeIndex.isReserved(assignment.cell) &&
             assignmentKey(assignment) !== assignmentKey(homeIndex.binding(assignment.cell.tape))
           )
-            throw new Error('Reserved home cell lost its root assignment');
+            throw new OwnershipValidationError('Reserved home cell lost its root assignment');
           return cellKey(assignment.cell);
         });
       },
       () => work.coverageFlowsTraversed++,
     );
+  }
+  function countAssignment(owner: Pick<CellAssignment, 'run' | 'occurrence'>, delta: number): void {
+    const key = assignmentKey(owner);
+    assignmentCounts.set(key, (assignmentCounts.get(key) ?? 0) + delta);
+    structural.changedAssignment(owner);
   }
   function assign(
     ranges: readonly RangeRef[],
@@ -215,12 +238,17 @@ function replayOwnershipSuffixMeasured(
       for (const cell of index.range(range)) {
         const key = cellKey(cell.range);
         const before = owners.get(key);
-        if (!before) throw new Error('Structural range uses an unavailable tape');
-        if (!skeleton.has(key)) throw new Error('Assignment outside retained run skeleton');
-        if (selected.has(key)) throw new Error('Repeated cell in structural assignment');
+        if (!before)
+          throw new OwnershipValidationError('Structural range uses an unavailable tape');
+        if (!skeleton.has(key))
+          throw new OwnershipValidationError('Assignment outside retained run skeleton');
+        if (selected.has(key))
+          throw new OwnershipValidationError('Repeated cell in structural assignment');
         selected.add(key);
         dirtyRun(before.run);
         dirtyRun(run);
+        countAssignment(before, -1);
+        countAssignment({ run, occurrence }, 1);
         owners.set(key, { cell: cell.range, run, occurrence });
       }
   }
@@ -229,22 +257,26 @@ function replayOwnershipSuffixMeasured(
     assertCoverage();
   }
   let count = resume?.count ?? 0;
-  const checkpoint = (): OwnershipCheckpoint => ({
-    count,
-    index,
-    layout: layout.fork(),
-    owners: owners.fork(),
-    roots: roots.fork(),
-    attachments: attachments.fork(),
-    splits,
-    candidates,
-    flowIntentions: flowIntentions.fork(),
-    installedTapes: installedTapes.fork(),
-    nativeReaders: nativeReaders.fork(),
-    nativeIntervals: nativeIntervals.fork(),
-    coverage: coverage.fork(),
-  });
-  for (const entry of actions.slice(count)) {
+  const checkpoint = (): OwnershipCheckpoint => {
+    structural.refresh(layout, index, resources, assignmentCounts, flowIntentions);
+    return {
+      count,
+      index,
+      layout: layout.fork(),
+      owners: owners.fork(),
+      roots: roots.fork(),
+      attachments: attachments.fork(),
+      structural: structural.fork(),
+      assignmentCounts: assignmentCounts.fork(),
+      flowIntentions: flowIntentions.fork(),
+      installedTapes: installedTapes.fork(),
+      nativeReaders: nativeReaders.fork(),
+      nativeIntervals: nativeIntervals.fork(),
+      coverage: coverage.fork(),
+    };
+  };
+  for (let at = count; at < actions.length; at++) {
+    const entry = actions.at(at)!;
     countWork('ownership.suffixActions');
     layout.beginAction(entry, (prior) => activity.observes(entry.action.id, prior));
     install({ allocations: entry.action.allocations, births: entry.births }, entry.action.effects);
@@ -259,6 +291,62 @@ function replayOwnershipSuffixMeasured(
       countWork('ownership.effectsInspected');
       const order = { action: { id: entry.action.id, lamport: entry.action.lamport }, ordinal };
       const active = input.isActive(order);
+      if (author) countWork('authorProof.candidateOrdinals');
+      if (author && sameAction(author, entry.action.id) && active && effect.type === 'SplitFlow') {
+        countWork('authorProof.splitPredicates');
+        const sourceRun = layout.runLayout(effect.cut.run);
+        const laterBirth = entry.action.effects.findIndex(
+          (candidate) => candidate.type === 'SplitFlow' && sameId(candidate.newRun, effect.cut.run),
+        );
+        if (laterBirth >= ordinal)
+          throw new OwnershipValidationError(
+            'Split source is not yet available at its effect prefix',
+          );
+        if (!effect.basis.ranges.length) {
+          if (layout.flowPlacement(sourceRun.flow).parent.type !== 'block')
+            throw new OwnershipValidationError('Empty split source must be standalone');
+          if (rawCells(sourceRun.flow).some((cell) => !homeIndex.isReserved(cell.cell)))
+            throw new OwnershipValidationError('Empty split omits author-visible content cells');
+        } else {
+          const basis = effect.basis.ranges.flatMap((member) => {
+            const cells = index.range(member.range);
+            for (const cell of cells) {
+              const owner = owners.get(cellKey(cell.range));
+              if (!owner || !sameId(owner.occurrence, member.occurrence))
+                throw new OwnershipValidationError(
+                  'Basis occurrence differs from author ownership',
+                );
+            }
+            return cells;
+          });
+          const current = rawCells(component(sourceRun.flow)).filter(
+            (assignment) => !homeIndex.isReserved(assignment.cell),
+          );
+          const positions = new Map(current.map((cell, i) => [cellKey(cell.cell), i]));
+          let previous: number | undefined;
+          for (const cell of basis) {
+            const position = positions.get(cellKey(cell.range));
+            if (position === undefined || (previous !== undefined && position !== previous + 1))
+              throw new OwnershipValidationError(
+                'Basis is not contiguous in author source flow traversal',
+              );
+            previous = position;
+          }
+          const cut = cutPosition(effect, index, homeIndex);
+          const expected = (
+            effect.retainedSide === 'left' ? basis.slice(cut) : basis.slice(0, cut)
+          ).map((cell) => cellKey(cell.range));
+          const actual = layout
+            .runLayout(effect.newRun)
+            .skeleton.slice(0, -1)
+            .flatMap((range) => index.range(range))
+            .map((cell) => cellKey(cell.range));
+          if (JSON.stringify(actual) !== JSON.stringify(expected))
+            throw new OwnershipValidationError(
+              'Split skeleton differs from authored captured component',
+            );
+        }
+      }
       if (active && effect.type === 'TransferRange') {
         // Resolve all source ranges before installing the destination attachment.
         for (const range of effect.ranges) index.range(range);
@@ -283,14 +371,12 @@ function replayOwnershipSuffixMeasured(
         if (basis.length) {
           const left = effect.retainedSide === 'left';
           const reference = basis[left ? Math.max(0, cut - 1) : Math.min(cut, basis.length - 1)];
-          if (!reference) throw new Error('Split needs an addressable basis cell');
+          if (!reference)
+            throw new OwnershipValidationError('Split needs an addressable basis cell');
           const referenceOwner = owners.get(cellKey(reference.range));
-          if (!referenceOwner) throw new Error('Split basis uses an unavailable tape');
-          const block = layout.flowBlock(layout.runLayout(referenceOwner.run).flow);
-          const flow = layout.flowPlacements.find(
-            (placement) =>
-              placement.parent.type === 'block' && sameId(placement.parent.node, block),
-          )!.flow;
+          if (!referenceOwner)
+            throw new OwnershipValidationError('Split basis uses an unavailable tape');
+          const flow = component(layout.runLayout(referenceOwner.run).flow);
           const current = rawCells(flow, reader).filter(
             (assignment) => !homeIndex.isReserved(assignment.cell),
           );
@@ -319,7 +405,7 @@ function replayOwnershipSuffixMeasured(
           assign(selected, effect.newRun, effect.occurrence);
         }
         const run = layout.runLayout(effect.newRun);
-        const node = layout.nodeAllocations.find((node) => sameId(node.id, effect.newNode));
+        const node = layout.nodeAllocation(effect.newNode);
         const birth = layout.blockPlacement(effect.newNode);
         if (
           !node?.flow ||
@@ -328,13 +414,12 @@ function replayOwnershipSuffixMeasured(
           !birth ||
           !sameId(birth.occurrence, effect.occurrence)
         )
-          throw new Error('Split allocation does not match retained birth');
+          throw new OwnershipValidationError('Split allocation does not match retained birth');
         if (
           !sameId(birth.slot.parent, effect.outerSlot.parent) ||
           !sameNullableId(birth.slot.predecessor, effect.outerSlot.predecessor)
         )
-          throw new Error('Split outer slot differs from retained birth');
-        splits = [...splits, { effect, order }];
+          throw new OwnershipValidationError('Split outer slot differs from retained birth');
       }
       const eligible = effect.type !== 'Interpret' || !!input.interpretationEligible?.(order);
       const changedFlow =
@@ -358,9 +443,14 @@ function replayOwnershipSuffixMeasured(
           'LiftChildren',
         ].includes(effect.type)
       )
-        candidates = [...candidates, { order, effect }];
+        structural.add({ order, effect }, resources);
       for (const changed of result.flows)
-        if (changed.result === 'applied') flowIntentions.set(resourceKey(changed.flow), order);
+        if (changed.result === 'applied') {
+          flowIntentions.set(resourceKey(changed.flow), order);
+          structural.changedFlow(changed.flow);
+        }
+      for (const changed of result.blocks)
+        if (changed.result === 'applied') structural.changedBlock(changed.node);
       // Native refinement is already installed in the initial cell index. Text,
       // visibility, properties and controls cannot change these raw assignments.
       // Recheck the invariant at structural births and after layout/ownership edits.
@@ -384,63 +474,11 @@ function replayOwnershipSuffixMeasured(
   }
   const final = checkpoint();
   if (installedTapes.size !== resources.tapeCount)
-    throw new Error('Home binding references an unavailable tape');
-  const flowHome = (flow: FlowId): NodeId => resources.flowHome(flow);
-  const requirements: DestinationRequirement[] = [];
-  for (const { order, effect } of candidates) {
-    countWork('ownership.retainedStructuralCandidates');
-    const nodes: NodeId[] = [];
-    switch (effect.type) {
-      case 'TransferRange':
-        if (
-          [...owners.values()].some(
-            (owner) => sameId(owner.run, effect.run) && sameId(owner.occurrence, effect.occurrence),
-          )
-        )
-          nodes.push(flowHome(layout.runLayout(effect.destination.run).flow));
-        break;
-      case 'JoinFlow': {
-        const placement = layout.flowPlacement(effect.source);
-        if (
-          placement.parent.type === 'flow' &&
-          sameId(placement.parent.occurrence, effect.occurrence)
-        )
-          nodes.push(flowHome(layout.runLayout(effect.destination.run).flow));
-        break;
-      }
-      case 'SplitFlow': {
-        nodes.push(effect.newNode);
-        if (sameId(layout.blockPlacement(effect.newNode)!.occurrence, effect.occurrence))
-          nodes.push(effect.outerSlot.parent);
-        break;
-      }
-      case 'MoveBlock':
-        if (sameId(layout.blockPlacement(effect.node)!.occurrence, effect.occurrence))
-          nodes.push(effect.slot.parent);
-        if (
-          effect.standaloneFlow &&
-          flowIntentions.get(resourceKey(effect.standaloneFlow)) === order
-        )
-          nodes.push(flowHome(effect.standaloneFlow));
-        break;
-      case 'Interpret':
-      case 'LiftChildren':
-        for (const placement of effect.type === 'Interpret'
-          ? effect.packet.placements
-          : effect.placements)
-          if (sameId(layout.blockPlacement(placement.node)!.occurrence, placement.occurrence))
-            nodes.push(placement.slot.parent);
-        break;
-      default:
-        break;
-    }
-    if (nodes.length)
-      requirements.push({
-        order,
-        nodes: [...new Map(nodes.map((node) => [resourceKey(node), node])).values()],
-      });
-  }
-  const cohorts = splitBuckets(splits, layout, index, homeIndex);
+    throw new OwnershipValidationError('Home binding references an unavailable tape');
+  const { requirements, cohorts, homes, homeLookup, cohortLookup } = structuralReads(
+    final.structural,
+    resources,
+  );
   return {
     state: final,
     retained: resources,
@@ -456,8 +494,19 @@ function replayOwnershipSuffixMeasured(
       cohorts,
       requirements,
       homes,
+      homeLookup,
+      cohortLookup,
     ),
   };
+}
+export function orderedLayoutInputs<T extends LayoutActionInput>(input: readonly T[]): T[] {
+  countWork('ownership.fullInputEnumerated', input.length);
+  countWork('ownership.fullInputMaterialized', input.length);
+  countWork('ownership.fullInputDeduplicated', input.length);
+  countWork('ownership.sortInputs', input.length);
+  return [...new Map(input.map((entry) => [actionKey(entry), entry])).values()].sort(
+    (a, b) => (countWork('ownership.sortComparisons'), compareActions(a.action, b.action)),
+  );
 }
 function sameNullableId(a: InlineSlot['predecessor'], b: InlineSlot['predecessor']): boolean {
   return a === null ? b === null : b !== null && sameId(a, b);
@@ -469,4 +518,8 @@ function sameInlineSlot(a: InlineSlot, b: InlineSlot): boolean {
     a.side === b.side &&
     sameNullableId(a.predecessor, b.predecessor)
   );
+}
+
+function sameAction(a: ActionId, b: ActionId): boolean {
+  return a.actor === b.actor && a.sequence === b.sequence;
 }

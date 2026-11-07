@@ -1,10 +1,10 @@
 # MW-13C projection locality
 
-Issue: grain/104. Base: `c9327db5209ad1d566c6f2ef84e4186cba6d40a5`
-on `feat/94-incremental-materialization`. The approved proposal is grain/104's
-`proposal` v1 and proposal PR #93. Implementation PR #95 owns this child branch.
-The parent owns production B+C integration and PR #88. This document does not
-establish complete C, integrated performance, or parent acceptance.
+Issue: grain/104. The controlled C slice was integrated through PR #95 at
+`864a182`. The production continuation uses approved proposal v2 and draft PR #96,
+branch `integration/104-production-projection`, over exact B+C `65ab8f5`.
+The parent owns shared integration and PR #88. This document does not establish
+complete C, integrated performance, readiness authorization, or parent acceptance.
 
 ## Candidate and resource contract
 
@@ -113,7 +113,7 @@ Explicit full iteration is separate and charged.
 | Operation/input condition                                                    | Current behavior and remaining gate                                                                                                                                                                                                                                 |
 | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | First open, eviction or no compatible retained source                        | Full provenance/projection/index seed; expected cold path.                                                                                                                                                                                                          |
-| Production structural commands through `prepare()`                           | Guarded full structural projector. The parent must wire reviewed B `StructuralChanges` into the local consumer and verify compatible source pins. C-controlled differences do not establish that gate.                                                              |
+| Production structural commands through `prepare()`                           | One retained B producer and exact resource adapter feed the local C builder. Managed 10/150 split/type/join/distant-edit/history controls cover difficult features. Broader acceptance remains source-scoped.                                                       |
 | Producer declines structural/native refinement                               | Preserve B's suffix/cold fallback and historical-reader guard. C supplies no marker-only exemption.                                                                                                                                                                 |
 | Exact controlled append, earlier arrival or batch                            | Local visibility, interpretation, region/view/address candidate for split/join, text, deletion, transfer, placement, lifting, interpretation, wrappers, sections, numbering and history.                                                                            |
 | Structural list/item/quote edit beside consecutive nonempty mixed wrappers   | Separate regions across different nonempty wrappers. The original failing ordered-list split probe is retained as a passing regression. Quote-growth controls at 8/32/128 paragraphs rebuild seven list-region nodes and inspect seven boundary nodes at each size. |
@@ -139,9 +139,10 @@ concurrent births/deletion/splits, transfers and ghost slots, packet winners and
 membership, wrapper cleanup, sections, ordered numbering, paste, indent/outdent,
 all-content deletion, exact batches, earlier arrivals, cancellation and eviction.
 
-Remaining acceptance includes consumption of reviewed B output and production
-managed-command verification at compatible B/C source pins, including exact
-suffix/retraction/earlier-arrival evidence. Fresh broad correctness/static reports
+The production candidate consumes B's exact changes. Managed 10/150-node traces
+check warm publication with distant deletion, suppression and scaffolds. Remaining
+acceptance includes broader production semantic, suffix/retraction/earlier-arrival,
+atomicity, retention and compatible-head CI evidence. Fresh broad correctness/static reports
 and any deadline failures remain separately source-scoped; earlier reports do not
 prove later changes. The parent owns that integration.
 Controlled fixtures build complete differences outside C timing and preserve
@@ -199,3 +200,171 @@ The regional schedule also reads/copies root-width ordering data. Its counters d
 not claim those arrays or boundary tables are constant work. Increasing an
 unrelated quote's descendants does not increase regional subtree reconstruction;
 a genuinely wide merge, section suffix or ordered numbering region remains wide.
+
+## Production adapter and installation
+
+`MaterializedOwnership.prepareReady()` reads the certified suffix through indexed
+ready access and retains B's ordered payload entries for the prefix. Fresh batches
+supply exact `reconstructBirthContent()` coverage, including inactive allocations.
+Earlier arrivals retain B's complete ordering audit. Resource rebuilds explicitly
+materialize and charge the retained inputs; the independent reference assembles
+all batches itself.
+
+`projection-adapter.ts` binds the old C state to B's exact genesis, native view,
+ready source and checkpoint. It visits both sides of assignment, placement, flow,
+run, occurrence, root, attachment, cohort and requirement deltas. Selected flow
+ancestry retains private-home headers and effective destinations. A work queue
+expands participating tapes through C's existing reverse readers, including ghosts.
+Destination contributions remove old effect references and add new references to
+complete retained per-node witness arrays. Controls also visit their exact target
+allocations and manifests, including allocations with no semantic effects. Birth
+activity can change without a placement or ownership delta. Semantically equal entries recreated
+by historical replay do not dirty C; visits to those delta entries remain charged.
+
+Text/property publications advance the same checkpoint binding. C's private state
+builder has no independent generation or producer commit. A local production commit
+retains the owned B producer. The public controlled seam still evicts that producer
+after an external commit. A C decline uses the same prepared B result for full
+projection/indexing and installs a coherent binding; it never prepares a second B.
+
+Adapter declines are `incompatible-producer-base`, `incompatible-producer-candidate`,
+`incompatible-producer-source`, `changed-genesis` and `missing-exact-addition`.
+Both base and candidate carry their own genesis identity. A changed genesis
+bypasses text/property reuse and seeds interpretation, deletion and view indexes
+from the new input. Cold open/eviction and
+C's exact metadata declines retain named full reconstruction. Required ordinary
+commands producing incomplete metadata remain integration defects.
+
+Activity, B and C candidates expose nonmutating `assertCurrent()` checks. The
+publication hook captures the pair and checks all participants before installing
+any root. B prepares checkpoint refinement, positions, resources and counters
+before installation. Commit does not read a ready sequence or refine checkpoints.
+Stale activity/B/C, each eligibility failure and cancellation after C construction
+leave the old tuple and committed roots intact; retry is checked independently.
+
+Diagnostics retain aggregate resource IDs and also qualify them by purpose.
+`publication/...` identifies accepted-state work; `staging/...` and `author/...`
+remain separate. D's full pre-append staging remains separate. The assigned
+[exact-author proof slice](mw13-exact-author-proof.md) replaces full ownership replay
+only for a supported exact local candidate after all original preambles.
+A history control can require B's genuine historical suffix replay, including a
+replay from zero before the first periodic checkpoint. This does not imply full
+C provenance/projection/index reconstruction.
+
+Production regression checks extend the existing regional and refinement corpus.
+They compare the actual managed publication, in addition to the controlled C
+candidate, against independent normalized output, visibility, packet decisions,
+properties, raw ownership and addresses. Indexed-ready controls forbid prefix
+iteration, check fresh-batch coverage, verify removal-only address retraction and
+same-B fallback/reseed, and forbid ready reads or checkpoint work at installation.
+These controls do not change deadlines, warm fixtures, CI partitions or workers.
+
+Inherited deletion resolves final parent paths before scheduling descendants.
+A changed child can wait for a changed parent without creating a false cycle.
+Descendants enter the existing work queue; parent recursion retains cycle checks
+and charges `witness.deletionAncestorsChecked`. A managed concurrent birth/delete
+control supplies the child before its parent and checks complete independent
+output and visibility.
+
+The GC controls also cancel 16 fully constructed production candidates, evict the
+cache and verify that candidate projection/ownership roots can be collected while
+the prior published tuple remains held and readable. The controls use weak
+references and non-retaining wrappers rather than mock call logs.
+
+Visibility exports retain the reference `text`, then `nodes` field order. This
+keeps existing exact-carrier observation hashes valid. The hash oracle and
+captured expectations are unchanged. Worker controls now require zero warm full
+projector/deletion-index construction and a real local structural candidate,
+while retaining their complete independent observations, history and cold-reopen
+assertions.
+
+## Selected cohort readers
+
+The producer retains a persistent parent-to-group membership root alongside its
+complete cohort map. Each nonnull entry records the first root's immutable block
+parent. Dirty-group refresh retracts the old membership and installs the newly
+ranked bucket before exposing a candidate. Null groups remain in the independent
+complete map and have no selected membership. Forks and checkpoints share roots;
+changed inner maps are forked before mutation. The eight-checkpoint bound is
+unchanged.
+
+Both production `OwnershipResult` constructors supply a selected callback built
+outside the preparation scope. That callback captures only a completed fork of
+the parent membership root. It sorts the selected parent's entries by the existing
+first-effect order and copies their bucket/root arrays. It retains no producer,
+activity callback, candidate, prior State or query cache. Missing membership means
+an empty selection. The reference constructor still filters its independent full
+array; explicit production `.buckets` exports still traverse the complete map.
+
+| Counter (`ownership.` prefix)                                                           | Unit                                                                                                 |
+| --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `cohortParentLookups`                                                                   | Selected parent queries, including empty parents.                                                    |
+| `cohortMembershipInserts`, `cohortMembershipRemovals`                                   | Keyed membership updates during dirty-group refresh.                                                 |
+| `cohortSelectedEntriesVisited`, `cohortSelectedSortInputs`, `cohortSelectedComparisons` | Selected nonnull entries visited, sort inputs and comparator calls.                                  |
+| `cohortSelectedBucketsCopied`, `cohortSelectedRootsCopied`                              | Bucket arrays and root entries copied by selected reads.                                             |
+| `cohortExportCalls`                                                                     | Complete export calls, including cached calls.                                                       |
+| `cohortsExported`                                                                       | Retained group entries traversed on uncached full exports, including nulls; unchanged unit.          |
+| `cohortExportSortInputs`, `cohortExportComparisons`                                     | Nonnull full-export sort inputs and comparator calls.                                                |
+| `cohortExportBucketsCopied`, `cohortExportRootsCopied`                                  | Bucket arrays and root entries detached by explicit public `.buckets` reads, including cached reads. |
+
+Keyed counters count operations; persistent-map search/path copying remains
+logarithmic. Actual cohorts and occurrences under the selected parent remain real
+dependencies. Fixed-root controls grow unrelated null and nonnull quote cohorts,
+keep selected root visits/copies at zero, and require quote-selected work to grow
+with its own nonempty cohorts. Independent full exports, both delivery orders,
+cross-parent retraction, undo/redo, native refinement, old readers and cold
+reseeding remain separate checks. These work counts establish no whole-command
+latency or parent acceptance.
+
+## Destination witness accounting
+
+The production adapter seeds one temporary keyed map per node whose requirement
+contributions change. Removals and additions use exact action/effect keys.
+Duplicate additions preserve retained reference objects. Each affected node gets
+one final materialization and the existing semantic-order sort; container-only
+readers use retained arrays directly. Maps do not escape preparation. Empty and
+removal-only results remain explicit. A decline still charges edits already
+attempted.
+
+| Counter (`projection.` prefix)                          | Unit                                                                                                      |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `adapterWitnessNodesSeeded`                             | Temporary per-node maps created.                                                                          |
+| `adapterWitnessSeedEntriesVisited`                      | Retained references visited once while seeding those maps.                                                |
+| `adapterWitnessKeyedReads`                              | Addition membership checks, including duplicates.                                                         |
+| `adapterWitnessKeyedUpdates`                            | Seed insertions, attempted removals and successful new-reference insertions.                              |
+| `adapterWitnessFinalNodes`                              | Complete final per-node arrays produced, including empty results.                                         |
+| `adapterWitnessFinalEntriesVisited`                     | References traversed during final materialization.                                                        |
+| `adapterWitnessEntriesCopied`                           | References copied into final arrays; unchanged unit. Repeated intermediate array edits have been removed. |
+| `adapterWitnessSortInputs`, `adapterWitnessComparisons` | Final sort inputs and comparator calls.                                                                   |
+| `requirementReferencesInspected`                        | References visited while updating the reverse requirement index.                                          |
+| `requirementReaderEntriesInspected`                     | Dependent entries inspected by removal filters, addition spreads and old/new split-reader traversal.      |
+| `requirementReaderEntriesCopied`                        | Filter outputs and existing dependent entries copied by addition spreads.                                 |
+| `requirementReaderEntriesAdded`                         | New dependent entries appended to reverse-reader arrays.                                                  |
+
+The reverse index preserves its existing array behavior. Reinstalling many nodes
+with one shared requirement can still do quadratic dependent-array work; that is
+charged explicitly rather than claimed constant. Cold seeds also charge reverse
+array construction. Old/new split readers are traversed directly, removing their
+combined temporary spread. Counts include discarded prepared candidates and
+adapter declines after edits. Synthetic contribution controls compare the actual
+adapter with independent previous array semantics at widths 8/32/128 and changed
+contributions 1/4/8. Real lifting fixtures share one effect across 8/32/128 distinct
+destinations and compare every dependent scan/copy with a separate model before
+rejecting the prepared candidate as stale. Complete normalized/visibility and
+canonical-byte checks remain enabled.
+
+A selected-reader GC worker holds a nonempty root across 16 later publications,
+16 cancelled candidates and eviction. The originating producer and cancelled
+candidate roots must collect while that reader remains usable. It also verifies
+held native reads and unchanged canonical bytes. This complements closure
+inspection: the reader factory captures only its completed parent-map fork;
+entries contain semantic bucket/order facts and no activity or commit callbacks.
+
+Downstream availability retains its split-permission filter and activity search.
+`witness.requirementFilterEntriesInspected` charges every filter input;
+`witness.requirementFilterEntriesCopied` charges each retained output reference.
+`witness.requirementActivityChecks` charges every activity predicate, including
+unsuccessful searches and predicates before an early match. Cold, structural and
+text/control routes use the same filter accounting. The wide reverse-reader
+controls assert these counts, and 8/32/128-reference controls cover first/last/no
+active matches during both cold construction and private preparation.

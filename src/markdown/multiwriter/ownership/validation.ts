@@ -8,6 +8,14 @@ import { CellIndex, sameId } from './cells.js';
 import { deriveHomes } from './homes.js';
 import type { HomeBinding } from './homes.js';
 import { certifyOwnership } from './ownership.js';
+import type { OwnershipInput } from './ownership.js';
+import {
+  consumeAuthorProof,
+  discardAuthorProof,
+  AuthorProofProviderError,
+} from './author-proof.js';
+import type { AuthorProofProvider, AuthorProofRequest } from './author-proof.js';
+import { countWork } from '../diagnostics.js';
 import type { TapeSnapshot } from '../text/types.js';
 
 /** MW-03 supplies deterministic node-to-birth bindings from retained allocation/effect facts.
@@ -15,6 +23,7 @@ import type { TapeSnapshot } from '../text/types.js';
  */
 export function createOwnershipAuthorValidator(options: {
   readonly genesis: LayoutGenesis;
+  readonly authorProof?: AuthorProofProvider;
   readonly births: (action: ActionEnvelope) => readonly BirthPlacement[];
   readonly effectEligible?: (actions: readonly ActionEnvelope[], order: EffectOrder) => boolean;
   readonly interpretationEligible?: (
@@ -32,6 +41,18 @@ export function createOwnershipAuthorValidator(options: {
       .map((tape) => context.native.snapshot(tape.id));
     const inputs = actions.map((entry) => ({ action: entry, births: options.births(entry) }));
     const activity = reduceActivity(actions);
+    countWork('authorProof.preambleActions', actions.length);
+    countWork('authorProof.preambleAllocations', allocations.length);
+    countWork('authorProof.preambleSnapshots', snapshots.length);
+    countWork(
+      'authorProof.preambleSnapshotParts',
+      snapshots.reduce((n, s) => n + s.parts.length, 0),
+    );
+    const rejected = (error: unknown) => {
+      if (error instanceof IngestDataError || error instanceof IngestCapacityError) throw error;
+      if (!(error instanceof Error)) throw error;
+      return 'reference' as const;
+    };
     try {
       const homes = [
         ...deriveHomes(genesis),
@@ -42,25 +63,57 @@ export function createOwnershipAuthorValidator(options: {
           ),
         ),
       ];
+      countWork('authorProof.preambleHomes', homes.length);
       assertEdgeBrackets(action, homes, snapshots);
-      certifyOwnership(
-        {
-          genesis,
-          actions: inputs,
-          snapshots,
-          isActive: (order) =>
-            activity.isActive(order.action.id) &&
-            (options.effectEligible?.(actions, order) ?? true),
-          interpretationEligible: (order) =>
-            options.interpretationEligible?.(actions, order) ?? false,
-        },
-        action.id,
-      );
+    } catch (error) {
+      return rejected(error);
+    }
+    const input: OwnershipInput = {
+      genesis,
+      actions: inputs,
+      snapshots,
+      isActive: (order) =>
+        activity.isActive(order.action.id) && (options.effectEligible?.(actions, order) ?? true),
+      interpretationEligible: (order) => options.interpretationEligible?.(actions, order) ?? false,
+    };
+    // Provider/host failures are outside the semantic rejection boundary.
+    if (options.authorProof) {
+      countWork('authorProof.requests');
+      const request: AuthorProofRequest = {
+        invocation: Object.freeze({}),
+        action,
+        indexed: context.indexed,
+        native: context.native,
+        input,
+        activity,
+      };
+      const result = (() => {
+        try {
+          return options.authorProof!(request);
+        } catch (error) {
+          throw new AuthorProofProviderError(error);
+        }
+      })();
+      if (result.state === 'rejected') {
+        countWork('authorProof.rejections');
+        return 'reference';
+      }
+      if (result.state === 'proved') {
+        try {
+          consumeAuthorProof(request, result.proof);
+          return null;
+        } finally {
+          discardAuthorProof(result.proof);
+        }
+      }
+      countWork(`authorProof.miss.${result.reason}`);
+    }
+    try {
+      countWork('authorProof.fullCertifications');
+      certifyOwnership(input, action.id);
       return null;
     } catch (error) {
-      if (error instanceof IngestDataError || error instanceof IngestCapacityError) throw error;
-      if (!(error instanceof Error)) throw error;
-      return 'reference';
+      return rejected(error);
     }
   };
 }

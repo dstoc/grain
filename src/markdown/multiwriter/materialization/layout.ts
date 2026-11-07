@@ -1,5 +1,6 @@
+import { OwnershipValidationError } from '../ownership/errors.js';
 import { countWork, touchWork } from '../diagnostics.js';
-import { compareActions } from '../contracts.js';
+import { compareActions, compareEffects } from '../contracts.js';
 import type {
   Allocation,
   BlockSlot,
@@ -64,6 +65,8 @@ export class MaterializedLayout {
   private runs = new PersistentMap<RunLayout>();
   private occurrences = new PersistentMap<OrderedOccurrence>();
   private sequences = new PersistentMap<SequenceLink>();
+  /** Certified immutable follower priorities, including ghost anchors. */
+  private followerPriorities = new PersistentMap<true>();
   private joined = new PersistentMap<readonly FlowId[]>();
   private flowRanks = new PersistentMap<number>();
   private blockOwners = new PersistentMap<string>();
@@ -82,6 +85,7 @@ export class MaterializedLayout {
       this.runs = source.runs.fork();
       this.occurrences = source.occurrences.fork();
       this.sequences = source.sequences.fork();
+      this.followerPriorities = source.followerPriorities.fork();
       this.joined = source.joined.fork();
       this.flowRanks = source.flowRanks.fork();
       this.blockOwners = source.blockOwners.fork();
@@ -94,10 +98,31 @@ export class MaterializedLayout {
       return;
     }
     this.allocate(structuredClone(genesis), null);
-    if (!this.rootId) throw new Error('Missing document root');
+    if (!this.rootId) throw new OwnershipValidationError('Missing document root');
   }
   fork(): MaterializedLayout {
     return new MaterializedLayout({ allocations: [], births: [] }, this);
+  }
+  /** Exact root differences, including withdrawals and former locations. This
+   * does not traverse an unchanged container or export the complete layout. */
+  changes(before?: MaterializedLayout) {
+    const visit = () => countWork('layout.changeIndexNodes');
+    const changes = <T>(after: PersistentMap<T>, prior?: PersistentMap<T>) => [
+      ...after.changes(prior ?? new PersistentMap<T>(), visit),
+    ];
+    return {
+      nodes: changes(this.nodes, before?.nodes),
+      runs: changes(this.runs, before?.runs),
+      occurrences: changes(this.occurrences, before?.occurrences),
+      blocks: changes(this.blocks, before?.blocks).map(({ key, before, after }) => ({
+        key,
+        before: before?.value,
+        after: after?.value,
+      })),
+      flows: changes(this.inline, before?.inline)
+        .filter(({ before, after }) => before?.value || after?.value)
+        .map(({ key, before, after }) => ({ key, before: before?.value, after: after?.value })),
+    };
   }
   get root(): NodeId {
     return this.rootId!;
@@ -106,32 +131,35 @@ export class MaterializedLayout {
     return this.node(id);
   }
   get nodeAllocations(): readonly NodeAllocation[] {
+    countWork('layout.nodesExported', this.nodes.size);
     return [...this.nodes.values()];
   }
   get runLayouts(): readonly RunLayout[] {
+    countWork('layout.runsExported', this.runs.size);
     return [...this.runs.values()];
   }
   get flowPlacements(): readonly FlowPlacement[] {
+    countWork('layout.flowsExported', this.flows.size);
     return [...this.flows.keys()].map((key) => this.inline.get(key)!.value!);
   }
   blockPlacement(node: NodeId): BlockPlacement | null {
     const edge = this.blocks.get(resourceKey(node));
-    if (!edge) throw new Error('Missing node allocation');
+    if (!edge) throw new OwnershipValidationError('Missing node allocation');
     return edge.value;
   }
   flowPlacement(flow: FlowId): FlowPlacement {
     const edge = this.inline.get(resourceKey(flow));
-    if (!edge?.value) throw new Error('Missing flow allocation');
+    if (!edge?.value) throw new OwnershipValidationError('Missing flow allocation');
     return edge.value;
   }
   runLayout(run: RunId): RunLayout {
     const layout = this.runs.get(resourceKey(run));
-    if (!layout) throw new Error('Missing run allocation');
+    if (!layout) throw new OwnershipValidationError('Missing run allocation');
     return layout;
   }
   occurrence(id: OccurrenceId): OrderedOccurrence {
     const occurrence = this.occurrences.get(resourceKey(id));
-    if (!occurrence) throw new Error('Missing occurrence allocation');
+    if (!occurrence) throw new OwnershipValidationError('Missing occurrence allocation');
     return occurrence;
   }
   /** Complete order includes inactive and ineffective anchors. */
@@ -142,8 +170,10 @@ export class MaterializedLayout {
     this.validateSlot(slot);
     const sequence = slotSequence(slot);
     const entries: OrderedOccurrence[] = [];
-    for (let link = this.sequences.get(sequence); link; link = link.previous)
+    for (let link = this.sequences.get(sequence); link; link = link.previous) {
+      countWork('layout.sequenceAuditEntries');
       entries.push(link.occurrence);
+    }
     return orderOccurrences(entries.reverse(), buckets);
   }
   children(parent: NodeId, buckets: readonly OccurrenceBucket[] = []): readonly NodeId[] {
@@ -187,7 +217,7 @@ export class MaterializedLayout {
     const run = this.runLayout(slot.run);
     const membership = run.skeleton.map((range) => index?.containsBoundary(range, slot.boundary));
     if (membership.length && membership.every((value) => value === false))
-      throw new Error('Boundary is outside retained run skeleton');
+      throw new OwnershipValidationError('Boundary is outside retained run skeleton');
     return {
       slot: structuredClone(slot),
       run,
@@ -204,16 +234,18 @@ export class MaterializedLayout {
   }
   beginAction(input: LayoutActionInput, observes?: (id: ActionId) => boolean): void {
     if (this.current && this.nextOrdinal !== this.current.effects.length)
-      throw new Error('Previous action prefix is incomplete');
+      throw new OwnershipValidationError('Previous action prefix is incomplete');
     const action = copyLayoutAction(input.action);
     if (this.current && compareActions(this.current, action) >= 0)
-      throw new Error('Actions must enter in semantic order');
+      throw new OwnershipValidationError('Actions must enter in semantic order');
     const key = actionKey(action.id);
-    if (this.actions.has(key)) throw new Error('Duplicate action prefix');
+    if (this.actions.has(key)) throw new OwnershipValidationError('Duplicate action prefix');
     for (const dependency of action.dependencies)
-      if (!this.actions.has(actionKey(dependency))) throw new Error('Missing action dependency');
+      if (!this.actions.has(actionKey(dependency)))
+        throw new OwnershipValidationError('Missing action dependency');
     this.actions.set(key, true);
-    if (!observes) throw new Error('Coupled replay requires certified causal membership');
+    if (!observes)
+      throw new OwnershipValidationError('Coupled replay requires certified causal membership');
     this.current = action;
     this.nextOrdinal = 0;
     this.allocate(
@@ -226,7 +258,7 @@ export class MaterializedLayout {
   step(ordinal: number, active: boolean, interpretationEligible = false): LayoutStepResult {
     const action = this.current;
     if (!action || ordinal !== this.nextOrdinal || ordinal >= action.effects.length)
-      throw new Error('Effects must enter in prefix order');
+      throw new OwnershipValidationError('Effects must enter in prefix order');
     const effect = action.effects[ordinal];
     this.nextOrdinal++;
     const blocks: { node: NodeId; result: MoveResult }[] = [];
@@ -241,7 +273,9 @@ export class MaterializedLayout {
             : effect.standaloneFlow === null ||
               resourceKey(node.flow) !== resourceKey(effect.standaloneFlow)
         )
-          throw new Error("Move must assert the inline node's own standalone flow");
+          throw new OwnershipValidationError(
+            "Move must assert the inline node's own standalone flow",
+          );
         blocks.push({ node: effect.node, result: this.moveBlock(effect) });
         // Independent constituent intentions: a cycle-rejected block edge still detaches.
         if (effect.standaloneFlow)
@@ -295,12 +329,12 @@ export class MaterializedLayout {
   }
   private node(id: NodeId): NodeAllocation {
     const node = this.nodes.get(resourceKey(id));
-    if (!node) throw new Error('Missing node allocation');
+    if (!node) throw new OwnershipValidationError('Missing node allocation');
     return node;
   }
   private flow(id: FlowId): FlowAllocation {
     const flow = this.flows.get(resourceKey(id));
-    if (!flow) throw new Error('Missing flow allocation');
+    if (!flow) throw new OwnershipValidationError('Missing flow allocation');
     return flow;
   }
   private validateSlot(slot: BlockSlot | InlineSlot): void {
@@ -309,12 +343,13 @@ export class MaterializedLayout {
     if (slot.predecessor) {
       const previous = this.occurrence(slot.predecessor);
       if (slotSequence(slot) !== slotSequence(previous.slot))
-        throw new Error('Predecessor belongs to another slot sequence');
+        throw new OwnershipValidationError('Predecessor belongs to another slot sequence');
     }
   }
   private validateOccurrence(id: OccurrenceId, slot: BlockSlot | InlineSlot): void {
     this.validateSlot(slot);
-    if (!sameSlot(this.occurrence(id).slot, slot)) throw new Error('Occurrence slot is immutable');
+    if (!sameSlot(this.occurrence(id).slot, slot))
+      throw new OwnershipValidationError('Occurrence slot is immutable');
   }
   private moveBlock(placement: BlockPlacement): MoveResult {
     const node = this.node(placement.node);
@@ -323,7 +358,7 @@ export class MaterializedLayout {
     const occurrenceKey = resourceKey(placement.occurrence);
     const owner = this.blockOwners.get(occurrenceKey);
     if (owner && owner !== resourceKey(node.id))
-      throw new Error('Occurrence already belongs to another node');
+      throw new OwnershipValidationError('Occurrence already belongs to another node');
     this.blockOwners.set(occurrenceKey, resourceKey(node.id));
     return replaceEdge(
       this.blocks,
@@ -348,7 +383,8 @@ export class MaterializedLayout {
     for (const [ordinal, effect] of (action?.effects ?? []).entries()) {
       for (const id of effectOccurrences(effect)) {
         const key = resourceKey(id);
-        if (orderById.has(key)) throw new Error('Occurrence used by multiple intentions');
+        if (orderById.has(key))
+          throw new OwnershipValidationError('Occurrence used by multiple intentions');
         orderById.set(key, { action: action!, ordinal });
       }
     }
@@ -356,35 +392,37 @@ export class MaterializedLayout {
     for (const allocation of batch.allocations) {
       countWork('layout.allocationsInspected');
       const key = resourceKey(allocation.id);
-      if (allocation.id.kind !== allocation.type) throw new Error('Allocation kind mismatch');
+      if (allocation.id.kind !== allocation.type)
+        throw new OwnershipValidationError('Allocation kind mismatch');
       if (
         allocation.id.birth.type === 'genesis'
           ? action !== null
           : action === null || actionKey(allocation.id.birth.action) !== actionKey(action.id)
       )
-        throw new Error('Allocation birth does not match its batch');
+        throw new OwnershipValidationError('Allocation birth does not match its batch');
       switch (allocation.type) {
         case 'node':
-          if (this.nodes.has(key)) throw new Error('Duplicate node');
+          if (this.nodes.has(key)) throw new OwnershipValidationError('Duplicate node');
           this.nodes.set(key, allocation);
           this.blocks.set(key, { parent: null, value: null });
           this.inline.set(key, { parent: null, value: null });
           if (allocation.role === 'root') {
             if (this.rootId || action || allocation.birthSlot || allocation.flow)
-              throw new Error('Invalid document root');
+              throw new OwnershipValidationError('Invalid document root');
             this.rootId = allocation.id;
-          } else if (!allocation.birthSlot) throw new Error('Missing birth slot');
+          } else if (!allocation.birthSlot)
+            throw new OwnershipValidationError('Missing birth slot');
           if ((allocation.role === 'inline') !== (allocation.flow !== null))
-            throw new Error('Only inline nodes own flows');
+            throw new OwnershipValidationError('Only inline nodes own flows');
           break;
         case 'flow':
-          if (this.flows.has(key)) throw new Error('Duplicate flow');
+          if (this.flows.has(key)) throw new OwnershipValidationError('Duplicate flow');
           this.flowRanks.set(key, this.flows.size);
           this.flows.set(key, allocation);
           this.inline.set(key, { parent: null, value: null });
           break;
         case 'run':
-          if (this.runs.has(key)) throw new Error('Duplicate run');
+          if (this.runs.has(key)) throw new OwnershipValidationError('Duplicate run');
           this.runs.set(key, {
             run: allocation.id,
             flow: allocation.flow,
@@ -393,7 +431,7 @@ export class MaterializedLayout {
           this.inline.set(key, { parent: null, value: null });
           break;
         case 'occurrence':
-          if (this.occurrences.has(key)) throw new Error('Duplicate occurrence');
+          if (this.occurrences.has(key)) throw new OwnershipValidationError('Duplicate occurrence');
           {
             const occurrence = {
               id: allocation.id,
@@ -414,7 +452,7 @@ export class MaterializedLayout {
       if (allocation.type === 'flow') {
         const node = this.node(allocation.home);
         if (!node.flow || resourceKey(node.flow) !== resourceKey(allocation.id))
-          throw new Error('Flow must terminate at its owning inline block');
+          throw new OwnershipValidationError('Flow must terminate at its owning inline block');
         this.standalone(allocation.id);
       } else if (allocation.type === 'run') {
         this.flow(allocation.flow);
@@ -427,23 +465,46 @@ export class MaterializedLayout {
         );
       } else if (allocation.type === 'node' && allocation.flow) {
         if (resourceKey(this.flow(allocation.flow).home) !== resourceKey(allocation.id))
-          throw new Error('Inline flow home mismatch');
+          throw new OwnershipValidationError('Inline flow home mismatch');
       } else if (allocation.type === 'occurrence') {
+        countWork('layout.sequenceEntriesValidated');
         this.validateSlot(allocation.slot);
+        const current = this.occurrence(allocation.id);
         const previousId = allocation.slot.predecessor;
-        if (previousId && action) {
+        if (previousId) {
           const previous = this.occurrence(previousId);
           if (
+            previous.order &&
+            (!current.order ||
+              (countWork('layout.orderingComparisons'),
+              compareEffects(previous.order, current.order) > 0))
+          )
+            throw new OwnershipValidationError('Predecessor must be earlier than its follower');
+          if (
+            action &&
             previous.order &&
             actionKey(previous.order.action.id) !== actionKey(action.id) &&
             !observes!(previous.order.action.id)
           )
-            throw new Error('Predecessor is not causally available');
+            throw new OwnershipValidationError('Predecessor is not causally available');
         }
+        const priority = JSON.stringify([
+          slotSequence(current.slot),
+          previousId && resourceKey(previousId),
+          current.order && [actionKey(current.order.action.id), current.order.ordinal],
+        ]);
+        if (this.followerPriorities.has(priority))
+          throw new OwnershipValidationError(
+            current.order
+              ? 'Equal-priority followers must form a predecessor chain'
+              : 'Genesis occurrences must form a predecessor chain',
+          );
+        this.followerPriorities.set(priority, true);
       }
     }
     const births = new Map(batch.births.map((birth) => [resourceKey(birth.node), birth]));
-    if (births.size !== batch.births.length) throw new Error('Duplicate birth binding');
+    if (births.size !== batch.births.length)
+      throw new OwnershipValidationError('Duplicate birth binding');
     const unplaced = batch.allocations.filter(
       (allocation): allocation is NodeAllocation =>
         allocation.type === 'node' && allocation.role !== 'root',
@@ -452,30 +513,52 @@ export class MaterializedLayout {
       births.size !== unplaced.length ||
       unplaced.some((node) => !births.has(resourceKey(node.id)))
     )
-      throw new Error('Birth bindings must cover exactly the new non-root nodes');
+      throw new OwnershipValidationError(
+        'Birth bindings must cover exactly the new non-root nodes',
+      );
     const newOccurrences = new Set(
       batch.allocations.flatMap((allocation) =>
         allocation.type === 'occurrence' ? [resourceKey(allocation.id)] : [],
       ),
     );
+    // Retained predecessor edges are immutable and already certified. They
+    // cannot point to a fresh ID, so new cycles lie entirely in this batch.
+    const done = new Set<string>();
+    for (const allocation of batch.allocations) {
+      if (allocation.type !== 'occurrence') continue;
+      let key: string | undefined = resourceKey(allocation.id);
+      const path = new Set<string>();
+      while (key && newOccurrences.has(key) && !done.has(key)) {
+        countWork('layout.predecessorEdgesValidated');
+        if (path.has(key)) throw new OwnershipValidationError('Cyclic occurrence predecessors');
+        path.add(key);
+        const previous: OccurrenceId | null = this.occurrences.get(key)!.slot.predecessor;
+        key = previous ? resourceKey(previous) : undefined;
+      }
+      for (const visited of path) done.add(visited);
+    }
     for (const node of unplaced) {
       const birth = births.get(resourceKey(node.id))!;
       const occurrence = this.occurrence(birth.occurrence);
       if (!newOccurrences.has(resourceKey(birth.occurrence)))
-        throw new Error('Birth occurrence must be newly allocated');
+        throw new OwnershipValidationError('Birth occurrence must be newly allocated');
       if (!sameSlot(occurrence.slot, node.birthSlot!))
-        throw new Error('Birth occurrence must use the immutable birth slot');
+        throw new OwnershipValidationError('Birth occurrence must use the immutable birth slot');
       if (this.moveBlock({ ...birth, slot: node.birthSlot! }) !== 'applied')
-        throw new Error('Invalid fallback placement');
+        throw new OwnershipValidationError('Invalid fallback placement');
     }
-    // Only new occurrences can change an immutable sequence. Validate the whole
-    // affected sequence, including retained inactive/ineffective anchors.
+    // Initial construction retains the full independent sequence audit. Ordered
+    // reads also audit complete sequences (including ghosts and cohort buckets).
+    // Appends validate only fresh edges/priorities against the retained index.
     for (const sequence of changedSequences) {
       countWork('layout.containersRebuilt');
       touchWork('containers.rebuilt', sequence);
+      if (action) continue;
       const entries: OrderedOccurrence[] = [];
-      for (let link = this.sequences.get(sequence); link; link = link.previous)
+      for (let link = this.sequences.get(sequence); link; link = link.previous) {
+        countWork('layout.sequenceAuditEntries');
         entries.push(link.occurrence);
+      }
       orderOccurrences(entries.reverse());
     }
   }

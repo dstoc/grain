@@ -82,40 +82,45 @@ function reconstructProvenanceMeasured(genesis: LayoutGenesis, actions: readonly
   countWork('provenance.fullReconstructions');
   countWork('provenance.actionsMaterialized', actions.length);
   const inputs = actions.map((action) => ({ action, births: reconstructBirths(action) }));
-  const birthContent: BirthContent[] = [
-    { ...genesis, effects: [] as readonly SemanticEffect[] },
-    ...inputs.map(({ action, births }) => ({ ...action, births })),
-  ].flatMap((batch) => {
-    const homes = deriveHomes(batch, batch.effects);
-    const runs = new Map(
-      batch.allocations.filter((a) => a.type === 'run').map((a) => [resourceKey(a.id), a]),
-    );
-    const homeByFlow = new Map(
-      homes.map((home) => {
-        const run = runs.get(resourceKey(home.run));
-        if (!run) throw new ProvenanceError('Private home has no root');
-        return [resourceKey(run.flow), { home, root: run }] as const;
-      }),
-    );
-    return batch.allocations.flatMap((node): BirthContent[] => {
-      countWork('provenance.birthAllocationsInspected');
-      if (node.type !== 'node') return [];
-      if (!node.flow) return [{ node: node.id, intervals: [] }];
-      const binding = homeByFlow.get(resourceKey(node.flow));
-      if (!binding) throw new ProvenanceError('Inline birth has no private home');
-      const { home, root } = binding;
-      const split = batch.effects.find(
-        (effect) =>
-          effect.type === 'SplitFlow' && resourceKey(effect.newNode) === resourceKey(node.id),
-      );
-      if (
-        split?.type === 'SplitFlow' &&
-        (resourceKey(split.newRun) !== resourceKey(root.id) ||
-          resourceKey(split.newFlow) !== resourceKey(node.flow))
-      )
-        throw new ProvenanceError('Split constructor differs from private home root');
-      return [{ node: node.id, intervals: structuredClone(split ? root.skeleton : [home.cell]) }];
-    });
-  });
+  const birthContent = reconstructBirthContent({ ...genesis, effects: [] }).concat(
+    inputs.flatMap(({ action, births }) => reconstructBirthContent({ ...action, births })),
+  );
   return { actions: inputs, birthContent };
+}
+
+/** Immutable allocating-batch coverage. Activity and merged ownership do not
+ * change these intervals. Reference orchestration assembles every batch itself. */
+export function reconstructBirthContent(
+  batch: LayoutGenesis & { readonly effects: readonly SemanticEffect[] },
+): readonly BirthContent[] {
+  const homes = deriveHomes(batch, batch.effects);
+  const runs = new Map(
+    batch.allocations.filter((a) => a.type === 'run').map((a) => [resourceKey(a.id), a]),
+  );
+  const homeByFlow = new Map(
+    homes.map((home) => {
+      const run = runs.get(resourceKey(home.run));
+      if (!run) throw new ProvenanceError('Private home has no root');
+      return [resourceKey(run.flow), { home, root: run }] as const;
+    }),
+  );
+  return batch.allocations.flatMap((node): BirthContent[] => {
+    countWork('provenance.birthAllocationsInspected');
+    if (node.type !== 'node') return [];
+    if (!node.flow) return [{ node: node.id, intervals: [] }];
+    const binding = homeByFlow.get(resourceKey(node.flow));
+    if (!binding) throw new ProvenanceError('Inline birth has no private home');
+    const { home, root } = binding;
+    const split = batch.effects.find(
+      (effect) =>
+        effect.type === 'SplitFlow' && resourceKey(effect.newNode) === resourceKey(node.id),
+    );
+    if (
+      split?.type === 'SplitFlow' &&
+      (resourceKey(split.newRun) !== resourceKey(root.id) ||
+        resourceKey(split.newFlow) !== resourceKey(node.flow))
+    )
+      throw new ProvenanceError('Split constructor differs from private home root');
+    return [{ node: node.id, intervals: structuredClone(split ? root.skeleton : [home.cell]) }];
+  });
 }

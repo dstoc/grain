@@ -8,7 +8,11 @@ import { actionKey } from '../actions/references.js';
 import { NativeTapeCache } from '../text/cache.js';
 import type { NativeView } from '../ingest/publication.js';
 import { MaterializedPublication } from './publication.js';
-import * as projector from '../projection/project.js';
+import { MaterializedActivity } from './activity.js';
+import { MaterializedOwnership } from './coupled.js';
+import { MaterializedProjection } from './projection.js';
+import { change as controlledChange } from '../../../../test/multiwriter/projection-consumer.js';
+import { MaterializedInterpretations } from './interpretations.js';
 
 afterEach(() => vi.restoreAllMocks());
 const open = (genesis = commandGenesis(), bytes?: Uint8Array) =>
@@ -324,9 +328,11 @@ test('semantic failure and cancellation do not commit a prepared activity suffix
       }),
     );
     target.document.store.applyUpdate(source.document.store.encodeUpdate());
-    const fail = vi.spyOn(projector, 'projectWithActivity').mockImplementationOnce(() => {
-      throw new Error('projection failed');
-    });
+    const fail = vi
+      .spyOn(MaterializedInterpretations.prototype, 'update')
+      .mockImplementationOnce(() => {
+        throw new Error('projection failed');
+      });
     expect(() => target.editor.refresh()).toThrow('projection failed');
     expect(target.document.publication.status().publication).toBe(before);
     expect(diagnostics().retainedActions).toBe(0);
@@ -394,3 +400,139 @@ for (const size of [10, 150])
       p.close();
     }
   }, 60000);
+
+for (const component of ['activity', 'ownership', 'projection'] as const)
+  for (const failure of ['stale', 'check'] as const)
+    test(`${component} ${failure} rejects before any activity/B/C installation`, () => {
+      const genesis = commandGenesis('abcdef\n\ntail'),
+        source = open(genesis),
+        target = open(genesis);
+      if (!('activityDiagnostics' in target.document))
+        throw new Error('Expected materialized document');
+      const document = target.document,
+        before = document.publication.status().publication!,
+        replay = document.ownershipDiagnostics(),
+        heldNative = before.native.encodeState();
+      try {
+        applied(
+          source.editor.edit({ local: 'source', group: 1n }, insertParagraph, {
+            nodeId: source.handle(source.nodes()[0]),
+            from: 2,
+          }),
+        );
+        document.store.applyUpdate(source.document.store.encodeUpdate());
+        const canonical = document.store.encodeUpdate();
+        const fail = () => {
+          throw new Error('eligibility failure');
+        };
+        let spy: { mockRestore(): void };
+        if (component === 'activity') {
+          const prepare = MaterializedActivity.prototype.prepare;
+          spy = vi.spyOn(MaterializedActivity.prototype, 'prepare').mockImplementation(function* (
+            this: MaterializedActivity,
+            ...args: Parameters<typeof prepare>
+          ) {
+            const candidate = yield* prepare.apply(this, args);
+            if (failure === 'stale') this.cancel();
+            return failure === 'check' ? { ...candidate, assertCurrent: fail } : candidate;
+          });
+        } else if (component === 'ownership') {
+          const prepare = MaterializedOwnership.prototype.prepareReady;
+          spy = vi
+            .spyOn(MaterializedOwnership.prototype, 'prepareReady')
+            .mockImplementation(function* (
+              this: MaterializedOwnership,
+              ...args: Parameters<typeof prepare>
+            ) {
+              const candidate = yield* prepare.apply(this, args);
+              if (failure === 'stale') this.cancel();
+              return failure === 'check' ? { ...candidate, assertCurrent: fail } : candidate;
+            });
+        } else {
+          const change = controlledChange(source, before.value);
+          const prepare = MaterializedProjection.prototype.prepare;
+          spy = vi.spyOn(MaterializedProjection.prototype, 'prepare').mockImplementation(function* (
+            this: MaterializedProjection,
+            ...args: Parameters<typeof prepare>
+          ) {
+            const candidate = yield* prepare.apply(this, args);
+            if (failure === 'stale') {
+              // This incompatible external prepare changes C's generation only.
+              // It does not cancel or evict the otherwise-current owned B.
+              expect(this.prepareStructural({ ...change, base: candidate.value }).state).toBe(
+                'fallback',
+              );
+            }
+            return failure === 'check' ? { ...candidate, assertCurrent: fail } : candidate;
+          });
+        }
+        try {
+          expect(() => target.editor.refresh()).toThrow(
+            failure === 'check' ? 'eligibility failure' : 'no longer current',
+          );
+          expect(document.publication.status().publication).toBe(before);
+          expect(document.activityDiagnostics().retainedActions).toBe(0);
+          expect(document.ownershipDiagnostics().lastReplayLength).toBe(replay.lastReplayLength);
+          expect(compareBytes(canonical, document.store.encodeUpdate())).toBe(0);
+          expect(compareBytes(heldNative, before.native.encodeState())).toBe(0);
+        } finally {
+          spy.mockRestore();
+        }
+        target.editor.refresh();
+        expect(document.activityDiagnostics().retainedActions).toBe(1);
+        equalReference(target);
+      } finally {
+        source.close();
+        target.close();
+      }
+    });
+
+test('cancelling after local C construction installs no prepared activity/B/C roots', () => {
+  const genesis = commandGenesis('abcdef\n\ntail'),
+    source = open(genesis),
+    target = open(genesis);
+  if (!('activityDiagnostics' in target.document))
+    throw new Error('Expected materialized document');
+  const document = target.document,
+    before = document.publication.status().publication!;
+  try {
+    applied(
+      source.editor.edit({ local: 'source', group: 1n }, insertParagraph, {
+        nodeId: source.handle(source.nodes()[0]),
+        from: 2,
+      }),
+    );
+    document.store.applyUpdate(source.document.store.encodeUpdate());
+    let constructed = false;
+    const prepare = MaterializedProjection.prototype.prepare;
+    const spy = vi.spyOn(MaterializedProjection.prototype, 'prepare').mockImplementation(function* (
+      this: MaterializedProjection,
+      ...args: Parameters<typeof prepare>
+    ) {
+      const candidate = yield* prepare.apply(this, args);
+      constructed = true;
+      yield;
+      return candidate;
+    });
+    try {
+      let work = document.publication.refresh(0);
+      for (let i = 0; !constructed && i < 200000; i++) {
+        if (work.state !== 'deferred') throw new Error('Published before cancellation gate');
+        work = work.continuation.resume(1);
+      }
+      expect(constructed).toBe(true);
+      expect(work.state).toBe('deferred');
+      if (work.state === 'deferred') work.continuation.cancel();
+      expect(document.activityDiagnostics().retainedActions).toBe(0);
+      expect(document.ownershipDiagnostics().lastReplayLength).toBe(0);
+      expect(document.publication.status().publication).toBe(before);
+    } finally {
+      spy.mockRestore();
+    }
+    target.editor.refresh();
+    equalReference(target);
+  } finally {
+    source.close();
+    target.close();
+  }
+});
