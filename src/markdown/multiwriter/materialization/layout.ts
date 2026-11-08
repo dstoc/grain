@@ -36,6 +36,7 @@ interface SequenceLink {
 }
 type NodeAllocation = Extract<Allocation, { type: 'node' }>;
 type FlowAllocation = Extract<Allocation, { type: 'flow' }>;
+const emptySequence = Object.freeze({});
 function actionKey(action: LayoutAction['id']): string {
   return JSON.stringify([action.actor, action.sequence.toString()]);
 }
@@ -65,6 +66,8 @@ export class MaterializedLayout {
   private runs = new PersistentMap<RunLayout>();
   private occurrences = new PersistentMap<OrderedOccurrence>();
   private sequences = new PersistentMap<SequenceLink>();
+  /** Sequence roots are immutable; cohort buckets are view-dependent and bypass this cache. */
+  private occurrenceOrders = new WeakMap<object, readonly OrderedOccurrence[]>();
   /** Certified immutable follower priorities, including ghost anchors. */
   private followerPriorities = new PersistentMap<true>();
   private joined = new PersistentMap<readonly FlowId[]>();
@@ -169,12 +172,27 @@ export class MaterializedLayout {
   ): readonly OrderedOccurrence[] {
     this.validateSlot(slot);
     const sequence = slotSequence(slot);
+    const head = this.sequences.get(sequence),
+      cacheKey = head ?? emptySequence;
+    if (!buckets.length) {
+      const cached = this.occurrenceOrders.get(cacheKey);
+      if (cached) {
+        countWork('layout.sequenceOrderCacheHits');
+        return cached;
+      }
+    }
     const entries: OrderedOccurrence[] = [];
-    for (let link = this.sequences.get(sequence); link; link = link.previous) {
+    for (let link = head; link; link = link.previous) {
       countWork('layout.sequenceAuditEntries');
       entries.push(link.occurrence);
     }
-    return orderOccurrences(entries.reverse(), buckets);
+    const ordered = orderOccurrences(entries.reverse(), buckets);
+    if (!buckets.length) {
+      const cached = Object.freeze(ordered);
+      this.occurrenceOrders.set(cacheKey, cached);
+      return cached;
+    }
+    return ordered;
   }
   children(parent: NodeId, buckets: readonly OccurrenceBucket[] = []): readonly NodeId[] {
     return this.occurrenceOrder({ parent, predecessor: null }, buckets).flatMap((occurrence) => {

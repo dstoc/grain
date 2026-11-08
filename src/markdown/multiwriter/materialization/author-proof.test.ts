@@ -63,6 +63,7 @@ for (const depth of [0, 8, 32])
       expect(report.work['author/projectionAuthor.candidateBirthCallbacks']).toBe(depth + 1);
       expect(report.work['author/command.candidatesPrepared']).toBe(depth + 1);
       expect(report.work['publication/command.candidatesPublished']).toBe(depth + 1);
+      expect(report.work['publication/layout.sequenceOrderCacheHits']).toBeGreaterThan(0);
       for (const name of [
         'readiness.authorClosureMaterialized',
         'readiness.authorClosureCloned',
