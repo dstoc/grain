@@ -459,7 +459,9 @@ export class MaterializedLayout {
             this.occurrences.set(key, occurrence);
             const sequence = slotSequence(allocation.slot);
             changedSequences.add(sequence);
-            this.sequences.set(sequence, { occurrence, previous: this.sequences.get(sequence) });
+            const previous = this.sequences.get(sequence);
+            if (previous) this.occurrenceOrders.delete(previous);
+            this.sequences.set(sequence, { occurrence, previous });
           }
           break;
         default:
