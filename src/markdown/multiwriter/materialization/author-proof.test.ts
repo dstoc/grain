@@ -63,6 +63,63 @@ for (const depth of [0, 8, 32])
       expect(report.work['author/projectionAuthor.candidateBirthCallbacks']).toBe(depth + 1);
       expect(report.work['author/command.candidatesPrepared']).toBe(depth + 1);
       expect(report.work['publication/command.candidatesPublished']).toBe(depth + 1);
+      expect(report.work['publication/layout.sequenceOrderCacheHits']).toBeGreaterThan(0);
+      expect(report.work['author/layout.sequenceOrderCacheFastPathHits'] ?? 0).toBeGreaterThan(0);
+      expect(
+        report.work['publication/layout.sequenceOrderCacheArrayEntriesCopied'] ?? 0,
+      ).toBeGreaterThan(0);
+      expect(
+        report.work['publication/layout.sequenceOrderCacheArrayEntriesAllocated'] ?? 0,
+      ).toBeGreaterThan(
+        report.work['publication/layout.sequenceOrderCacheArrayEntriesCopied'] ?? 0,
+      );
+      expect(
+        report.work['publication/layout.sequenceOrderCachePredecessorEntries'] ?? 0,
+      ).toBeGreaterThan(0);
+      expect(report.work['publication/index.nodesAllocated'] ?? 0).toBeGreaterThan(0);
+      if (depth === 32)
+        expect(report.work['publication/layout.sequenceAuditEntries'] ?? 0).toBeLessThan(627);
+      const testEnvironment = globalThis as typeof globalThis & {
+        readonly process?: { readonly env?: Record<string, string | undefined> };
+      };
+      if (depth === 32 && testEnvironment.process?.env?.GRAIN109_CACHE_WORK === '1')
+        console.info(
+          'grain/109 depth-32 cache work',
+          JSON.stringify({
+            publicationSequenceEntries: report.work['publication/layout.sequenceAuditEntries'] ?? 0,
+            authorSequenceEntries: report.work['author/layout.sequenceAuditEntries'] ?? 0,
+            publicationOrderCacheHits:
+              report.work['publication/layout.sequenceOrderCacheHits'] ?? 0,
+            authorIncrementalAppends:
+              report.work['author/layout.sequenceOrderCacheFastPathHits'] ?? 0,
+            publicationIncrementalAppends:
+              report.work['publication/layout.sequenceOrderCacheFastPathHits'] ?? 0,
+            arrayEntriesCopied:
+              (report.work['author/layout.sequenceOrderCacheArrayEntriesCopied'] ?? 0) +
+              (report.work['publication/layout.sequenceOrderCacheArrayEntriesCopied'] ?? 0),
+            arrayEntriesAllocated:
+              (report.work['author/layout.sequenceOrderCacheArrayEntriesAllocated'] ?? 0) +
+              (report.work['publication/layout.sequenceOrderCacheArrayEntriesAllocated'] ?? 0),
+            predecessorEntries:
+              (report.work['author/layout.sequenceOrderCachePredecessorEntries'] ?? 0) +
+              (report.work['publication/layout.sequenceOrderCachePredecessorEntries'] ?? 0),
+            cacheIndexRootUpdates:
+              (report.work['author/layout.sequenceOrderCacheRootUpdates'] ?? 0) +
+              (report.work['publication/layout.sequenceOrderCacheRootUpdates'] ?? 0),
+            cacheBuilds:
+              (report.work['author/layout.sequenceOrderCacheEntriesBuilt'] ?? 0) +
+              (report.work['publication/layout.sequenceOrderCacheEntriesBuilt'] ?? 0),
+            cacheInputEntries:
+              (report.work['author/layout.sequenceOrderCacheInputEntries'] ?? 0) +
+              (report.work['publication/layout.sequenceOrderCacheInputEntries'] ?? 0),
+            indexNodesRead:
+              (report.work['author/index.nodesRead'] ?? 0) +
+              (report.work['publication/index.nodesRead'] ?? 0),
+            indexNodesAllocated:
+              (report.work['author/index.nodesAllocated'] ?? 0) +
+              (report.work['publication/index.nodesAllocated'] ?? 0),
+          }),
+        );
       for (const name of [
         'readiness.authorClosureMaterialized',
         'readiness.authorClosureCloned',

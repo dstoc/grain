@@ -486,7 +486,7 @@ function replayOwnershipSuffixMeasured(
     cohorts,
     requirements,
     value: new OwnershipResult(
-      layout,
+      final.layout,
       index,
       orderedOwners(index, owners, homes),
       roots,
