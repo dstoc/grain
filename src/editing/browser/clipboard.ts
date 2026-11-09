@@ -1,7 +1,6 @@
 import { serializeToString } from '../../markdown/block-serializer.js';
 import type { MarkdownNode } from '../../markdown/node.js';
-import type { CanonicalDocument } from '../../markdown/canonical/document.js';
-import type { CanonicalNode } from '../../markdown/canonical/node-projection.js';
+import type { ReadonlyMarkdownNodeView } from '../../markdown/node-view.js';
 
 export interface ClipboardPayload {
   readonly markdown: string;
@@ -9,14 +8,14 @@ export interface ClipboardPayload {
 }
 
 export function serializeBlockSelection(
-  document: CanonicalDocument,
-  selection: readonly CanonicalNode[],
+  document: { readonly root: ReadonlyMarkdownNodeView },
+  selection: readonly ReadonlyMarkdownNodeView[],
 ): string {
-  const selected = new Set(selection.map((node) => node.sharedId));
+  const selected = new Set(selection);
   const sectionsWithSelectedChildren = new WeakSet<MarkdownNode>();
-  const hasSelectedDescendant = (node: CanonicalNode): boolean =>
-    node.children.some((child) => selected.has(child.sharedId) || hasSelectedDescendant(child));
-  const roots = new Set<CanonicalNode>();
+  const hasSelectedDescendant = (node: ReadonlyMarkdownNodeView): boolean =>
+    (node.children ?? []).some((child) => selected.has(child) || hasSelectedDescendant(child));
+  const roots = new Set<ReadonlyMarkdownNodeView>();
   for (const node of selection) {
     if (node.previousSibling) {
       roots.add(node);
@@ -38,17 +37,17 @@ export function serializeBlockSelection(
       }
     }
   }
-  const order = new Map<CanonicalNode, number>();
-  const visit = (node: CanonicalNode) => {
+  const order = new Map<ReadonlyMarkdownNodeView, number>();
+  const visit = (node: ReadonlyMarkdownNodeView) => {
     order.set(node, order.size);
-    node.children.forEach(visit);
+    (node.children ?? []).forEach(visit);
   };
   visit(document.root);
-  const convert = (node: CanonicalNode): MarkdownNode | undefined => {
-    const children = node.children
+  const convert = (node: ReadonlyMarkdownNodeView): MarkdownNode | undefined => {
+    const children = (node.children ?? [])
       .map(convert)
       .filter((child): child is MarkdownNode => child !== undefined);
-    const isSelected = selected.has(node.sharedId);
+    const isSelected = selected.has(node);
     let result: MarkdownNode;
     switch (node.type) {
       case 'document':

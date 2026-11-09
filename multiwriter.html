@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Grain — independent replica experiment</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font: 16px system-ui;
+      }
+      body {
+        margin: auto;
+        max-width: 1100px;
+        padding: 1rem 1rem 5rem;
+      }
+      h1 {
+        font-size: 1.5rem;
+      }
+      h2 {
+        font-size: 1.1rem;
+        margin-top: 0;
+      }
+      button,
+      select,
+      textarea {
+        font: inherit;
+      }
+      button,
+      select {
+        padding: 0.35rem 0.5rem;
+      }
+      button:focus-visible,
+      select:focus-visible,
+      textarea:focus-visible {
+        outline: 3px solid #4285f4;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        align-items: center;
+      }
+      #panes {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+        margin: 1rem 0;
+      }
+      section {
+        border: 1px solid #8887;
+        padding: 1rem;
+        border-radius: 0.5rem;
+        min-width: 0;
+      }
+      md-multiwriter-editor {
+        display: block;
+        min-height: 12rem;
+        max-height: 26rem;
+        overflow: auto;
+        margin-top: 1rem;
+      }
+      .status,
+      #queue-status,
+      #source-label {
+        font-size: 0.85rem;
+        color: light-dark(#555, #bbb);
+      }
+      #errors {
+        color: light-dark(#a20b15, #ffb4b4);
+        white-space: pre-wrap;
+      }
+      #queue {
+        padding-left: 1.5rem;
+      }
+      #queue li {
+        margin: 0.5rem 0;
+      }
+      textarea {
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 10rem;
+        padding: 0.5rem;
+        margin-top: 0.7rem;
+      }
+      pre {
+        overflow: auto;
+        max-height: 22rem;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      @media (max-width: 650px) {
+        #panes {
+          grid-template-columns: 1fr;
+        }
+        body {
+          padding: 0.6rem 0.6rem 5rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Independent replica experiment</h1>
+    <p>
+      Experimental reference engine. Normal editing remains in the
+      <a href="/">Markdown harness</a> while the incremental engine is under review.
+    </p>
+    <p>
+      Both panes use the same account label and separate engines, journals, actors, and undo
+      history. Views may intentionally differ. Queueing a message does not prove delivery or global
+      synchronization.
+    </p>
+    <p id="errors" role="alert"></p>
+    <div id="panes"></div>
+    <section aria-label="Delivery controls">
+      <h2>Delivery</h2>
+      <div class="controls">
+        <label><input id="automatic" type="checkbox" /> Automatic delivery</label>
+        <button id="retry-a">Retry A → peers</button><button id="retry-b">Retry B → peers</button>
+        <button id="deliver-all">Deliver current queue</button>
+      </div>
+      <p>
+        Enabling sending publishes accumulated held work. Receive-disabled messages are discarded.
+        Retry sends full coverage to repair dropped prerequisites.
+      </p>
+      <p id="queue-status" role="status"></p>
+      <ol id="queue"></ol>
+    </section>
+    <section style="margin-top: 1rem" aria-label="Pane export">
+      <h2>Pane export and new experiment</h2>
+      <div class="controls">
+        <label
+          >Pane
+          <select id="export-pane">
+            <option>A</option>
+            <option>B</option>
+          </select></label
+        >
+        <button id="export">Export selected pane</button
+        ><button id="new">New experiment from Source</button>
+      </div>
+      <p id="source-label"></p>
+      <label for="source">Source — edits apply only when starting a new experiment</label>
+      <textarea id="source" spellcheck="false"></textarea>
+      <details>
+        <summary id="tree-label">Captured tree</summary>
+        <pre id="tree"></pre>
+      </details>
+    </section>
+    <script type="module" src="/src/multiwriter.ts"></script>
+  </body>
+</html>

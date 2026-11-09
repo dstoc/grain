@@ -55,3 +55,15 @@ These are repository source imports. `package.json` is private and does not decl
 - A host feature belongs in `main.ts` or another host adapter. Do not add persistence, navigation, search, or application policy to the Markdown core.
 
 See [Edit authoring](./edit-authoring.md) for the command contract and [Legacy retirement](./legacy-retirement.md) for the reviewed removals and remaining release gates.
+
+## Experimental independent replicas
+
+`src/markdown/multiwriter/replica/index.ts` composes bootstrap, managed authoring,
+history, provider admission and lifecycle without the DOM. `replica/network.ts`
+is the host-controlled message scheduler. `replica/render.ts` maps complete
+publications to origin-keyed read-only renderer nodes. `src/editing/multiwriter-editor.ts`
+binds those nodes to the shared selection/composition controllers and native input.
+`src/multiwriter.ts` owns the separate `/multiwriter.html` experiment, genesis
+metadata, per-pane IndexedDB journals, delivery controls and Source exports.
+The normal `main.ts` path stays unchanged pending the approved MW-13 cutover gate.
+See [independent replica usage](multiwriter-replicas.md).

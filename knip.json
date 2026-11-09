@@ -2,6 +2,10 @@
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
     "src/main.ts!",
+    "src/multiwriter.ts!",
+    "src/markdown/multiwriter/replica/index.ts!",
+    "src/markdown/multiwriter/replica/network.ts!",
+    "src/editing/multiwriter-editor.ts!",
     "src/markdown/block-parser/api.ts!",
     "src/markdown/inline-parser/index.ts!",
     "src/markdown/canonical-actions.ts!",
@@ -46,7 +50,8 @@
     "vite.config.ts",
     "vitest.config.ts",
     "!src/**/*.test.ts!",
-    "test/multiwriter/**/*.ts"
+    "test/multiwriter/**/*.ts",
+    "multiwriter.html"
   ],
   "ignoreDependencies": ["@babel/plugin-proposal-decorators"]
 }
