@@ -34,9 +34,19 @@ interface SequenceLink {
   readonly occurrence: OrderedOccurrence;
   readonly previous?: SequenceLink;
 }
+interface SequenceOrder {
+  /** The exact immutable sequence head represented by `ordered`. */
+  readonly head?: SequenceLink;
+  readonly ordered: readonly OrderedOccurrence[];
+  /** Greatest complete action/effect priority in the sequence. */
+  readonly latestOrder: EffectOrder | null;
+}
+interface ChangedSequence {
+  readonly previous?: SequenceLink;
+  readonly added: OrderedOccurrence[];
+}
 type NodeAllocation = Extract<Allocation, { type: 'node' }>;
 type FlowAllocation = Extract<Allocation, { type: 'flow' }>;
-const emptySequence = Object.freeze({});
 function actionKey(action: LayoutAction['id']): string {
   return JSON.stringify([action.actor, action.sequence.toString()]);
 }
@@ -66,8 +76,8 @@ export class MaterializedLayout {
   private runs = new PersistentMap<RunLayout>();
   private occurrences = new PersistentMap<OrderedOccurrence>();
   private sequences = new PersistentMap<SequenceLink>();
-  /** Sequence roots are immutable; cohort buckets are view-dependent and bypass this cache. */
-  private occurrenceOrders = new WeakMap<object, readonly OrderedOccurrence[]>();
+  /** Branch-local immutable current orders. Cohort buckets bypass this cache. */
+  private occurrenceOrders = new PersistentMap<SequenceOrder>();
   /** Certified immutable follower priorities, including ghost anchors. */
   private followerPriorities = new PersistentMap<true>();
   private joined = new PersistentMap<readonly FlowId[]>();
@@ -88,6 +98,7 @@ export class MaterializedLayout {
       this.runs = source.runs.fork();
       this.occurrences = source.occurrences.fork();
       this.sequences = source.sequences.fork();
+      this.occurrenceOrders = source.occurrenceOrders.fork();
       this.followerPriorities = source.followerPriorities.fork();
       this.joined = source.joined.fork();
       this.flowRanks = source.flowRanks.fork();
@@ -172,25 +183,38 @@ export class MaterializedLayout {
   ): readonly OrderedOccurrence[] {
     this.validateSlot(slot);
     const sequence = slotSequence(slot);
-    const head = this.sequences.get(sequence),
-      cacheKey = head ?? emptySequence;
+    const head = this.sequences.get(sequence);
     if (!buckets.length) {
-      const cached = this.occurrenceOrders.get(cacheKey);
-      if (cached) {
+      const cached = this.occurrenceOrders.get(sequence);
+      if (cached && cached.head === head) {
         countWork('layout.sequenceOrderCacheHits');
-        return cached;
+        return cached.ordered;
       }
     }
     const entries: OrderedOccurrence[] = [];
+    let latestOrder: EffectOrder | null = null;
     for (let link = head; link; link = link.previous) {
       countWork('layout.sequenceAuditEntries');
       entries.push(link.occurrence);
+      if (
+        !buckets.length &&
+        link.occurrence.order &&
+        (!latestOrder || compareEffects(link.occurrence.order, latestOrder) > 0)
+      )
+        latestOrder = link.occurrence.order;
     }
     const ordered = orderOccurrences(entries.reverse(), buckets);
     if (!buckets.length) {
-      const cached = Object.freeze(ordered);
-      this.occurrenceOrders.set(cacheKey, cached);
-      return cached;
+      countWork('layout.sequenceOrderCacheEntriesBuilt');
+      countWork('layout.sequenceOrderCacheInputEntries', entries.length);
+      const cached = Object.freeze({
+        head,
+        ordered: Object.freeze(ordered),
+        latestOrder,
+      });
+      this.occurrenceOrders.set(sequence, cached);
+      countWork('layout.sequenceOrderCacheRootUpdates');
+      return cached.ordered;
     }
     return ordered;
   }
@@ -397,7 +421,7 @@ export class MaterializedLayout {
     observes?: (id: ActionId) => boolean,
   ): void {
     const orderById = new Map<string, EffectOrder>();
-    const changedSequences = new Set<string>();
+    const changedSequences = new Map<string, ChangedSequence>();
     for (const [ordinal, effect] of (action?.effects ?? []).entries()) {
       for (const id of effectOccurrences(effect)) {
         const key = resourceKey(id);
@@ -458,9 +482,13 @@ export class MaterializedLayout {
             };
             this.occurrences.set(key, occurrence);
             const sequence = slotSequence(allocation.slot);
-            changedSequences.add(sequence);
             const previous = this.sequences.get(sequence);
-            if (previous) this.occurrenceOrders.delete(previous);
+            let changed = changedSequences.get(sequence);
+            if (!changed) {
+              changed = { previous, added: [] };
+              changedSequences.set(sequence, changed);
+            }
+            changed.added.push(occurrence);
             this.sequences.set(sequence, { occurrence, previous });
           }
           break;
@@ -570,7 +598,7 @@ export class MaterializedLayout {
     // Initial construction retains the full independent sequence audit. Ordered
     // reads also audit complete sequences (including ghosts and cohort buckets).
     // Appends validate only fresh edges/priorities against the retained index.
-    for (const sequence of changedSequences) {
+    for (const sequence of changedSequences.keys()) {
       countWork('layout.containersRebuilt');
       touchWork('containers.rebuilt', sequence);
       if (action) continue;
@@ -580,6 +608,67 @@ export class MaterializedLayout {
         entries.push(link.occurrence);
       }
       orderOccurrences(entries.reverse());
+    }
+    if (action) this.updateOccurrenceOrders(changedSequences);
+  }
+
+  /** Keep only the exact current order for each changed sequence in this branch. */
+  private updateOccurrenceOrders(changedSequences: Map<string, ChangedSequence>): void {
+    for (const [sequence, change] of changedSequences) {
+      const cached = this.occurrenceOrders.get(sequence);
+      if (!cached) continue;
+      if (cached.head !== change.previous || change.added.length !== 1) {
+        this.occurrenceOrders.delete(sequence);
+        countWork('layout.sequenceOrderCacheRootUpdates');
+        continue;
+      }
+
+      const [added] = change.added;
+      if (
+        !added.order ||
+        (cached.latestOrder && compareEffects(added.order, cached.latestOrder) <= 0)
+      ) {
+        this.occurrenceOrders.delete(sequence);
+        countWork('layout.sequenceOrderCacheRootUpdates');
+        continue;
+      }
+
+      const predecessor = added.slot.predecessor;
+      let insertAt = 0;
+      if (predecessor !== null) {
+        insertAt = -1;
+        for (let index = 0; index < cached.ordered.length; index++) {
+          countWork('layout.sequenceOrderCachePredecessorEntries');
+          if (resourceKey(cached.ordered[index].id) === resourceKey(predecessor)) {
+            insertAt = index + 1;
+            break;
+          }
+        }
+        if (insertAt < 0) {
+          this.occurrenceOrders.delete(sequence);
+          countWork('layout.sequenceOrderCacheRootUpdates');
+          continue;
+        }
+      }
+
+      // The old sequence was already fully ordered and validated. A new unique
+      // occurrence whose predecessor is null or in that sequence cannot form a
+      // cycle; the strict maximum-priority guard makes it the first follower.
+      const ordered = Array.from({ length: cached.ordered.length + 1 }, (_, target) => {
+        if (target === insertAt) return added;
+        return cached.ordered[target < insertAt ? target : target - 1]!;
+      });
+      countWork('layout.sequenceOrderCacheArrayEntriesCopied', cached.ordered.length);
+      countWork('layout.sequenceOrderCacheArrayEntriesAllocated', ordered.length);
+      const head = this.sequences.get(sequence);
+      const next = Object.freeze({
+        head,
+        ordered: Object.freeze(ordered),
+        latestOrder: added.order,
+      });
+      this.occurrenceOrders.set(sequence, next);
+      countWork('layout.sequenceOrderCacheFastPathHits');
+      countWork('layout.sequenceOrderCacheRootUpdates');
     }
   }
 }
