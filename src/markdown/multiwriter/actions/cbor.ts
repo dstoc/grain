@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import { scanUtf8 } from '../ingest/utf8.js';
 import {
   DEFAULT_INGEST_LIMITS,
@@ -28,8 +29,14 @@ const textDecoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 
 export function compareBytes(a: Uint8Array, b: Uint8Array): number {
   for (let i = 0; i < Math.min(a.length, b.length); i++) {
-    if (a[i] !== b[i]) return a[i] - b[i];
+    if (a[i] !== b[i]) {
+      countWork('payload.bytesCompared', i + 1);
+      countWork('payload.comparisons');
+      return a[i] - b[i];
+    }
   }
+  countWork('payload.bytesCompared', Math.min(a.length, b.length));
+  countWork('payload.comparisons');
   return a.length - b.length;
 }
 

@@ -30,13 +30,13 @@
     "src/markdown/block-ui.ts!",
     "src/markdown/transclusion.ts!",
     "src/**/*.test.ts",
-    "benchmarks/**/*.mjs",
-    "benchmarks/**/*.ts"
+    "benchmarks/**/*.mjs!",
+    "benchmarks/**/*.ts!"
   ],
   "project": [
     "src/**/*.ts!",
-    "benchmarks/**/*.mjs",
-    "benchmarks/**/*.ts",
+    "benchmarks/**/*.mjs!",
+    "benchmarks/**/*.ts!",
     "!src/editing/test/**/*.ts!",
     "!src/markdown/multiwriter/actions/test-fixtures.ts!",
     "!src/markdown/block-parser.permutations.*.ts!",

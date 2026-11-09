@@ -4,6 +4,7 @@ import { ActionStore } from '../actions/store.js';
 import { A, B, C, action, resource, fullEnvelope } from '../actions/test-fixtures.js';
 import { decodeCbor, decodeCborSteps, encodeCbor } from '../actions/cbor.js';
 import { decodeEnvelope, encodeEnvelope, EnvelopeDecodeError } from '../actions/codec.js';
+import * as envelopeCodec from '../actions/codec.js';
 import type { ActionEnvelope, ActionId } from '../contracts.js';
 import { NativeTapeCache } from '../text/cache.js';
 import type { NativeBody } from '../text/types.js';
@@ -593,4 +594,34 @@ it('never grants authoring or publishes from a store with failed integrity', () 
   target.appendEncoded([1, 2, 3]);
   expect(publication.status()).toMatchObject({ stale: true, canAuthor: false });
   expect(() => complete(publication.refresh())).toThrow('integrity');
+});
+
+it('reuses exact detached dependency preimages without re-encoding or accepting changed payloads', () => {
+  const genesis = fixture(),
+    a = author(genesis);
+  const first = insert(a);
+  const original = structuredClone(first);
+  const validate = createIngestValidator({ genesis });
+  cleanup.push(() => validate.destroy());
+  const certify = (entry: ActionEnvelope, dependencies: readonly ActionEnvelope[]) => {
+    const result = validate(entry, { dependencies });
+    return result !== null && typeof result === 'object' ? complete(compute(result)) : result;
+  };
+  expect(certify(first, [])).toBe(null);
+  Object.assign(first.groupId, { sequence: 99n });
+  const second = insert(a, action(A, 2n, [original]), 3, 'Y');
+  const encode = vi.spyOn(envelopeCodec, 'encodeEnvelope');
+  const apply = vi.spyOn(NativeTapeCache.prototype, 'applySteps');
+  expect(certify(second, [original])).toBe(null);
+  expect(encode).toHaveBeenCalledTimes(1);
+  expect(apply).toHaveBeenCalledTimes(1);
+  encode.mockClear();
+  validate.retainReady([original, second]);
+  expect(encode).not.toHaveBeenCalled();
+  const fork = structuredClone(original);
+  Object.assign(fork.groupId, { sequence: 88n });
+  apply.mockClear();
+  expect(certify(second, [fork])).toBe(null);
+  expect(encode.mock.calls.length).toBeGreaterThan(1);
+  expect(apply.mock.calls.length).toBeGreaterThan(1);
 });

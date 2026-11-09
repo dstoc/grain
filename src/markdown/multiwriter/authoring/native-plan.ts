@@ -1,3 +1,4 @@
+import { countWork } from '../diagnostics.js';
 import type {
   Allocation,
   MarkerId,
@@ -11,41 +12,100 @@ import type { NativeView } from '../ingest/publication.js';
 import { resourceKey } from '../layout/index.js';
 import type { LocatedText, NativeInsertion, TapePart, TapeSnapshot } from '../text/types.js';
 
+export interface NativePlanSource {
+  readonly native: NativeView;
+  readonly tapes: readonly TapeId[];
+  readonly clients: Pick<ReadonlySet<number>, 'has'>;
+}
+const sources = new WeakMap<NativeView, NativePlanSource>();
+/** Internal immutable resource view; tape enumeration stays lazy until a structural query. */
+export function registerNativePlanSource(view: NativeView, source: NativePlanSource): void {
+  sources.set(view, source);
+}
+export function nativePlanSource(view: NativeView): NativePlanSource | undefined {
+  return sources.get(view);
+}
+
 /** Action-local native coordinate simulation. No Yjs clocks are consumed by planning. */
 export class NativePlan implements NativeView {
   readonly operations: NativeInsertion[] = [];
   readonly allocations: Allocation[] = [];
   readonly manifest: NativeResourceBirth[] = [];
   private readonly tapes = new Map<string, TapeSnapshot>();
+  private readonly markers = new Map<
+    string,
+    { readonly tape: TapeId; readonly part: Extract<TapePart, { type: 'marker' }> }
+  >();
   private readonly client: number;
   private clock = 0;
-  constructor(snapshots: readonly TapeSnapshot[]) {
-    const clients = new Set(snapshots.flatMap((s) => s.parts.map((p) => p.native.client)));
+  private readonly source?: { native: NativeView; tapes: readonly TapeId[] };
+  private readonly direct?: NativeView;
+  constructor(input: readonly TapeSnapshot[] | NativePlanSource) {
+    const lazy = 'native' in input ? input : undefined;
+    const snapshots = 'native' in input ? [] : input;
+    this.source = lazy;
+    // Only registered publication roots promise immutable direct reads. Keep
+    // snapshot isolation for arbitrary caller-supplied/lazy native facades.
+    this.direct = lazy && sources.get(lazy.native) === lazy ? lazy.native : undefined;
+    const clients =
+      lazy?.clients ?? new Set(snapshots.flatMap((s) => s.parts.map((p) => p.native.client)));
     let client = 0;
     while (clients.has(client)) client++;
     this.client = client;
-    for (const s of structuredClone(snapshots)) this.tapes.set(resourceKey(s.tape), s);
+    for (const s of structuredClone(snapshots)) this.install(s);
   }
   all() {
-    return [...this.tapes.values()].map((s) => structuredClone(s));
+    countWork('plan.allTapeExports', this.source?.tapes.length ?? 0);
+    const result = new Map(this.source?.tapes.map((id) => [resourceKey(id), this.snapshot(id)]));
+    for (const [key, snapshot] of this.tapes) result.set(key, structuredClone(snapshot));
+    return [...result.values()];
+  }
+  private install(snapshot: TapeSnapshot): void {
+    countWork('plan.tapesInstalled');
+    countWork('plan.partsInstalled', snapshot.parts.length);
+    this.tapes.set(resourceKey(snapshot.tape), snapshot);
+    for (const part of snapshot.parts)
+      if (part.type === 'marker')
+        this.markers.set(resourceKey(part.marker), { tape: snapshot.tape, part });
+  }
+  private readTape(tape: TapeId): TapeSnapshot {
+    let snapshot = this.tapes.get(resourceKey(tape));
+    if (!snapshot && this.source) {
+      snapshot = this.source.native.snapshot(tape);
+      this.install(snapshot);
+    }
+    if (!snapshot) throw new Error('Unknown planned tape');
+    return snapshot;
   }
   snapshot(tape: TapeId): TapeSnapshot {
-    const s = this.tapes.get(resourceKey(tape));
-    if (!s) throw new Error('Unknown planned tape');
-    return structuredClone(s);
+    return structuredClone(this.readTape(tape));
+  }
+  private untouched(tape: TapeId): NativeView | undefined {
+    return this.tapes.has(resourceKey(tape)) ? undefined : this.direct;
   }
   marker(id: MarkerId) {
-    for (const snapshot of this.tapes.values()) {
-      const p = snapshot.parts.find(
-        (p) => p.type === 'marker' && resourceKey(p.marker) === resourceKey(id),
-      );
-      if (p?.type === 'marker')
-        return { tape: snapshot.tape, native: p.native, index: p.index, affinity: p.affinity };
+    const key = resourceKey(id);
+    let marker = this.markers.get(key);
+    if (!marker && this.source) {
+      const found = this.source.native.marker(id);
+      if (this.untouched(found.tape)) return found;
+      this.readTape(found.tape);
+      marker = this.markers.get(key);
     }
-    throw new Error('Unknown planned marker');
+    if (!marker) throw new Error('Unknown planned marker');
+    const { tape, part } = marker;
+    return structuredClone({
+      tape,
+      native: part.native,
+      index: part.index,
+      affinity: part.affinity,
+    });
   }
   locate(tape: TapeId, id: NativeId): number {
-    for (const part of this.snapshot(tape).parts) {
+    const source = this.untouched(tape);
+    if (source) return source.locate(tape, id);
+    for (const part of this.readTape(tape).parts) {
+      countWork('plan.partsTraversed');
       const size = part.type === 'text' ? part.text.length : 1;
       if (
         part.native.client === id.client &&
@@ -57,7 +117,9 @@ export class NativePlan implements NativeView {
     throw new Error('Unknown planned native identity');
   }
   lookup(range: NativeTextRange): readonly LocatedText[] {
-    const result = this.snapshot(range.tape).parts.flatMap((p) => {
+    const source = this.untouched(range.tape);
+    if (source) return source.lookup(range);
+    const result = this.readTape(range.tape).parts.flatMap((p) => {
       if (p.type !== 'text' || p.native.client !== range.client) return [];
       const from = Math.max(p.native.clock, range.clock),
         to = Math.min(p.native.clock + p.text.length, range.clock + range.length);
@@ -76,6 +138,8 @@ export class NativePlan implements NativeView {
     return result;
   }
   range(range: RangeRef): readonly LocatedText[] {
+    const source = this.untouched(range.tape);
+    if (source) return source.range(range);
     const start = this.marker(range.start),
       end = this.marker(range.end);
     if (
@@ -84,7 +148,7 @@ export class NativePlan implements NativeView {
       start.index >= end.index
     )
       throw new Error('Invalid planned interval');
-    return this.snapshot(range.tape).parts.flatMap((p) =>
+    return this.readTape(range.tape).parts.flatMap((p) =>
       p.type === 'text' && p.index > start.index && p.index < end.index
         ? [
             {
@@ -112,7 +176,7 @@ export class NativePlan implements NativeView {
     return this.insert(op);
   }
   private insert(op: Exclude<NativeInsertion, { type: 'createTape' }>): readonly NativeTextRange[] {
-    const snapshot = this.snapshot(op.tape),
+    const snapshot = this.readTape(op.tape),
       size = op.type === 'text' ? op.text.length : 1;
     if (!Number.isInteger(op.index) || op.index < 0 || op.index > snapshot.length)
       throw new Error('Invalid planned insertion');
@@ -154,7 +218,7 @@ export class NativePlan implements NativeView {
       });
     }
     parts.sort((a, b) => a.index - b.index);
-    this.tapes.set(resourceKey(op.tape), { ...snapshot, length: snapshot.length + size, parts });
+    this.install({ ...snapshot, length: snapshot.length + size, parts });
     return op.type === 'text' ? [{ tape: op.tape, ...native, length: size }] : [];
   }
   /** Bind by the planned final coordinates, including split/coalesced Yjs strings.

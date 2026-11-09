@@ -1,3 +1,5 @@
+import { countWork, measure } from '../diagnostics.js';
+import type { ReadySequence } from './ready-source.js';
 import { convertedFocus } from './parser-focus.js';
 import { prepareParserConversion, bindParserConversion } from '../projection/parser-plan.js';
 import type { OutputBinding } from '../projection/parser-plan.js';
@@ -5,6 +7,9 @@ import type { ParserConversionPlan } from '../../block-parser/types.js';
 import { ProjectionError } from '../projection/interpretation.js';
 import { isInlineNode } from '../../node.js';
 import type { MarkdownNode } from '../../node.js';
+import { CommandRecordDraft } from './record-draft.js';
+import { commandViewIndex } from './view-index.js';
+import type { TreeDraft } from '../../semantic/draft.js';
 import { ConstructionTree } from '../../semantic/construction-tree.js';
 import type {
   CreateNodeSpec,
@@ -30,16 +35,19 @@ import type {
 } from '../contracts.js';
 import { resourceKey } from '../layout/index.js';
 import { sameSlot } from '../layout/occurrences.js';
-import { CellIndex, HomeIndex } from '../ownership/index.js';
+import { CellIndex, HomeIndex, reduceOwnership } from '../ownership/index.js';
 import type { OwnershipResult } from '../ownership/index.js';
 import type { NativeView } from '../ingest/publication.js';
 import type { ReferenceGenesis } from '../reference/document.js';
-import { reconstructProvenance } from '../reference/provenance.js';
+import { reconstructBirths, reconstructProvenance } from '../reference/provenance.js';
+import { reduceActivity } from '../visibility/index.js';
+import { selectInterpretations } from '../projection/interpretation.js';
 import { projectMarkdown, projectionDocument } from '../projection/project.js';
 import type { SourceFragment } from '../projection/parser-plan.js';
 import type { ViewNode } from '../projection/types.js';
-import { NativePlan } from './native-plan.js';
+import { NativePlan, nativePlanSource } from './native-plan.js';
 import type { CommandIntent, MultiwriterCommandDraft } from './draft.js';
+import type { CommandOwnership } from './document.js';
 
 function slice(pieces: readonly SourceFragment[], from: number, to: number): SourceFragment[] {
   let at = 0;
@@ -94,6 +102,7 @@ export class CommandCompiler {
   private ordinal = 0;
   private readonly intents: readonly CommandIntent[];
   private memo?: { key: string; value: ReturnType<typeof projectMarkdown> };
+  private ownershipMemo?: { key: string; value: OwnershipResult };
   private readonly ids = new Map<Handle, NodeId>();
   private readonly focusMappings = new Map<
     Handle,
@@ -109,10 +118,16 @@ export class CommandCompiler {
   >();
   private readonly seenPlacements = new Set<Handle>();
   private readonly births = new Map<Handle, OccurrenceId>();
-  private readonly tree: ConstructionTree;
+  private tree_?: { readonly draft: TreeDraft };
+  private readonly properties = new Map<
+    Handle,
+    { checked?: boolean | null; info?: string | null }
+  >();
+  private readonly root: ViewNode;
+  private readonly overlay: boolean;
   constructor(
     readonly genesis: ReferenceGenesis,
-    readonly ready: readonly ActionEnvelope[],
+    readonly ready: ReadySequence,
     readonly base: Omit<
       ActionEnvelope,
       'allocations' | 'nativeInsertUpdates' | 'nativeManifest' | 'effects'
@@ -120,27 +135,69 @@ export class CommandCompiler {
     readonly draft: MultiwriterCommandDraft,
     root: ViewNode,
     native: NativeView,
+    initial?: ReturnType<typeof projectMarkdown>,
+    private readonly commandOwnership?: CommandOwnership,
   ) {
+    this.root = root;
+    this.overlay = initial !== undefined;
     this.intents = draft.compilerIntents();
-    this.native = new NativePlan(
-      [...genesis.layout.allocations, ...ready.flatMap((a) => a.allocations)]
+    const source = initial && nativePlanSource(native);
+    if (source) this.native = new NativePlan(source);
+    else {
+      const tapes = [
+        ...genesis.layout.allocations,
+        ...Array.from(ready).flatMap((a) => a.allocations),
+      ]
         .filter((a) => a.type === 'tape')
-        .map((t) => native.snapshot(t.id)),
-    );
-    this.tree = new ConstructionTree(projectionDocument({ root, emptyRoot: null }));
-    for (const [handle, view] of draft.origins) {
-      this.ids.set(handle, view.origin.representative);
-      this.text.set(
-        handle,
-        view.fragments.filter((p) => p.visible).map((p) => ({ text: p.text, range: p.range })),
+        .map((t) => t.id);
+      this.native = new NativePlan(
+        initial
+          ? {
+              native,
+              tapes,
+              clients: new Set(
+                [
+                  ...genesis.body.nativeManifest,
+                  ...Array.from(ready).flatMap((a) => a.nativeManifest),
+                ].map((entry) => entry.native.client),
+              ),
+            }
+          : tapes.map((tape) => native.snapshot(tape)),
       );
     }
+    if (initial) {
+      this.memo = { key: '0:0:0', value: initial };
+      this.ownershipMemo = { key: '0:0:0', value: initial.ownership };
+    } else void this.tree;
+    if (!initial)
+      for (const [handle, view] of draft.origins) {
+        this.ids.set(handle, view.origin.representative);
+        if (!initial)
+          this.text.set(
+            handle,
+            view.fragments.filter((p) => p.visible).map((p) => ({ text: p.text, range: p.range })),
+          );
+      }
     for (const intent of this.intents) {
       if (intent.type === 'create') this.specs.set(intent.id, intent.spec);
       if (intent.type === 'place' && !this.firstPlaces.has(intent.id))
         this.firstPlaces.set(intent.id, intent);
       if (intent.type === 'split') this.splitNodes.add(intent.split.destination);
     }
+  }
+  private get tree(): { readonly draft: TreeDraft } {
+    if (!this.tree_) {
+      if (!this.overlay) countWork('compiler.fullConstructionTrees');
+      const tree = this.overlay
+        ? { draft: new CommandRecordDraft(commandViewIndex(this.root)) }
+        : new ConstructionTree(projectionDocument({ root: this.root, emptyRoot: null }));
+      for (const [id, properties] of this.properties) {
+        if (properties.checked !== undefined) tree.draft.setChecked(id, properties.checked);
+        if (properties.info !== undefined) tree.draft.setInfo(id, properties.info);
+      }
+      this.tree_ = tree;
+    }
+    return this.tree_;
   }
   private alloc<K extends ResourceKind>(kind: K): ResourceId<K> {
     if (this.ordinal >= 0xffffffff) throw new Error('Action resource ordinal overflow');
@@ -170,11 +227,46 @@ export class CommandCompiler {
     return value;
   }
   private ownership(): OwnershipResult {
-    return this.state().ownership;
+    // Exact deletion changes visibility, not native cells or raw ownership. A
+    // replacement's insertion can read the same raw state after its deletion.
+    // Native operations and every other allocation/effect retain full fallback.
+    const key = `${this.allocations.filter((a) => a.type !== 'deletion').length}:${this.effects.filter((e) => e.type !== 'InsertText' && e.type !== 'DeleteText').length}:${this.native.operations.length}`;
+    if (this.ownershipMemo?.key === key) return this.ownershipMemo.value;
+    // Intermediate raw structure does not need visibility, birth coverage or a
+    // normalized Markdown tree. Keep the reference compiler's full path intact.
+    // Final native binding and exact author certification still precede append.
+    const value = this.overlay ? this.rawOwnership() : this.state().ownership;
+    this.ownershipMemo = { key, value };
+    return value;
+  }
+  private rawOwnership(): OwnershipResult {
+    if (this.commandOwnership) {
+      const touched = [
+        ...new Map(this.native.operations.map((op) => [resourceKey(op.tape), op.tape])).values(),
+      ];
+      return this.commandOwnership(this.envelope(), this.native, touched);
+    }
+    const actions = [...this.ready, this.envelope()];
+    const activity = reduceActivity(actions);
+    const interpretations = selectInterpretations(activity, this.genesis.initialProperties);
+    return reduceOwnership({
+      genesis: this.genesis.layout,
+      actions: actions.map((action) => ({ action, births: reconstructBirths(action) })),
+      snapshots: this.native.all(),
+      isActive: (order) => {
+        const ref = { action: order.action.id, ordinal: order.ordinal };
+        return activity.isEffectActive(ref) && interpretations.effectEligible(ref);
+      },
+      interpretationEligible: (order) =>
+        interpretations.eligible({ action: order.action.id, ordinal: order.ordinal }),
+    });
   }
   private id(handle: Handle): NodeId {
-    const id = this.ids.get(handle);
-    if (id) return id;
+    const id = this.ids.get(handle) ?? this.draft.origins.get(handle)?.origin.representative;
+    if (id) {
+      this.ids.set(handle, id);
+      return id;
+    }
     if (this.splitNodes.has(handle)) throw new Error('Split destination is not yet constructed');
     const spec = this.specs.get(handle),
       place = this.firstPlaces.get(handle);
@@ -280,7 +372,7 @@ export class CommandCompiler {
       null,
       ...[
         ...this.genesis.layout.allocations,
-        ...this.ready.flatMap((a) => a.allocations),
+        ...Array.from(this.ready).flatMap((a) => a.allocations),
       ].toReversed(),
     ];
     const safe = predecessors
@@ -324,17 +416,23 @@ export class CommandCompiler {
   }
   private flow(handle: Handle): FlowId {
     const id = this.id(handle),
-      flow = this.ownership().nodeAllocations.find((n) => same(n.id, id))?.flow;
+      flow = this.ownership().nodeAllocation(id).flow;
     if (!flow) throw new Error('Command target has no inline flow');
     return flow;
   }
   private blockSlot(parent: Handle, before: Handle | null, moving?: Handle): BlockSlot {
     const parentId = this.id(parent);
-    const children = this.tree.draft.node(parent).children.filter((id) => id !== moving);
-    const at = before === null ? children.length : children.indexOf(before);
-    if (at < 0) throw new Error('Insertion reference is not a destination child');
+    const tree = this.tree.draft;
+    if (before !== null && tree.parentOf(before) !== parent)
+      throw new Error('Insertion reference is not a destination child');
     const view = this.draft.origins.get(parent);
-    const previous = at > 0 ? children[at - 1] : undefined;
+    let previous =
+      before === null
+        ? tree instanceof CommandRecordDraft
+          ? tree.lastChildOf(parent)
+          : tree.node(parent).children.at(-1)
+        : tree.previousSiblingOf(before);
+    if (previous && previous === moving) previous = tree.previousSiblingOf(previous);
     const placement = previous ? this.ownership().blockPlacement(this.id(previous)) : undefined;
     // Original boundaries choose the raw constituent. An inserted or moved sibling
     // advances that gap, while unchanged siblings preserve retained hidden slots.
@@ -361,7 +459,16 @@ export class CommandCompiler {
     return { parent: parentId, predecessor };
   }
   private pieces(handle: Handle) {
-    return this.text.get(handle) ?? [];
+    let pieces = this.text.get(handle);
+    if (!pieces) {
+      pieces =
+        this.draft.origins
+          .get(handle)
+          ?.fragments.filter((p) => p.visible)
+          .map((p) => ({ text: p.text, range: p.range })) ?? [];
+      this.text.set(handle, pieces);
+    }
+    return pieces;
   }
   private length(handle: Handle) {
     return this.pieces(handle).reduce((n, p) => n + p.text.length, 0);
@@ -412,9 +519,7 @@ export class CommandCompiler {
       };
     }
     const flow = this.flow(handle),
-      home = ownership.homeBindings.find((h) =>
-        ownership.runLayouts.some((r) => same(r.run, h.run) && same(r.flow, flow)),
-      );
+      home = ownership.homeForFlow(flow);
     if (!home) throw new Error('Empty inline has no retained home');
     return {
       tape: home.cell.tape,
@@ -426,16 +531,15 @@ export class CommandCompiler {
     if (!text.length) return;
     this.id(handle);
     const point = this.point(handle, offset, affinity),
-      index = new CellIndex(this.native.all()),
+      index = new CellIndex([this.native.snapshot(point.tape)]),
       ownership = this.ownership();
     const neighbor = index.adjacent(point.slot.boundary, point.slot.side);
     let ranges: readonly NativeTextRange[] = [];
-    if (new HomeIndex(ownership.homeBindings, index).isReserved(neighbor.range)) {
-      for (const op of new HomeIndex(ownership.homeBindings, index).planTextInsertion(
-        point.slot,
-        text,
-        () => this.alloc('marker'),
-      ))
+    const home = ownership.homeForTape(point.tape);
+    if (!home) throw new Error('Text insertion requires a retained private home');
+    const homes = new HomeIndex([home], index);
+    if (homes.isReserved(neighbor.range)) {
+      for (const op of homes.planTextInsertion(point.slot, text, () => this.alloc('marker')))
         ranges = [...ranges, ...this.native.add(op)];
     } else ranges = this.native.add({ type: 'text', tape: point.tape, index: point.index, text });
     this.effects.push({ type: 'InsertText', ranges });
@@ -468,37 +572,42 @@ export class CommandCompiler {
     this.native.add({ type: 'marker', tape: p.tape, index: p.index, marker: boundary, affinity });
     return { ...p.slot, boundary, side: 'right', predecessor: null };
   }
+  private splitBasis(ownership: OwnershipResult, flow: FlowId) {
+    const cells = ownership.raw(flow).flatMap((entry) => (entry.type === 'cell' ? [entry] : []));
+    const tapes = [
+      ...new Map(
+        cells.map((entry) => [resourceKey(entry.assignment.cell.tape), entry.assignment.cell.tape]),
+      ).values(),
+    ];
+    const homes = new HomeIndex(
+      tapes.map((tape) => {
+        const home = ownership.homeForTape(tape);
+        if (!home) throw new Error('Split input requires a retained private home');
+        return home;
+      }),
+      new CellIndex(tapes.map((tape) => this.native.snapshot(tape))),
+    );
+    return cells.flatMap((entry) =>
+      homes.isReserved(entry.assignment.cell)
+        ? []
+        : [{ range: entry.assignment.cell, occurrence: entry.assignment.occurrence }],
+    );
+  }
   private split(split: InlineSplit) {
     const { source, destination, from, to, retainedSide } = split;
     this.id(source);
     const original = this.pieces(source),
       flow = this.flow(source);
-    let ownership = this.ownership(),
-      homes = new HomeIndex(ownership.homeBindings, new CellIndex(this.native.all()));
-    let basis = ownership
-      .raw(flow)
-      .flatMap((e) =>
-        e.type === 'cell' && !homes.isReserved(e.assignment.cell)
-          ? [{ range: e.assignment.cell, occurrence: e.assignment.occurrence }]
-          : [],
-      );
-    const ownHome = ownership.homeBindings.find((h) =>
-      ownership.runLayouts.some((r) => same(r.run, h.run) && same(r.flow, flow)),
-    )!;
+    let ownership = this.ownership();
+    let basis = this.splitBasis(ownership, flow);
+    const ownHome = ownership.homeForFlow(flow)!;
     let cut: InlineSlot;
     if (!basis.length)
       cut = { run: ownHome.run, boundary: ownHome.cell.end, side: 'left', predecessor: null };
     else {
       cut = this.boundary(source, from, 'right');
       ownership = this.ownership();
-      homes = new HomeIndex(ownership.homeBindings, new CellIndex(this.native.all()));
-      basis = ownership
-        .raw(flow)
-        .flatMap((e) =>
-          e.type === 'cell' && !homes.isReserved(e.assignment.cell)
-            ? [{ range: e.assignment.cell, occurrence: e.assignment.occurrence }]
-            : [],
-        );
+      basis = this.splitBasis(ownership, flow);
     }
     this.deleteText(source, from, to);
     const positions = new Set<number>();
@@ -553,7 +662,7 @@ export class CommandCompiler {
   private move(id: Handle, parent: Handle, before: Handle | null) {
     const first = !this.seenPlacements.has(id);
     this.seenPlacements.add(id);
-    if (!this.ids.has(id)) {
+    if (!this.ids.has(id) && !this.draft.origins.has(id)) {
       if (!this.splitNodes.has(id)) this.id(id);
       return;
     }
@@ -569,7 +678,7 @@ export class CommandCompiler {
       node,
       slot,
       occurrence,
-      standaloneFlow: ownership.nodeAllocations.find((n) => same(n.id, node))!.flow,
+      standaloneFlow: ownership.nodeAllocation(node).flow,
     });
   }
   private lift(lift: ChildLift) {
@@ -593,7 +702,7 @@ export class CommandCompiler {
         joinedFlows: FlowId[] = [];
       const visit = (node: NodeId) => {
         observedNodes.push(node);
-        const flow = ownership.nodeAllocations.find((n) => same(n.id, node))?.flow;
+        const flow = ownership.nodeAllocation(node).flow;
         if (flow) {
           for (const e of ownership.raw(flow))
             if (e.type === 'cell') ownedIntervals.push(e.assignment.cell);
@@ -628,9 +737,7 @@ export class CommandCompiler {
     const source = this.id(handle),
       flow = this.flow(handle),
       ownership = this.ownership();
-    const sourceRun = ownership.homeBindings.find((h) =>
-      ownership.runLayouts.some((r) => same(r.run, h.run) && same(r.flow, flow)),
-    )!.run;
+    const sourceRun = ownership.homeForFlow(flow)!.run;
     const parent = this.tree.draft.parentOf(handle);
     if (!parent) throw new Error('Parser source has no insertion parent');
     const priorMasks: NativeTextRange[] = [];
@@ -754,8 +861,8 @@ export class CommandCompiler {
         }
       }
       const at = this.point(handle, sourceOffset, 'left'),
-        index = new CellIndex(this.native.all()),
-        homes = new HomeIndex(this.ownership().homeBindings, index);
+        index = new CellIndex([this.native.snapshot(at.tape)]),
+        homes = new HomeIndex([this.ownership().homeForTape(at.tape)!], index);
       let ranges: readonly NativeTextRange[] = [];
       if (homes.isReserved(index.adjacent(at.slot.boundary, at.slot.side).range)) {
         for (const op of homes.planTextInsertion(at.slot, request.text, () => this.alloc('marker')))
@@ -773,7 +880,7 @@ export class CommandCompiler {
     this.allocations.push(...placementAllocations);
     const retained = [
       ...this.genesis.layout.allocations,
-      ...this.ready.flatMap((a) => a.allocations),
+      ...Array.from(this.ready).flatMap((a) => a.allocations),
     ];
     const bound = bindParserConversion(
       prepared,
@@ -957,6 +1064,9 @@ export class CommandCompiler {
   }
 
   run(): void {
+    return measure('draft-query', () => this.runMeasured());
+  }
+  private runMeasured(): void {
     if (this.intents.every((i) => i.type === 'splice')) {
       for (const handle of new Set(this.intents.map((i) => (i.type === 'splice' ? i.id : '')))) {
         const original = this.pieces(handle),
@@ -973,10 +1083,10 @@ export class CommandCompiler {
             position: number | undefined;
           for (const source of original) {
             if (
-              same(source.range.tape, p.range.tape) &&
               source.range.client === p.range.client &&
               source.range.clock <= p.range.clock &&
-              p.range.clock + p.range.length <= source.range.clock + source.range.length
+              p.range.clock + p.range.length <= source.range.clock + source.range.length &&
+              same(source.range.tape, p.range.tape)
             ) {
               position = base + p.range.clock - source.range.clock;
               break;
@@ -1041,7 +1151,12 @@ export class CommandCompiler {
             node: this.id(intent.id),
             values: { checked: intent.checked },
           });
-          this.tree.draft.setChecked(intent.id, intent.checked);
+          if (this.tree_) this.tree_.draft.setChecked(intent.id, intent.checked);
+          else
+            this.properties.set(intent.id, {
+              ...this.properties.get(intent.id),
+              checked: intent.checked,
+            });
           break;
         case 'info':
           this.effects.push({
@@ -1049,7 +1164,12 @@ export class CommandCompiler {
             node: this.id(intent.id),
             values: { info: intent.info },
           });
-          this.tree.draft.setInfo(intent.id, intent.info);
+          if (this.tree_) this.tree_.draft.setInfo(intent.id, intent.info);
+          else
+            this.properties.set(intent.id, {
+              ...this.properties.get(intent.id),
+              info: intent.info,
+            });
           break;
         case 'convert': {
           const hidden =
@@ -1144,6 +1264,12 @@ export class CommandCompiler {
     native: NativeView,
     body: Pick<ActionEnvelope, 'allocations' | 'nativeInsertUpdates' | 'nativeManifest'>,
   ): ActionEnvelope {
+    return measure('draft-query', () => this.bindMeasured(native, body));
+  }
+  private bindMeasured(
+    native: NativeView,
+    body: Pick<ActionEnvelope, 'allocations' | 'nativeInsertUpdates' | 'nativeManifest'>,
+  ): ActionEnvelope {
     const ranges = (rs: readonly NativeTextRange[]) =>
       rs.flatMap((r) => this.native.bind(r, native));
     return {
@@ -1169,7 +1295,10 @@ export class CommandCompiler {
   }
   focusTarget(handle: Handle, offset: number, affinity: TextAffinity) {
     return (
-      this.focusMappings.get(handle)?.(offset, affinity) ?? { node: this.ids.get(handle), offset }
+      this.focusMappings.get(handle)?.(offset, affinity) ?? {
+        node: this.ids.get(handle) ?? this.draft.origins.get(handle)?.origin.representative,
+        offset,
+      }
     );
   }
 }

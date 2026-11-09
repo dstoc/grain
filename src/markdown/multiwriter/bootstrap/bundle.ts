@@ -4,6 +4,7 @@ import type { DeliveryRoute, SessionId } from '../contracts.js';
 import { DirectionalActionProvider } from '../providers/index.js';
 import type { ProviderOptions } from '../providers/index.js';
 import { openReferenceDocument } from '../reference/document.js';
+import { openMaterializedDocument } from '../materialization/document.js';
 import {
   BootstrapCompatibilityError,
   bootstrapLimits,
@@ -49,6 +50,10 @@ export function decodeBundle(bytes: Uint8Array, input?: Partial<BootstrapLimits>
   return { genesis: fields.genesis, actionUpdate: fields.actionUpdate };
 }
 export interface BootstrapOpenOptions extends Omit<ProviderOptions, 'store'> {
+  /** Local implementation choice; never encoded in genesis or synchronization metadata.
+   * Materialized currently reuses native bodies; semantic reduction remains full reference.
+   */
+  readonly materialization?: 'reference' | 'incremental-native';
   /** Descriptor supplied by creation, a remote bundle, or existing host metadata. */
   readonly genesis: Uint8Array;
   /** Host must load/install immutable metadata before attaching this namespace's journal. */
@@ -59,6 +64,12 @@ export interface BootstrapOpenOptions extends Omit<ProviderOptions, 'store'> {
  * Authoring stays suspended until this resolves. Navigation/writer state belongs to callers.
  */
 export async function openBootstrap(options: BootstrapOpenOptions) {
+  if (
+    options.materialization !== undefined &&
+    options.materialization !== 'reference' &&
+    options.materialization !== 'incremental-native'
+  )
+    throw new Error('Unknown local materialization implementation');
   const bytes = options.genesis.slice();
   requireSameGenesis(options.persistedGenesis, bytes);
   const limits = bootstrapLimits(options.bootstrapLimits);
@@ -71,7 +82,11 @@ export async function openBootstrap(options: BootstrapOpenOptions) {
     ),
     local: crypto.randomUUID(),
   });
-  const document = openReferenceDocument(referenceGenesis(descriptor), {
+  const open =
+    options.materialization === 'incremental-native'
+      ? openMaterializedDocument
+      : openReferenceDocument;
+  const document = open(referenceGenesis(descriptor), {
     nativeDecodeOperations: limits.nativeOperations,
   });
   let attachment: DirectionalActionProvider | undefined;

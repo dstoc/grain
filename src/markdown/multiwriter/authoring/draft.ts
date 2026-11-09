@@ -1,19 +1,25 @@
+import { countWork } from '../diagnostics.js';
 import type { ParserConversionPlan } from '../../block-parser/types.js';
 import { isInlineNode } from '../../node.js';
 import type { MarkdownNode } from '../../node.js';
 import { commandDraft } from '../../../editing/command-draft.js';
 import type { ChildLift, CommandDraft, InlineSplit } from '../../../editing/command-draft.js';
+import { CommandRecordDraft } from './record-draft.js';
 import { ConstructionTree } from '../../semantic/construction-tree.js';
-import type { ConstructionNode } from '../../semantic/construction-tree.js';
 import type {
+  TreeDraft,
   ConversionPlan,
+  DraftNode,
   DraftTextPiece,
   InlineFragment,
   Transfer,
 } from '../../semantic/draft.js';
 import type { CreateNodeSpec, NodeId, TextAffinity, TextEdit } from '../../semantic/types.js';
+import { assertTextEdit, assertTextPoint } from '../../semantic/types.js';
 import type { NativeTextRange } from '../contracts.js';
 import type { ViewNode } from '../projection/types.js';
+import { commandViewIndex } from './view-index.js';
+import type { OriginMap, CommandViewIndex } from './view-index.js';
 import { projectionDocument } from '../projection/project.js';
 
 export type CommandIntent =
@@ -75,9 +81,18 @@ function slicePieces(pieces: readonly OriginPiece[], from: number, to: number): 
 /** Isolated semantic records plus native ranges/immutable buffers. Never normalizes shared facts. */
 export class MultiwriterCommandDraft implements CommandDraft {
   readonly intents: CommandIntent[] = [];
-  readonly origins = new Map<NodeId, ViewNode>();
+  readonly origins: OriginMap;
   readonly pieces = new Map<NodeId, readonly OriginPiece[]>();
-  readonly tree: ConstructionTree;
+  private tree_?: { readonly draft: TreeDraft };
+  private readonly parents: CommandViewIndex['parents'];
+  private readonly siblings: CommandViewIndex['siblings'];
+  private readonly handles: { get(view: ViewNode): NodeId | undefined };
+  private readonly contents = new Map<NodeId, string>();
+  private readonly properties = new Map<
+    NodeId,
+    { checked?: boolean | null; info?: string | null }
+  >();
+  private readonly views = new Map<NodeId, DraftNode>();
   readonly rootId: NodeId;
   private readonly fragments = new WeakMap<InlineFragment, readonly OriginPiece[]>();
   private readonly consumed = new WeakSet<InlineFragment>();
@@ -186,41 +201,127 @@ export class MultiwriterCommandDraft implements CommandDraft {
       }
     });
   }
-  constructor(root: ViewNode) {
-    this.tree = new ConstructionTree(projectionDocument({ root, emptyRoot: null }));
-    this.rootId = this.tree.rootId;
-    const visit = (view: ViewNode, node: ConstructionNode) => {
-      this.origins.set(node.id, view);
-      this.pieces.set(
-        node.id,
-        view.fragments
-          .filter((p) => p.visible)
-          .map((p) => ({ type: 'retained', text: p.text, range: p.range })),
-      );
-      view.children.forEach((child, i) => visit(child, node.children[i]!));
-    };
-    visit(root, this.tree.root);
+  constructor(
+    private readonly root: ViewNode,
+    private readonly overlay = false,
+  ) {
+    const index = commandViewIndex(root);
+    this.origins = index.origins;
+    this.parents = index.parents;
+    this.siblings = index.siblings;
+    this.handles = { get: (view) => index.handle(view) };
+    this.rootId = 'construction:0';
+    if (!overlay) {
+      void this.tree;
+      for (const id of this.origins.keys()) this.originPieces(id);
+    }
   }
-  node(id: NodeId) {
-    return this.tree.draft.node(id);
+  /** Isolated structural records, borrowed from the indexed publication until touched. */
+  get tree(): { readonly draft: TreeDraft } {
+    if (!this.tree_) {
+      if (!this.overlay) countWork('draft.fullConstructionTrees');
+      const tree = this.overlay
+        ? { draft: new CommandRecordDraft(commandViewIndex(this.root)) }
+        : new ConstructionTree(projectionDocument({ root: this.root, emptyRoot: null }));
+      for (const [id, content] of this.contents) {
+        const before = tree.draft.node(id).content!;
+        tree.draft.spliceText(id, { from: 0, to: before.length, insert: content });
+      }
+      for (const [id, properties] of this.properties) {
+        if (properties.checked !== undefined) tree.draft.setChecked(id, properties.checked);
+        if (properties.info !== undefined) tree.draft.setInfo(id, properties.info);
+      }
+      this.tree_ = tree;
+    }
+    return this.tree_;
+  }
+  private originPieces(id: NodeId): readonly OriginPiece[] {
+    let pieces = this.pieces.get(id);
+    if (!pieces) {
+      pieces =
+        this.origins
+          .get(id)
+          ?.fragments.filter((p) => p.visible)
+          .map((p) => ({ type: 'retained' as const, text: p.text, range: p.range })) ?? [];
+      this.pieces.set(id, pieces);
+    }
+    return pieces;
+  }
+  node(id: NodeId): DraftNode {
+    if (this.tree_) return this.tree_.draft.node(id);
+    const cached = this.views.get(id);
+    if (cached) return cached;
+    const view = this.origins.get(id);
+    if (!view) throw new Error(`unknown construction node ${id}`);
+    const read = () => this.tree_?.draft.node(id);
+    const inline = ['paragraph', 'section', 'code-block'].includes(view.type);
+    const content = () => this.contents.get(id) ?? view.content;
+    const properties = () => this.properties.get(id);
+    const children = () => Object.freeze(view.children.map((child) => this.handles.get(child)!));
+    const result = Object.freeze({
+      id,
+      get type() {
+        return read()?.type ?? view.type;
+      },
+      get content() {
+        return read() ? read()!.content : inline ? content() : undefined;
+      },
+      get children() {
+        return read()?.children ?? children();
+      },
+      get marker() {
+        return read()
+          ? read()!.marker
+          : ['section', 'list-item', 'block-quote'].includes(view.type)
+            ? view.marker
+            : null;
+      },
+      get info() {
+        return read()
+          ? read()!.info
+          : view.type === 'code-block'
+            ? properties()?.info !== undefined
+              ? properties()!.info
+              : view.info
+            : null;
+      },
+      get checked() {
+        return read()
+          ? read()!.checked
+          : view.type === 'list-item'
+            ? properties()?.checked !== undefined
+              ? properties()!.checked
+              : view.checked
+            : null;
+      },
+    }) as DraftNode;
+    this.views.set(id, result);
+    return result;
   }
   parentOf(id: NodeId) {
-    return this.tree.draft.parentOf(id);
+    if (!this.tree_ && !this.origins.has(id)) throw new Error(`unknown construction node ${id}`);
+    return this.tree_ ? this.tree_.draft.parentOf(id) : this.parents.get(id);
   }
   previousSiblingOf(id: NodeId) {
-    return this.tree.draft.previousSiblingOf(id);
+    if (!this.tree_ && !this.origins.has(id)) throw new Error(`unknown construction node ${id}`);
+    return this.tree_ ? this.tree_.draft.previousSiblingOf(id) : this.siblings.get(id)?.previous;
   }
   nextSiblingOf(id: NodeId) {
-    return this.tree.draft.nextSiblingOf(id);
+    if (!this.tree_ && !this.origins.has(id)) throw new Error(`unknown construction node ${id}`);
+    return this.tree_ ? this.tree_.draft.nextSiblingOf(id) : this.siblings.get(id)?.next;
   }
   bookmark(id: NodeId, offset: number, affinity: TextAffinity) {
-    return this.tree.draft.bookmark(id, offset, affinity);
+    if (this.tree_) return this.tree_.draft.bookmark(id, offset, affinity);
+    const text = this.node(id).content;
+    if (text === undefined) throw new Error('Node has no text bookmarks');
+    assertTextPoint(text, offset, 'bookmark offset');
+    return Object.freeze({ nodeId: id, offset, affinity });
   }
   private literal(text: string): OriginPiece[] {
     return text ? [{ type: 'buffer', text, buffer: this.buffer++, from: 0 }] : [];
   }
   private replace(id: NodeId, from: number, to: number, insert: readonly OriginPiece[]) {
-    const p = this.pieces.get(id) ?? [];
+    const p = this.originPieces(id);
     this.pieces.set(id, [...slicePieces(p, 0, from), ...insert, ...slicePieces(p, to, Infinity)]);
   }
   create(spec: CreateNodeSpec): NodeId {
@@ -247,16 +348,21 @@ export class MultiwriterCommandDraft implements CommandDraft {
   }
   spliceText(id: NodeId, edit: TextEdit): void {
     const before = this.node(id).content;
-    this.tree.draft.spliceText(id, edit);
+    if (this.tree_) this.tree_.draft.spliceText(id, edit);
+    else {
+      if (before === undefined) throw new Error('Node has no inline text');
+      assertTextEdit(before, edit);
+      this.contents.set(id, before.slice(0, edit.from) + edit.insert + before.slice(edit.to));
+    }
     if (before === this.node(id).content) return;
-    const pieces = this.pieces.get(id) ?? [],
+    const pieces = this.originPieces(id),
       inserted = this.literal(edit.insert);
     this.replace(id, edit.from, edit.to, inserted);
     this.record({ type: 'splice', id, edit: structuredClone(edit) }, pieces, inserted);
   }
   splitInline(split: InlineSplit): void {
     const { source, destination, from, to, retainedSide } = split;
-    const p = this.pieces.get(source) ?? [];
+    const p = this.originPieces(source);
     const remaining = [...slicePieces(p, 0, from), ...slicePieces(p, to, Infinity)];
     commandDraft(this.tree.draft).splitInline(split);
     this.pieces.set(
@@ -275,15 +381,12 @@ export class MultiwriterCommandDraft implements CommandDraft {
   }
   joinInline(source: NodeId, destination: NodeId): void {
     commandDraft(this.tree.draft).joinInline(source, destination);
-    this.pieces.set(destination, [
-      ...(this.pieces.get(destination) ?? []),
-      ...(this.pieces.get(source) ?? []),
-    ]);
+    this.pieces.set(destination, [...this.originPieces(destination), ...this.originPieces(source)]);
     this.pieces.set(source, []);
     this.intents.push({ type: 'join', source, destination });
   }
   cutInline(id: NodeId, from: number, to: number): InlineFragment {
-    const before = this.pieces.get(id) ?? [];
+    const before = this.originPieces(id);
     const pieces = slicePieces(before, from, to);
     const fragment = this.tree.draft.cutInline(id, from, to);
     this.fragments.set(fragment, pieces);
@@ -294,7 +397,7 @@ export class MultiwriterCommandDraft implements CommandDraft {
   insertFragment(id: NodeId, at: number, affinity: TextAffinity, fragment: InlineFragment): void {
     const p = this.fragments.get(fragment);
     if (!p || this.consumed.has(fragment)) throw new Error('Foreign or consumed command fragment');
-    const before = this.pieces.get(id) ?? [];
+    const before = this.originPieces(id);
     this.tree.draft.insertFragment(id, at, affinity, fragment);
     this.replace(id, at, at, p);
     this.consumed.add(fragment);
@@ -317,7 +420,7 @@ export class MultiwriterCommandDraft implements CommandDraft {
   }
   convertInline(id: NodeId, plan: ConversionPlan): void {
     const before = this.node(id).content,
-      pieces = this.pieces.get(id) ?? [];
+      pieces = this.originPieces(id);
     this.tree.draft.convertInline(id, plan);
     if (plan.content?.mode === 'replace' && before !== plan.content.text)
       this.pieces.set(id, this.literal(plan.content.text));
@@ -329,18 +432,24 @@ export class MultiwriterCommandDraft implements CommandDraft {
     this.intents.push({ type: 'marker', id, marker });
   }
   setChecked(id: NodeId, checked: boolean | null): void {
-    if (this.node(id).checked === checked) return;
-    this.tree.draft.setChecked(id, checked);
+    const node = this.node(id);
+    if (node.checked === checked) return;
+    if (node.type !== 'list-item') throw new Error(`${node.type} has no checked state`);
+    if (this.tree_) this.tree_.draft.setChecked(id, checked);
+    else this.properties.set(id, { ...this.properties.get(id), checked });
     this.intents.push({ type: 'checked', id, checked });
   }
   setInfo(id: NodeId, info: string | null): void {
-    if (this.node(id).info === info) return;
-    this.tree.draft.setInfo(id, info);
+    const node = this.node(id);
+    if (node.info === info) return;
+    if (node.type !== 'code-block') throw new Error(`${node.type} has no code info`);
+    if (this.tree_) this.tree_.draft.setInfo(id, info);
+    else this.properties.set(id, { ...this.properties.get(id), info });
     this.intents.push({ type: 'info', id, info });
   }
   /** Apply a parser plan to this isolated draft; native binding remains compiler-owned. */
   interpret(id: NodeId, plan: ParserConversionPlan): readonly NodeId[] {
-    const source = this.pieces.get(id) ?? [],
+    const source = this.originPieces(id),
       parent = this.parentOf(id);
     if (!parent) throw new Error('Parser source is detached');
     const before = this.nextSiblingOf(id) ?? null;
@@ -379,13 +488,13 @@ export class MultiwriterCommandDraft implements CommandDraft {
     this.record(
       { type: 'interpret', id, plan: structuredClone(plan), handles },
       source,
-      [...handles.values()].flatMap((id) => this.pieces.get(id) ?? []),
+      [...handles.values()].flatMap((id) => this.originPieces(id)),
     );
     return [...handles.values()];
   }
   sourcePieces(id: NodeId): readonly DraftTextPiece[] {
     let from = 0;
-    return (this.pieces.get(id) ?? []).map((p) => {
+    return this.originPieces(id).map((p) => {
       const start = from;
       from += p.text.length;
       return { from: start, to: from, kind: p.type === 'retained' ? 'existing' : 'inserted' };

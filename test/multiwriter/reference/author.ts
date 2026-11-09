@@ -24,7 +24,7 @@ import type {
   TapeSnapshot,
 } from '../../../src/markdown/multiwriter/text/cache.js';
 import type { TraceAction } from '../trace.js';
-import type { openReferenceDocument } from '../../../src/markdown/multiwriter/reference/document.js';
+import type { AuthoringDocument } from '../../../src/markdown/multiwriter/authoring/document.js';
 
 export interface Aliases {
   ids: Map<string, ResourceId<ResourceKind>>;
@@ -32,7 +32,7 @@ export interface Aliases {
   ranges: Map<string, RangeRef>;
   slots: Map<string, InlineSlot>;
 }
-export type ReferenceDocument = ReturnType<typeof openReferenceDocument>;
+export type ReferenceDocument = AuthoringDocument;
 /** Allocation roles are a test observation convention, never a reducer/birth-binding rule.
  * Gaps between intent ranges keep aliases reconstructible without native clock guesses.
  */

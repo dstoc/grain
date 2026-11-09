@@ -1,3 +1,5 @@
+import { countWork } from '../diagnostics.js';
+import { measure } from '../diagnostics.js';
 import { DEFAULT_INGEST_LIMITS, assertLimit, finish } from '../ingest/work.js';
 import type { Work } from '../ingest/work.js';
 import * as Y from 'yjs';
@@ -42,6 +44,7 @@ export class NativeTapeCache {
   #pending: object | null = null;
   #closed = false;
   #decodeOperations: number;
+  #positions = new WeakMap<Y.Text, WeakMap<Y.Item, number>>();
 
   constructor(decodeOperations = DEFAULT_INGEST_LIMITS.decodeOperations as number) {
     assertLimit(decodeOperations);
@@ -59,7 +62,11 @@ export class NativeTapeCache {
    * the next write. This synchronous publication boundary is not a session admission lock.
    */
   prepare(key: string, insertions: readonly NativeInsertion[]): PreparedNativeBody {
+    return measure('native-preparation', () => this.prepareMeasured(key, insertions));
+  }
+  private prepareMeasured(key: string, insertions: readonly NativeInsertion[]): PreparedNativeBody {
     this.#idle();
+    countWork('native.preparedOperations', insertions.length);
     if (!key || this.#retained.has(key))
       throw new Error('Native body key already published/invalid');
     const token = {};
@@ -96,7 +103,10 @@ export class NativeTapeCache {
             this.#assertInsertion(tape, insertion.index);
             if (insertion.type === 'text') {
               assertUnicode(insertion.text);
-              if (insertion.text.length) tape.insert(insertion.index, insertion.text);
+              if (insertion.text.length) {
+                this.#positions.delete(tape);
+                tape.insert(insertion.index, insertion.text);
+              }
             } else
               this.#insertMarker(
                 insertion.tape,
@@ -174,12 +184,17 @@ export class NativeTapeCache {
 
   /** Apply a complete ready body. An identical repeat is idempotent; changed bytes are an error. */
   apply(key: string, input: NativeBody): void {
-    finish(this.applySteps(key, input));
+    return measure('native-preparation', () => {
+      finish(this.applySteps(key, input));
+    });
   }
 
   /** Stages validation across slices; no native mutation occurs until inspection completes. */
   *applySteps(key: string, input: NativeBody): Work<void> {
     this.#idle();
+    countWork('native.bodyApplications');
+    if (key === 'genesis') countWork('native.genesisApplications');
+    countWork('native.bodyManifestEntries', input.nativeManifest.length);
     if (!key) throw new Error('Invalid native body key');
     const body = copyBody(input);
     const previous = this.#retained.get(key);
@@ -205,6 +220,7 @@ export class NativeTapeCache {
           this.#doc.getText(resourceKey(tape.id));
         }
         for (const marker of inspection.markers) this.#markers.set(resourceKey(marker.id), marker);
+        for (const name of inspection.touched) this.#positions.delete(this.#doc.getText(name));
         for (const update of body.nativeInsertUpdates) Y.applyUpdate(this.#doc, update);
         this.#assertSettled(inspection.touched);
         this.#retained.set(key, body);
@@ -229,6 +245,7 @@ export class NativeTapeCache {
     }
     const old = this.#doc;
     this.#doc = candidate.#doc;
+    this.#positions = new WeakMap();
     this.#tapes = candidate.#tapes;
     this.#markers = candidate.#markers;
     this.#retained = candidate.#retained;
@@ -247,6 +264,7 @@ export class NativeTapeCache {
     const parts: TapePart[] = [];
     let index = 0;
     for (let item = text._start; item; item = item.right) {
+      countWork('native.snapshotItemsTraversed');
       yield;
       const native = { client: item.id.client, clock: item.id.clock };
       if (item.content instanceof Y.ContentString)
@@ -259,7 +277,50 @@ export class NativeTapeCache {
       }
       index += item.length;
     }
+    countWork('native.snapshotPartsCloned', parts.length);
     return structuredClone({ tape, length: index, parts });
+  }
+
+  /** Final integrated items intersecting the admitted insertions. An item can
+   * include retained text after Yjs merges adjacent structs. Insertion-only
+   * callers can splice these items into their own immutable indexes; splitting
+   * an old item around a new insertion is implied by that splice.
+   */
+  *affectedPartsSteps(manifest: NativeBody['nativeManifest']): Work<
+    readonly {
+      readonly tape: TapeId;
+      readonly part: TapePart;
+    }[]
+  > {
+    this.#open();
+    const parts = new Map<string, { readonly tape: TapeId; readonly part: TapePart }>();
+    for (const entry of manifest) {
+      let clock = entry.native.clock;
+      const end = clock + (entry.type === 'text' ? entry.native.length : 1);
+      while (clock < end) {
+        yield;
+        const item = Y.getItem(this.#doc.store, Y.createID(entry.native.client, clock));
+        if (item.parent !== this.#text(entry.tape))
+          throw new NativeValidationError('Native ID belongs to another tape');
+        const key = `${item.id.client}:${item.id.clock}`;
+        if (!parts.has(key)) {
+          const native = { client: item.id.client, clock: item.id.clock },
+            index = yield* this.locateSteps(entry.tape, native);
+          let part: TapePart;
+          if (item.content instanceof Y.ContentString)
+            part = { type: 'text', index, native, text: item.content.str };
+          else {
+            const marker = this.#markers.get(
+              ((item.content as Y.ContentEmbed).embed as { grainMarker: string }).grainMarker,
+            )!;
+            part = { type: 'marker', index, native, marker: marker.id, affinity: marker.affinity };
+          }
+          parts.set(key, { tape: entry.tape, part });
+        }
+        clock = item.id.clock + item.length;
+      }
+    }
+    return structuredClone([...parts.values()]);
   }
 
   /** Permanent open interval. Interior markers refine cells but are not returned as text. */
@@ -327,12 +388,27 @@ export class NativeTapeCache {
     // The offset itself must address a whole Unicode character or an embed.
     const offset = id.clock - item.id.clock;
     if (item.content instanceof Y.ContentString) assertTextBoundary(item.content.str, offset);
-    let index = offset;
-    for (let left = item.left; left; left = left.left) {
-      yield;
-      index += left.length;
+    const text = item.parent as Y.Text;
+    let positions = this.#positions.get(text);
+    if (!positions) {
+      positions = new WeakMap();
+      this.#positions.set(text, positions);
     }
-    return index;
+    const path: Y.Item[] = [];
+    let cursor: Y.Item | null = item;
+    while (cursor && !positions.has(cursor)) {
+      yield;
+      if (this.#positions.get(text) !== positions) throw new Error('Native lookup invalidated');
+      path.push(cursor);
+      cursor = cursor.left;
+    }
+    let index = cursor ? positions.get(cursor)! + cursor.length : 0;
+    for (let i = path.length - 1; i >= 0; i--) {
+      const entry = path[i];
+      positions.set(entry, index);
+      index += entry.length;
+    }
+    return positions.get(item)! + offset;
   }
 
   /** Exact observed IDs. Concurrent insertions inside the native interval are excluded. */
@@ -380,6 +456,7 @@ export class NativeTapeCache {
     this.#retained.clear();
     this.#tapes.clear();
     this.#markers.clear();
+    this.#positions = new WeakMap();
   }
   #open(): void {
     if (this.#closed) throw new Error('Native cache is closed');
@@ -414,7 +491,9 @@ export class NativeTapeCache {
         clock: Y.getState(this.#doc.store, this.#doc.clientID),
       },
     };
-    this.#text(tapeId).insertEmbed(index, { grainMarker: name });
+    const text = this.#text(tapeId);
+    this.#positions.delete(text);
+    text.insertEmbed(index, { grainMarker: name });
     this.#markers.set(name, marker);
     allocations.push(marker);
   }
@@ -455,12 +534,24 @@ export class NativeTapeCache {
     }
   }
   #recover(): void {
+    countWork('native.recoveries');
+    countWork('native.recoveryBodies', this.#retained.size);
     const ready = [...this.#retained].map(([key, body]) => ({ key, body }));
     this.rebuild(ready);
   }
 }
 
 function copyBody(body: NativeBody): NativeBody {
+  countWork('native.bodyAllocationsCopied', body.allocations.length);
+  countWork('native.bodyManifestEntriesCopied', body.nativeManifest.length);
+  countWork('native.bodyUpdatesCopied', body.nativeInsertUpdates.length);
+  countWork(
+    'native.bodyUpdateBytesCopied',
+    body.nativeInsertUpdates.reduce((sum, update) => sum + update.length, 0),
+  );
+  const envelope = body as NativeBody & Partial<import('../contracts.js').ActionEnvelope>;
+  countWork('native.bodyEffectsCopied', envelope.effects?.length ?? 0);
+  countWork('native.bodyDependenciesCopied', envelope.dependencies?.length ?? 0);
   return structuredClone(body);
 }
 function sameBody(a: NativeBody, b: NativeBody): boolean {

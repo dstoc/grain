@@ -1,9 +1,10 @@
+import { countWork } from '../diagnostics.js';
+import { measure } from '../diagnostics.js';
 import { serializeToString } from '../../block-serializer.js';
 import type { DocumentNode, MarkdownNode } from '../../node.js';
 import { isAllowedSemanticChild } from '../../semantic/types.js';
 import type {
   ActionEnvelope,
-  Allocation,
   DeletionId,
   NativeResourceBirth,
   NativeTextRange,
@@ -12,18 +13,21 @@ import type {
 import type { BirthPlacement, LayoutGenesis } from '../layout/index.js';
 import { resourceKey } from '../layout/index.js';
 import { reduceOwnership } from '../ownership/index.js';
+import type { OwnershipResult } from '../ownership/index.js';
+import type { TapeSnapshot } from '../text/types.js';
 import type { NativeView } from '../ingest/publication.js';
 import { NativeValidationError } from '../text/identity.js';
 import { reduceActivity, reduceVisibility } from '../visibility/index.js';
-import type { TextToken, VisibilityLayout } from '../visibility/index.js';
+import type { TextToken, VisibilityLayout, Activity } from '../visibility/index.js';
 import {
   ProjectionError,
   selectInterpretations,
   validatePacket,
   validateMembership,
 } from './interpretation.js';
-import type { PresentedProperties } from './interpretation.js';
 import { normalizeProjection } from './normalize.js';
+import type { PresentedProperties } from './interpretation.js';
+import { rawProjectionNode } from './raw-node.js';
 import type { BirthContent, MutableViewNode, ProjectionView, ViewNode } from './types.js';
 import { textOrigin } from './types.js';
 
@@ -52,16 +56,39 @@ const rangeToken = (range: NativeTextRange, i: number) => ({
 
 /** Full reference projection of one ready snapshot; no shared mutation API is accepted. */
 export function projectMarkdown(input: ProjectionInput) {
-  try {
-    return project(input);
-  } catch (error) {
-    if (error instanceof NativeValidationError) throw new ProjectionError(error.message);
-    throw error;
-  }
+  return projectWithActivity(input, reduceActivity(input.actions.map(({ action }) => action)));
 }
-function project(input: ProjectionInput) {
-  const groupActivity = reduceActivity(input.actions.map(({ action }) => action));
-  const interpretations = selectInterpretations(groupActivity, input.initialProperties);
+
+/** Internal seam for a reader that already reduced activity at this exact ready set.
+ * The reference entry above always performs its own independent full reduction.
+ */
+export interface PreparedStructure {
+  readonly ownership: OwnershipResult;
+  readonly snapshots: readonly TapeSnapshot[];
+  /** Optional derived text index; reference projection always uses the full scan. */
+  readonly visibility?: typeof reduceVisibility;
+  /** Derived selection at this exact ready set; reference projection selects independently. */
+  readonly interpretations?: ReturnType<typeof selectInterpretations>;
+}
+export function projectWithActivity(
+  input: ProjectionInput,
+  groupActivity: Activity,
+  structure?: PreparedStructure,
+) {
+  return measure('visibility-normalization', () => {
+    try {
+      return project(input, groupActivity, structure);
+    } catch (error) {
+      if (error instanceof NativeValidationError) throw new ProjectionError(error.message);
+      throw error;
+    }
+  });
+}
+function project(input: ProjectionInput, groupActivity: Activity, structure?: PreparedStructure) {
+  countWork('projection.fullProjectors');
+  countWork('projection.actionsInspected', input.actions.length);
+  const interpretations =
+    structure?.interpretations ?? selectInterpretations(groupActivity, input.initialProperties);
   const effectActive = (ref: Parameters<typeof groupActivity.isEffectActive>[0]) =>
     groupActivity.isEffectActive(ref) && interpretations.effectEligible(ref);
   const activity = {
@@ -74,15 +101,16 @@ function project(input: ProjectionInput) {
     ...activity.actions.flatMap((action) => action.allocations),
   ];
   const initial = input.initialProperties ?? [];
+  const propertyNodes = initial.length
+    ? new Set(
+        allocations
+          .filter((allocation) => allocation.type === 'node')
+          .map((node) => resourceKey(node.id)),
+      )
+    : undefined;
   if (
     new Set(initial.map((entry) => resourceKey(entry.node))).size !== initial.length ||
-    initial.some(
-      (entry) =>
-        !allocations.some(
-          (allocation) =>
-            allocation.type === 'node' && resourceKey(allocation.id) === resourceKey(entry.node),
-        ),
-    )
+    initial.some((entry) => !propertyNodes!.has(resourceKey(entry.node)))
   )
     throw new ProjectionError('Initial properties require unique retained node origins');
   const read = (range: NativeTextRange) =>
@@ -95,25 +123,34 @@ function project(input: ProjectionInput) {
     for (const effect of action.effects)
       if (effect.type === 'Interpret') validatePacket(effect.packet, allocations, read);
   }
-  const snapshots = allocations
-    .filter((allocation) => allocation.type === 'tape')
-    .map((tape) => input.native.snapshot(tape.id));
-  const ownership = reduceOwnership({
-    genesis: input.genesis,
-    actions: input.actions,
-    snapshots,
-    isActive: (order) =>
-      activity.isEffectActive({ action: order.action.id, ordinal: order.ordinal }),
-    interpretationEligible: (order) =>
-      interpretations.eligible({ action: order.action.id, ordinal: order.ordinal }),
-  });
+  const snapshots =
+    structure?.snapshots ??
+    allocations
+      .filter((allocation) => allocation.type === 'tape')
+      .map((tape) => input.native.snapshot(tape.id));
+  const ownership =
+    structure?.ownership ??
+    reduceOwnership({
+      genesis: input.genesis,
+      actions: input.actions,
+      snapshots,
+      isActive: (order) =>
+        activity.isEffectActive({ action: order.action.id, ordinal: order.ordinal }),
+      interpretationEligible: (order) =>
+        interpretations.eligible({ action: order.action.id, ordinal: order.ordinal }),
+    });
   const birthContent = new Map(
     input.birthContent.map((entry) => [resourceKey(entry.node), entry.intervals]),
   );
+  // Full reconstruction owns fresh detached collections for this invocation.
+  // Reusing them within the pass does not reuse an incremental checkpoint.
+  const nodeAllocations = ownership.nodeAllocations,
+    runLayouts = ownership.runLayouts,
+    destinationRequirements = ownership.destinationRequirements;
   if (
     birthContent.size !== input.birthContent.length ||
-    birthContent.size !== ownership.nodeAllocations.length ||
-    ownership.nodeAllocations.some((node) => !birthContent.has(resourceKey(node.id)))
+    birthContent.size !== nodeAllocations.length ||
+    nodeAllocations.some((node) => !birthContent.has(resourceKey(node.id)))
   )
     throw new ProjectionError('Birth-causal coverage must include every retained node');
   for (const entry of input.birthContent)
@@ -173,22 +210,29 @@ function project(input: ProjectionInput) {
     throw new ProjectionError('Native snapshot is missing retained markers');
   if (tokens.length !== births.size)
     throw new ProjectionError('Native snapshot is missing insertion-manifest text');
-  const flowByRun = new Map(ownership.runLayouts.map((run) => [resourceKey(run.run), run.flow]));
+  const flowByRun = new Map(runLayouts.map((run) => [resourceKey(run.run), run.flow]));
+  const requirementsByNode = new Map<string, { action: ActionEnvelope['id']; ordinal: number }[]>();
+  for (const { nodes, order } of destinationRequirements)
+    for (const key of new Set(nodes.map(resourceKey))) {
+      const requirements = requirementsByNode.get(key) ?? [];
+      requirements.push({ action: order.action.id, ordinal: order.ordinal });
+      requirementsByNode.set(key, requirements);
+    }
+  const allocationByFlow = new Map<string, (typeof nodeAllocations)[number]>();
+  for (const node of nodeAllocations)
+    if (node.flow && !allocationByFlow.has(resourceKey(node.flow)))
+      allocationByFlow.set(resourceKey(node.flow), node);
   const visibilityLayout: VisibilityLayout = {
-    nodes: ownership.nodeAllocations,
+    nodes: nodeAllocations,
     parent: (node) => ownership.blockPlacement(node)?.slot.parent ?? null,
     owner: (token) => ownership.flowBlock(flowByRun.get(resourceKey(ownership.owner(token).run))!),
-    requirements: (node) =>
-      ownership.destinationRequirements
-        .filter((requirement) =>
-          requirement.nodes.some((id) => resourceKey(id) === resourceKey(node)),
-        )
-        .map(({ order }) => ({ action: order.action.id, ordinal: order.ordinal })),
+    requirements: (node) => requirementsByNode.get(resourceKey(node)) ?? [],
     contains: (range, token) => ownership.contains(range, token),
     containsBirthContent: (node, token) =>
       birthContent.get(resourceKey(node))!.some((range) => ownership.contains(range, token)),
   };
-  const initialVisibility = reduceVisibility(
+  const visibilityReducer = structure?.visibility ?? reduceVisibility;
+  const initialVisibility = visibilityReducer(
     activity,
     visibilityLayout,
     tokens,
@@ -218,12 +262,8 @@ function project(input: ProjectionInput) {
   for (const entry of activity.effects) {
     if (entry.effect.type !== 'SplitFlow') continue;
     const split = entry.effect;
-    const run = ownership.runLayouts.find(
-      (run) => resourceKey(run.run) === resourceKey(split.cut.run),
-    )!;
-    const source = ownership.nodeAllocations.find(
-      (node) => node.flow && resourceKey(node.flow) === resourceKey(run.flow),
-    )!;
+    const flow = flowByRun.get(resourceKey(split.cut.run))!;
+    const source = allocationByFlow.get(resourceKey(flow))!;
     if (
       activity.effects.some(
         (deletion) =>
@@ -243,7 +283,7 @@ function project(input: ProjectionInput) {
     ),
   );
   const visibility = hiddenDerivations.size
-    ? reduceVisibility(
+    ? visibilityReducer(
         activity,
         {
           ...visibilityLayout,
@@ -265,44 +305,25 @@ function project(input: ProjectionInput) {
   const available = new Set(
     visibility.nodes.filter((entry) => entry.available).map((entry) => resourceKey(entry.node)),
   );
-  const nodes = new Map(ownership.nodeAllocations.map((node) => [resourceKey(node.id), node]));
-  const rootAllocation = ownership.nodeAllocations.find((node) => node.role === 'root');
+  const nodes = new Map(nodeAllocations.map((node) => [resourceKey(node.id), node]));
+  const rootAllocation = nodeAllocations.find((node) => node.role === 'root');
   if (!rootAllocation) throw new ProjectionError('Missing document root');
   // Ownership is complete and immutable during projection. Read detached collections once.
-  const runById = new Map(ownership.runLayouts.map((run) => [resourceKey(run.run), run]));
+  const runById = new Map(runLayouts.map((run) => [resourceKey(run.run), run]));
   const flowById = new Map(ownership.flowPlacements.map((flow) => [resourceKey(flow.flow), flow]));
   const snapshotByTape = new Map(
     snapshots.map((snapshot) => [resourceKey(snapshot.tape), snapshot]),
   );
   function build(id: NodeId): MutableViewNode[] {
+    countWork('projection.nodesBuilt');
     const allocation = nodes.get(resourceKey(id));
     if (!allocation) throw new ProjectionError('Unknown raw child');
     if (!available.has(resourceKey(id))) return [];
     const properties = interpretations.properties(id);
-    const type = nodeType(allocation, properties);
     const placement = ownership.blockPlacement(id);
     const edge = placement ? { type: 'edge' as const, child: id, slot: placement.slot } : null;
-    const result: MutableViewNode = {
-      origin: { type: 'node', representative: id, constituents: [id] },
-      edge,
-      type,
-      marker:
-        properties.marker ??
-        (type === 'section'
-          ? '#'
-          : type === 'list-item'
-            ? '- '
-            : type === 'block-quote'
-              ? '> '
-              : null),
-      info: properties.info,
-      checked: properties.checked,
-      content: '',
-      children: [],
-      fragments: [],
-      boundaries: [],
-      wrappers: [],
-    };
+    const result = rawProjectionNode(allocation, properties, edge),
+      type = result.type;
     const children = ownership.children(id).flatMap(build);
     const absorbed =
       allocation.flow !== null &&
@@ -406,23 +427,6 @@ function project(input: ProjectionInput) {
   deepFreeze(view);
   return { view, ownership, activity, interpretations, visibility };
 }
-function nodeType(
-  allocation: Extract<Allocation, { type: 'node' }>,
-  properties: PresentedProperties,
-): MarkdownNode['type'] {
-  switch (allocation.role) {
-    case 'root':
-      return 'document';
-    case 'quote':
-      return 'block-quote';
-    case 'list':
-      return 'list';
-    case 'list-item':
-      return 'list-item';
-    case 'inline':
-      return properties.presentation === 'code' ? 'code-block' : properties.presentation;
-  }
-}
 function deepFreeze(value: object): void {
   Object.freeze(value);
   for (const entry of Object.values(value))
@@ -431,6 +435,7 @@ function deepFreeze(value: object): void {
 /** Export delimiters/numbering are presentation only; content already has native origins. */
 export function projectionDocument(view: ProjectionView): DocumentNode {
   function convert(node: ViewNode): MarkdownNode {
+    countWork('projection.semanticNodesConstructed');
     const children = node.children.map(convert);
     switch (node.type) {
       case 'document':

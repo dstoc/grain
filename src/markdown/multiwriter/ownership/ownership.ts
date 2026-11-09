@@ -1,3 +1,5 @@
+import { measure } from '../diagnostics.js';
+import { countWork } from '../diagnostics.js';
 import { compareActions } from '../contracts.js';
 import type {
   ActionId,
@@ -9,11 +11,13 @@ import type {
   NativeId,
   TapeId,
   NodeId,
+  OccurrenceId,
   RangeRef,
   RunId,
   SemanticEffect,
 } from '../contracts.js';
 import { LayoutPrefix, resourceKey } from '../layout/index.js';
+import { copyLayoutAction } from '../layout/layout.js';
 import type {
   EffectOrder,
   LayoutActionInput,
@@ -27,7 +31,7 @@ import { deriveHomes, HomeIndex } from './homes.js';
 import type { HomeBinding } from './homes.js';
 export type { HomeBinding } from './homes.js';
 import type { SplitBirth } from './cohorts.js';
-import { traverse } from './traversal.js';
+import { CoverageKeys, traverse } from './traversal.js';
 import type { RawInlineEntry, RunAttachment, RunOrigin } from './traversal.js';
 
 export interface OwnershipInput {
@@ -44,26 +48,77 @@ export interface DestinationRequirement {
   readonly nodes: readonly NodeId[];
 }
 
+const homeIndexes = new WeakMap<
+  readonly HomeBinding[],
+  {
+    readonly tapes: ReadonlyMap<string, HomeBinding>;
+    readonly flows: ReadonlyMap<string, HomeBinding>;
+  }
+>();
 /** Read-only facade over a completed replay. Queries return detached values.
  * This is raw ownership, not visibility or normalization. containsBirthContent for
  * MW-05 must be derived separately from each node's birth-causal intervals.
  */
 export class OwnershipResult {
   constructor(
-    private readonly layout: LayoutPrefix,
-    private readonly index: CellIndex,
-    private readonly owners: ReadonlyMap<string, CellAssignment>,
-    private readonly roots: ReadonlyMap<string, readonly RunOrigin[]>,
-    private readonly attachments: ReadonlyMap<string, RunAttachment>,
-    private readonly cohorts: readonly OccurrenceBucket[],
-    private readonly requirements: readonly DestinationRequirement[],
-    private readonly homes: readonly HomeBinding[],
+    private readonly layout: Pick<LayoutPrefix, keyof LayoutPrefix>,
+    private readonly index: Pick<CellIndex, keyof CellIndex>,
+    private readonly owners: Pick<ReadonlyMap<string, CellAssignment>, 'get' | 'values'>,
+    private readonly roots: Pick<ReadonlyMap<string, readonly RunOrigin[]>, 'get'>,
+    private readonly attachments: Pick<ReadonlyMap<string, RunAttachment>, 'get'>,
+    private readonly cohorts: readonly OccurrenceBucket[] | (() => readonly OccurrenceBucket[]),
+    private readonly requirements:
+      | readonly DestinationRequirement[]
+      | (() => readonly DestinationRequirement[]),
+    private readonly homes: readonly HomeBinding[] | (() => readonly HomeBinding[]),
+    private readonly homeLookup?: {
+      readonly tape: (tape: TapeId) => HomeBinding | undefined;
+      readonly flow: (flow: FlowId) => HomeBinding | undefined;
+    },
+    private readonly cohortLookup?: (parent: NodeId) => readonly OccurrenceBucket[],
   ) {}
+  private homeIndex() {
+    const homes = typeof this.homes === 'function' ? this.homes() : this.homes;
+    let index = homeIndexes.get(homes);
+    if (!index) {
+      const tapes = new Map<string, HomeBinding>(),
+        flows = new Map<string, HomeBinding>();
+      for (const home of homes) {
+        tapes.set(resourceKey(home.cell.tape), home);
+        flows.set(resourceKey(this.layout.runLayout(home.run).flow), home);
+      }
+      index = { tapes, flows };
+      homeIndexes.set(homes, index);
+    }
+    return index;
+  }
+  homeForTape(tape: TapeId): HomeBinding | undefined {
+    return structuredClone(
+      this.homeLookup ? this.homeLookup.tape(tape) : this.homeIndex().tapes.get(resourceKey(tape)),
+    );
+  }
+  homeForFlow(flow: FlowId): HomeBinding | undefined {
+    return structuredClone(
+      this.homeLookup ? this.homeLookup.flow(flow) : this.homeIndex().flows.get(resourceKey(flow)),
+    );
+  }
+  nodeAllocation(node: NodeId) {
+    return structuredClone(this.layout.nodeAllocation(node));
+  }
   get homeBindings(): readonly HomeBinding[] {
-    return structuredClone(this.homes);
+    return structuredClone(typeof this.homes === 'function' ? this.homes() : this.homes);
   }
   get assignments(): readonly CellAssignment[] {
     return structuredClone([...this.owners.values()]);
+  }
+  runLayout(run: RunId) {
+    return structuredClone(this.layout.runLayout(run));
+  }
+  flowPlacement(flow: FlowId) {
+    return structuredClone(this.layout.flowPlacement(flow));
+  }
+  occurrence(id: OccurrenceId) {
+    return structuredClone(this.layout.occurrence(id));
   }
   get runLayouts() {
     return structuredClone(this.layout.runLayouts);
@@ -74,11 +129,20 @@ export class OwnershipResult {
   get nodeAllocations() {
     return structuredClone(this.layout.nodeAllocations);
   }
+  private cohortValues(): readonly OccurrenceBucket[] {
+    return typeof this.cohorts === 'function' ? this.cohorts() : this.cohorts;
+  }
   get buckets(): readonly OccurrenceBucket[] {
-    return structuredClone(this.cohorts);
+    const buckets = this.cohortValues();
+    countWork('ownership.cohortExportBucketsCopied', buckets.length);
+    for (const bucket of buckets)
+      countWork('ownership.cohortExportRootsCopied', bucket.roots.length);
+    return structuredClone(buckets);
   }
   get destinationRequirements(): readonly DestinationRequirement[] {
-    return structuredClone(this.requirements);
+    return structuredClone(
+      typeof this.requirements === 'function' ? this.requirements() : this.requirements,
+    );
   }
   blockPlacement(node: NodeId) {
     return structuredClone(this.layout.blockPlacement(node));
@@ -86,24 +150,19 @@ export class OwnershipResult {
   flowBlock(flow: FlowId): NodeId {
     return structuredClone(this.layout.flowBlock(flow));
   }
-  children(parent: NodeId): readonly NodeId[] {
-    // Layout orders one parent at a time; buckets for other sequences must not enter it.
-    const buckets = this.cohorts.filter((bucket) => {
+  private parentCohorts(parent: NodeId): readonly OccurrenceBucket[] {
+    if (this.cohortLookup) return this.cohortLookup(parent);
+    // Keep the independent reference's complete-array selection path.
+    return this.cohortValues().filter((bucket) => {
       const slot = this.layout.occurrence(bucket.roots[0]).slot;
       return 'parent' in slot && sameId(slot.parent, parent);
     });
-    return structuredClone(this.layout.children(parent, buckets));
+  }
+  children(parent: NodeId): readonly NodeId[] {
+    return structuredClone(this.layout.children(parent, this.parentCohorts(parent)));
   }
   occurrenceOrder(slot: BlockSlot) {
-    return structuredClone(
-      this.layout.occurrenceOrder(
-        slot,
-        this.cohorts.filter((bucket) => {
-          const root = this.layout.occurrence(bucket.roots[0]).slot;
-          return 'parent' in root && sameId(root.parent, slot.parent);
-        }),
-      ),
-    );
+    return structuredClone(this.layout.occurrenceOrder(slot, this.parentCohorts(slot.parent)));
   }
   resolveBlockSlot(slot: BlockSlot): BlockSlot {
     return this.layout.resolveBlockSlot(slot);
@@ -126,7 +185,10 @@ export class OwnershipResult {
   contains(range: RangeRef, token: { readonly tape: TapeId; readonly native: NativeId }): boolean {
     if (!sameId(range.tape, token.tape)) return false;
     const cell = this.index.locateToken(token.tape, token.native);
-    return this.index.range(range).some((member) => cellKey(member.range) === cellKey(cell.range));
+    return (
+      this.index.containsBoundary(range, cell.range.start) &&
+      this.index.containsBoundary(range, cell.range.end)
+    );
   }
   tokenOwners(token: NativeTextRange): readonly CellAssignment[] {
     return structuredClone(this.index.token(token).map((cell) => this.ownerOfCell(cell.range)));
@@ -166,21 +228,40 @@ export function reduceOwnership(input: OwnershipInput): OwnershipResult {
 
 /** Exact author closure only; concurrent merge must never re-run these author-local checks. */
 export function certifyOwnership(input: OwnershipInput, author: ActionId): void {
-  if (
-    !input.actions.some(
-      (entry) =>
-        entry.action.id.actor === author.actor && entry.action.id.sequence === author.sequence,
+  return measure('exact-author', () => {
+    if (
+      !input.actions.some(
+        (entry) =>
+          entry.action.id.actor === author.actor && entry.action.id.sequence === author.sequence,
+      )
     )
-  )
-    throw new Error('Certification requires the candidate action');
-  replayOwnership(input, author);
+      throw new Error('Certification requires the candidate action');
+    replayOwnership(input, author);
+  });
 }
 
 function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipResult {
+  return measure('coupled-replay', () => replayOwnershipMeasured(input, author));
+}
+function replayOwnershipMeasured(input: OwnershipInput, author?: ActionId): OwnershipResult {
+  countWork('referenceOwnership.fullReconstructions');
+  countWork('referenceOwnership.actionsEnumerated', input.actions.length);
+  countWork('referenceOwnership.actionsCloned', input.actions.length);
+  countWork('referenceOwnership.sortInputs', input.actions.length);
   const genesis = structuredClone(input.genesis);
   const actions = [
-    ...new Map(input.actions.map((entry) => [actionKey(entry), structuredClone(entry)])).values(),
-  ].sort((a, b) => compareActions(a.action, b.action));
+    ...new Map(
+      input.actions.map((entry) => [
+        actionKey(entry),
+        {
+          action: copyLayoutAction(entry.action),
+          births: structuredClone(entry.births),
+        },
+      ]),
+    ).values(),
+  ].sort(
+    (a, b) => (countWork('referenceOwnership.sortComparisons'), compareActions(a.action, b.action)),
+  );
   const homes = [
     ...deriveHomes(genesis),
     ...actions.flatMap((entry) =>
@@ -216,8 +297,14 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
   if (tapeAllocations.length !== input.snapshots.length)
     throw new Error('Native snapshots must cover exactly the ready tapes');
   const markerAllocations = allAllocations.filter((allocation) => allocation.type === 'marker');
+  const tapeById = new Map<string, (typeof tapeAllocations)[number]>();
+  const markerById = new Map<string, (typeof markerAllocations)[number]>();
+  for (const tape of tapeAllocations)
+    if (!tapeById.has(resourceKey(tape.id))) tapeById.set(resourceKey(tape.id), tape);
+  for (const marker of markerAllocations)
+    if (!markerById.has(resourceKey(marker.id))) markerById.set(resourceKey(marker.id), marker);
   for (const snapshot of input.snapshots) {
-    const tape = tapeAllocations.find((entry) => sameId(entry.id, snapshot.tape));
+    const tape = tapeById.get(resourceKey(snapshot.tape));
     const markers = snapshot.parts.filter((part) => part.type === 'marker');
     if (
       !tape ||
@@ -226,7 +313,8 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
     )
       throw new Error('Snapshot does not match retained tape endpoints');
     for (const marker of markers) {
-      const allocation = markerAllocations.find((entry) => sameId(entry.id, marker.marker));
+      countWork('referenceOwnership.markerBindingsVisited');
+      const allocation = markerById.get(resourceKey(marker.marker));
       if (
         !allocation ||
         !sameId(allocation.tape, snapshot.tape) ||
@@ -246,9 +334,20 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
     throw new Error('Native snapshots must cover exactly the ready markers');
 
   const homeIndex = new HomeIndex(homes, index);
+  // These maps are rebuilt from this replay's own input, never imported from an
+  // incremental checkpoint. Keep home ranks to preserve the reference's raw order.
+  const homesByRun = new Map(homes.map((home) => [resourceKey(home.run), home]));
+  const homesByTape = new Map(
+    homes.map((home, rank) => [resourceKey(home.cell.tape), { home, rank }]),
+  );
+  const runById = new Map<string, Extract<(typeof allAllocations)[number], { type: 'run' }>>();
+  for (const allocation of allAllocations)
+    if (allocation.type === 'run' && !runById.has(resourceKey(allocation.id)))
+      runById.set(resourceKey(allocation.id), allocation);
   for (const allocation of allAllocations) {
+    countWork('referenceOwnership.allocationsInspected');
     if (allocation.type !== 'run') continue;
-    const home = homes.find((home) => sameId(home.run, allocation.id));
+    const home = homesByRun.get(resourceKey(allocation.id));
     const captures = home ? allocation.skeleton.slice(0, -1) : allocation.skeleton;
     const seen = new Set<string>();
     for (const range of allocation.skeleton)
@@ -281,10 +380,8 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
         for (const range of effect.ranges) homeIndex.assertCapture(range);
     }
   function layoutRun(run: RunId) {
-    const allocation = allAllocations.find(
-      (entry) => entry.type === 'run' && sameId(entry.id, run),
-    );
-    if (!allocation || allocation.type !== 'run') throw new Error('Missing retained run');
+    const allocation = runById.get(resourceKey(run));
+    if (!allocation) throw new Error('Missing retained run');
     return allocation;
   }
   function install(batch: LayoutGenesis, effects: readonly SemanticEffect[]): void {
@@ -310,9 +407,16 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
         destination: transfer.destination,
       });
     }
-    for (const home of homes.filter((home) =>
-      batch.allocations.some((entry) => entry.type === 'tape' && sameId(entry.id, home.cell.tape)),
-    )) {
+    const batchTapes = new Set(
+      batch.allocations.flatMap((entry) => (entry.type === 'tape' ? [resourceKey(entry.id)] : [])),
+    );
+    const batchHomes = [...batchTapes]
+      .flatMap((key) => {
+        const home = homesByTape.get(key);
+        return home ? [home] : [];
+      })
+      .sort((a, b) => a.rank - b.rank);
+    for (const { home } of batchHomes) {
       const tapeKey = resourceKey(home.cell.tape);
       if (installedTapes.has(tapeKey)) throw new Error('Duplicate tape birth');
       installedTapes.add(tapeKey);
@@ -326,17 +430,20 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
       }
     }
   }
-  function rawCells(flow: FlowId) {
-    return traverse(flow, layout, index, owners, roots, attachments).flatMap((entry) =>
+  function rawCells(flow: FlowId, keys?: CoverageKeys) {
+    return traverse(flow, layout, index, owners, roots, attachments, keys).flatMap((entry) =>
       entry.type === 'cell' ? [entry.assignment] : [],
     );
   }
   function assertCoverage(): void {
+    // Layout, cells, homes and owners are detached replay data. This audit does
+    // not yield or invoke activity/eligibility callbacks; keys cannot escape it.
+    const keys = new CoverageKeys();
     const visited = new Set<string>();
     for (const placement of layout.flowPlacements) {
       if (placement.parent.type !== 'block') continue;
-      for (const assignment of rawCells(placement.flow)) {
-        const key = cellKey(assignment.cell);
+      for (const assignment of rawCells(placement.flow, keys)) {
+        const key = keys.cell(assignment.cell);
         if (visited.has(key)) throw new Error('Cell emitted more than once');
         visited.add(key);
       }
@@ -346,8 +453,8 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
       if (!installedTapes.has(resourceKey(home.cell.tape))) continue;
       for (const cell of index.range(home.cell)) {
         if (!homeIndex.isReserved(cell.range)) continue;
-        const owner = owners.get(cellKey(cell.range));
-        if (!owner || assignmentKey(owner) !== assignmentKey(home))
+        const owner = owners.get(keys.cell(cell.range));
+        if (!owner || keys.assignment(owner) !== keys.assignment(home))
           throw new Error('Reserved home cell lost its root assignment');
       }
     }
@@ -387,6 +494,7 @@ function replayOwnership(input: OwnershipInput, author?: ActionId): OwnershipRes
     )
       assertCoverage();
     for (const [ordinal, effect] of entry.action.effects.entries()) {
+      countWork('referenceOwnership.effectsInspected');
       const order = { action: { id: entry.action.id, lamport: entry.action.lamport }, ordinal };
       const active = input.isActive(order);
       const certifying =
