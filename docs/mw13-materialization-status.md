@@ -1,5 +1,40 @@
 # Incremental multiwriter materialization status
 
+## Current status, 2026-11-09
+
+At source `812417255120f02b796a849d39751db218c43f8b`,
+[PR #88](https://github.com/dstoc/grain/pull/88) is open and non-draft for
+owner-authorized partial integration into `yjs`, pending required GitHub gates.
+It has not merged. The feature branch includes
+[PR #95](https://github.com/dstoc/grain/pull/95)'s projection changes,
+[PR #96](https://github.com/dstoc/grain/pull/96)'s retained production projection
+and narrow author-proof reuse,
+[PR #97](https://github.com/dstoc/grain/pull/97)'s prepared-command baseline, and
+[PR #98](https://github.com/dstoc/grain/pull/98)'s validated sibling-order reuse
+and final-layout repair.
+
+Reference remains the default; `incremental-native` remains an explicit local
+opt-in. The independent full reference/oracle, Yjs 13.6.33 and conservative
+fallbacks remain intact. No browser cutover, canonical pruning or PR #79
+integration is included.
+
+[D, grain/105](https://tines.tbuckley.dev/issues/prj_L8Cva7P0y96K81kq/105), is
+Done under the accepted prepared-command baseline. Its matched split/join p50
+observations are roughly 83.340/32.571 ms, not a 15 ms pass or replacement
+threshold. [E, grain/106](https://tines.tbuckley.dev/issues/prj_L8Cva7P0y96K81kq/106),
+and [parent grain/94](https://tines.tbuckley.dev/issues/prj_L8Cva7P0y96K81kq/94)
+remain in Escalate with dependencies intact. E's ordinary-text core p50/p95
+2/5 ms goals, broader scale/history/storage/heap obligations and uninterrupted
+mixed 10,000-action trace remain open. Partial code integration does not complete
+E or MW-13 acceptance.
+
+The original overview, behavior table, stage reports and gate list below record
+earlier work through `ba5ddc8`. Their present-tense descriptions and draft
+instructions are historical and source-scoped. This status snapshot supersedes
+older instructions to keep PR #88 draft. Historical failures remain failures.
+The [PR #98 evidence qualifications](https://tines.tbuckley.dev/issues/prj_L8Cva7P0y96K81kq/109)
+remain applicable, and the six earlier missing-output experiments remain unresolved.
+
 The opt-in reader reuses native state, readiness certificates, activity roots and
 coupled placement/ownership checkpoints. Insertions, exact text replacements and
 text-only history controls update affected flows and their ancestors. Checked/info edits update affected view records while
@@ -709,5 +744,7 @@ Complete the following before accepting MW-13:
    every independent oracle, assertion, trace, seed, schedule, deadline, canonical
    fact, pending carrier and original identity.
 
-Keep draft PR #88 and all outstanding gates open. Earlier measurements and
-verification artifacts remain historical evidence for their original sources.
+Proceed with the owner-authorized partial integration of PR #88 only after the
+required GitHub checks and independent review pass for the integration head.
+Keep E and full MW-13 acceptance open. Earlier measurements and verification
+artifacts remain historical evidence for their original sources.
